@@ -43,6 +43,8 @@ For vulnerabilities, read [SECURITY.md](SECURITY.md) and use [private vulnerabil
 
 Target `main` and use the repository PR template. Explain the concrete problem, the resulting behavior, and how you verified it. Link related issues and call out changes to data handling, permissions, compatibility, or dependencies when relevant.
 
+If your checkout also has a Rakazo upstream remote, run `gh repo set-default cogine-ai/CogineBot` before opening or watching a PR with GitHub CLI. Confirm the target repository so feedback and changes go to CogineBot.
+
 For UI changes, include a shareable screenshot or CI screenshot link. Quote new user-facing copy and explain why it is needed. Keep English and Chinese README content aligned when changing the project's scope, setup, or status.
 
 Check the PR's current-head results rather than relying on the historical baseline or an earlier successful run. Wait for required checks and maintainer review, address actionable feedback, and update the description when the scope changes. Publishing images, releases, or updates is outside the read-only repository CI.

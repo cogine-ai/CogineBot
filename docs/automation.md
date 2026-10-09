@@ -39,4 +39,6 @@ The archive includes image publishing, desktop release/signing, mobile OTA updat
 
 Repository administrators must disable the previously registered upstream workflow IDs before enabling the new workflow, while the repository-wide Actions switch is still off. After enabling, confirm that only Repository CI runs for the intended commit. Old remote workflow registrations and the repository-wide switch are GitHub settings; moving files does not prove those settings changed.
 
+If the organization allows Actions only for selected repositories, add this repository to that existing allowlist before enabling its switch. Keep the organization policy and other repository selections unchanged. Events received while Actions was disabled are not replayed; a new pull-request update can start the first CI run after enabling.
+
 Future release, deployment, scheduled update, real-provider, or report-publication automation needs a separate authorized change with reviewed destinations, credentials, permissions, budgets, and company-specific channels. Do not restore the archived files to the active directory or reuse upstream production configuration as part of routine CI maintenance.
