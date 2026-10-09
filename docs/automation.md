@@ -11,7 +11,7 @@ The workflow uses GitHub-hosted Ubuntu runners, Node.js 24.16.0, and pnpm 9.15.0
 | Repository documentation and workflows | `node scripts/check-repository.mjs` and `bash scripts/lint-workflows.sh`, without a workspace dependency installation. The workflow linter downloads a version-pinned, checksum-verified tool from its official release. |
 | Lint and typecheck | `pnpm lint` and `pnpm check`. |
 | Web production build | `pnpm --filter @rakazo/web build`; no desktop or mobile package is built. |
-| Default offline unit tests | The complete default `pnpm test` suite with two workers and a JSON result file. Live provider, computer, and database opt-ins are empty. No tests are excluded to hide known failures. |
+| Default offline unit tests | The complete default `pnpm run test` suite with two workers and a JSON result file. Live provider, computer, and database opt-ins are empty. No tests are excluded to hide known failures. |
 | Official PostgreSQL integration | `pnpm test:integration -- --sandbox=fake --runtime=scripted`, using the existing 29-suite harness. Testcontainers starts a disposable PostgreSQL 16 container and creates a separate database from the migrated template for each suite. Model-dependent fixtures use scripted responses or a loopback model emulator. |
 | Selected fake web E2E | The official `pnpm test:e2e` harness with `--sandbox=fake --runtime=scripted` and the `artifact-preview`, `markdown-table`, `peer-messages`, and `spaces` specs. It starts a disposable PostgreSQL container, local API, and headless Chromium. |
 

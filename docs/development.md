@@ -25,12 +25,12 @@ corepack pnpm install --frozen-lockfile --ignore-scripts
 corepack pnpm db:generate
 corepack pnpm check
 corepack pnpm lint
-NODE_ENV=test corepack pnpm test --maxWorkers=2
+NODE_ENV=test corepack pnpm run test --maxWorkers=2
 ```
 
 `--ignore-scripts` disables automatic dependency lifecycle scripts. Generate clients explicitly rather than enabling every install script. If a particular tool needs an additional build step, identify that dependency and review the step first. Keep the lockfile unchanged for a baseline reproduction.
 
-The shell examples use POSIX syntax. In PowerShell, set `$env:NODE_ENV = "test"` before `corepack pnpm test --maxWorkers=2`.
+The shell examples use POSIX syntax. In PowerShell, set `$env:NODE_ENV = "test"` before `corepack pnpm run test --maxWorkers=2`.
 
 The default Vitest setup pins scripted/fake providers unless verification is explicitly enabled. Ordinary test processes do not load the checkout's `.env`; opt-in verification CLIs have different configuration behavior. Do not enable live-provider flags to make an offline test pass.
 
@@ -94,7 +94,7 @@ Real agent execution uses `AGENT_RUNTIME=pi`. Choose the test model, allowed too
 | Goal | Command | Additional requirements |
 | --- | --- | --- |
 | Repository structure and docs | `node scripts/check-repository.mjs` | Node only; no behavior acceptance |
-| Offline units and contracts | `NODE_ENV=test corepack pnpm test --maxWorkers=2` | Locked dependencies, generated clients; some helpers need Python/shell |
+| Offline units and contracts | `NODE_ENV=test corepack pnpm run test --maxWorkers=2` | Locked dependencies, generated clients; some helpers need Python/shell |
 | Pi protocol against model fixtures | `corepack pnpm test:pi` | Loopback fixture model; no paid inference |
 | PostgreSQL product behavior | `corepack pnpm test:integration` | Docker/Testcontainers |
 | Browser behavior | `corepack pnpm test:e2e` | Docker and Playwright Chromium; fake providers by default |

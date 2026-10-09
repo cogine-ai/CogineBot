@@ -16,7 +16,7 @@ The first three-role CSV workflow and mid-run revisions are [planned acceptance 
 | `corepack pnpm db:generate` | Installed locked dependencies. Generate Prisma clients; no running database required. |
 | `corepack pnpm check` | Type checking across the monorepo. |
 | `corepack pnpm lint` | Biome lint and formatting checks. |
-| `NODE_ENV=test corepack pnpm test --maxWorkers=2` | Broader offline unit suite. Scripted runtime/fake providers by default; use a clean shell without `VERIFY_*` opt-ins or live credentials. |
+| `NODE_ENV=test corepack pnpm run test --maxWorkers=2` | Broader offline unit suite. Scripted runtime/fake providers by default; use a clean shell without `VERIFY_*` opt-ins or live credentials. |
 | `corepack pnpm test:integration` | Docker/Testcontainers and PostgreSQL product checks. Longer than units; no paid inference by default. |
 | `corepack pnpm test:e2e` | Docker and Playwright web checks with emulated providers by default. |
 | `corepack pnpm test:pi` | Pi protocol checks against local model fixtures; no model key. |

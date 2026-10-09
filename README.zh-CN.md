@@ -19,7 +19,7 @@ CogineBot 是由 [cogine-ai](https://github.com/cogine-ai) 维护、基于 [Raka
 | 从固定 Rakazo 基线继承的能力 | CogineBot 首个流程的计划 |
 | --- | --- |
 | 持久 Bot、Space、对话、记忆与例行任务 | 三个固定角色完成一个可复现的方案检索与比较任务 |
-| Bot 间委派和异步结果消息 | 必需研究、审查和有效结果文件共同决定任务完成 |
+| Bot 间委派和异步结果消息 | 必须完成研究和审查，并生成有效结果文件，任务才算完成。 |
 | 文件工具、产物预览和下载路径 | 附来源及审查结论的可下载 CSV |
 | 网页、Electron、Expo 客户端共用 API | 优先完善网页首用与可见进度 |
 | 模型连接，以及可选的电脑和集成适配器 | 要求版本、过时结果拒绝、取消和费用边界 |
@@ -47,7 +47,7 @@ corepack pnpm install --frozen-lockfile --ignore-scripts
 corepack pnpm db:generate
 corepack pnpm check
 corepack pnpm lint
-NODE_ENV=test corepack pnpm test --maxWorkers=2
+NODE_ENV=test corepack pnpm run test --maxWorkers=2
 ```
 
 安装依赖需要访问包源；这些检查不需要付费推理。生成 Prisma client 不需要正在运行的数据库。已记录的 macOS 基线包含上述两个启动器失败，请回报实际结果，不预设整套测试通过。

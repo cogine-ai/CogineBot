@@ -47,7 +47,7 @@ corepack pnpm install --frozen-lockfile --ignore-scripts
 corepack pnpm db:generate
 corepack pnpm check
 corepack pnpm lint
-NODE_ENV=test corepack pnpm test --maxWorkers=2
+NODE_ENV=test corepack pnpm run test --maxWorkers=2
 ```
 
 Dependency installation needs package-registry access; these checks require no paid inference. Prisma client generation does not require a running database. The recorded macOS baseline contains the two launcher failures noted above; report your actual results rather than assuming a green suite.
