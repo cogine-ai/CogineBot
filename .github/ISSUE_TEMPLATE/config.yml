@@ -1,11 +1,6 @@
+# Modified on 2026-10-09 for CogineBot's private security reporting route.
 blank_issues_enabled: false
 contact_links:
-  - name: Security vulnerabilities
-    url: https://github.com/elie222/rakazo/blob/main/SECURITY.md
-    about: Report security issues to security@rakazo.com — do not open a public issue.
-  - name: User support
-    url: mailto:support@rakazo.com
-    about: Questions about using Rakazo or self-hosting help.
-  - name: Maintainer
-    url: mailto:elie@rakazo.com
-    about: Reach the maintainer directly.
+  - name: Report a security vulnerability privately
+    url: https://github.com/cogine-ai/CogineBot/security/advisories/new
+    about: Use private vulnerability reporting for security issues. See SECURITY.md for scope.

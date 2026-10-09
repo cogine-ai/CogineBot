@@ -1,3 +1,4 @@
+// Modified on 2026-10-09 for CogineBot's archived workflow fixture paths.
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: Shell and GitHub expressions are literal workflow fixtures.
 import { execFileSync } from "node:child_process";
 import {
@@ -17,7 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const extractor = path.join(repoRoot, "scripts/extract-playwright-artifacts.py");
 const workflow = readFileSync(
-  path.join(repoRoot, ".github/workflows/publish-playwright-report.yml"),
+  path.join(repoRoot, ".github/upstream-workflows/publish-playwright-report.yml"),
   "utf8",
 );
 const temporaryDirectories: string[] = [];

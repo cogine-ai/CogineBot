@@ -1,94 +1,46 @@
+# Modified on 2026-10-09 for CogineBot's reporting routes and source support.
 name: Bug report
-description: Something is broken in Rakazo
+description: Report a reproducible problem in CogineBot
 title: "[Bug]: "
-labels:
-  - bug
 body:
   - type: markdown
     attributes:
       value: |
-        For **security vulnerabilities**, email [security@rakazo.com](mailto:security@rakazo.com) — do not use this form. See [SECURITY.md](https://github.com/elie222/rakazo/blob/main/SECURITY.md).
-
-  - type: checkboxes
-    id: not-security
-    attributes:
-      label: Confirmation
-      options:
-        - label: This is not a security vulnerability report
-          required: true
-
+        Report security issues [privately](https://github.com/cogine-ai/CogineBot/security/advisories/new). For ordinary bugs, use a minimal reproduction with synthetic data.
   - type: textarea
     id: description
     attributes:
-      label: Description
-      description: What went wrong? Keep it concise.
-      placeholder: The bot computer pane stays blank after sending a message.
+      label: Expected and actual behavior
+      description: What did you expect, and what happened instead?
     validations:
       required: true
-
   - type: textarea
     id: steps
     attributes:
       label: Steps to reproduce
-      description: Numbered steps from a clean local setup when possible.
+      description: Include the smallest sequence that reproduces the issue.
       placeholder: |
-        1. `pnpm dev`
-        2. Create a bot and send "hello"
-        3. Open the computer pane
+        1. Start a local development instance
+        2. Create a bot with synthetic input
+        3. Observe the result
     validations:
       required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual behavior
-    validations:
-      required: true
-
   - type: input
-    id: version
+    id: revision
     attributes:
-      label: Rakazo version or commit
-      placeholder: v0.1.0 or abc1234
+      label: Commit or branch
+      placeholder: main at abc1234
     validations:
       required: true
-
-  - type: dropdown
-    id: os
-    attributes:
-      label: Operating system
-      options:
-        - macOS
-        - Linux
-        - Windows
-        - Other
-    validations:
-      required: true
-
-  - type: input
-    id: sandbox
-    attributes:
-      label: SANDBOX_PROVIDER
-      description: If relevant (default is `docker`).
-      placeholder: docker
-
-  - type: input
-    id: runtime
-    attributes:
-      label: AGENT_RUNTIME
-      description: If relevant (default is `pi`).
-      placeholder: pi
-
   - type: textarea
-    id: logs
+    id: environment
     attributes:
-      label: Logs or screenshots
-      description: Redact secrets and tokens. Use placeholders instead of real keys.
-      render: shell
+      label: Environment
+      description: Include OS, Node.js/pnpm versions, app surface, agent runtime, and sandbox provider where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted error or screenshot
+      description: Share only a minimal excerpt. Remove keys, cookies, personal paths, account identifiers, and private data. Do not paste .env files.

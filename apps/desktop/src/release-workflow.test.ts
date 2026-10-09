@@ -1,9 +1,10 @@
+// Modified on 2026-10-09 for CogineBot's archived workflow fixture paths.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(
-  path.resolve(import.meta.dirname, "../../../.github/workflows/release-desktop.yml"),
+  path.resolve(import.meta.dirname, "../../../.github/upstream-workflows/release-desktop.yml"),
   "utf8",
 );
 
