@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Read the [roadmap](https://github.com/cogine-ai/CogineBot#roadmap) before proposing a change. Use synthetic examples and leave credentials or private business data out of this report.
+        Describe the problem and expected outcome against the [current project information](https://github.com/cogine-ai/CogineBot). Use synthetic examples and leave credentials or private business data out of this report.
   - type: textarea
     id: problem
     attributes:

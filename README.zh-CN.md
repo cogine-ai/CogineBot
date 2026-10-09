@@ -1,32 +1,28 @@
-<p align="center">
-  <img src="docs/assets/coginebot-banner.svg" alt="CogineBot — 多 Bot 协作，成果可检查" width="100%" />
-</p>
-
 # CogineBot
 
-**让 Agent 协作，把交付成果看清楚。**
+**持久 Bot、共享 API 与多端客户端的源码仓库。**
 
 [English](README.md) · **简体中文**
 
 [开始使用](#开始使用) · [开发指南](docs/development.md) · [参与贡献](CONTRIBUTING.md) · [验证基线](docs/preparation-baseline.md) · [仓库自动化](docs/automation.md) · [Apache-2.0](LICENSE)
 
-CogineBot 是由 [cogine-ai](https://github.com/cogine-ai) 维护、基于 [Rakazo](https://github.com/elie222/rakazo) 的开源 Agent 工作台。我们正在开发一个聚焦的网页流程：提交要求，协作研究与审查，在执行中修改要求，最后下载成果。
+CogineBot 是由 [cogine-ai](https://github.com/cogine-ai) 独立维护、基于 [Rakazo](https://github.com/elie222/rakazo) 的开源仓库，包含继承的 Bot 运行时、后端及网页、桌面和移动客户端。
 
-**处于早期开发阶段。** 本仓库尚未通过完整 Coordinator → Researcher → Reviewer → CSV 流程及中途修改要求的真实模型验收。目前没有 CogineBot 托管服务、发布镜像或安装器。
+**当前处于仓库准备与源码验证阶段。** 本仓库的真实模型任务质量、真实电脑恢复能力和公网托管就绪程度仍未验证。目前没有 CogineBot 托管服务、发布镜像或安装器。
 
 ## 仓库里有什么
 
-| 从固定 Rakazo 基线继承的能力 | CogineBot 首个流程的计划 |
-| --- | --- |
-| 持久 Bot、Space、对话、记忆与例行任务 | 三个固定角色完成一个可复现的方案检索与比较任务 |
-| Bot 间委派和异步结果消息 | 必须完成研究和审查，并生成有效结果文件，任务才算完成。 |
-| 文件工具、产物预览和下载路径 | 附来源及审查结论的可下载 CSV |
-| 网页、Electron、Expo 客户端共用 API | 优先完善网页首用与可见进度 |
-| 模型连接，以及可选的电脑和集成适配器 | 要求版本、过时结果拒绝、取消和费用边界 |
+- 持久 Bot、Space、对话、记忆与例行任务
+- Bot 间委派和异步结果消息
+- 文件工具、产物预览和下载路径
+- 网页、Electron、Expo 客户端共用 API
+- 模型连接，以及可选的电脑和集成适配器
 
-左栏描述保留源码中的能力，验证范围随配置不同；右栏是待验收计划。现有 `@rakazo/*` 包名和应用界面仍沿用上游。
+这些能力存在于保留的 Rakazo 源码中，验证范围随配置不同。现有 `@rakazo/*` 包名和应用界面仍沿用上游。
 
 [改造前验证基线](docs/preparation-baseline.md) 记录了类型检查、网页构建、选定 PostgreSQL 与浏览器检查，以及默认离线单元测试。该单元测试结果为 **7,456 通过、2 失败、231 跳过**。两个启动器失败仍有记录；scripted/fake 提供方检查不能证明真实模型任务质量或真实电脑恢复能力。
+
+当前修改的检查结果以[仓库 CI](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml) 中对应提交的结果为准。本轮质量分支的检查与已记录的改造前基线分别报告。
 
 ## 开始使用
 
@@ -72,15 +68,6 @@ docs/       开发、验证、运行及来源记录
 | 仓库 CI 与归档工作流 | [自动化说明](docs/automation.md) |
 | 上游起点及同步策略 | [上游来源记录](UPSTREAM.md) |
 | 提交修改或报告安全问题 | [贡献指南](CONTRIBUTING.md) · [安全说明](SECURITY.md) |
-
-## 路线图
-
-1. **仓库质量：** 清楚的源码入门、双语入口、贡献说明和只读 CI。
-2. **真实模型基线：** 在合成数据和明确预算下，验收三角色 CSV 流程。
-3. **任务行为：** 验收要求版本、审查与产物绑定、过时结果拒绝、失败和取消。
-4. **发布准备：** 验证隔离、相关电脑恢复、费用、干净安装及实际分发内容。
-
-这些是推进顺序，不是交付日期。可查看 [Issues](https://github.com/cogine-ai/CogineBot/issues) 和[仓库 CI](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml) 中对应提交的结果。本轮质量分支的检查与已记录的改造前基线分别报告。
 
 ## 许可证与致谢
 

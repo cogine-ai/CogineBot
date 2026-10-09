@@ -87,7 +87,7 @@ For a full source runtime, `corepack pnpm dev` starts API, worker, web, and supe
 
 When moving to real-model validation, use the application's shared model connection settings. Compatible endpoints use the same saved connection mechanism for endpoint, model, capabilities, and credentials. Do not add a new provider-specific environment variable to bypass it.
 
-Real agent execution uses `AGENT_RUNTIME=pi`. Choose the test model, allowed tools, synthetic task, computer mode, and spending limit before enabling it. A model connection or one successful response does not establish the complete three-role CSV workflow; capture the task, review, revision, output, errors, and actual costs separately.
+Real agent execution uses `AGENT_RUNTIME=pi`. Choose the test model, allowed tools, synthetic task, computer mode, and spending limit before enabling it. A model connection or one successful response does not establish task quality; record the task's acceptance criteria, results, errors, and actual costs separately.
 
 ## Choose a verification layer
 
@@ -103,7 +103,7 @@ Real agent execution uses `AGENT_RUNTIME=pi`. Choose the test model, allowed too
 
 Follow [agent verification](agent-verification.md) for the exact scope of each harness. The preparation baseline's selected native-PostgreSQL and browser runs do not establish that the complete Docker/Testcontainers lane passed. Skipped database, Linux-only, or provider checks remain unverified.
 
-Live canaries, real-model evals, and hosted-computer tests can incur costs and affect external systems. They are opt-in work after repository quality validation; they are not a prerequisite for the quick check or the read-only [repository CI](automation.md).
+Live canaries, real-model evals, and hosted-computer tests can incur costs and affect external systems. They require an explicit opt-in and a defined scope and budget; they are not a prerequisite for the quick check or the read-only [repository CI](automation.md).
 
 The Electron desktop E2E suite opens real windows and may steal focus on macOS. Leave that acceptance to an appropriate virtual-display/CI environment rather than routine checks on a maintainer's desktop.
 

@@ -6,7 +6,7 @@ Help make the source easier to run, the behavior easier to verify, and the resul
 
 Useful contributions include reproducible bug reports, documentation corrections, offline test coverage, accessible UI improvements, and provider-neutral fixes. Keep a PR to one problem. Discuss task orchestration changes, new providers, dependencies, public-hosting behavior, and release automation in an issue before committing to a large implementation.
 
-The first three-role CSV workflow and mid-run revisions are [planned acceptance work](README.md#roadmap), not a validated product promise. Distinguish inherited Rakazo behavior from new CogineBot behavior. Preserve `README.upstream.md` as the original reference; record upstream changes through [UPSTREAM.md](UPSTREAM.md).
+Distinguish inherited Rakazo source capabilities from changes actually made in CogineBot. Describe implemented behavior and its validation evidence; do not present unconfirmed product ideas as a roadmap or supported behavior. Preserve `README.upstream.md` as the original reference; record upstream changes through [UPSTREAM.md](UPSTREAM.md).
 
 ## Verify at the right level
 

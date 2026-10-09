@@ -21,7 +21,7 @@ These are offline product checks: they do not call paid models, provision remote
 
 The clean checkout must not contain `.env` files or production credentials. `NODE_ENV=test` prevents the harness's root environment loader from loading a developer environment; Prisma and Vite have their own environment-file behavior, so do not add `.env` files to CI. `VERIFY_PROVIDERS`, `VERIFY_DATABASE`, `VERIFY_LOGGING`, `RUN_COMPUTER_E2E`, and `RUN_COMPUTER_REPLAY_DOCKER` are empty in the workflow. The PostgreSQL harness enables `VERIFY_DATABASE=1` only inside its isolated run. Runtime and sandbox selection are fixed, with no input allowing a manual run to switch to a real provider.
 
-The four browser specs cover selected registration, Space, peer messaging, artifact preview, and CSV download behavior. Passing them would not establish that the complete Coordinator → Researcher → Reviewer workflow succeeds with a real model, that changing requirements mid-run works, or that a release is ready.
+The four browser specs cover selected registration, Space, peer messaging, artifact preview, and CSV download behavior. Passing them would not establish real-model task quality, correctness across changing requirements, or release readiness.
 
 ## Results and failures
 
@@ -41,4 +41,4 @@ Repository administrators must disable the previously registered upstream workfl
 
 If the organization allows Actions only for selected repositories, add this repository to that existing allowlist before enabling its switch. Keep the organization policy and other repository selections unchanged. Events received while Actions was disabled are not replayed; a new pull-request update can start the first CI run after enabling.
 
-Future release, deployment, scheduled update, real-provider, or report-publication automation needs a separate authorized change with reviewed destinations, credentials, permissions, budgets, and company-specific channels. Do not restore the archived files to the active directory or reuse upstream production configuration as part of routine CI maintenance.
+Release, deployment, scheduled update, real-provider, and report-publication automation are outside this workflow's scope. Any such automation requires a separate authorized change with reviewed destinations, credentials, permissions, budgets, and company-specific channels. Do not restore the archived files to the active directory or reuse upstream production configuration as part of routine CI maintenance.
