@@ -1,3 +1,4 @@
+// Modified on 2026-10-09 for CogineBot's archived workflow fixture paths.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,7 +21,10 @@ interface ComposeService {
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const composeFile = path.resolve(repoRoot, "infra/compose/docker-compose.images.yml");
-const publishWorkflowFile = path.resolve(repoRoot, ".github/workflows/publish-server-image.yml");
+const publishWorkflowFile = path.resolve(
+  repoRoot,
+  ".github/upstream-workflows/publish-server-image.yml",
+);
 const compose = parse(readFileSync(composeFile, "utf8")) as {
   services: Record<string, ComposeService>;
 };

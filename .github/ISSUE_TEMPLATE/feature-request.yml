@@ -1,0 +1,27 @@
+name: Feature request
+description: Describe a problem CogineBot could help solve
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem and expected outcome against the [current project information](https://github.com/cogine-ai/CogineBot). Use synthetic examples and leave credentials or private business data out of this report.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and user
+      description: Who encounters this problem, and what are they trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected outcome
+      description: Describe a concrete example of success.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or proposed approach
+      description: Share a workaround or a small change that might help, if you have one.

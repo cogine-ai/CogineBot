@@ -22,6 +22,6 @@ git fetch --no-tags upstream
 
 Review proposed upstream updates on a separate branch, record the source revision and conflicts, and repeat the relevant verification before integrating them. Never replace company history with a force push or blindly mirror upstream branches and tags.
 
-Existing package names, application branding, installer URLs, update channels, and workflows still refer to Rakazo. Their adaptation is separate work. GitHub Actions remain disabled at initialization; image publishing, desktop releases, mobile updates, scheduled jobs, and report publishing must be reviewed before enabling company automation.
+Existing package names, application branding, installer URLs, and update channels still refer to Rakazo. Their adaptation is separate work. GitHub Actions were disabled at initialization. The inherited workflows are now preserved outside the active workflow directory; the new read-only checks and remote workflow state are described in [automation.md](docs/automation.md). Image publishing, desktop releases, mobile updates, scheduled jobs, and report publishing require a separate reviewed change.
 
 No upstream `NOTICE` file exists in the fixed tracked tree. Existing source notices and copyrights remain intact. `THIRD_PARTY_NOTICES.md` adds the complete license text for identified copied MIT material; remaining asset provenance and any future binary/container distribution obligations require review against the actual distributed contents.

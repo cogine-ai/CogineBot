@@ -1,0 +1,146 @@
+name: Repository CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CI: "1"
+  NODE_ENV: test
+  DO_NOT_TRACK: "1"
+  TURBO_TELEMETRY_DISABLED: "1"
+  AGENT_RUNTIME: scripted
+  SANDBOX_PROVIDER: fake
+  CLOUD_AGENT_PROVIDER: emulator
+  WAKEUP_DRIVER: memory
+  VERIFY_PROVIDERS: ""
+  VERIFY_DATABASE: ""
+  VERIFY_LOGGING: ""
+  RUN_COMPUTER_E2E: ""
+  RUN_COMPUTER_REPLAY_DOCKER: ""
+  OPENROUTER_API_KEY: ""
+  MODEL_API_KEY: ""
+  COMPOSIO_API_KEY: ""
+  CURSOR_API_KEY: ""
+  AXIOM_TOKEN: ""
+  AXIOM_DATASET: ""
+  LOG_LEVEL: "off"
+
+jobs:
+  repository:
+    name: Repository documentation and workflow checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24.16.0
+      - run: node scripts/check-repository.mjs
+      - run: bash scripts/lint-workflows.sh
+
+  checks:
+    name: ${{ matrix.check }}
+    needs: repository
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: Lint and typecheck
+            lane: static
+            timeout: 15
+          - check: Web production build
+            lane: build
+            timeout: 15
+          - check: Default offline unit tests
+            lane: unit
+            timeout: 20
+          - check: Official PostgreSQL integration
+            lane: integration
+            timeout: 20
+          - check: Selected fake web E2E
+            lane: web
+            timeout: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+      - name: Install locked dependencies without lifecycle scripts
+        run: |
+          set -euo pipefail
+          mkdir -p test-report/repository-ci
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee test-report/repository-ci/install.log
+      - name: Generate Prisma clients explicitly
+        run: |
+          set -euo pipefail
+          pnpm db:generate 2>&1 | tee test-report/repository-ci/prisma-generate.log
+      - name: Lint and typecheck
+        if: matrix.lane == 'static'
+        run: |
+          set -euo pipefail
+          pnpm lint 2>&1 | tee test-report/repository-ci/lint.log
+          pnpm check 2>&1 | tee test-report/repository-ci/typecheck.log
+      - name: Build the web application
+        if: matrix.lane == 'build'
+        run: |
+          set -euo pipefail
+          pnpm --filter @rakazo/web build 2>&1 | tee test-report/repository-ci/web-build.log
+      - name: Run the default offline unit suite
+        if: matrix.lane == 'unit'
+        run: |
+          set -euo pipefail
+          pnpm run test --maxWorkers=2 --reporter=default --reporter=json --outputFile=test-report/repository-ci/unit-results.json 2>&1 | tee test-report/repository-ci/unit.log
+      - name: Run the official isolated PostgreSQL suites
+        if: matrix.lane == 'integration'
+        run: |
+          set -euo pipefail
+          pnpm test:integration -- --sandbox=fake --runtime=scripted 2>&1 | tee test-report/repository-ci/integration.log
+      - name: Install the Chromium test binary
+        if: matrix.lane == 'web'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          pnpm --filter @rakazo/web exec playwright install chromium 2>&1 | tee test-report/repository-ci/chromium-install.log
+      - name: Run selected web specs with the official offline harness
+        if: matrix.lane == 'web'
+        run: |
+          set -euo pipefail
+          pnpm test:e2e -- --sandbox=fake --runtime=scripted '--spec=(artifact-preview|markdown-table|peer-messages|spaces)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
+      - name: Retain failure diagnostics
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: repository-ci-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-report/repository-ci/
+            test-report/integration/summary.json
+            test-report/e2e/summary.json
+            playwright-report/
+            apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7

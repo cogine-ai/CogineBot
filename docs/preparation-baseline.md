@@ -19,7 +19,7 @@ Environment: macOS arm64, Node.js 24.16.0, pnpm 9.15.0, Prisma 7.10.0, PostgreSQ
 
 PostgreSQL suites: `pi-offline.postgres`, `authorization`, `attachments`, `executor-lifecycle`, `journeys`, `space-membership.postgres`, `wakeup.postgres`, `realtime.postgres`, `usage-accounting.postgres`, and `job-reconciler.postgres`.
 
-Web specs: `peer-messages`, `artifact-preview`, `markdown-table`, and `spaces`. They cover selected registration, Space, peer messaging, preview, and download paths. Component CSV download checks are not proof of a complete real-model Coordinator → Researcher → Reviewer workflow.
+Web specs: `peer-messages`, `artifact-preview`, `markdown-table`, and `spaces`. They cover selected registration, Space, peer messaging, preview, and download paths. Component CSV download checks do not establish real-model task quality.
 
 ## Known test failures
 
@@ -28,7 +28,7 @@ Two launcher tests failed and reproduced in a single-worker rerun with the origi
 - `infra/sandboxes/supervisor/src/focus-or-launch.test.ts`: the launcher's expected argument record was empty.
 - `packages/adapters/src/linux-desktop.focus.test.ts`: the expected process record was absent after the wrapper returned success.
 
-The launcher probes can return success after a 0.2-second wait without guaranteeing that the launched process has written its initial record. A synthetic probe confirmed that timing window. A rerun using a different PATH/Python version passed locally, which does not prove a fix or identify the complete platform cause. Linux execution remains to be verified. No source or test changes were made to hide these failures.
+The launcher probes can return success after a 0.2-second wait without guaranteeing that the launched process has written its initial record. A synthetic probe confirmed that timing window. A rerun using a different PATH/Python version passed locally, which does not prove a fix or identify the complete platform cause. Linux execution was not part of this native baseline; subsequent repository CI results are separate evidence. No source or test changes were made to hide these failures.
 
 ## Dependency and provenance review
 
@@ -38,12 +38,10 @@ The critical match is [`shell-quote@1.10.0`, GHSA-pqg4-j6r4-53mv](https://github
 
 Root Apache-2.0 text and existing source notices are retained. Identified copied MIT material receives full license text in `THIRD_PARTY_NOTICES.md`. A bounded reachable-history text scan produced candidates classified as fixtures/examples; it did not confirm live credentials. Binary-only and uncovered content remain outside that conclusion. Source attribution, asset provenance, and any future binary distribution review are separate obligations.
 
-## Next validation work
+## Validation boundaries
 
-1. Adapt repository automation before enabling Actions. The retained upstream workflows can publish images and updates.
-2. Configure a real model with a bounded run budget and synthetic task data; capture the complete three-role CSV baseline and a mid-run requirements change.
-3. Define business task completion, revision-to-review/artifact binding, stale-output rejection, cancellation propagation, and total budget enforcement using the existing Task/Run/Attempt and persistence mechanisms.
-4. Resolve or explicitly scope baseline failures and dependency findings; validate relevant Linux/runtime conditions.
-5. Validate isolation, real computer recovery where offered, clean installation, and the actual release contents before claiming readiness for shared hosting or a product release.
+These preparation checks did not establish real-model task quality, real computer recovery, shared-hosting isolation, or release readiness. They do not define a product roadmap or require a particular role count, workflow, or output format.
 
 No paid model calls, real computer workflow, public deployment, or company release were part of these preparation checks.
+
+Updated on 2026-10-09 to separate recorded validation from unconfirmed product ideas; the original check results are retained.

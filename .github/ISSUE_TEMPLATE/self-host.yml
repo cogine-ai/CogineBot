@@ -1,80 +1,43 @@
-name: Self-host setup
-description: Cannot start Rakazo, run compose, migrate, or build the sandbox
-title: "[Self-host]: "
-labels:
-  - self-host
+# Modified on 2026-10-09 for CogineBot's reporting routes and source support.
+name: Development setup help
+description: Get help with a source checkout, database, or local build
+title: "[Setup]: "
 body:
   - type: markdown
     attributes:
       value: |
-        For **security vulnerabilities**, email [security@rakazo.com](mailto:security@rakazo.com). See [SECURITY.md](https://github.com/elie222/rakazo/blob/main/SECURITY.md).
-
-        Setup steps are in [README.md](https://github.com/elie222/rakazo/blob/main/README.md). Do not paste `.env` contents or API keys.
-
+        Start with the [development guide](https://github.com/cogine-ai/CogineBot/blob/main/docs/development.md). CogineBot has no company release installer yet. Report security issues [privately](https://github.com/cogine-ai/CogineBot/security/advisories/new).
   - type: dropdown
     id: step
     attributes:
       label: Which step fails?
       options:
-        - Docker Compose / Postgres
-        - pnpm install
-        - pnpm db:generate or db:migrate
-        - pnpm sandbox:build
-        - pnpm dev (API, worker, web, or supervisor)
-        - Health check / first login
+        - Repository check
+        - Dependency installation
+        - Prisma generation or migration
+        - Typecheck, lint, build, or tests
+        - Local API, worker, web, or sandbox startup
         - Other
     validations:
       required: true
-
+  - type: input
+    id: revision
+    attributes:
+      label: Commit or branch
+      placeholder: main at abc1234
+    validations:
+      required: true
   - type: textarea
     id: command
     attributes:
-      label: Command you ran
-      placeholder: pnpm sandbox:build
+      label: Command and error
+      description: Include the exact command and a short redacted error. Remove credentials, personal paths, and private data. Do not paste .env files.
     validations:
       required: true
-
   - type: textarea
-    id: error
+    id: environment
     attributes:
-      label: Error output
-      description: Full terminal output or log excerpt. Redact secrets.
-      render: shell
-    validations:
-      required: true
-
-  - type: input
-    id: version
-    attributes:
-      label: Rakazo version or commit
-      placeholder: main @ abc1234
-    validations:
-      required: true
-
-  - type: dropdown
-    id: os
-    attributes:
-      label: Operating system
-      options:
-        - macOS
-        - Linux
-        - Windows
-        - Other
-    validations:
-      required: true
-
-  - type: input
-    id: docker
-    attributes:
-      label: Docker version
-      placeholder: Docker Desktop 4.x / docker 27.x
-    validations:
-      required: true
-
-  - type: input
-    id: node
-    attributes:
-      label: Node.js version
-      placeholder: v22.x
+      label: Environment
+      description: Include OS, Node.js/pnpm versions, and PostgreSQL/Docker versions where relevant.
     validations:
       required: true
