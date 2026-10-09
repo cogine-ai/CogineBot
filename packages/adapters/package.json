@@ -21,7 +21,7 @@
     "@e2b/desktop": "2.4.0",
     "@earendil-works/pi-agent-core": "0.87.1",
     "@earendil-works/pi-ai": "0.87.1",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "@mozilla/readability": "0.6.0",
     "@observablehq/plot": "0.6.17",
     "@rakazo/adapter-kit": "workspace:*",
