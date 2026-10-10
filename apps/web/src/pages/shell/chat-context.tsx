@@ -70,6 +70,7 @@ export function TimeSeparator({ createdAt, locale }: { createdAt: string; locale
 }
 
 export function ComposerReplyPreview({
+  active = true,
   author,
   text,
   quote,
@@ -77,6 +78,7 @@ export function ComposerReplyPreview({
   target,
   onDismiss,
 }: {
+  active?: boolean;
   author: string;
   text: string;
   quote?: string | null;
@@ -86,6 +88,7 @@ export function ComposerReplyPreview({
 }) {
   const { t } = useLingui();
   useEffect(() => {
+    if (!active) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) {
         event.preventDefault();
@@ -94,7 +97,7 @@ export function ComposerReplyPreview({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onDismiss]);
+  }, [active, onDismiss]);
   return (
     <div
       data-testid="reply-chip"

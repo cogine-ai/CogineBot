@@ -17,6 +17,7 @@ import { LoadingState } from "./components/ai/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SubscriptionGate } from "./components/SubscriptionGate";
 import { authClient } from "./lib/auth";
+import { synchronizeComposerSession } from "./lib/composer-session";
 import { markAfterPaint, markOnce } from "./lib/performance";
 import { getRemoteImagesEnabled, subscribeRemoteImages } from "./lib/remote-images-preference";
 import { rpc } from "./lib/rpc";
@@ -94,6 +95,10 @@ function SessionApp() {
   if (nextHolding !== holdingUnreachable) setHoldingUnreachable(nextHolding);
 
   useLayoutEffect(() => {
+    synchronizeComposerSession(gate, session.data?.user.id);
+  }, [gate, session.data?.user.id]);
+
+  useLayoutEffect(() => {
     if (session.isPending) return;
     markOnce("rk:renderer:session-committed");
     markAfterPaint("rk:renderer:session-painted");
@@ -164,11 +169,11 @@ function SessionApp() {
             }
           >
             <Route path="/onboarding" element={<OnboardingPage />} />
-            <Route path="/app" element={<ShellPage />} />
-            <Route path="/app/g/:groupId" element={<ShellPage />} />
+            <Route path="/app" element={<ShellPage key={user?.id} />} />
+            <Route path="/app/g/:groupId" element={<ShellPage key={user?.id} />} />
             <Route path="/app/artifacts" element={<ArtifactsPage />} />
             <Route path="/app/artifacts/:artifactId" element={<ArtifactsPage />} />
-            <Route path="/app/:botId" element={<ShellPage />} />
+            <Route path="/app/:botId" element={<ShellPage key={user?.id} />} />
           </Route>
         </Routes>
       </Suspense>

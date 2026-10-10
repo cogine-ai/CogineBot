@@ -97,10 +97,8 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await expect(groupAvatar.locator(".rakazo-bot-avatar")).toHaveCount(2);
   const workingAvatar = groupAvatar.locator('[data-working="true"]');
   await expect(workingAvatar).toHaveCount(1);
-  await expect(workingAvatar.locator(".rakazo-bot-avatar-ring")).toHaveCSS(
-    "animation-name",
-    "rakazo-avatar-spin",
-  );
+  await expect(workingAvatar.locator("img")).toBeVisible();
+  await expect(workingAvatar.locator(".rakazo-bot-avatar-ring")).toHaveCount(0);
   await captureScreenshot(page, testInfo, "group-avatar-active");
   await page.unroute("**/rpc/groups/list");
   await page.unroute("**/rpc/threads/get");
@@ -129,7 +127,9 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await sidebar.getByRole("button", { name: /^Review team/ }).click();
   await expect(page.getByRole("combobox", { name: "Message Review team" })).toHaveValue("");
   await sidebar.getByRole("button", { name: /^Draft team/ }).click();
-  await expect(page.getByRole("combobox", { name: "Message Draft team" })).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: "Message Draft team" })).toHaveValue(
+    "@Researcher unfinished draft",
+  );
 
   const composer = page.getByRole("combobox", { name: "Message Draft team" });
   await composer.fill("@Res");
@@ -151,7 +151,7 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await expect(transcript.getByText("Researcher", { exact: true }).first()).toBeVisible();
   await expect(transcript.getByText("Research Writer", { exact: true }).first()).toBeVisible();
   const researcherSpeak = transcript
-    .locator("div")
+    .locator("[data-message-id]")
     .filter({ has: page.getByText("Researcher", { exact: true }) })
     .filter({ has: page.getByRole("button", { name: "Speak this reply" }) })
     .first()

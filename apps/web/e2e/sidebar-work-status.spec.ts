@@ -25,7 +25,9 @@ async function captureSidebarRoster(page: Page, testInfo: TestInfo, name: string
   await captureScreenshot(page, testInfo, name);
 }
 
-test("sidebar roster shows Working… while a run is active", async ({ page }, testInfo) => {
+test("sidebar keeps the latest message while its avatar shows activity", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   await signup(page, `work-status-${stamp}@rakazo.test`, "password12", "Work Status");
   await completeOnboarding(page);
@@ -42,8 +44,9 @@ test("sidebar roster shows Working… while a run is active", async ({ page }, t
     await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeVisible({
       timeout: 30_000,
     });
-    await expect(row.getByText("Working…", { exact: true })).toBeVisible();
-    await expect(row).not.toContainText("keep working until I stop you");
+    await expect(row.getByText("Working…", { exact: true })).toHaveCount(0);
+    await expect(row).toContainText("keep working until I stop you");
+    await expect(row.locator(".rakazo-bot-avatar")).toHaveAttribute("data-working", "true");
     await captureSidebarRoster(page, testInfo, "sidebar-work-status-working");
   } finally {
     await rpc(page, "threads/stop", { botId }).catch(() => undefined);

@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 /** Submit from the Send control so an in-flight prior send cannot swallow Enter. */
 async function sendComposerMessage(page: Page, composer: Locator, text: string) {
@@ -8,6 +8,39 @@ async function sendComposerMessage(page: Page, composer: Locator, text: string) 
   await expect(send).toBeEnabled();
   await send.click();
   await expect(composer).toHaveValue("");
+}
+
+/** A normal stored reply supplies the hover subject without any startup guide. */
+async function createBotTextRow(page: Page, marker: string) {
+  const botId = activeBotId(page);
+  const sent = await rpc<{ runId: string }>(page, "threads/send", {
+    botId,
+    text: `Say hello to a companion: ${marker}`,
+    clientNonce: marker,
+  });
+  await expect
+    .poll(async () => {
+      const snapshot = await rpc<{ run?: { id: string; status: string } | null }>(
+        page,
+        "threads/get",
+        { botId },
+      );
+      return (
+        snapshot.run?.id !== sent.runId ||
+        snapshot.run.status === "completed" ||
+        snapshot.run.status === "cancelled"
+      );
+    })
+    .toBe(true);
+  const transcript = page.getByTestId("transcript");
+  const bubble = transcript.getByTestId("message-bot-bubble").filter({ hasText: marker });
+  await expect(bubble).toBeVisible({ timeout: 20_000 });
+  const row = transcript
+    .locator("[data-message-id]")
+    .filter({ has: page.getByTestId("message-bot-bubble").filter({ hasText: marker }) })
+    .first();
+  await expect(row).toBeVisible();
+  return row;
 }
 
 async function revealHoverRail(row: Locator): Promise<Locator> {
@@ -76,15 +109,7 @@ test("message hover shows beside-bubble actions; reply links to parent", async (
 
   const transcript = page.getByTestId("transcript");
 
-  // Empty start: no Fresh-start greeting. Answer the focus card so a plain
-  // bot text bubble exists for hover layout checks.
-  await expect(page.getByText("What do you want me on first?", { exact: true })).toBeVisible({
-    timeout: 20_000,
-  });
-  await page.getByRole("button", { name: /Day-to-day work/ }).click();
-  const botText = page.getByText(/Got it\./);
-  await expect(botText).toBeVisible({ timeout: 20_000 });
-  const botRow = transcript.locator(`[data-message-id]`).filter({ has: botText }).first();
+  const botRow = await createBotTextRow(page, `hover-bot-${stamp}`);
   await expect(botRow).toBeVisible();
   await expectRailAtRest(page, botRow);
   await captureScreenshot(page, testInfo, "message-actions-rest-desktop");
@@ -386,17 +411,7 @@ test("hover time shows the date for a message from an earlier day", async ({ pag
   await signup(page, `hover-date-${stamp}@rakazo.test`, "password12", "Hover Date");
   await completeOnboarding(page);
 
-  await expect(page.getByText("What do you want me on first?", { exact: true })).toBeVisible({
-    timeout: 20_000,
-  });
-  await page.getByRole("button", { name: /Day-to-day work/ }).click();
-  const botText = page.getByText(/Got it\./);
-  await expect(botText).toBeVisible({ timeout: 20_000 });
-  const row = page
-    .getByTestId("transcript")
-    .locator("[data-message-id]")
-    .filter({ has: botText })
-    .first();
+  const row = await createBotTextRow(page, `hover-date-bot-${stamp}`);
   const messageId = await row.getAttribute("data-message-id");
   if (!messageId) throw new Error("missing message id");
 
@@ -487,17 +502,7 @@ test.describe("touch message actions", () => {
     expect(
       await page.evaluate(() => matchMedia("(hover: hover) and (pointer: fine)").matches),
     ).toBe(false);
-    await expect(page.getByText("What do you want me on first?", { exact: true })).toBeVisible({
-      timeout: 20_000,
-    });
-    await page.getByRole("button", { name: /Day-to-day work/ }).click();
-    const botText = page.getByText(/Got it\./);
-    await expect(botText).toBeVisible({ timeout: 20_000 });
-    const row = page
-      .getByTestId("transcript")
-      .locator("[data-message-id]")
-      .filter({ has: botText })
-      .first();
+    const row = await createBotTextRow(page, `touch-bot-${Date.now()}`);
     const rail = row.getByTestId("message-hover-rail");
     await expect(rail).toHaveCSS("opacity", "1");
     await expect(rail.getByRole("button", { name: "Reply", exact: true })).toBeVisible();

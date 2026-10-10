@@ -1,5 +1,6 @@
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { AvatarStyleProvider } from "./avatar-style.js";
 import { GroupAvatar } from "./group-avatar.js";
 
 describe("GroupAvatar", () => {
@@ -66,5 +67,24 @@ describe("GroupAvatar", () => {
       />,
     );
     expect(html).toContain("+2");
+  });
+
+  it("inherits portrait defaults and keeps uploaded member images in a fixed square frame", () => {
+    const html = renderToString(
+      <AvatarStyleProvider value="robot" portraitDefaults>
+        <GroupAvatar
+          size={40}
+          members={[
+            { botId: "bot-a", color: "#8B5CF6" },
+            { botId: "bot-b", color: "data:image/png;base64,abc" },
+          ]}
+        />
+      </AvatarStyleProvider>,
+    );
+    expect(html).toContain("min-width:40px;min-height:40px;flex:none;aspect-ratio:1");
+    expect(html).toContain("rakazo-bot-portrait");
+    expect(html).toContain('src="data:image/png;base64,abc"');
+    expect(html).toContain("min-width:26px;min-height:26px;flex:none;aspect-ratio:1");
+    expect(html.match(/<img /g)).toHaveLength(2);
   });
 });

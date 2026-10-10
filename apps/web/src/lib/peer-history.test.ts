@@ -1,6 +1,6 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadPeerHistory } from "./peer-history";
+import { loadPeerHistory, mergePeerHistory } from "./peer-history";
 
 function message(id: string, seq: number): ThreadMessage {
   return { id, seq } as ThreadMessage;
@@ -80,5 +80,86 @@ describe("peer history loading", () => {
     lifecycle.abort();
 
     await rejected;
+  });
+
+  it("does not request a second page after cancellation even when a transport ignores abort", async () => {
+    const lifecycle = new AbortController();
+    let resolvePage!: (page: { messages: ThreadMessage[]; olderCursor: number | null }) => void;
+    const loadPage = vi.fn(
+      () =>
+        new Promise<{ messages: ThreadMessage[]; olderCursor: number | null }>((resolve) => {
+          resolvePage = resolve;
+        }),
+    );
+    const loading = loadPeerHistory({ signal: lifecycle.signal, loadPage });
+    const rejected = expect(loading).rejects.toMatchObject({ name: "AbortError" });
+    lifecycle.abort();
+    await rejected;
+    resolvePage({ messages: [message("late", 20)], olderCursor: 20 });
+    await Promise.resolve();
+    expect(loadPage).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an already cancelled request before calling the transport", async () => {
+    const lifecycle = new AbortController();
+    lifecycle.abort();
+    const loadPage = vi.fn();
+    await expect(loadPeerHistory({ signal: lifecycle.signal, loadPage })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(loadPage).not.toHaveBeenCalled();
+  });
+
+  it("keeps the viewer bounded when a page repeats its cursor", async () => {
+    const loadPage = vi.fn().mockResolvedValue({ messages: [message("row", 10)], olderCursor: 10 });
+    await expect(
+      loadPeerHistory({ signal: new AbortController().signal, loadPage }),
+    ).rejects.toThrow("cursor did not advance");
+    expect(loadPage).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not turn a failed page into an empty successful history", async () => {
+    const loadPage = vi.fn().mockRejectedValue(new Error("offline"));
+    await expect(
+      loadPeerHistory({ signal: new AbortController().signal, loadPage }),
+    ).rejects.toThrow("offline");
+  });
+});
+
+describe("peer history and live overlap", () => {
+  it("deduplicates replayed IDs without replacing a newer live update with slow history", () => {
+    const old = {
+      ...message("reply", 4),
+      threadId: "direct",
+      createdAt: "2026-10-11T09:00:00Z",
+      blocks: [{ kind: "text" as const, text: "old" }],
+    };
+    const live = { ...old, seq: 8, blocks: [{ kind: "text" as const, text: "updated" }] };
+    const newer = { ...message("next", 9), threadId: "direct", createdAt: "2026-10-11T09:01:00Z" };
+    expect(mergePeerHistory([live, newer], [old, live])).toEqual([live, newer]);
+  });
+
+  it("merges group sends and direct replies chronologically without colliding on thread IDs", () => {
+    const direct = {
+      ...message("same-id", 1),
+      threadId: "direct",
+      createdAt: "2026-10-11T09:01:00Z",
+    };
+    const group = {
+      ...message("same-id", 30),
+      threadId: "group",
+      createdAt: "2026-10-11T09:00:00Z",
+    };
+    expect(mergePeerHistory([direct], [group])).toEqual([group, direct]);
+  });
+
+  it("does not resurrect cleared messages from a late historical response", () => {
+    const old = { ...message("old", 4), threadId: "direct" };
+    const next = { ...message("next", 8), threadId: "direct" };
+    const group = { ...message("group-row", 1), threadId: "group" };
+    expect(mergePeerHistory([old, group], [old, next], new Map([["direct", 7]]))).toEqual([
+      group,
+      next,
+    ]);
   });
 });

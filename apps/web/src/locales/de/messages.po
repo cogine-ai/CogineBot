@@ -14,8 +14,8 @@ msgstr ""
 "Plural-Forms: \n"
 
 #: src/pages/Shell.tsx
-msgid " (unread)"
-msgstr " (ungelesen)"
+#~ msgid " (unread)"
+#~ msgstr " (ungelesen)"
 
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
@@ -141,6 +141,10 @@ msgstr "vor {hours} Std."
 #: src/pages/ActivityList.tsx
 msgid "{minutes}m ago"
 msgstr "vor {minutes} Min."
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (unread)"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -557,7 +561,6 @@ msgid "Arguments"
 msgstr "Argumente"
 
 #: src/pages/Artifacts.tsx
-#: src/pages/Shell.tsx
 msgid "Artifacts"
 msgstr ""
 
@@ -945,7 +948,6 @@ msgstr ""
 #: src/components/ErrorBoundary.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/PeerMessagesOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 #: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/WindowChrome.tsx
@@ -959,6 +961,10 @@ msgstr "{title} schließen"
 #: src/pages/shell/message-cards.tsx
 msgid "Close chart"
 msgstr "Diagramm schließen"
+
+#: src/pages/PeerMessagesOverlay.tsx
+msgid "Close chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Close computer"
@@ -1019,10 +1025,13 @@ msgstr "Cloud"
 msgid "Code"
 msgstr "Code"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Collapse {0}"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Collapse {displayTitle}"
 msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
@@ -1707,9 +1716,17 @@ msgstr "Erstelle einen Abschnitt und verschiebe {0} dorthin."
 msgid "Create account"
 msgstr "Konto erstellen"
 
+#: src/pages/Shell.tsx
+msgid "Create Bot"
+msgstr ""
+
 #: src/pages/GroupPanel.tsx
 msgid "Create group"
 msgstr "Gruppe erstellen"
+
+#: src/pages/Shell.tsx
+msgid "Create group chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
@@ -1729,6 +1746,7 @@ msgid "Create Routine"
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Create space"
 msgstr ""
@@ -2133,10 +2151,13 @@ msgstr "Executor-Token"
 msgid "Expand"
 msgstr "Erweitern"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Expand {0}"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}"
 msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
@@ -2192,6 +2213,7 @@ msgid "File is too large to upload."
 msgstr "Datei ist zu groß zum Hochladen."
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Shell.tsx
 msgid "Files"
 msgstr "Dateien"
 
@@ -2342,8 +2364,8 @@ msgid "Hi, this is how I'll sound when I read replies out loud."
 msgstr "Hallo, so klinge ich, wenn ich Antworten vorlese."
 
 #: src/pages/Shell.tsx
-msgid "Hide bots"
-msgstr ""
+#~ msgid "Hide bots"
+#~ msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Hide password"
@@ -2757,12 +2779,20 @@ msgid "Message event"
 msgstr ""
 
 #: src/pages/Shell.tsx
+msgid "Message from"
+msgstr ""
+
+#: src/pages/Shell.tsx
 msgid "Message from {peer}"
 msgstr "Nachricht von {peer}"
 
 #: src/pages/Shell.tsx
 msgid "Message…"
 msgstr "Nachricht…"
+
+#: src/pages/Shell.tsx
+msgid "Messaged"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Messaged {peer}"
@@ -2884,6 +2914,10 @@ msgstr "Verschieben nach"
 #: src/components/call/CallCard.tsx
 msgid "Mute"
 msgstr "Stummschalten"
+
+#: src/pages/Shell.tsx
+msgid "My space"
+msgstr ""
 
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
@@ -3145,7 +3179,11 @@ msgstr "Öffnen"
 
 #. placeholder {0}: group.title
 #: src/pages/Shell.tsx
-msgid "Open {0}"
+#~ msgid "Open {0}"
+#~ msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Open {displayTitle}"
 msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
@@ -3552,6 +3590,10 @@ msgstr "Entfernt, aber die Liste konnte nicht aktualisiert werden"
 #: src/pages/PluginsOverlay.tsx
 msgid "Removing…"
 msgstr "Wird entfernt…"
+
+#: src/pages/Shell.tsx
+msgid "Rename"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
@@ -4207,6 +4249,10 @@ msgstr "Unterstützt Denkmodus"
 msgid "Switch bot"
 msgstr ""
 
+#: src/pages/Shell.tsx
+msgid "Switch space"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Switching…"
 msgstr "Wird gewechselt…"
@@ -4310,8 +4356,8 @@ msgid "This cannot be undone."
 msgstr "Dies kann nicht rückgängig gemacht werden."
 
 #: src/pages/PeerMessagesOverlay.tsx
-msgid "This chat is view-only"
-msgstr "Dieser Chat ist schreibgeschützt"
+#~ msgid "This chat is view-only"
+#~ msgstr "Dieser Chat ist schreibgeschützt"
 
 #: src/pages/HostComputerPrompt.tsx
 msgid "this computer"
@@ -4716,7 +4762,6 @@ msgstr "{path} geschrieben"
 msgid "year"
 msgstr ""
 
-#: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Yesterday"
 msgstr "Gestern"

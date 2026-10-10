@@ -28,7 +28,9 @@ async function captureSidebarRoster(
   await captureScreenshot(page, testInfo, name);
 }
 
-test("sidebar roster shows bot title pill below the name", async ({ page }, testInfo) => {
+test("sidebar shows the last message and leaves the profile title in details", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   await signup(page, `roster-title-${stamp}@rakazo.test`, "password12", "Roster Title");
   await completeOnboarding(page);
@@ -48,18 +50,14 @@ test("sidebar roster shows bot title pill below the name", async ({ page }, test
   await expect(row).toBeVisible();
 
   const name = row.locator("[data-roster-bot-name]");
-  const title = row.getByText("Research & outreach lead");
   await expect(name).toHaveText("Long Research Assistant Name");
-  await expect(title).toBeVisible();
-
+  await expect(row.getByText("Research & outreach lead")).toHaveCount(0);
   const nameBox = await name.boundingBox();
-  const titleBox = await title.boundingBox();
-  expect(nameBox).toBeTruthy();
-  expect(titleBox).toBeTruthy();
-  if (nameBox && titleBox) {
-    expect(titleBox.y).toBeGreaterThan(nameBox.y + nameBox.height - 2);
-    expect(nameBox.width).toBeGreaterThan(80);
-  }
+  expect(nameBox?.width).toBeGreaterThan(80);
+  await captureSidebarRoster(page, testInfo, "sidebar-roster-name-preview");
 
-  await captureSidebarRoster(page, testInfo, "sidebar-roster-title-pill");
+  await page.getByTestId("bot-settings-trigger").click();
+  await expect(page.getByTestId("side-panel").locator("label:has-text('Title') input")).toHaveValue(
+    "Research & outreach lead",
+  );
 });

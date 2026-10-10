@@ -45,4 +45,24 @@ describe("peer conversations", () => {
   it("finds nothing in a thread with no peer traffic", () => {
     expect(peerConversations([plainText])).toEqual([]);
   });
+
+  it("keeps multiple exchanges in one row distinct, including two sends to the same peer", () => {
+    const row = message("multi", "2026-08-25T10:01:00.000Z", [
+      { kind: "text", text: "not a receipt" },
+      { kind: "bot_message_sent", toBotId: "b_2", toBotName: "Analyst", text: "first" },
+      { kind: "bot_message_sent", toBotId: "b_2", toBotName: "Analyst", text: "second" },
+    ]);
+    const peer = peerConversations([row])[0]!;
+    expect(peer.messages.map(({ id }) => id)).toEqual(["t_1:multi:1", "t_1:multi:2"]);
+    expect(peer.messages.map(({ text }) => text)).toEqual(["first", "second"]);
+  });
+
+  it("filters a group exchange by its originating Bot without dropping an untagged direct reply", () => {
+    const own = { ...sentToAnalyst, botId: "origin" };
+    const other = { ...sentToAnalyst, id: "other", botId: "another-member" };
+    expect(peerConversations([own, other, replyFromAnalyst], "origin")[0]?.messages).toHaveLength(
+      2,
+    );
+    expect(peerMessagesFrom([other], "origin")).toEqual([]);
+  });
 });

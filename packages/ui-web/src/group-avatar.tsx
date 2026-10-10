@@ -1,4 +1,5 @@
-import { type CSSProperties, memo } from "react";
+import type { CSSProperties } from "react";
+import { memo } from "react";
 import { BotAvatar } from "./bot-avatar.js";
 import { cn } from "./lib/utils.js";
 
@@ -20,6 +21,14 @@ export const GroupAvatar = memo(function GroupAvatar({
   size = 38,
   className,
 }: GroupAvatarProps) {
+  const frameStyle: CSSProperties = {
+    width: size,
+    height: size,
+    minWidth: size,
+    minHeight: size,
+    flex: "none",
+    aspectRatio: "1",
+  };
   const firstMember = members[0];
   if (!firstMember) {
     return (
@@ -28,7 +37,7 @@ export const GroupAvatar = memo(function GroupAvatar({
           "rakazo-group-avatar relative flex items-center justify-center rounded-full border border-border bg-muted text-muted-foreground",
           className,
         )}
-        style={{ width: size, height: size, flex: "none" }}
+        style={frameStyle}
       >
         <svg
           aria-hidden="true"
@@ -79,16 +88,15 @@ export const GroupAvatar = memo(function GroupAvatar({
   return (
     <div
       className={cn("rakazo-group-avatar relative rounded-full select-none", className)}
-      style={{ width: size, height: size, flex: "none" }}
+      style={frameStyle}
     >
       {visibleMembers.map((member, index) => (
         <div
           key={member.botId ?? index}
-          className="absolute"
+          className="absolute rounded-full ring-2 ring-sidebar"
           style={{
             ...positions[index],
             zIndex: index + 1,
-            filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.6))",
           }}
         >
           <BotAvatar

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="writer-title">
+<title id="writer-title">Lilac cat companion</title>
+<defs>
+<linearGradient id="writer-bg" x1="20" y1="0" x2="110" y2="128" gradientUnits="userSpaceOnUse"><stop stop-color="#f2eef7"/><stop offset="1" stop-color="#e8e1ef"/></linearGradient>
+<linearGradient id="writer-coat" x1="35" y1="22" x2="92" y2="125" gradientUnits="userSpaceOnUse"><stop stop-color="#b7a3c9"/><stop offset="1" stop-color="#9885af"/></linearGradient>
+<clipPath id="writer-frame"><rect width="128" height="128" rx="32"/></clipPath>
+</defs>
+<g clip-path="url(#writer-frame)">
+<rect width="128" height="128" fill="url(#writer-bg)"/>
+<path fill="url(#writer-coat)" d="M21 128c0-23 16-38 43-38 26-1 44 14 45 38Z"/>
+<path fill="#e7dfea" d="M48 99q17-9 32 0l7 29H41Z"/>
+<path fill="#a28bb8" d="m30 50-3-29q0-6 5-3l26 19Zm48-13 22-20q5-3 5 2l-2 32Z"/>
+<path fill="#d7bfd3" d="m34 26 3 20 13-9Zm63-2L86 36l12 10Z"/>
+<path fill="url(#writer-coat)" d="M30 49c6-17 21-23 35-22 20 0 34 9 37 27 4 26-11 44-36 44-25 0-44-18-36-49Z"/>
+<path fill="#ccb9d7" opacity=".65" d="M56 29q9-4 18 1l-4 15-6-6-5 7Z"/>
+<path fill="#e9e0e8" d="M46 72q9-9 19-5 11-5 20 5c4 10-4 20-19 21-14 0-24-11-20-21Z"/>
+<ellipse cx="48" cy="57" rx="3.2" ry="4" fill="#514957"/><ellipse cx="83" cy="56" rx="3.2" ry="4" fill="#514957"/>
+<path d="M43 48q6-2 11 1m23-3q6-1 11 2" fill="none" stroke="#8c749f" stroke-width="2" stroke-linecap="round"/>
+<path fill="#997886" d="M60 71q6-3 12 0l-6 6Z"/>
+<path d="M66 77v4m-6 0q6 5 12-1M45 74l-8-2m8 7-9 1m49-7 9-3m-8 9 9 1" fill="none" stroke="#98899e" stroke-width="1.8" stroke-linecap="round"/>
+</g>
+</svg>

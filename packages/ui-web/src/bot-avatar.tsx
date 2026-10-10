@@ -18,8 +18,9 @@ import { tokens } from "@rakazo/ui-tokens";
 import type { CSSProperties } from "react";
 import { memo, useId, useMemo, useSyncExternalStore } from "react";
 import type { AvatarStyle } from "./avatar-style.js";
-import { useAvatarStyle } from "./avatar-style.js";
+import { useAvatarStyle, usePortraitDefaults } from "./avatar-style.js";
 import { cn } from "./lib/utils.js";
+import { botPortraitUrl } from "./portrait-assets.js";
 import "./styles.css";
 
 export type { GrokColorDef };
@@ -80,6 +81,17 @@ export function parseBotAvatar(
 
 const AVATAR_HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
+function avatarFrameStyle(size: number): CSSProperties {
+  return {
+    width: size,
+    height: size,
+    minWidth: size,
+    minHeight: size,
+    flex: "none",
+    aspectRatio: "1",
+  };
+}
+
 export function defaultBotAvatarValue(rawColor: string): string {
   const parsed = parseBotAvatar(rawColor);
   if (rawColor && !parsed.isImage && AVATAR_HEX.test(parsed.color)) return parsed.color;
@@ -106,6 +118,7 @@ export const BotAvatar = memo(function BotAvatar({
   const id = useId().replace(/[^a-zA-Z0-9-_]/g, "");
   const isWorking = ACTIVE_RUN_STATUSES.some((s) => s === status);
   const preferredVariant = useAvatarStyle();
+  const portraitDefaults = usePortraitDefaults();
 
   const parsed = useMemo(() => parseBotAvatar(color, identity), [color, identity]);
   const effectiveId = identity || parsed.color || "agent";
@@ -131,14 +144,15 @@ export const BotAvatar = memo(function BotAvatar({
         )}
         data-working={isWorking}
         style={{
-          width: size,
-          height: size,
-          boxShadow: isWorking
-            ? "0 0 0 2px #3B82F6, 0 0 10px rgba(59,130,246,0.6)"
-            : "0 2px 5px rgba(0,0,0,0.5)",
+          ...avatarFrameStyle(size),
+          boxShadow: portraitDefaults
+            ? undefined
+            : isWorking
+              ? "0 0 0 2px #3B82F6, 0 0 10px rgba(59,130,246,0.6)"
+              : "0 2px 5px rgba(0,0,0,0.5)",
         }}
       >
-        {isWorking ? (
+        {isWorking && !portraitDefaults ? (
           <svg
             className="rakazo-bot-avatar-ring absolute pointer-events-none"
             style={{
@@ -161,7 +175,32 @@ export const BotAvatar = memo(function BotAvatar({
             />
           </svg>
         ) : null}
-        <img src={parsed.imageUrl} alt="" className="h-full w-full object-cover" />
+        <img
+          src={parsed.imageUrl}
+          alt=""
+          className="block h-full w-full object-cover"
+          draggable={false}
+        />
+      </div>
+    );
+  }
+
+  if (portraitDefaults && variant === undefined && parsed.shapeIndex === undefined) {
+    return (
+      <div
+        className={cn(
+          "rakazo-bot-avatar rakazo-bot-portrait relative inline-flex items-center justify-center overflow-hidden rounded-full select-none",
+          className,
+        )}
+        data-working={isWorking}
+        style={avatarFrameStyle(size)}
+      >
+        <img
+          src={botPortraitUrl(effectiveId)}
+          alt=""
+          className="block h-full w-full object-cover"
+          draggable={false}
+        />
       </div>
     );
   }
@@ -198,8 +237,7 @@ export const BotAvatar = memo(function BotAvatar({
         className,
       )}
       style={{
-        width: size,
-        height: size,
+        ...avatarFrameStyle(size),
       }}
       data-working={isWorking}
     >
@@ -329,8 +367,7 @@ function RobotAvatar({
       )}
       data-working={isWorking}
       style={{
-        width: size,
-        height: size,
+        ...avatarFrameStyle(size),
         background: `radial-gradient(circle at 35% 26%, ${colorDef.light}, ${colorDef.hex} 55%, ${colorDef.dark} 100%)`,
         boxShadow: isWorking
           ? `0 0 0 2px rgba(255,255,255,0.25), 0 0 ${Math.round(size * 0.45)}px ${colorDef.hex}`
@@ -440,9 +477,7 @@ function OrganicAvatar({
       data-shape-family={seed % 10}
       data-eye-pattern={seed % 4}
       style={{
-        width: size,
-        height: size,
-        flex: "none",
+        ...avatarFrameStyle(size),
       }}
     >
       {(["idle", "working"] as const).map((mode) => (

@@ -1,7 +1,7 @@
 import { expect, type Route, test } from "@playwright/test";
 import type { McpServer } from "@rakazo/contracts";
 import { MCP_OAUTH_CHANNEL } from "../src/lib/mcp-connect";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import { captureScreenshot, completeOnboarding, openIntegrations, signup } from "./helpers";
 
 test("connects an MCP server through the OAuth popup callback", async ({ page }, testInfo) => {
   const stamp = Date.now();
@@ -83,7 +83,7 @@ test("connects an MCP server through the OAuth popup callback", async ({ page },
     });
   });
 
-  await page.getByText("Integrations", { exact: true }).click();
+  await openIntegrations(page);
   await page.getByTestId("integrations-advanced").evaluate((element) => {
     (element as HTMLDetailsElement).open = true;
   });

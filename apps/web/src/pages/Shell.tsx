@@ -33,7 +33,6 @@ import {
   normalizeCreateBotProfile,
 } from "@rakazo/contracts";
 import {
-  attachmentsForThread,
   buildComposerMentionOptions,
   type ComposerMention,
   clampMentionHighlightIndex,
@@ -66,9 +65,12 @@ import {
   withLiveStreamingProgress,
 } from "@rakazo/core";
 import {
+  AccountAvatar,
+  AttachmentPreview,
   AvatarStyleProvider,
   BotAvatar,
   Button,
+  CogineBotWordmark,
   cn,
   DropdownMenu,
   DropdownMenuContent,
@@ -79,21 +81,22 @@ import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
+  MessageInput,
   Popover,
   PopoverContent,
   PopoverTrigger,
-  resolvePersonaColorDef,
 } from "@rakazo/ui-web";
 import {
   ArrowDown,
   ArrowUp,
   Bell,
   Box,
+  Check,
   ChevronDown,
   Clock,
   Copy,
-  FolderOpen,
   Gauge,
+  Layers,
   LayoutGrid,
   Lock,
   LogOut,
@@ -104,7 +107,6 @@ import {
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
-  Paperclip,
   Pencil,
   Plus,
   Puzzle,
@@ -123,6 +125,7 @@ import {
   Fragment,
   type MutableRefObject,
   memo,
+  type ReactNode,
   type RefObject,
   Suspense,
   useCallback,
@@ -166,11 +169,7 @@ import { readActivityMode, writeActivityMode } from "../lib/activity-mode";
 import type { ArtifactTarget } from "../lib/artifact-open";
 import { authClient } from "../lib/auth";
 import { takeInitialBootstrap } from "../lib/bootstrap";
-import {
-  BOTS_SIDEBAR_EDGE_DRAG_PX,
-  readBotsSidebarCollapsed,
-  writeBotsSidebarCollapsed,
-} from "../lib/bots-sidebar-pref";
+import { readBotsSidebarCollapsed, writeBotsSidebarCollapsed } from "../lib/bots-sidebar-pref";
 import {
   deliverBrowserNotification as deliverNativeBrowserNotification,
   requestBrowserNotificationPermission,
@@ -178,14 +177,30 @@ import {
 } from "../lib/browser-notifications";
 import { startCall, useCallSession } from "../lib/call-session";
 import { newClientId } from "../lib/client-id";
+import type {
+  ComposerDraft,
+  ComposerDraftChange,
+  PendingComposerAttachment,
+} from "../lib/composer-draft";
+import {
+  clearComposerDrafts,
+  consumeSubmittedComposerDraft,
+  makeComposerDraftKey,
+  readComposerDraft,
+} from "../lib/composer-draft";
+import { composerSendAttempts, composerSendSignature } from "../lib/composer-send-attempt";
 import {
   embeddableScreenUrl,
   loadComputerScreen,
   screenIframeSandbox,
 } from "../lib/computer-screen";
 import { publishComputerCommand } from "../lib/computer-workspace";
+import { conversationMessages } from "../lib/conversation-messages";
 import { desktopBridge } from "../lib/desktop";
-import { scheduleFocusPrompt } from "../lib/focus-prompt";
+import {
+  calculateDesktopWorkspaceLayout,
+  useDesktopWorkspaceLayout,
+} from "../lib/desktop-workspace-layout";
 import { localTimezone } from "../lib/local-timezone";
 import { copyableMessageText } from "../lib/message-text";
 import { messageProviderLabel } from "../lib/messaging";
@@ -204,7 +219,6 @@ import {
   rightPanelStorageKey,
   writeRightPanelState,
 } from "../lib/right-panel-state";
-import { rosterWorkStatusLabel } from "../lib/roster-status";
 import { clearSpaceSelection, rpc, selectedSpaceId, selectSpace } from "../lib/rpc";
 import { readSeenRunErrorIds, rememberSeenRunErrorId } from "../lib/run-error-storage";
 import { sharedInflight } from "../lib/shared-inflight";
@@ -239,6 +253,7 @@ import {
   transcriptMovedDown,
 } from "../lib/transcript-scroll";
 import { speaker } from "../lib/tts";
+import { useComposerDraft } from "../lib/use-composer-draft";
 import { errorText } from "../lib/user-error";
 import { ActivityList } from "./ActivityList";
 import type { ContextMenuPosition } from "./BotContextMenu";
@@ -257,16 +272,15 @@ import {
 import type { SettingsSection } from "./SettingsOverlay";
 import { SpaceSearchResults } from "./SpaceSearch";
 import { BotSettings, CreateBotForm } from "./shell/bot-panel";
-import { BotCreatePicker } from "./shell/bot-picker";
 import { ComposerReplyPreview, ReplyLine, TimeSeparator } from "./shell/chat-context";
 import { CommandPalette, isCommandPaletteHotkey } from "./shell/command-palette";
+import { ConversationRow } from "./shell/conversation-row";
 import {
   ClearConversationDialog,
   DeleteBotDialog,
   DeleteItemDialog,
   NewBotSectionDialog,
   NewSpaceDialog,
-  PickerInfoDialog,
   RenameBotSectionDialog,
   RenameSpaceDialog,
 } from "./shell/dialogs";
@@ -299,12 +313,7 @@ const McpServersOverlay = lazyOverlay(() =>
   import("./McpServersOverlay").then((module) => module.McpServersOverlay),
 );
 
-type PendingAttachment = {
-  id: string;
-  threadKey: string;
-  file: File;
-  previewUrl?: string;
-};
+type PendingAttachment = PendingComposerAttachment;
 
 type PendingBrowserNotification = {
   event: Pick<ProductEvent, "id" | "type" | "threadId" | "botId" | "payload">;
@@ -321,13 +330,6 @@ const THREAD_SNAPSHOT_TIMEOUT_MS = 2_000;
 const VOICE_STATUS_REFRESH_TIMEOUT_MS = 10_000;
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 32;
 const MOBILE_SIDEBAR_SWIPE_DISTANCE_PX = 56;
-/** Above one line (~28px); two lines clear this. */
-const COMPOSER_SINGLE_LINE_MAX_PX = 36;
-/** One-line `gap-x-3.5`, subtracted on each side of the text. */
-const COMPOSER_ONE_LINE_GAP_PX = 14;
-/** Narrower than the expand check so a draft at the edge cannot flip. */
-const COMPOSER_COLLAPSE_SLACK_PX = 16;
-
 function threadSnapshotSignal(parent: AbortSignal): AbortSignal {
   return AbortSignal.any([parent, AbortSignal.timeout(THREAD_SNAPSHOT_TIMEOUT_MS)]);
 }
@@ -440,13 +442,13 @@ export function ShellPage() {
     getToolActivityEnabled,
     () => true,
   );
-  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
-  const [replyTarget, setReplyTarget] = useState<ThreadMessage | null>(null);
-  const [replyQuote, setReplyQuote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+  const [attachmentNotice, setAttachmentNotice] = useState<{
+    scopeKey: string;
+    text: string;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [panel, setPanelState] = useState<Panel>(null);
   const [restoredPanelKey, setRestoredPanelKey] = useState<string | null>(null);
@@ -471,6 +473,7 @@ export function ShellPage() {
     }
   }, []);
   const [peerConversation, setPeerConversation] = useState<{
+    botId: string;
     peerBotId: string;
     peerBotName: string;
   } | null>(null);
@@ -565,14 +568,10 @@ export function ShellPage() {
   const [draggedBotId, setDraggedBotId] = useState<string | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [botsSidebarCollapsed, setBotsSidebarCollapsed] = useState(false);
-  const focusPromptAbortRef = useRef<AbortController | null>(null);
-  const focusPromptBotIdRef = useRef<string | null>(null);
-  const botsSidebarEdgeDragRef = useRef<{ startX: number; mode: "expand" | "collapse" } | null>(
-    null,
-  );
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
-  const [pickerInfoTopic, setPickerInfoTopic] = useState<"group" | "space" | null>(null);
+  const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const sidebarSearchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 768px)");
@@ -785,10 +784,26 @@ export function ShellPage() {
   computerOpenRef.current = computerOpen;
   computerBotIdRef.current = computerBotId ?? active?.id;
   const activeGroup = groups.find((group) => group.id === groupId);
-  const activePendingAttachments = useMemo(
-    () => attachmentsForThread(pendingAttachments, inGroup ? groupId : active?.id),
-    [active?.id, groupId, inGroup, pendingAttachments],
-  );
+  const draftScopeKey =
+    userId && bootstrapMe?.spaceId && (groupId || active?.id)
+      ? makeComposerDraftKey({
+          userId,
+          spaceId: bootstrapMe.spaceId,
+          targetKind: inGroup ? "group" : "bot",
+          targetId: inGroup ? groupId! : active!.id,
+        })
+      : null;
+  const { draft: composerDraft, updateDraft: updateComposerDraft } =
+    useComposerDraft(draftScopeKey);
+  const draftScopeKeyRef = useRef(draftScopeKey);
+  draftScopeKeyRef.current = draftScopeKey;
+  const pendingAttachments = composerDraft.attachments;
+  const activePendingAttachments = pendingAttachments;
+  const replyTarget = composerDraft.replyTarget;
+  const replyQuote = composerDraft.replyQuote;
+  const setReplyTarget = (value: ThreadMessage | null) =>
+    updateComposerDraft({ replyTarget: value });
+  const setReplyQuote = (value: string | null) => updateComposerDraft({ replyQuote: value });
   const activeRoutines = !inGroup && routinesBotId === active?.id ? routines : [];
   const panelTarget = inGroup ? activeGroup?.id : active?.id;
   const panelStorageKey =
@@ -1368,6 +1383,7 @@ export function ShellPage() {
       applyEvent: (event) =>
         applyThreadEvent(event, commitSnapshot, commitComputer, snapshotRef, computerRef),
       onEvent: (event, initial) => {
+        if (event.type === "thread.cleared") setPeerConversation(null);
         const currentBot = botsRef.current.find((bot) => bot.id === active.id);
         notifyBrowserForEvent(
           event,
@@ -1379,6 +1395,7 @@ export function ShellPage() {
           false,
         );
         if (event.type === "thread.cleared") {
+          setPeerConversation(null);
           expandedHistoryThread.current = null;
           pinnedAroundRef.current = null;
           historyEpoch.current += 1;
@@ -1478,6 +1495,7 @@ export function ShellPage() {
           computerRef,
         ),
       onEvent: (event, initial) => {
+        if (event.type === "thread.cleared") setPeerConversation(null);
         const eventBot = botsRef.current.find((bot) => bot.id === event.botId);
         notifyBrowserForEvent(
           event,
@@ -1777,9 +1795,8 @@ export function ShellPage() {
   const activeReplyTarget = replyTarget;
   const activeReplyQuote = replyTarget ? replyQuote : null;
   const clearReply = useCallback(() => {
-    setReplyTarget(null);
-    setReplyQuote(null);
-  }, []);
+    updateComposerDraft({ replyTarget: null, replyQuote: null });
+  }, [updateComposerDraft]);
   const currentRuns = activeThreadRuns(activeSnapshot);
   const answerableAskMessageId = latestAnswerableAskMessageId(activeSnapshot);
   const workingRuns = currentRuns.filter((run) =>
@@ -1794,7 +1811,10 @@ export function ShellPage() {
     rememberSeenRunErrorId(runId);
   }, []);
   const transcriptMessages = useMemo(
-    () => userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: true }),
+    () =>
+      conversationMessages(
+        userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: true }),
+      ),
     [activeSnapshot?.messages],
   );
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
@@ -2029,14 +2049,15 @@ export function ShellPage() {
   );
   const onAttachmentPick = useCallback(
     async (files: FileList | null) => {
-      const threadKey = activeGroupId.current ?? activeBotId.current;
+      const threadKey = draftScopeKey;
       if (!threadKey || !files?.length) return;
-      const existing = attachmentsForThread(pendingAttachments, threadKey);
+      const existing = readComposerDraft(threadKey).attachments;
       const next: PendingAttachment[] = [];
       const skipped: string[] = [];
+      let overLimit = 0;
       for (const file of Array.from(files)) {
         if (existing.length + next.length >= ATTACHMENT_MAX_COUNT) {
-          skipped.push(t`${file.name} (max ${ATTACHMENT_MAX_COUNT} attachments)`);
+          overLimit += 1;
           continue;
         }
         if (file.size > ATTACHMENT_MAX_BYTES) {
@@ -2049,40 +2070,84 @@ export function ShellPage() {
           continue;
         }
         next.push({
-          id: `${file.name}-${file.size}-${file.lastModified}-${next.length}`,
+          id: newClientNonce(),
           threadKey,
           file,
           previewUrl: mimeType.startsWith("image/") ? URL.createObjectURL(file) : undefined,
         });
       }
-      if (next.length) setPendingAttachments((current) => [...current, ...next]);
-      setAttachmentNotice(skipped.length ? t`Skipped ${skipped.join(", ")}` : null);
+      if (next.length)
+        updateComposerDraft((current) => ({ attachments: [...current.attachments, ...next] }));
+      const notices = [
+        ...(overLimit
+          ? [t`Up to ${ATTACHMENT_MAX_COUNT} attachments. ${overLimit} not added.`]
+          : []),
+        ...(skipped.length ? [t`Skipped ${skipped.join(", ")}`] : []),
+      ];
+      setAttachmentNotice(notices.length ? { scopeKey: threadKey, text: notices.join(" ") } : null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [pendingAttachments, t],
+    [draftScopeKey, updateComposerDraft, t],
   );
-  const removeAttachment = useCallback((attachment: PendingAttachment) => {
-    revokePendingAttachmentPreviews([attachment]);
-    setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id));
-  }, []);
+  const removeAttachment = useCallback(
+    (attachment: PendingAttachment) => {
+      revokePendingAttachmentPreviews([attachment]);
+      updateComposerDraft((current) => ({
+        attachments: current.attachments.filter((item) => item.id !== attachment.id),
+      }));
+      setAttachmentNotice((current) =>
+        current?.scopeKey === attachment.threadKey ? null : current,
+      );
+    },
+    [updateComposerDraft],
+  );
   const sendMessage = useCallback(
-    async (text: string, mentions: ComposerMention[] = []) => {
+    async (
+      text: string,
+      mentions: ComposerMention[] = [],
+      submittedVersion: number,
+    ): Promise<boolean> => {
       const initialBotTarget = activeBotId.current;
       const initialGroupTarget = activeGroupId.current;
-      if ((!initialBotTarget && !initialGroupTarget) || sending) return;
-      const originThreadKey = initialGroupTarget ?? initialBotTarget;
-      const attachments = attachmentsForThread(pendingAttachments, originThreadKey);
+      const originThreadKey = draftScopeKey;
+      if ((!initialBotTarget && !initialGroupTarget) || !originThreadKey || sendingRef.current)
+        return false;
+      const submitted = readComposerDraft(originThreadKey);
+      if (submitted.version !== submittedVersion) return false;
+      const attachments = submitted.attachments;
       const plan = resolveComposerSendPlan({
         text,
         mentions,
         hasAttachments: attachments.length > 0,
       });
-      if (plan.isNoOp) return;
+      if (plan.isNoOp) return false;
       const reroutedToGroup = Boolean(
         plan.rerouteGroupId && plan.rerouteGroupId !== initialGroupTarget,
       );
       const groupTarget = plan.rerouteGroupId ?? initialGroupTarget;
       const botTarget = reroutedToGroup ? undefined : initialBotTarget;
+      const target = groupTarget ? { groupId: groupTarget } : { botId: botTarget };
+      const replyToMessageId = reroutedToGroup ? undefined : submitted.replyTarget?.id;
+      const replyQuote = reroutedToGroup ? undefined : submitted.replyQuote;
+      const attempt = composerSendAttempts.acquire(
+        originThreadKey,
+        composerSendSignature({
+          text: plan.trimmed,
+          target,
+          mentions: plan.mentionPayload,
+          routineIds: plan.routineIds,
+          attachments,
+          replyToMessageId,
+          replyQuote,
+        }),
+      );
+      if (!attempt) return false;
+      const context = { context: { spaceId: bootstrapMe?.spaceId } };
+      const isCurrentAttempt = () => composerSendAttempts.isCurrent(originThreadKey, attempt);
+      const stillHere = () =>
+        draftScopeKeyRef.current === originThreadKey &&
+        activeGroupId.current === initialGroupTarget &&
+        activeBotId.current === initialBotTarget;
       if (
         plan.shouldSend &&
         (groupTarget || botsRef.current.find((bot) => bot.id === botTarget)?.notifyOnFinish)
@@ -2090,135 +2155,88 @@ export function ShellPage() {
         const permissionRequest = requestBrowserNotificationPermission();
         if (permissionRequest) void permissionRequest.then(flushPendingBrowserNotifications);
       }
-      const trimmed = plan.trimmed;
       sendingRef.current = true;
       setSending(true);
       setSendError(null);
-      const dropDelayedSetup = () => {
-        // Only after successful engagement so a failed upload/send keeps the setup card.
-        if (initialBotTarget && focusPromptBotIdRef.current === initialBotTarget) {
-          cancelFocusPrompt();
-        }
-      };
+      let succeeded = false;
       try {
         if (plan.shouldRunRoutines) {
-          const sendNonce = newClientNonce();
           await Promise.all(
-            plan.routineIds.map((routineId) =>
-              rpc.routines.testRun({
-                routineId,
-                clientNonce: `routine-mention:${sendNonce}:${routineId}`,
-              }),
-            ),
+            plan.routineIds.map(async (routineId) => {
+              if (!isCurrentAttempt()) return;
+              if (attempt.completedRoutineIds.has(routineId)) return;
+              await rpc.routines.testRun(
+                { routineId, clientNonce: `routine-mention:${attempt.clientNonce}:${routineId}` },
+                context,
+              );
+              attempt.completedRoutineIds.add(routineId);
+            }),
           );
         }
-        if (!plan.shouldSend) {
-          dropDelayedSetup();
-          clearReply();
-          revokePendingAttachmentPreviews(attachments);
-          setPendingAttachments((current) =>
-            current.filter((attachment) => attachment.threadKey !== originThreadKey),
+        if (!isCurrentAttempt()) return false;
+        if (plan.shouldSend) {
+          const artifactIds: string[] = [];
+          for (const pending of attachments) {
+            if (!isCurrentAttempt()) return false;
+            let artifactId = attempt.uploadedArtifactIds.get(pending.id);
+            if (!artifactId) {
+              const mimeType = inferAttachmentMimeType(pending.file.name, pending.file.type);
+              if (!mimeType) throw new Error(t`Unsupported file type: ${pending.file.name}`);
+              const contentBase64 = await readFileAsBase64(pending.file);
+              if (!isCurrentAttempt()) return false;
+              const artifact = await rpc.artifacts.create(
+                { ...target, name: pending.file.name, mimeType, contentBase64 },
+                context,
+              );
+              artifactId = artifact.id;
+              attempt.uploadedArtifactIds.set(pending.id, artifactId);
+            }
+            artifactIds.push(artifactId);
+          }
+          if (!isCurrentAttempt()) return false;
+          const sent = await rpc.threads.send(
+            {
+              ...target,
+              clientNonce: attempt.clientNonce,
+              text: plan.trimmed || undefined,
+              mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
+              artifactIds: artifactIds.length ? artifactIds : undefined,
+              replyToMessageId,
+              replyQuote: replyQuote ?? undefined,
+            },
+            context,
           );
-          setAttachmentNotice(null);
-          if (reroutedToGroup && groupTarget) {
-            navigate(`/app/g/${groupTarget}`);
-            return;
-          }
-          if (groupTarget && activeGroupId.current === groupTarget) {
-            await refreshGroupThreadRef.current(groupTarget);
-          } else if (botTarget && activeBotId.current === botTarget) {
-            await refreshThreadRef.current(botTarget);
-          }
-          return;
-        }
-        const artifactIds: string[] = [];
-        for (const pending of attachments) {
-          const mimeType = inferAttachmentMimeType(pending.file.name, pending.file.type);
-          if (!mimeType) {
-            throw new Error(t`Unsupported file type: ${pending.file.name}`);
-          }
-          const contentBase64 = await readFileAsBase64(pending.file);
-          const artifact = await rpc.artifacts.create(
-            groupTarget
-              ? { groupId: groupTarget, name: pending.file.name, mimeType, contentBase64 }
-              : { botId: botTarget!, name: pending.file.name, mimeType, contentBase64 },
-          );
-          artifactIds.push(artifact.id);
-        }
-        const clientNonce = newClientNonce();
-        if (groupTarget) {
-          await rpc.threads.send({
-            groupId: groupTarget,
-            clientNonce,
-            text: trimmed || undefined,
-            mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
-            artifactIds: artifactIds.length ? artifactIds : undefined,
-            replyToMessageId: reroutedToGroup ? undefined : activeReplyTarget?.id,
-            replyQuote: reroutedToGroup ? undefined : (activeReplyQuote ?? undefined),
-          });
-        } else if (botTarget) {
-          const sent = await rpc.threads.send({
-            botId: botTarget,
-            clientNonce,
-            text: trimmed || undefined,
-            mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
-            artifactIds: artifactIds.length ? artifactIds : undefined,
-            replyToMessageId: activeReplyTarget?.id,
-            replyQuote: activeReplyQuote ?? undefined,
-          });
-          if (activeBotId.current === botTarget) {
+          if (!isCurrentAttempt()) return false;
+          if (!sent?.runId || !sent?.taskId) throw new Error(t`Failed to send message`);
+          if (botTarget && stillHere()) {
             updateSnapshot((current) =>
               applyThreadSendReceipt(
                 current,
-                {
-                  botId: botTarget,
-                  runId: sent.runId,
-                  taskId: sent.taskId,
-                },
+                { botId: botTarget, runId: sent.runId, taskId: sent.taskId },
                 terminalRunReceipts.current,
               ),
             );
           }
         }
-        dropDelayedSetup();
-        clearReply();
-        revokePendingAttachmentPreviews(attachments);
-        setPendingAttachments((current) =>
-          current.filter((attachment) => attachment.threadKey !== originThreadKey),
-        );
-        // Refresh sidebar status even when a bot→group reroute navigates away below.
+        succeeded = true;
+        consumeSubmittedComposerDraft(originThreadKey, submitted);
+        if (stillHere()) setAttachmentNotice(null);
         void refreshBots().catch(() => undefined);
-        if (reroutedToGroup && groupTarget) {
-          navigate(`/app/g/${groupTarget}`);
-          return;
-        }
-        if (groupTarget && activeGroupId.current === groupTarget) setAttachmentNotice(null);
-        if (botTarget && activeBotId.current === botTarget) setAttachmentNotice(null);
+        if (reroutedToGroup && groupTarget && stillHere()) navigate(`/app/g/${groupTarget}`);
         if (groupTarget) void refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
         else if (botTarget) void refreshThreadRef.current(botTarget).catch(() => undefined);
+        return true;
       } catch (error) {
-        if (reroutedToGroup && groupTarget) {
+        if (isCurrentAttempt() && stillHere())
           setSendError(errorText(error, t`Failed to send message`));
-        } else if (groupTarget && activeGroupId.current === groupTarget) {
-          setSendError(errorText(error, t`Failed to send message`));
-        } else if (botTarget && activeBotId.current === botTarget) {
-          setSendError(errorText(error, t`Failed to send message`));
-        }
+        return false;
       } finally {
+        composerSendAttempts.finish(originThreadKey, attempt, succeeded);
         sendingRef.current = false;
         setSending(false);
       }
     },
-    [
-      activeReplyTarget?.id,
-      activeReplyQuote,
-      clearReply,
-      flushPendingBrowserNotifications,
-      navigate,
-      pendingAttachments,
-      sending,
-      t,
-    ],
+    [draftScopeKey, bootstrapMe?.spaceId, flushPendingBrowserNotifications, navigate, t],
   );
   const stopRun = useCallback(async () => {
     if (sending) return;
@@ -2342,12 +2360,6 @@ export function ShellPage() {
     await refreshBots().catch(() => undefined);
   }
 
-  function cancelFocusPrompt() {
-    focusPromptAbortRef.current?.abort();
-    focusPromptAbortRef.current = null;
-    focusPromptBotIdRef.current = null;
-  }
-
   function setBotsSidebarCollapsedPref(collapsed: boolean) {
     setBotsSidebarCollapsed(collapsed);
     writeBotsSidebarCollapsed(userId, collapsed);
@@ -2364,7 +2376,6 @@ export function ShellPage() {
     description: string;
     computerMode: ComputerMode;
   }) {
-    const isFirstBot = botsRef.current.length === 0;
     const bot = await rpc.bots.create({
       ...normalizeCreateBotProfile(input),
       notifyOnFinish: true,
@@ -2375,38 +2386,7 @@ export function ShellPage() {
     );
     navigate(`/app/${bot.id}`);
     setPanel(null);
-    // Register cancellation before awaiting start so leaving the bot during
-    // startup cannot miss the abort and still schedule a late focus card.
-    cancelFocusPrompt();
-    const controller = new AbortController();
-    focusPromptAbortRef.current = controller;
-    focusPromptBotIdRef.current = bot.id;
-    const started = await rpc.onboarding
-      .start({ botId: bot.id })
-      .then(() => true)
-      .catch(() => false);
-    if (!started || controller.signal.aborted || focusPromptBotIdRef.current !== bot.id) {
-      if (focusPromptAbortRef.current === controller) {
-        focusPromptAbortRef.current = null;
-        focusPromptBotIdRef.current = null;
-      }
-      await refreshBots().catch(() => undefined);
-      return;
-    }
-    void scheduleFocusPrompt({
-      immediate: isFirstBot,
-      signal: controller.signal,
-      shouldSkip: () => sendingRef.current,
-      prompt: async () => {
-        if (focusPromptBotIdRef.current !== bot.id || activeBotId.current !== bot.id) return;
-        await rpc.onboarding.promptFocus({ botId: bot.id }).catch(() => undefined);
-      },
-    }).finally(() => {
-      if (focusPromptAbortRef.current === controller) {
-        focusPromptAbortRef.current = null;
-        focusPromptBotIdRef.current = null;
-      }
-    });
+    await rpc.onboarding.start({ botId: bot.id }).catch(() => undefined);
     await refreshBots().catch(() => undefined);
   }
 
@@ -2511,14 +2491,6 @@ export function ShellPage() {
   }, [active?.id]);
 
   useEffect(() => {
-    if (focusPromptBotIdRef.current && focusPromptBotIdRef.current !== active?.id) {
-      cancelFocusPrompt();
-    }
-  }, [active?.id]);
-
-  useEffect(() => () => cancelFocusPrompt(), []);
-
-  useEffect(() => {
     if (!computer?.busyBotName) {
       setComputerError(null);
       setComputerErrorFromScreen(false);
@@ -2589,16 +2561,10 @@ export function ShellPage() {
   }, [panelStorageKey, restoredPanelKey, panel, editingRoutine?.id]);
 
   useEffect(() => {
-    const threadKey = inGroup ? groupId : active?.id;
-    setPendingAttachments((current) => {
-      const stale = current.filter((attachment) => attachment.threadKey !== threadKey);
-      revokePendingAttachmentPreviews(stale);
-      return attachmentsForThread(current, threadKey);
-    });
-    clearReply();
+    setPeerConversation(null);
     setAttachmentNotice(null);
     setSendError(null);
-  }, [active?.id, clearReply, groupId, inGroup]);
+  }, [draftScopeKey]);
 
   useEffect(() => {
     if (!computerOpen) return;
@@ -2731,12 +2697,27 @@ export function ShellPage() {
     showComputerRecoveryHint;
 
   const userName = session.data?.user.name ?? t`You`;
-  const initials = userName
-    .split(" ")
-    .map((p) => p[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+  const panelVisible = Boolean(panel && (active || activeGroup || panel === "create"));
+  const { layout, resizePanel, isDesktop } = useDesktopWorkspaceLayout({
+    sidebarCollapsed: botsSidebarCollapsed,
+    panelOpen: panelVisible,
+  });
+  const compactSidebar = isDesktop && layout.sidebarCollapsed;
+  const currentSpace = spaces.find((space) => space.id === bootstrapMe?.spaceId);
+  const currentSpaceName = currentSpace?.name ?? t`My space`;
+  const expandSidebar = () => {
+    if (
+      compactSidebar &&
+      panelVisible &&
+      calculateDesktopWorkspaceLayout({
+        viewportWidth: window.innerWidth,
+        sidebarCollapsed: false,
+        panelOpen: true,
+      }).sidebarCollapsed
+    )
+      setPanel(null);
+    setBotsSidebarCollapsedPref(false);
+  };
 
   const shell = (
     <div
@@ -2803,118 +2784,227 @@ export function ShellPage() {
       ) : null}
       <aside
         data-testid="bots-sidebar"
-        data-collapsed={botsSidebarCollapsed ? "true" : "false"}
-        inert={botsSidebarCollapsed && !mobileSidebarOpen ? true : undefined}
-        className={`absolute inset-y-0 start-0 z-40 flex w-[calc(100%-48px)] max-w-[316px] shrink-0 flex-col border-e border-sidebar-border bg-sidebar transition-[transform,width,opacity] md:static md:z-auto md:translate-x-0 ${
+        data-collapsed={compactSidebar ? "true" : "false"}
+        data-sidebar-compact={compactSidebar ? "true" : "false"}
+        className={`absolute inset-y-0 start-0 z-40 flex w-[calc(100%-48px)] max-w-[316px] shrink-0 flex-col border-e border-sidebar-border bg-sidebar transition-[transform,width] md:static md:z-auto md:translate-x-0 md:max-w-none ${
           mobileSidebarOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full"
-        } ${
-          botsSidebarCollapsed
-            ? "md:w-0 md:max-w-0 md:overflow-hidden md:border-e-0 md:opacity-0 md:pointer-events-none"
-            : "md:w-[316px]"
-        }`}
+        } ${compactSidebar ? "md:w-[88px]" : "md:w-[280px]"}`}
       >
-        <div className="app-drag flex items-center justify-between px-[18px] pb-3 pt-4">
-          <WindowChrome />
-          <div className="relative flex items-center gap-2.5">
-            <button
-              type="button"
-              aria-label={t`Activity`}
-              aria-pressed={activityMode}
-              title={t`Activity`}
-              data-activity-mode={activityMode ? "on" : "off"}
-              onClick={toggleActivityMode}
-              className={`app-no-drag flex h-7 w-7 items-center justify-center rounded-full ${
-                activityMode
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground/70 hover:text-foreground/75"
-              }`}
-            >
-              <Bell
-                size={15}
-                strokeWidth={1.8}
-                fill={activityMode ? "currentColor" : "none"}
-                aria-hidden="true"
-              />
-            </button>
-            <button
-              type="button"
-              className="app-no-drag hidden h-7 w-7 items-center justify-center rounded-full text-muted-foreground/70 hover:text-foreground/75 md:inline-flex"
-              aria-label={t`Minimize bots`}
-              title={t`Minimize bots`}
-              data-testid="minimize-bots-sidebar"
-              onClick={() => setBotsSidebarCollapsedPref(true)}
-            >
-              <PanelLeftClose size={15} strokeWidth={1.8} aria-hidden="true" />
-            </button>
-            <Popover open={createMenuOpen} onOpenChange={setCreateMenuOpen}>
-              <PopoverTrigger
-                className="app-no-drag text-[21px] text-muted-foreground/70 hover:text-foreground/75"
-                title={t`Create`}
-                data-testid="create-menu-trigger"
-              >
-                +
-              </PopoverTrigger>
-              {/* Unmount with the state change so the panel it opens never coexists with the menu. */}
-              {createMenuOpen ? (
-                <PopoverContent
-                  align="end"
-                  className="app-no-drag w-auto gap-0 overflow-hidden p-0 data-closed:animate-none"
-                >
-                  <BotCreatePicker
-                    bots={bots}
-                    onCreateBot={() => {
-                      setCreateMenuOpen(false);
-                      setMobileSidebarOpen(false);
-                      setPanel("create");
-                    }}
-                    onOpenBot={(id) => {
-                      setCreateMenuOpen(false);
-                      setMobileSidebarOpen(false);
-                      navigate(`/app/${id}`);
-                    }}
-                    onCreateGroup={() => {
-                      setCreateMenuOpen(false);
-                      setMobileSidebarOpen(false);
-                      setPanel("create-group");
-                    }}
-                    onCreateSpace={() => {
-                      setCreateMenuOpen(false);
-                      setMobileSidebarOpen(false);
-                      setNewSpaceOpen(true);
-                    }}
-                    onShowGroupInfo={() => {
-                      setCreateMenuOpen(false);
-                      setMobileSidebarOpen(false);
-                      setPickerInfoTopic("group");
-                    }}
-                    onShowSpaceInfo={() => {
-                      setCreateMenuOpen(false);
-                      setMobileSidebarOpen(false);
-                      setPickerInfoTopic("space");
-                    }}
-                  />
-                </PopoverContent>
-              ) : null}
-            </Popover>
+        {desktopBridge() ? (
+          <div className="app-drag flex h-9 shrink-0 items-center px-2">
+            <WindowChrome />
           </div>
-        </div>
-        <InputGroup
-          data-testid="sidebar-search"
-          className="mx-2.5 mb-3 w-auto rounded-xl bg-card dark:bg-input border border-border text-muted-foreground focus-within:border-ring"
+        ) : null}
+        <div
+          className={`app-drag flex h-16 shrink-0 items-center ${compactSidebar ? "justify-center px-2" : "justify-between px-5"}`}
         >
-          <InputGroupAddon>
-            <Search size={16} strokeWidth={1.8} aria-hidden="true" />
-          </InputGroupAddon>
-          <InputGroupInput
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={t`Search`}
-            autoComplete="off"
-            name="sidebar-search"
-          />
-        </InputGroup>
-        <div className="rk-scroll flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pb-2.5">
-          {showSpaceSearch ? (
+          {!compactSidebar ? (
+            <CogineBotWordmark className="h-auto max-h-6 w-32 text-foreground" />
+          ) : null}
+          <button
+            type="button"
+            className="app-no-drag hidden size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-foreground md:inline-flex"
+            aria-label={compactSidebar ? t`Show bots` : t`Minimize bots`}
+            title={compactSidebar ? t`Show bots` : t`Minimize bots`}
+            data-testid={compactSidebar ? "restore-bots-sidebar" : "minimize-bots-sidebar"}
+            onClick={() => {
+              if (compactSidebar) expandSidebar();
+              else setBotsSidebarCollapsedPref(true);
+            }}
+          >
+            {compactSidebar ? (
+              <PanelLeftOpen size={16} strokeWidth={1.7} />
+            ) : (
+              <PanelLeftClose size={16} strokeWidth={1.7} />
+            )}
+          </button>
+        </div>
+        <div className={compactSidebar ? "px-5 pb-2" : "px-3 pb-2"}>
+          <Popover open={spacePickerOpen} onOpenChange={setSpacePickerOpen}>
+            <PopoverTrigger
+              data-testid="space-menu-trigger"
+              aria-label={t`Switch space`}
+              title={currentSpaceName}
+              className={`flex w-full items-center rounded-lg text-[12px] text-foreground hover:bg-sidebar-accent ${compactSidebar ? "h-9 justify-center" : "gap-3 px-2 py-2"}`}
+            >
+              <Layers size={17} strokeWidth={1.6} className="shrink-0 text-muted-foreground" />
+              {!compactSidebar ? (
+                <>
+                  <span
+                    data-testid="sidebar-current-space"
+                    className="min-w-0 flex-1 truncate text-start"
+                  >
+                    {currentSpaceName}
+                  </span>
+                  <ChevronDown size={14} className="shrink-0 text-muted-foreground" />
+                </>
+              ) : null}
+            </PopoverTrigger>
+            {spacePickerOpen ? (
+              <PopoverContent
+                side="bottom"
+                align="start"
+                className="w-60 max-w-[calc(100vw-2rem)] gap-0 rounded-xl p-1.5 text-[12px] data-closed:animate-none"
+              >
+                {spaces.map((space) => (
+                  <Button
+                    key={space.id}
+                    variant="ghost"
+                    className="h-9 w-full justify-start gap-2 font-normal text-[12px]"
+                    onClick={() => {
+                      setSpacePickerOpen(false);
+                      const firstBot = space.bots[0];
+                      const firstGroup = space.groups[0];
+                      openSpaceChat(
+                        space.id,
+                        firstBot
+                          ? `/app/${firstBot.id}`
+                          : firstGroup
+                            ? `/app/g/${firstGroup.id}`
+                            : "/onboarding",
+                      );
+                    }}
+                  >
+                    <Layers size={15} className="shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-start">{space.name}</span>
+                    {space.id === bootstrapMe?.spaceId ? (
+                      <Check size={14} className="shrink-0 text-muted-foreground" />
+                    ) : null}
+                  </Button>
+                ))}
+                <div className="my-1 border-t border-border" />
+                <Button
+                  data-testid="create-new-space"
+                  variant="ghost"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  onClick={() => {
+                    setSpacePickerOpen(false);
+                    setNewSpaceOpen(true);
+                  }}
+                >
+                  <Plus size={15} className="text-muted-foreground" />
+                  <Trans>Create space</Trans>
+                </Button>
+                {currentSpace?.canRename ? (
+                  <Button
+                    variant="ghost"
+                    className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                    onClick={() => {
+                      setSpacePickerOpen(false);
+                      setRenameSpaceTarget(currentSpace);
+                    }}
+                  >
+                    <Pencil size={15} className="text-muted-foreground" />
+                    <Trans>Rename</Trans>
+                  </Button>
+                ) : null}
+                {currentSpace?.canDelete ? (
+                  <Button
+                    variant="ghost"
+                    className="h-9 w-full justify-start gap-2 text-[12px] font-normal text-destructive"
+                    onClick={() => {
+                      setSpacePickerOpen(false);
+                      setDeleteSpaceTarget(currentSpace);
+                    }}
+                  >
+                    <Trash2 size={15} />
+                    <Trans>Delete</Trans>
+                  </Button>
+                ) : null}
+              </PopoverContent>
+            ) : null}
+          </Popover>
+        </div>
+        <div
+          className={`flex shrink-0 gap-1 pb-3 ${compactSidebar ? "flex-col items-center px-3" : "items-center px-3"}`}
+        >
+          {compactSidebar ? (
+            <button
+              type="button"
+              aria-label={t`Search`}
+              data-testid="sidebar-search"
+              title={t`Search`}
+              onClick={() => {
+                expandSidebar();
+                requestAnimationFrame(() => sidebarSearchRef.current?.focus());
+              }}
+              className="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-sidebar-accent"
+            >
+              <Search size={17} strokeWidth={1.6} />
+            </button>
+          ) : (
+            <InputGroup
+              data-testid="sidebar-search"
+              className="h-8 min-w-0 flex-1 rounded-lg border-border bg-transparent text-muted-foreground focus-within:border-ring"
+            >
+              <InputGroupAddon>
+                <Search size={14} strokeWidth={1.7} />
+              </InputGroupAddon>
+              <InputGroupInput
+                ref={sidebarSearchRef}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={t`Search`}
+                autoComplete="off"
+                name="sidebar-search"
+                className="text-[12px]"
+              />
+              <InputGroupAddon align="inline-end">
+                <span className="text-[10px] text-muted-foreground">
+                  {navigator.platform.includes("Mac") ? "⌘ K" : "Ctrl K"}
+                </span>
+              </InputGroupAddon>
+            </InputGroup>
+          )}
+          <Popover open={createMenuOpen} onOpenChange={setCreateMenuOpen}>
+            <PopoverTrigger
+              className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+              title={t`Create`}
+              aria-label={t`Create`}
+              data-testid="create-menu-trigger"
+            >
+              <Plus size={19} strokeWidth={1.6} />
+            </PopoverTrigger>
+            {createMenuOpen ? (
+              <PopoverContent
+                data-testid="create-menu"
+                align="end"
+                className="w-48 gap-0 rounded-xl p-1.5 text-[12px] data-closed:animate-none"
+              >
+                <Button
+                  variant="ghost"
+                  data-testid="create-new-bot"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  onClick={() => {
+                    setCreateMenuOpen(false);
+                    setMobileSidebarOpen(false);
+                    setPanel("create");
+                  }}
+                >
+                  <Plus size={16} className="text-muted-foreground" />
+                  <Trans>Create Bot</Trans>
+                </Button>
+                <Button
+                  variant="ghost"
+                  data-testid="create-new-group"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  onClick={() => {
+                    setCreateMenuOpen(false);
+                    setMobileSidebarOpen(false);
+                    setPanel("create-group");
+                  }}
+                >
+                  <LayoutGrid size={16} className="text-muted-foreground" />
+                  <Trans>Create group chat</Trans>
+                </Button>
+              </PopoverContent>
+            ) : null}
+          </Popover>
+        </div>
+        <div
+          className={`rk-scroll flex flex-1 flex-col gap-0.5 overflow-y-auto pb-2.5 ${compactSidebar ? "px-3" : "px-2.5"}`}
+        >
+          {showSpaceSearch && !compactSidebar ? (
             <SpaceSearchResults
               hits={searchHits}
               loading={searchLoading}
@@ -2922,7 +3012,7 @@ export function ShellPage() {
             />
           ) : (
             <>
-              {activityMode ? (
+              {activityMode && !compactSidebar ? (
                 <ActivityList
                   onOpenRun={(run) => {
                     setMobileSidebarOpen(false);
@@ -2931,12 +3021,35 @@ export function ShellPage() {
                   }}
                 />
               ) : null}
-              {sidebarGroups.map((group) => {
-                const collapsed = Boolean(group.title) && collapsedSidebarSections.has(group.key);
+              {sidebarGroups.map((group, groupIndex) => {
+                const systemSection =
+                  group.key === "pinned" ||
+                  group.key.endsWith(":pinned") ||
+                  group.key === "unassigned" ||
+                  group.key.endsWith(":unassigned");
+                const firstInSpace =
+                  groupIndex === 0 || sidebarGroups[groupIndex - 1]?.spaceId !== group.spaceId;
+                const displayTitle = systemSection
+                  ? spaces.length > 1 && firstInSpace
+                    ? group.spaceName
+                    : null
+                  : group.title;
+                const collapsed =
+                  !compactSidebar &&
+                  !systemSection &&
+                  Boolean(group.title) &&
+                  collapsedSidebarSections.has(group.key);
+                const previousGroup = sidebarGroups[groupIndex - 1];
+                const followsPinned =
+                  previousGroup?.spaceId === group.spaceId &&
+                  (previousGroup.key === "pinned" || previousGroup.key.endsWith(":pinned"));
                 const groupBotIds = group.bots.flatMap((item) =>
                   item.kind === "bot" ? [item.chat.id] : [],
                 );
-                const nestedRows = nestRosterByParent(group.bots, collapsedRosterParents);
+                const nestedRows = nestRosterByParent(
+                  group.bots,
+                  compactSidebar ? new Set<string>() : collapsedRosterParents,
+                );
                 const treeActive = nestedRows.some((row) => row.depth > 0 || row.hasChildren);
                 const rosterParent = new Map(
                   nestedRows.map((row) => [row.item.chat.id, row.parentId] as const),
@@ -2949,15 +3062,21 @@ export function ShellPage() {
                 const hasSpaceActions = group.canRenameSpace || group.canDeleteSpace;
                 return (
                   <div key={group.key} data-sidebar-group={group.key}>
-                    {group.title || hasSpaceActions ? (
+                    {followsPinned ? (
+                      <div
+                        data-sidebar-pinned-separator
+                        className={`my-3 border-t border-sidebar-border ${compactSidebar ? "mx-3" : "mx-2"}`}
+                      />
+                    ) : null}
+                    {!compactSidebar && (displayTitle || (hasSpaceActions && spaces.length > 1)) ? (
                       <div
                         className={
-                          group.title && hasSpaceActions
+                          displayTitle && hasSpaceActions
                             ? "grid pt-3 pb-0.5"
-                            : `flex items-center pt-3 pb-0.5${group.title ? "" : " justify-end"}`
+                            : `flex items-center pt-3 pb-0.5${displayTitle ? "" : " justify-end"}`
                         }
                       >
-                        {group.title ? (
+                        {displayTitle ? (
                           <button
                             type="button"
                             className={`flex min-w-0 items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground/60 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring ${hasSpaceActions ? "col-start-1 row-start-1 w-full pe-8" : "flex-1"}`}
@@ -3004,17 +3123,17 @@ export function ShellPage() {
                             aria-expanded={group.emptySpaceId ? undefined : !collapsed}
                             aria-label={
                               group.emptySpaceId
-                                ? t`Open ${group.title}`
+                                ? t`Open ${displayTitle}`
                                 : collapsed
-                                  ? t`Expand ${group.title}`
-                                  : t`Collapse ${group.title}`
+                                  ? t`Expand ${displayTitle}`
+                                  : t`Collapse ${displayTitle}`
                             }
                           >
                             <span className="flex min-w-0 items-center gap-1.5 truncate">
                               {group.showLock ? (
                                 <Lock size={11} strokeWidth={2} aria-hidden="true" />
                               ) : null}
-                              <span className="truncate">{group.title}</span>
+                              <span className="truncate">{displayTitle}</span>
                             </span>
                             {group.emptySpaceId ? null : (
                               <ChevronDown
@@ -3035,7 +3154,7 @@ export function ShellPage() {
                             variant="ghost"
                             size="icon-sm"
                             className={
-                              group.title
+                              displayTitle
                                 ? "col-start-1 row-start-1 justify-self-end self-center"
                                 : undefined
                             }
@@ -3061,15 +3180,7 @@ export function ShellPage() {
                         const selected =
                           (item.kind === "bot" && !inGroup && active?.id === item.chat.id) ||
                           (item.kind === "group" && inGroup && activeGroup?.id === item.chat.id);
-                        const workStatusLabel =
-                          item.kind === "bot" ? rosterWorkStatusLabel(item.chat.status) : null;
-                        const rosterLine =
-                          workStatusLabel ??
-                          (item.kind === "bot"
-                            ? item.chat.preview ||
-                              (item.chat.status !== "idle" ? item.chat.status : "")
-                            : item.chat.preview ||
-                              item.chat.members.map((member) => member.name).join(", "));
+                        const rosterLine = item.chat.preview ?? "";
                         return (
                           <div
                             key={`${item.kind}:${item.chat.id}`}
@@ -3079,7 +3190,7 @@ export function ShellPage() {
                                 item.kind === "bot" && draggedBotId === item.chat.id ? 0.55 : 1,
                             }}
                           >
-                            {hasChildren ? (
+                            {hasChildren && !compactSidebar ? (
                               <span
                                 className="absolute inset-y-0 z-10 flex w-3.5 items-center justify-center"
                                 style={{ insetInlineStart: `${10 + depth * 14}px` }}
@@ -3106,10 +3217,12 @@ export function ShellPage() {
                                 </button>
                               </span>
                             ) : null}
-                            <button
-                              type="button"
+                            <ConversationRow
                               draggable={item.kind === "bot"}
                               data-roster-bot-id={item.kind === "bot" ? item.chat.id : undefined}
+                              data-roster-group-id={
+                                item.kind === "group" ? item.chat.id : undefined
+                              }
                               data-roster-depth={
                                 item.kind === "bot" && treeActive ? depth : undefined
                               }
@@ -3177,83 +3290,42 @@ export function ShellPage() {
                                   position: { x: event.clientX, y: event.clientY },
                                 });
                               }}
-                              className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-[10px] text-start ${
-                                item.kind === "bot" ? "cursor-grab active:cursor-grabbing" : ""
-                              } ${
-                                selected ? "bg-sidebar-accent" : "group-hover/row:bg-sidebar-accent"
-                              }`}
+                              name={item.chat.name}
+                              preview={rosterLine}
+                              bot={item.kind === "bot"}
+                              compact={compactSidebar}
+                              selected={selected}
+                              unread={item.chat.unread}
+                              className={
+                                item.kind === "bot"
+                                  ? "cursor-grab active:cursor-grabbing"
+                                  : undefined
+                              }
                               style={
-                                treeActive
+                                treeActive && !compactSidebar
                                   ? { paddingInlineStart: `${24 + depth * 14}px` }
                                   : undefined
                               }
-                            >
-                              {item.kind === "bot" ? (
-                                <BotAvatar
-                                  color={item.chat.color}
-                                  identity={item.chat.id}
-                                  size={38}
-                                  status={item.chat.status}
-                                />
-                              ) : (
-                                <GroupAvatar
-                                  members={
-                                    item.chat.id === activeSnapshot?.groupId
-                                      ? (activeSnapshot.members ?? item.chat.members)
-                                      : item.chat.members
-                                  }
-                                  size={38}
-                                />
-                              )}
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-1.5">
-                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                                    <span
-                                      dir="auto"
-                                      data-roster-bot-name={item.kind === "bot" ? "" : undefined}
-                                      className={`min-w-0 truncate text-[14px] text-foreground ${
-                                        item.chat.unread ? "font-semibold" : "font-medium"
-                                      }`}
-                                    >
-                                      {item.chat.name}
-                                    </span>
-                                    {item.chat.unread ? (
-                                      <span className="sr-only">
-                                        <Trans> (unread)</Trans>
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-1.5">
-                                    <span className="text-[11.5px] text-muted-foreground/60 tabular-nums">
-                                      {formatRosterTime(item.chat.updatedAt)}
-                                    </span>
-                                    {item.chat.unread ? (
-                                      <span
-                                        aria-hidden="true"
-                                        className="inline-block h-2 w-2 rounded-full bg-foreground"
-                                      />
-                                    ) : null}
-                                  </div>
-                                </div>
-                                {item.kind === "bot" && item.chat.title ? (
-                                  <div className="mt-1 flex">
-                                    <span className="max-w-full truncate rounded-md border border-border bg-muted px-2 py-0.5 text-[11px] font-normal text-muted-foreground">
-                                      {item.chat.title}
-                                    </span>
-                                  </div>
-                                ) : null}
-                                <div
-                                  dir="auto"
-                                  className={`mt-1 line-clamp-2 text-[12.5px] break-words whitespace-normal ${
-                                    workStatusLabel || item.chat.unread
-                                      ? "font-medium text-foreground/75"
-                                      : "text-muted-foreground/60"
-                                  }`}
-                                >
-                                  {rosterLine}
-                                </div>
-                              </div>
-                            </button>
+                              avatar={
+                                item.kind === "bot" ? (
+                                  <BotAvatar
+                                    color={item.chat.color}
+                                    identity={item.chat.id}
+                                    size={38}
+                                    status={item.chat.status}
+                                  />
+                                ) : (
+                                  <GroupAvatar
+                                    members={
+                                      item.chat.id === activeSnapshot?.groupId
+                                        ? (activeSnapshot.members ?? item.chat.members)
+                                        : item.chat.members
+                                    }
+                                    size={38}
+                                  />
+                                )
+                              }
+                            />
                           </div>
                         );
                       })}
@@ -3262,7 +3334,9 @@ export function ShellPage() {
               })}
             </>
           )}
-          {archivedBots.length + archivedGroups.length > 0 && !showSpaceSearch ? (
+          {archivedBots.length + archivedGroups.length > 0 &&
+          !showSpaceSearch &&
+          !compactSidebar ? (
             <div className="mt-2 border-t border-border pt-2">
               <button
                 type="button"
@@ -3347,139 +3421,143 @@ export function ShellPage() {
             </div>
           ) : null}
         </div>
-        <button
-          type="button"
-          onClick={() => setPluginsOpen(true)}
-          className="mx-3 mb-1 flex items-center gap-3 rounded-xl px-2.5 py-2 hover:bg-sidebar-accent"
+        <div
+          className={`mx-2.5 flex shrink-0 border-t border-sidebar-border py-2 ${compactSidebar ? "flex-col-reverse items-center gap-1" : "items-center justify-between"}`}
         >
-          <span className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-accent text-foreground/80">
-            <LayoutGrid size={15} strokeWidth={1.8} />
-          </span>
-          <span className="text-[14px] font-medium text-foreground/90">
-            <Trans>Integrations</Trans>
-          </span>
-        </button>
-        <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-          <PopoverTrigger
-            data-testid="user-menu-trigger"
-            className="flex items-center gap-[11px] px-[18px] py-3.5"
-          >
-            <span className="grid h-8 w-8 place-items-center rounded-full bg-accent text-[12px] text-foreground/75">
-              {initials}
-            </span>
-            <span className="text-[14.5px] text-foreground/90">{userName}</span>
-          </PopoverTrigger>
-          {menuOpen ? (
-            <PopoverContent
-              side="top"
-              align="start"
-              className="w-[calc(316px-1.5rem)] max-w-[calc(100vw-3rem)] gap-0 p-1 data-closed:animate-none"
+          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+            <PopoverTrigger
+              data-testid="user-menu-trigger"
+              aria-label={userName}
+              title={userName}
+              className="grid size-10 shrink-0 place-items-center rounded-full hover:bg-sidebar-accent"
             >
-              <Button
-                variant="ghost"
-                className="w-full justify-start font-normal"
-                onClick={() => {
-                  setMenuOpen(false);
-                  setMobileSidebarOpen(false);
-                  navigate("/app/artifacts");
-                }}
+              <AccountAvatar size={32} />
+            </PopoverTrigger>
+            {menuOpen ? (
+              <PopoverContent
+                side="top"
+                align="start"
+                className="w-56 max-w-[calc(100vw-2rem)] gap-0 rounded-xl p-1.5 text-[12px] data-closed:animate-none"
               >
-                <FolderOpen className="text-muted-foreground" strokeWidth={1.75} />
-                <Trans>Artifacts</Trans>
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start font-normal"
-                aria-label={t`Settings`}
-                onClick={() => {
-                  setMenuOpen(false);
-                  openSettings("general");
-                }}
-              >
-                <Settings className="text-muted-foreground" strokeWidth={1.75} />
-                <Trans>Settings</Trans>
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start font-normal"
-                aria-label={t`Usage`}
-                onClick={() => {
-                  setMenuOpen(false);
-                  openSettings("usage");
-                }}
-              >
-                <Gauge className="text-muted-foreground" strokeWidth={1.75} />
-                <Trans>Usage</Trans>
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start font-normal"
-                onClick={() =>
-                  void authClient.signOut().then(() => {
-                    clearSpaceSelection();
-                    navigate("/");
-                  })
-                }
-              >
-                <LogOut className="text-muted-foreground" strokeWidth={1.75} />
-                <Trans>Log out</Trans>
-              </Button>
-            </PopoverContent>
-          ) : null}
-        </Popover>
+                <span className="block truncate px-2.5 py-2 text-[12px] font-medium text-foreground">
+                  {userName}
+                </span>
+                <div className="mb-1 border-t border-border" />
+                <Button
+                  variant="ghost"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openSettings("general");
+                  }}
+                  aria-label={t`Settings`}
+                >
+                  <Settings size={16} className="text-muted-foreground" />
+                  <Trans>Settings</Trans>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openSettings("usage");
+                  }}
+                  aria-label={t`Usage`}
+                >
+                  <Gauge size={16} className="text-muted-foreground" />
+                  <Trans>Usage</Trans>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setPluginsOpen(true);
+                  }}
+                >
+                  <LayoutGrid size={16} className="text-muted-foreground" />
+                  <Trans>Integrations</Trans>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  aria-pressed={activityMode}
+                  data-activity-mode={activityMode ? "on" : "off"}
+                  onClick={() => {
+                    if (!activityMode) {
+                      expandSidebar();
+                      setQuery("");
+                    }
+                    toggleActivityMode();
+                    setMenuOpen(false);
+                  }}
+                >
+                  <Bell
+                    size={16}
+                    className="text-muted-foreground"
+                    fill={activityMode ? "currentColor" : "none"}
+                  />
+                  <Trans>Activity</Trans>
+                  {activityMode ? (
+                    <Check size={14} className="ms-auto text-muted-foreground" />
+                  ) : null}
+                </Button>
+                {archivedBots.length + archivedGroups.length > 0 ? (
+                  <Button
+                    variant="ghost"
+                    className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      expandSidebar();
+                      setQuery("");
+                      setArchivedOpen(true);
+                    }}
+                  >
+                    <Box size={16} className="text-muted-foreground" />
+                    <Trans>Archived</Trans>
+                  </Button>
+                ) : null}
+                <div className="my-1 border-t border-border" />
+                <Button
+                  variant="ghost"
+                  className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                  onClick={() => {
+                    clearComposerDrafts();
+                    composerSendAttempts.clear();
+                    void authClient.signOut().then(() => {
+                      clearSpaceSelection();
+                      navigate("/");
+                    });
+                  }}
+                >
+                  <LogOut size={16} className="text-muted-foreground" />
+                  <Trans>Log out</Trans>
+                </Button>
+              </PopoverContent>
+            ) : null}
+          </Popover>
+          <button
+            type="button"
+            data-testid="sidebar-files-trigger"
+            aria-label={t`Files`}
+            title={t`Files`}
+            onClick={() => {
+              setMobileSidebarOpen(false);
+              navigate("/app/artifacts");
+            }}
+            className={`flex h-10 shrink-0 items-center justify-center rounded-lg text-[12px] text-muted-foreground hover:bg-sidebar-accent hover:text-foreground ${compactSidebar ? "w-10" : "gap-2 px-3"}`}
+          >
+            <Copy size={16} strokeWidth={1.6} />
+            {!compactSidebar ? <Trans>Files</Trans> : null}
+          </button>
+        </div>
       </aside>
-
-      {/* The full-screen computer covers the sidebar, so its edge must not catch clicks there. */}
-      {computerOpen || booting ? null : (
-        <button
-          type="button"
-          data-testid="bots-sidebar-edge"
-          aria-label={botsSidebarCollapsed ? t`Show bots` : t`Hide bots`}
-          aria-pressed={!botsSidebarCollapsed}
-          className={`absolute inset-y-0 z-50 hidden w-2 cursor-ew-resize touch-none border-0 bg-transparent p-0 md:block ${
-            botsSidebarCollapsed ? "start-0" : "start-[308px]"
-          }`}
-          onPointerDown={(event) => {
-            event.currentTarget.setPointerCapture(event.pointerId);
-            botsSidebarEdgeDragRef.current = {
-              startX: event.clientX,
-              mode: botsSidebarCollapsed ? "expand" : "collapse",
-            };
-          }}
-          onPointerMove={(event) => {
-            const drag = botsSidebarEdgeDragRef.current;
-            if (!drag) return;
-            const rtl =
-              typeof document !== "undefined" &&
-              document.documentElement.getAttribute("dir") === "rtl";
-            const delta = rtl ? drag.startX - event.clientX : event.clientX - drag.startX;
-            if (drag.mode === "expand" && delta >= BOTS_SIDEBAR_EDGE_DRAG_PX) {
-              botsSidebarEdgeDragRef.current = null;
-              setBotsSidebarCollapsedPref(false);
-            } else if (drag.mode === "collapse" && delta <= -BOTS_SIDEBAR_EDGE_DRAG_PX) {
-              botsSidebarEdgeDragRef.current = null;
-              setBotsSidebarCollapsedPref(true);
-            }
-          }}
-          onPointerUp={(event) => {
-            const drag = botsSidebarEdgeDragRef.current;
-            botsSidebarEdgeDragRef.current = null;
-            if (!drag) return;
-            if (Math.abs(event.clientX - drag.startX) < BOTS_SIDEBAR_EDGE_DRAG_PX) {
-              setBotsSidebarCollapsedPref(!botsSidebarCollapsed);
-            }
-          }}
-          onPointerCancel={() => {
-            botsSidebarEdgeDragRef.current = null;
-          }}
-        />
-      )}
 
       {/* Keep the composer's z-index inside the chat so phone overlays like the side panel cover it. */}
       <main
         aria-hidden={mobileSidebarOpen || undefined}
         inert={mobileSidebarOpen}
-        className="isolate flex min-w-0 flex-1 flex-col bg-background"
+        className="@container/conversation relative isolate flex min-w-0 flex-1 flex-col bg-background"
       >
         {/* Inside main so the composer and its menus stay above it. */}
         {!mobileSidebarOpen ? (
@@ -3489,197 +3567,231 @@ export function ShellPage() {
             className="absolute bottom-20 start-0 top-16 z-20 w-8 touch-none md:hidden"
           />
         ) : null}
-        <div className="app-drag flex items-center justify-between border-b border-sidebar-border px-3 py-[17px] md:px-[22px]">
-          <div className="flex min-w-0 items-center gap-2">
-            {/* Collapsed bots sidebar: this header is the leading edge for window chrome. */}
-            {botsSidebarCollapsed && desktopBridge() ? <WindowChrome /> : null}
-            <button
-              type="button"
-              aria-label={t`Open navigation`}
-              onClick={() => setMobileSidebarOpen(true)}
-              className="app-no-drag grid h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground/75 hover:bg-accent md:hidden"
-            >
-              <Menu size={19} strokeWidth={1.7} />
-            </button>
-            {botsSidebarCollapsed ? (
+        <div
+          aria-hidden={Boolean(peerConversation) || undefined}
+          inert={Boolean(peerConversation)}
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            peerConversation && "pointer-events-none invisible absolute inset-0",
+          )}
+        >
+          <div className="app-drag flex items-center justify-between border-b border-sidebar-border px-3 py-[17px] md:px-[22px]">
+            <div className="flex min-w-0 items-center gap-2">
               <button
                 type="button"
-                data-testid="restore-bots-sidebar"
-                aria-label={t`Show bots`}
-                title={t`Show bots`}
-                onClick={() => setBotsSidebarCollapsedPref(false)}
-                className="app-no-drag hidden h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground/75 hover:bg-accent md:grid"
+                aria-label={t`Open navigation`}
+                onClick={() => setMobileSidebarOpen(true)}
+                className="app-no-drag grid h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground/75 hover:bg-accent md:hidden"
               >
-                <PanelLeftOpen size={19} strokeWidth={1.7} aria-hidden="true" />
+                <Menu size={19} strokeWidth={1.7} />
               </button>
-            ) : null}
-            <button
-              type="button"
-              data-testid="bot-settings-trigger"
-              onClick={() => setPanel(inGroup ? "group-settings" : "settings")}
-              className="app-no-drag flex min-w-0 items-center gap-3"
-            >
-              {inGroup ? (
-                <GroupAvatar
-                  members={activeSnapshot?.members ?? activeGroup?.members ?? []}
-                  size={26}
-                />
-              ) : active ? (
-                <BotAvatar
-                  color={active.color}
-                  identity={active.id}
-                  size={26}
-                  status={active.status}
-                />
-              ) : null}
-              <span className="min-w-0">
-                <span className="block truncate text-[16px] font-medium text-foreground" dir="auto">
-                  {inGroup
-                    ? (activeGroup?.name ?? activeSnapshot?.groupName ?? t`Group`)
-                    : (active?.name ?? t`Select a bot`)}
+              <button
+                type="button"
+                data-testid="bot-settings-trigger"
+                onClick={() => setPanel(inGroup ? "group-settings" : "settings")}
+                className="app-no-drag flex min-w-0 items-center gap-3"
+              >
+                {inGroup ? (
+                  <GroupAvatar
+                    members={activeSnapshot?.members ?? activeGroup?.members ?? []}
+                    size={26}
+                  />
+                ) : active ? (
+                  <BotAvatar
+                    color={active.color}
+                    identity={active.id}
+                    size={26}
+                    status={active.status}
+                  />
+                ) : null}
+                <span className="min-w-0">
+                  <span
+                    className="block truncate text-[16px] font-medium text-foreground"
+                    dir="auto"
+                  >
+                    {inGroup
+                      ? (activeGroup?.name ?? activeSnapshot?.groupName ?? t`Group`)
+                      : (active?.name ?? t`Select a bot`)}
+                  </span>
                 </span>
-              </span>
-            </button>
-          </div>
-          <div className="flex items-center gap-1">
-            {!inGroup && active ? (
-              <button
-                type="button"
-                title={t`Agent computer`}
-                onClick={() => {
-                  const next = panel === "computer" ? null : "computer";
-                  setPanel(next);
-                  if (next === "computer" && active) {
-                    // Refresh run/computer so Take control isn't stuck on a stale busyBotName.
-                    void refreshThread(active.id).catch(() => undefined);
-                  }
-                }}
-                data-active={panel === "computer" ? "" : undefined}
-                className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
-              >
-                <Monitor size={18} strokeWidth={1.6} className="text-foreground/75" />
               </button>
-            ) : null}
-          </div>
-        </div>
-        {!active && !activeGroup && initialBotsLoaded ? (
-          <div className="grid flex-1 place-items-center">
-            <Button onClick={() => setPanel("create")}>
-              <Plus size={16} aria-hidden="true" />
-              <Trans>Create new Bot</Trans>
-            </Button>
-          </div>
-        ) : (
-          <Transcript
-            key={activeSnapshot?.threadId}
-            scrollRef={messageScroll}
-            scrollRequest={scrollRequest}
-            onScrollRequestHandled={clearScrollRequest}
-            artifactTarget={transcriptArtifactTarget}
-            messages={transcriptMessages}
-            showToolActivity={showToolActivity}
-            olderCursor={activeSnapshot?.olderCursor ?? null}
-            loadingOlder={loadingOlder}
-            answerableAskMessageId={answerableAskMessageId}
-            running={transcriptRunning}
-            workingBots={workingBots}
-            onLoadOlder={loadOlder}
-            onOpenBot={openBot}
-            onAnswer={answerMessage}
-            onReply={(message) => {
-              setReplyTarget(message);
-              setReplyQuote(null);
-            }}
-            onQuote={(message, quote) => {
-              setReplyTarget(message);
-              setReplyQuote(quote);
-            }}
-            onReact={reactToMessage}
-            onJumpToMessage={jumpToReplyMessage}
-            onOpenPeerMessages={(peer) => {
-              setPeerConversation(peer);
-            }}
-            memberName={resolveTranscriptMemberName}
-            peerBot={resolveTranscriptBot}
-            onRefresh={refreshActiveThread}
-            onBotChanged={refreshBots}
-            onAddRoutine={addSkillRoutine}
-            voiceReady={Boolean(voiceStatus?.ready)}
-            speakingMessageId={speakingMessageId}
-            onSpeak={speakMessage}
-            onOpenComputer={onOpenComputer}
-          />
-        )}
-        {recordingSkill ? (
-          <div className="px-6 pb-2 text-center text-[13px] text-destructive">
-            <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
-          </div>
-        ) : null}
-        {active || activeGroup ? (
-          <Composer
-            key={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
-            activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
-            running={composerRunning}
-            disabled={Boolean(recordingSkill)}
-            pendingAttachments={activePendingAttachments}
-            attachmentNotice={attachmentNotice}
-            sendError={sendError}
-            runError={displayedRunError}
-            runErrorId={displayedRunErrorId}
-            onRunErrorPresented={handleRunErrorPresented}
-            onDismissError={dismissComposerError}
-            sending={sending}
-            fileInputRef={fileInputRef}
-            onAttachmentPick={onAttachmentPick}
-            onRemoveAttachment={removeAttachment}
-            onSend={sendMessage}
-            onStop={stopRun}
-            onVoice={
-              !inGroup && active
-                ? () => {
-                    if (!voiceStatus?.ready) {
-                      openSettings("voice");
-                      return;
+            </div>
+            <div className="flex items-center gap-1">
+              {!inGroup && active ? (
+                <button
+                  type="button"
+                  title={t`Agent computer`}
+                  onClick={() => {
+                    const next = panel === "computer" ? null : "computer";
+                    setPanel(next);
+                    if (next === "computer" && active) {
+                      // Refresh run/computer so Take control isn't stuck on a stale busyBotName.
+                      void refreshThread(active.id).catch(() => undefined);
                     }
-                    startCall({
-                      botId: active.id,
-                      botName: active.name,
-                      botColor: active.color,
-                      transcribe: Boolean(voiceStatus?.transcribe),
-                    });
-                  }
-                : undefined
+                  }}
+                  data-active={panel === "computer" ? "" : undefined}
+                  className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
+                >
+                  <Monitor size={18} strokeWidth={1.6} className="text-foreground/75" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {!active && !activeGroup && initialBotsLoaded ? (
+            <div className="grid flex-1 place-items-center">
+              <Button onClick={() => setPanel("create")}>
+                <Plus size={16} aria-hidden="true" />
+                <Trans>Create new Bot</Trans>
+              </Button>
+            </div>
+          ) : (
+            <Transcript
+              key={activeSnapshot?.threadId}
+              scrollRef={messageScroll}
+              paused={Boolean(peerConversation)}
+              botName={active?.name}
+              scrollRequest={scrollRequest}
+              onScrollRequestHandled={clearScrollRequest}
+              artifactTarget={transcriptArtifactTarget}
+              messages={transcriptMessages}
+              showToolActivity={showToolActivity}
+              olderCursor={activeSnapshot?.olderCursor ?? null}
+              loadingOlder={loadingOlder}
+              answerableAskMessageId={answerableAskMessageId}
+              running={transcriptRunning}
+              workingBots={workingBots}
+              onLoadOlder={loadOlder}
+              onOpenBot={openBot}
+              onAnswer={answerMessage}
+              onReply={(message) => {
+                setReplyTarget(message);
+                setReplyQuote(null);
+              }}
+              onQuote={(message, quote) => {
+                setReplyTarget(message);
+                setReplyQuote(quote);
+              }}
+              onReact={reactToMessage}
+              onJumpToMessage={jumpToReplyMessage}
+              onOpenPeerMessages={(peer) => {
+                const originBotId = peer.botId ?? active?.id;
+                if (originBotId) setPeerConversation({ ...peer, botId: originBotId });
+              }}
+              memberName={resolveTranscriptMemberName}
+              peerBot={resolveTranscriptBot}
+              onRefresh={refreshActiveThread}
+              onBotChanged={refreshBots}
+              onAddRoutine={addSkillRoutine}
+              voiceReady={Boolean(voiceStatus?.ready)}
+              speakingMessageId={speakingMessageId}
+              onSpeak={speakMessage}
+              onOpenComputer={onOpenComputer}
+            />
+          )}
+          {recordingSkill ? (
+            <div className="px-6 pb-2 text-center text-[13px] text-destructive">
+              <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
+            </div>
+          ) : null}
+          {active || activeGroup ? (
+            <Composer
+              draftKey={draftScopeKey}
+              key={draftScopeKey}
+              active={!peerConversation}
+              draftState={composerDraft}
+              onDraftChange={updateComposerDraft}
+              activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
+              running={composerRunning}
+              disabled={Boolean(recordingSkill)}
+              pendingAttachments={activePendingAttachments}
+              attachmentNotice={
+                attachmentNotice?.scopeKey === draftScopeKey ? attachmentNotice.text : null
+              }
+              sendError={sendError}
+              runError={displayedRunError}
+              runErrorId={displayedRunErrorId}
+              onRunErrorPresented={handleRunErrorPresented}
+              onDismissError={dismissComposerError}
+              sending={sending}
+              fileInputRef={fileInputRef}
+              onAttachmentPick={onAttachmentPick}
+              onRemoveAttachment={removeAttachment}
+              onSend={sendMessage}
+              onStop={stopRun}
+              onVoice={
+                !inGroup && active
+                  ? () => {
+                      if (!voiceStatus?.ready) {
+                        openSettings("voice");
+                        return;
+                      }
+                      startCall({
+                        botId: active.id,
+                        botName: active.name,
+                        botColor: active.color,
+                        transcribe: Boolean(voiceStatus?.transcribe),
+                      });
+                    }
+                  : undefined
+              }
+              artifactTarget={transcriptArtifactTarget}
+              replyTarget={activeReplyTarget}
+              replyQuote={activeReplyQuote}
+              replyTargetName={replyTargetName}
+              onClearReply={clearReply}
+              mentionTargets={composerMentionTargets}
+              agentSkills={agentSkills}
+              onSlashOpen={refreshAgentSkills}
+              onSlashAction={(action) => {
+                if (action === "chat-settings") {
+                  setPanel(inGroup ? "group-settings" : "settings");
+                  return;
+                }
+                if (action === "settings-general") {
+                  openSettings("general");
+                  return;
+                }
+                if (action === "settings-usage") {
+                  openSettings("usage");
+                }
+              }}
+            />
+          ) : null}
+        </div>
+        {peerConversation ? (
+          <Suspense
+            fallback={
+              <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
+                <Trans>Loading…</Trans>
+              </div>
             }
-            artifactTarget={transcriptArtifactTarget}
-            replyTarget={activeReplyTarget}
-            replyQuote={activeReplyQuote}
-            replyTargetName={replyTargetName}
-            onClearReply={clearReply}
-            mentionTargets={composerMentionTargets}
-            agentSkills={agentSkills}
-            onSlashOpen={refreshAgentSkills}
-            onSlashAction={(action) => {
-              if (action === "chat-settings") {
-                setPanel(inGroup ? "group-settings" : "settings");
-                return;
+          >
+            <PeerMessagesOverlay
+              key={`${bootstrapMe?.spaceId}:${activeSnapshot?.threadId}:${peerConversation.botId}:${peerConversation.peerBotId}`}
+              botId={peerConversation.botId}
+              botName={resolveTranscriptBot(peerConversation.botId)?.name ?? active?.name ?? t`Bot`}
+              botColor={resolveTranscriptBot(peerConversation.botId)?.color ?? FALLBACK_BOT_COLOR}
+              peerBotId={peerConversation.peerBotId}
+              peerBotName={peerConversation.peerBotName}
+              peerBotColor={
+                resolveTranscriptBot(peerConversation.peerBotId)?.color ?? FALLBACK_BOT_COLOR
               }
-              if (action === "settings-general") {
-                openSettings("general");
-                return;
-              }
-              if (action === "settings-usage") {
-                openSettings("usage");
-              }
-            }}
-          />
+              messages={activeSnapshot?.messages ?? []}
+              threadId={activeSnapshot?.threadId}
+              groupId={groupId}
+              spaceId={bootstrapMe?.spaceId}
+              onClose={() => setPeerConversation(null)}
+            />
+          </Suspense>
         ) : null}
       </main>
 
       <CallCard onSettings={() => openSettings("voice")} />
 
       <ResizableSidePanel
-        botsSidebarCollapsed={botsSidebarCollapsed}
-        open={Boolean(panel && (active || activeGroup || panel === "create"))}
+        layout={layout}
+        onWidthChange={resizePanel}
+        open={panelVisible}
         panel={panel ?? "closed"}
       >
         {panel && (active || activeGroup || panel === "create") ? (
@@ -4399,10 +4511,6 @@ export function ShellPage() {
           />
         ) : null}
 
-        {pickerInfoTopic ? (
-          <PickerInfoDialog topic={pickerInfoTopic} onClose={() => setPickerInfoTopic(null)} />
-        ) : null}
-
         {clearTarget ? (
           <ClearConversationDialog
             bot={clearTarget.chat}
@@ -4506,19 +4614,6 @@ export function ShellPage() {
               setSettingsOpen(false);
               setSettingsSection("general");
             }}
-          />
-        ) : null}
-        {peerConversation && active ? (
-          <PeerMessagesOverlay
-            botId={active.id}
-            botName={active.name}
-            botColor={active.color}
-            peerBotId={peerConversation.peerBotId}
-            peerBotName={peerConversation.peerBotName}
-            peerBotColor={
-              resolveTranscriptBot(peerConversation.peerBotId)?.color ?? FALLBACK_BOT_COLOR
-            }
-            onClose={() => setPeerConversation(null)}
           />
         ) : null}
       </Suspense>
@@ -4692,11 +4787,18 @@ export function ShellPage() {
   );
 
   return (
-    <AvatarStyleProvider value={bootstrapMe?.avatarStyle ?? "robot"}>{shell}</AvatarStyleProvider>
+    <AvatarStyleProvider
+      value={bootstrapMe?.avatarStyle ?? "robot"}
+      portraitDefaults={bootstrapMe?.avatarStyle !== "organic"}
+    >
+      {shell}
+    </AvatarStyleProvider>
   );
 }
 
 const Transcript = memo(function Transcript({
+  paused,
+  botName,
   scrollRef,
   scrollRequest,
   onScrollRequestHandled,
@@ -4726,6 +4828,8 @@ const Transcript = memo(function Transcript({
   onSpeak,
   onOpenComputer,
 }: {
+  paused: boolean;
+  botName?: string;
   scrollRef: RefObject<HTMLDivElement | null>;
   scrollRequest: { messageId: string; nonce: number } | null;
   onScrollRequestHandled: () => void;
@@ -4744,7 +4848,7 @@ const Transcript = memo(function Transcript({
   onQuote: (message: ThreadMessage, quote: string) => void;
   onReact: (message: ThreadMessage, reaction: MessageReaction) => Promise<void>;
   onJumpToMessage: (messageId: string) => void;
-  onOpenPeerMessages: (peer: { peerBotId: string; peerBotName: string }) => void;
+  onOpenPeerMessages: (peer: { botId?: string; peerBotId: string; peerBotName: string }) => void;
   memberName?: (botId: string | undefined) => string | undefined;
   peerBot: (botId: string) => { name?: string; color: string; status?: string } | undefined;
   onRefresh: () => Promise<void>;
@@ -4830,6 +4934,10 @@ const Transcript = memo(function Transcript({
   // lifecycle listens on selectionchange; the mouse flag keeps it hidden while
   // a drag is still in flight.
   useEffect(() => {
+    if (paused) {
+      setQuoteDraft(null);
+      return;
+    }
     const onMouseDown = (event: MouseEvent) => {
       selectingWithMouse.current = true;
       if ((event.target as Element | null)?.closest?.("[data-quote-selection]")) return;
@@ -4862,7 +4970,7 @@ const Transcript = memo(function Transcript({
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [evaluateSelection]);
+  }, [evaluateSelection, paused]);
   const snapToEnd = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
@@ -4908,7 +5016,7 @@ const Transcript = memo(function Transcript({
   // (or user input interrupting it, which also fires scrollend) ends the
   // suppression, with the timeout as fallback when no scroll happens.
   useLayoutEffect(() => {
-    if (!scrollRequest || scrolledJump.current === scrollRequest.nonce) return;
+    if (paused || !scrollRequest || scrolledJump.current === scrollRequest.nonce) return;
     const element = scrollRef.current;
     const row = element?.querySelector(
       `[data-message-id="${CSS.escape(scrollRequest.messageId)}"]`,
@@ -4934,11 +5042,15 @@ const Transcript = memo(function Transcript({
       { duration: 1200 },
     );
     onScrollRequestHandled();
-  }, [messages, scrollRequest, scrollRef, endJumpScroll, onScrollRequestHandled]);
+  }, [messages, paused, scrollRequest, scrollRef, endJumpScroll, onScrollRequestHandled]);
 
   useLayoutEffect(() => {
+    if (paused) {
+      following.current = false;
+      return;
+    }
     if (following.current) snapToEnd();
-  }, [messages, running, snapToEnd]);
+  }, [messages, running, snapToEnd, paused]);
 
   useLayoutEffect(() => {
     const button = jumpButtonRef.current;
@@ -5015,164 +5127,172 @@ const Transcript = memo(function Transcript({
             following.current = false;
           }
         }}
-        className="rk-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-5 md:px-7 md:py-6"
+        className="rk-scroll @container/chat min-h-0 flex-1 overflow-y-auto px-4 py-5 @[480px]/conversation:px-7 @[480px]/conversation:py-6"
       >
-        {olderCursor != null ? (
-          <button
-            type="button"
-            disabled={loadingOlder}
-            onClick={() => void loadOlder()}
-            className="self-center rounded-lg px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted hover:text-foreground/75 disabled:opacity-50"
-          >
-            {loadingOlder ? t`Loading…` : t`Load earlier messages`}
-          </button>
-        ) : null}
-        {groupVoiceChats(reactionView.visibleMessages).map((item) => {
-          if (item.kind === "voiceChat") {
+        <div
+          data-testid="conversation-column"
+          className="mx-auto flex w-full max-w-[764px] flex-col gap-5"
+        >
+          {olderCursor != null ? (
+            <button
+              type="button"
+              disabled={loadingOlder}
+              onClick={() => void loadOlder()}
+              className="self-center rounded-lg px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted hover:text-foreground/75 disabled:opacity-50"
+            >
+              {loadingOlder ? t`Loading…` : t`Load earlier messages`}
+            </button>
+          ) : null}
+          {groupVoiceChats(reactionView.visibleMessages).map((item) => {
+            if (item.kind === "voiceChat") {
+              return (
+                <div key={item.key}>
+                  {item.messages[0] && separatorIds.has(item.messages[0].id) ? (
+                    <TimeSeparator
+                      createdAt={item.messages[0].createdAt}
+                      locale={i18n.locale || "en"}
+                    />
+                  ) : null}
+                  <VoiceChatCard group={item} revealMessageId={scrollRequest?.messageId} />
+                </div>
+              );
+            }
+            const message = item.message;
+            if (!messageHasVisibleBlocks(message.blocks, showToolActivity)) return null;
+            const peerReceipt = isPeerReceiptBlocks(message.blocks);
+            const messageReactions = reactionView.reactions.get(message.id);
             return (
-              <div key={item.key}>
-                {item.messages[0] && separatorIds.has(item.messages[0].id) ? (
-                  <TimeSeparator
-                    createdAt={item.messages[0].createdAt}
-                    locale={i18n.locale || "en"}
-                  />
+              <Fragment key={message.id}>
+                {separatorIds.has(message.id) ? (
+                  <TimeSeparator createdAt={message.createdAt} locale={i18n.locale || "en"} />
                 ) : null}
-                <VoiceChatCard group={item} revealMessageId={scrollRequest?.messageId} />
-              </div>
-            );
-          }
-          const message = item.message;
-          if (!messageHasVisibleBlocks(message.blocks, showToolActivity)) return null;
-          const peerReceipt = isPeerReceiptBlocks(message.blocks);
-          const messageReactions = reactionView.reactions.get(message.id);
-          return (
-            <Fragment key={message.id}>
-              {separatorIds.has(message.id) ? (
-                <TimeSeparator createdAt={message.createdAt} locale={i18n.locale || "en"} />
-              ) : null}
-              <div
-                data-message-id={message.id}
-                className={peerReceipt ? "relative py-0.5" : "group/message relative hover:z-20"}
-              >
                 <div
-                  className={
-                    peerReceipt
-                      ? undefined
-                      : `relative flex ${message.role === "user" ? "justify-end" : "justify-start"}`
-                  }
+                  data-message-id={message.id}
+                  className={peerReceipt ? "relative py-0.5" : "group/message relative hover:z-20"}
                 >
                   <div
-                    data-testid={peerReceipt ? undefined : "message-bubble-frame"}
                     className={
                       peerReceipt
                         ? undefined
-                        : `relative w-fit min-w-0 ${
-                            message.role === "user"
-                              ? "max-w-[min(84%,calc(100%_-_8rem))] [@media(hover:none)]:max-w-[84%]"
-                              : "max-w-[min(88%,calc(100%_-_8rem))] [@media(hover:none)]:max-w-[88%]"
-                          }`
+                        : `relative flex ${message.role === "user" ? "justify-end" : "justify-start"}`
                     }
                   >
-                    <MessageView
-                      artifactTarget={artifactTarget}
-                      message={message}
-                      canAnswer={message.id === answerableAskMessageId}
-                      onOpenBot={onOpenBot}
-                      onOpenPeerMessages={onOpenPeerMessages}
-                      onAnswer={onAnswer}
-                      speakerName={
+                    <div
+                      data-testid={peerReceipt ? undefined : "message-bubble-frame"}
+                      className={
                         peerReceipt
                           ? undefined
-                          : message.role === "bot"
-                            ? memberName?.(message.botId)
-                            : undefined
+                          : `relative w-fit min-w-0 ${
+                              message.role === "user" ? "max-w-[85%]" : "max-w-[88%]"
+                            }`
                       }
-                      memberName={memberName}
-                      peerBot={peerBot}
-                      replyParent={
-                        message.replyToMessageId
-                          ? messageById.get(message.replyToMessageId)
-                          : undefined
-                      }
-                      onJumpToMessage={onJumpToMessage}
-                      onRefresh={onRefresh}
-                      onBotChanged={onBotChanged}
-                      onAddRoutine={onAddRoutine}
-                      voiceReady={voiceReady}
-                      speaking={speakingMessageId === message.id}
-                      onSpeak={() => onSpeak(message)}
-                      onOpenComputer={onOpenComputer}
-                      showToolActivity={showToolActivity}
-                    />
-                    {peerReceipt ? null : (
-                      <MessageHoverActions
+                    >
+                      <MessageView
+                        artifactTarget={artifactTarget}
                         message={message}
-                        side={message.role === "user" ? "start" : "end"}
-                        onReply={onReply}
-                        onReact={onReact}
+                        canAnswer={message.id === answerableAskMessageId}
+                        onOpenBot={onOpenBot}
+                        onOpenPeerMessages={onOpenPeerMessages}
+                        onAnswer={onAnswer}
+                        speakerName={
+                          peerReceipt
+                            ? undefined
+                            : message.role === "bot"
+                              ? (memberName?.(message.botId) ??
+                                (message.botId ? peerBot(message.botId)?.name : undefined) ??
+                                botName ??
+                                t`Bot`)
+                              : undefined
+                        }
+                        memberName={memberName}
+                        peerBot={peerBot}
+                        replyParent={
+                          message.replyToMessageId
+                            ? messageById.get(message.replyToMessageId)
+                            : undefined
+                        }
+                        onJumpToMessage={onJumpToMessage}
+                        onRefresh={onRefresh}
+                        onBotChanged={onBotChanged}
+                        onAddRoutine={onAddRoutine}
+                        voiceReady={voiceReady}
+                        speaking={speakingMessageId === message.id}
+                        onSpeak={() => onSpeak(message)}
+                        onOpenComputer={onOpenComputer}
+                        showToolActivity={showToolActivity}
+                        hoverActions={
+                          peerReceipt ? undefined : (
+                            <MessageHoverActions
+                              message={message}
+                              side={message.role === "user" ? "start" : "end"}
+                              onReply={onReply}
+                              onReact={onReact}
+                            />
+                          )
+                        }
                       />
-                    )}
+                    </div>
                   </div>
+                  {!peerReceipt && !message.id.startsWith("progress:") ? (
+                    <time
+                      dateTime={message.createdAt}
+                      data-testid="message-hover-time"
+                      className={cn(
+                        "pointer-events-none absolute top-1 z-10 text-xs tabular-nums text-muted-foreground opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100 group-has-[[aria-expanded=true]]/message:opacity-100 [@media(hover:none)]:transition-none",
+                        // Hover keeps the date in the side margin. Touch leaves that margin for the bubble and drops the revealed time under it.
+                        message.role === "user"
+                          ? "start-0 max-w-[max(8rem,16%)] text-start"
+                          : "end-0 max-w-[max(8rem,12%)] text-end",
+                        "[@media(hover:none)]:group-hover/message:static [@media(hover:none)]:group-focus-within/message:static [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:static",
+                        "[@media(hover:none)]:group-hover/message:block [@media(hover:none)]:group-focus-within/message:block [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:block",
+                        "[@media(hover:none)]:group-hover/message:mt-1 [@media(hover:none)]:group-focus-within/message:mt-1 [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:mt-1",
+                        "[@media(hover:none)]:group-hover/message:w-full [@media(hover:none)]:group-focus-within/message:w-full [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:w-full",
+                        "[@media(hover:none)]:group-hover/message:max-w-none [@media(hover:none)]:group-focus-within/message:max-w-none [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:max-w-none",
+                        message.role === "user"
+                          ? "[@media(hover:none)]:group-hover/message:text-end [@media(hover:none)]:group-focus-within/message:text-end [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:text-end"
+                          : "[@media(hover:none)]:group-hover/message:text-start [@media(hover:none)]:group-focus-within/message:text-start [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:text-start",
+                      )}
+                    >
+                      {formatMessageTime(message.createdAt, i18n.locale || "en")}
+                    </time>
+                  ) : null}
+                  {!peerReceipt && messageReactions ? (
+                    <div
+                      data-testid="message-reactions"
+                      className={cn(
+                        "mt-1 flex flex-wrap gap-1",
+                        message.role === "user" && "justify-end",
+                      )}
+                    >
+                      {[...messageReactions].map(([emoji, count]) => (
+                        <span
+                          key={emoji}
+                          className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs"
+                        >
+                          {emoji}
+                          {count > 1 ? ` ${count}` : ""}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
-                {!peerReceipt && !message.id.startsWith("progress:") ? (
-                  <time
-                    dateTime={message.createdAt}
-                    data-testid="message-hover-time"
-                    className={cn(
-                      "pointer-events-none absolute top-1 z-10 text-xs tabular-nums text-muted-foreground opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100 group-has-[[aria-expanded=true]]/message:opacity-100 [@media(hover:none)]:transition-none",
-                      // Hover keeps the date in the side margin. Touch leaves that margin for the bubble and drops the revealed time under it.
-                      message.role === "user"
-                        ? "start-0 max-w-[max(8rem,16%)] text-start"
-                        : "end-0 max-w-[max(8rem,12%)] text-end",
-                      "[@media(hover:none)]:group-hover/message:static [@media(hover:none)]:group-focus-within/message:static [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:static",
-                      "[@media(hover:none)]:group-hover/message:block [@media(hover:none)]:group-focus-within/message:block [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:block",
-                      "[@media(hover:none)]:group-hover/message:mt-1 [@media(hover:none)]:group-focus-within/message:mt-1 [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:mt-1",
-                      "[@media(hover:none)]:group-hover/message:w-full [@media(hover:none)]:group-focus-within/message:w-full [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:w-full",
-                      "[@media(hover:none)]:group-hover/message:max-w-none [@media(hover:none)]:group-focus-within/message:max-w-none [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:max-w-none",
-                      message.role === "user"
-                        ? "[@media(hover:none)]:group-hover/message:text-end [@media(hover:none)]:group-focus-within/message:text-end [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:text-end"
-                        : "[@media(hover:none)]:group-hover/message:text-start [@media(hover:none)]:group-focus-within/message:text-start [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:text-start",
-                    )}
-                  >
-                    {formatMessageTime(message.createdAt, i18n.locale || "en")}
-                  </time>
-                ) : null}
-                {!peerReceipt && messageReactions ? (
-                  <div
-                    data-testid="message-reactions"
-                    className={cn(
-                      "mt-1 flex flex-wrap gap-1",
-                      message.role === "user" && "justify-end",
-                    )}
-                  >
-                    {[...messageReactions].map(([emoji, count]) => (
-                      <span
-                        key={emoji}
-                        className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs"
-                      >
-                        {emoji}
-                        {count > 1 ? ` ${count}` : ""}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            </Fragment>
-          );
-        })}
-        {running &&
-        !messages.some(
-          (message) =>
-            message.id.startsWith("progress:") &&
-            message.blocks.some(
-              (block) =>
-                block.kind === "progress" && !isToolActivityBlock(block) && Boolean(block.text),
-            ),
-        ) ? (
-          <ActiveBotGlyph bots={workingBots} label={workingLabel} />
-        ) : null}
+              </Fragment>
+            );
+          })}
+          {running &&
+          !messages.some(
+            (message) =>
+              message.id.startsWith("progress:") &&
+              message.blocks.some(
+                (block) =>
+                  block.kind === "progress" && !isToolActivityBlock(block) && Boolean(block.text),
+              ),
+          ) ? (
+            <ActiveBotGlyph bots={workingBots} label={workingLabel} />
+          ) : null}
+        </div>
       </div>
-      {quoteDraft ? (
+      {!paused && quoteDraft ? (
         <QuoteSelectionButton
           range={quoteDraft.range}
           onQuote={() => {
@@ -5274,6 +5394,10 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
 });
 
 const Composer = memo(function Composer({
+  draftKey,
+  active,
+  draftState,
+  onDraftChange,
   artifactTarget,
   activeName,
   running,
@@ -5301,6 +5425,10 @@ const Composer = memo(function Composer({
   onSlashOpen,
   onSlashAction,
 }: {
+  draftKey: string | null;
+  active: boolean;
+  draftState: ComposerDraft;
+  onDraftChange: (change: ComposerDraftChange) => void;
   activeName?: string;
   running: boolean;
   disabled?: boolean;
@@ -5315,7 +5443,7 @@ const Composer = memo(function Composer({
   fileInputRef: RefObject<HTMLInputElement | null>;
   onAttachmentPick: (files: FileList | null) => void | Promise<void>;
   onRemoveAttachment: (attachment: PendingAttachment) => void;
-  onSend: (text: string, mentions?: ComposerMention[]) => Promise<void>;
+  onSend: (text: string, mentions: ComposerMention[], submittedVersion: number) => Promise<boolean>;
   onStop: () => Promise<void>;
   onVoice?: () => void;
   artifactTarget: ArtifactTarget;
@@ -5329,21 +5457,34 @@ const Composer = memo(function Composer({
   onSlashAction?: (action: SlashActionId) => void;
 }) {
   const { t } = useLingui();
-  const [draft, setDraft] = useState("");
+  const draft = draftState.text;
+  const setDraft = (value: string | ((current: string) => string)) =>
+    onDraftChange((current) => ({
+      text: typeof value === "function" ? value(current.text) : value,
+    }));
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionHighlightIndex, setMentionHighlightIndex] = useState(0);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
-  const [selectedSkill, setSelectedSkill] = useState<AgentSkillCatalogEntry | null>(null);
-  const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
+  const selectedSkill = draftState.selectedSkill;
+  const selectedMentions = draftState.selectedMentions;
+  const setSelectedSkill = (value: AgentSkillCatalogEntry | null) =>
+    onDraftChange({ selectedSkill: value });
+  const setSelectedMentions = (
+    value: ComposerMention[] | ((current: ComposerMention[]) => ComposerMention[]),
+  ) =>
+    onDraftChange((current) => ({
+      selectedMentions: typeof value === "function" ? value(current.selectedMentions) : value,
+    }));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [composerExpanded, setComposerExpanded] = useState(false);
-  const attachButtonRef = useRef<HTMLButtonElement>(null);
-  const composerActionsRef = useRef<HTMLDivElement>(null);
   const composerBarRef = useRef<HTMLDivElement>(null);
-  const composerFieldRef = useRef<HTMLDivElement>(null);
-  const composerLayoutRef = useRef<ComposerLayout | null>(null);
-  const previousExpandedRef = useRef(false);
-  const composerAnimationsRef = useRef<Animation[]>([]);
+  const composerActionsRef = useRef<HTMLDivElement>(null);
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const getInlineWidth = useCallback(() => {
+    const bar = composerBarRef.current;
+    if (!bar) return 0;
+    const columns = getComputedStyle(bar).gridTemplateColumns.split(" ");
+    return Number.parseFloat(columns[1] ?? "0");
+  }, []);
   const [replyAnnouncement, setReplyAnnouncement] = useState("");
   // What the live region currently holds — a send disarming the reply clears
   // "reply" text, while an explicit cancel must keep "Reply cancelled".
@@ -5393,58 +5534,6 @@ const Composer = memo(function Composer({
       document.removeEventListener("visibilitychange", recordIfPresented);
     };
   }, [onRunErrorPresented, runError, runErrorId]);
-
-  useLayoutEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-
-    function syncHeight() {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      const bar = composerBarRef.current;
-      // A chip can switch the grid in this commit; keep the previous box as the animation start.
-      if ((bar?.dataset.expanded === "true") === previousExpandedRef.current) {
-        const layout = readComposerLayout(bar, composerFieldRef.current);
-        if (layout) composerLayoutRef.current = layout;
-      }
-      const contentHeight = measureTextareaHeight(textarea);
-      textarea.style.height = `${contentHeight}px`;
-      if (draft.length === 0) {
-        setComposerExpanded(false);
-        return;
-      }
-      if (contentHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
-        setComposerExpanded(true);
-        return;
-      }
-      const attach = attachButtonRef.current;
-      const actions = composerActionsRef.current;
-      if (!attach || !actions) return;
-      const besideControls =
-        actions.getBoundingClientRect().left -
-        attach.getBoundingClientRect().right -
-        2 * COMPOSER_ONE_LINE_GAP_PX;
-      const heightBeside = measureTextareaHeight(
-        textarea,
-        besideControls - COMPOSER_COLLAPSE_SLACK_PX,
-      );
-      textarea.style.height = `${contentHeight}px`;
-      if (heightBeside <= COMPOSER_SINGLE_LINE_MAX_PX) setComposerExpanded(false);
-    }
-
-    syncHeight();
-    let lastWidth = el.getBoundingClientRect().width;
-    const observer = new ResizeObserver(() => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      const width = textarea.getBoundingClientRect().width;
-      if (width === lastWidth) return;
-      lastWidth = width;
-      syncHeight();
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [draft]);
 
   function updateDraft(value: string) {
     setDraft(value);
@@ -5543,14 +5632,12 @@ const Composer = memo(function Composer({
   function send() {
     if (!canSend || sending || disabled) return;
     const text = serializeComposerPrompt(draft, selectedSkill, selectedMentions);
-    setDraft("");
-    setMentionQuery(null);
-    setMentionHighlightIndex(0);
-    setSlashQuery(null);
-    setSelectedSkill(null);
-    const mentions = selectedMentions;
-    setSelectedMentions([]);
-    void onSend(text, mentions);
+    void onSend(text, selectedMentions, draftState.version).then((succeeded) => {
+      if (!succeeded || readComposerDraft(draftKey).version !== 0) return;
+      setMentionQuery(null);
+      setMentionHighlightIndex(0);
+      setSlashQuery(null);
+    });
   }
 
   function handleDragEnter(event: DragEvent<HTMLFieldSetElement>) {
@@ -5619,60 +5706,8 @@ const Composer = memo(function Composer({
 
   const showComposerPlaceholder =
     draft.length === 0 && selectedSkill === null && selectedMentions.length === 0;
-  const expanded = composerExpanded || selectedSkill !== null || selectedMentions.length > 0;
-
-  useLayoutEffect(() => {
-    if (previousExpandedRef.current === expanded) return;
-    previousExpandedRef.current = expanded;
-    const bar = composerBarRef.current;
-    const field = composerFieldRef.current;
-    const textarea = textareaRef.current;
-    const start = composerLayoutRef.current;
-    if (!bar || !field || !textarea) return;
-    textarea.style.height = `${measureTextareaHeight(textarea)}px`;
-    const resting = readComposerLayout(bar, field);
-    // A send or a cleared draft snaps back; nothing is left to follow.
-    if (
-      !start ||
-      textarea.value === "" ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      if (resting) composerLayoutRef.current = resting;
-      return;
-    }
-    if (!resting) return;
-    composerLayoutRef.current = resting;
-    // Grow from the fixed bottom edge so the controls stay put.
-    const timing = { duration: 120, easing: "cubic-bezier(0.2, 0, 0, 1)" };
-    composerAnimationsRef.current = [
-      bar.animate(
-        [
-          { height: `${start.barHeight}px`, overflow: "hidden" },
-          { height: `${resting.barHeight}px`, overflow: "hidden" },
-        ],
-        timing,
-      ),
-      field.animate(
-        [
-          {
-            transform: `translate(${start.fieldX - resting.fieldX}px, ${start.fieldY - resting.fieldY}px)`,
-          },
-          { transform: "none" },
-        ],
-        timing,
-      ),
-    ];
-    return () => {
-      const animations = composerAnimationsRef.current;
-      // A chip removed mid-transition must shrink from the box on screen, not the finished target.
-      if (animations.some((animation) => animation.playState === "running")) {
-        const onScreen = readComposerLayout(composerBarRef.current, composerFieldRef.current);
-        if (onScreen) composerLayoutRef.current = onScreen;
-      }
-      for (const animation of animations) animation.cancel();
-      composerAnimationsRef.current = [];
-    };
-  }, [expanded]);
+  const hasAttachmentContent = pendingAttachments.length > 0 || attachmentNotice !== null;
+  const expandedLayout = composerExpanded || hasAttachmentContent;
   const replyName = replyTarget ? (replyTargetName ?? previewMessageText(replyTarget)) : "";
   const replyNameRef = useRef(replyName);
   replyNameRef.current = replyName;
@@ -5721,7 +5756,7 @@ const Composer = memo(function Composer({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`relative z-30 m-0 min-w-0 border-0 px-3 pb-4 pt-3 md:px-6 md:pb-6 ${
+      className={`relative z-30 mx-auto w-full max-w-[820px] min-w-0 border-0 px-4 pb-[18px] pt-3 @[480px]/conversation:px-7 ${
         draggingFiles ? "rounded-[14px] ring-2 ring-inset ring-ring" : ""
       }`}
     >
@@ -5752,6 +5787,7 @@ const Composer = memo(function Composer({
       ) : null}
       {replyTarget ? (
         <ComposerReplyPreview
+          active={active}
           author={replyName}
           text={previewMessageText(replyTarget)}
           quote={replyQuote}
@@ -5765,42 +5801,6 @@ const Composer = memo(function Composer({
             textareaRef.current?.focus();
           }}
         />
-      ) : null}
-      {attachmentNotice ? (
-        <div className="mb-3 rounded-[14px] border border-warning/40 bg-warning/10 px-4 py-2 text-[13px] text-warning">
-          {attachmentNotice}
-        </div>
-      ) : null}
-      {pendingAttachments.length ? (
-        <div className="mb-3 flex flex-wrap gap-2">
-          {pendingAttachments.map((attachment) => (
-            <div
-              key={attachment.id}
-              className="flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1.5 text-[13px] text-foreground/75"
-            >
-              {attachment.previewUrl ? (
-                <img
-                  src={attachment.previewUrl}
-                  alt={attachment.file.name}
-                  className="h-8 w-8 rounded object-cover"
-                />
-              ) : (
-                <Paperclip size={14} strokeWidth={1.8} />
-              )}
-              <span className="max-w-[180px] truncate" dir="auto">
-                {attachment.file.name}
-              </span>
-              <button
-                type="button"
-                aria-label={t`Remove ${attachment.file.name}`}
-                onClick={() => onRemoveAttachment(attachment)}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X size={13} strokeWidth={2} />
-              </button>
-            </div>
-          ))}
-        </div>
       ) : null}
       {mentionPickerOpen ? (
         <div
@@ -5886,41 +5886,8 @@ const Composer = memo(function Composer({
           })}
         </div>
       ) : null}
-      <div
-        ref={composerBarRef}
-        data-testid="composer-bar"
-        data-expanded={expanded}
-        className={`grid grid-cols-[auto_minmax(0,1fr)_auto] content-end items-center rounded-[26px] border border-border bg-background pe-2.5 ps-3 transition-colors focus-within:border-ring ${
-          expanded ? "gap-x-2 gap-y-2 pb-[9px] pt-3" : "gap-x-3.5 py-[9px]"
-        }`}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept={ATTACHMENT_ACCEPT}
-          className="hidden"
-          onChange={(event) => void onAttachmentPick(event.target.files)}
-        />
-        <Button
-          ref={attachButtonRef}
-          variant="ghost"
-          size="icon"
-          aria-label={t`Attach file`}
-          disabled={disabled}
-          onClick={() => fileInputRef.current?.click()}
-          className={`col-start-1 size-8 shrink-0 rounded-full border border-border bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground ${
-            expanded ? "row-start-2" : ""
-          }`}
-        >
-          <Plus size={16} strokeWidth={2} />
-        </Button>
-        <div
-          ref={composerFieldRef}
-          className={`flex min-w-0 flex-wrap items-end gap-1.5 ${
-            expanded ? "col-span-3 row-start-1 px-1.5" : "col-start-2"
-          }`}
-        >
+      {selectedSkill || selectedMentions.length > 0 ? (
+        <div data-testid="composer-context" className="mb-2 flex min-w-0 flex-wrap gap-1.5">
           {selectedSkill ? (
             <span
               data-testid="skill-chip"
@@ -5967,8 +5934,82 @@ const Composer = memo(function Composer({
               </button>
             </span>
           ))}
-          <textarea
+        </div>
+      ) : null}
+      <div
+        ref={composerBarRef}
+        data-testid="composer-bar"
+        data-expanded={expandedLayout ? "true" : "false"}
+        className={cn(
+          "grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 border border-border bg-muted px-3 transition-colors focus-within:border-ring",
+          expandedLayout ? "gap-y-2 pt-3 pb-2 rounded-[20px]" : "py-[7px] rounded-[26px]",
+        )}
+      >
+        {hasAttachmentContent ? (
+          <div
+            data-testid="composer-attachments"
+            className="col-span-3 col-start-1 row-start-1 min-w-0"
+          >
+            {attachmentNotice ? (
+              <div
+                role="status"
+                data-testid="composer-attachment-notice"
+                className="mb-2 text-[12px] leading-4 text-muted-foreground"
+              >
+                {attachmentNotice}
+              </div>
+            ) : null}
+            {pendingAttachments.length ? (
+              <div className="flex flex-wrap gap-2">
+                {pendingAttachments.map((attachment) => (
+                  <AttachmentPreview
+                    key={attachment.id}
+                    name={attachment.file.name}
+                    mimeType={
+                      inferAttachmentMimeType(attachment.file.name, attachment.file.type) ?? ""
+                    }
+                    previewUrl={attachment.previewUrl}
+                    removeLabel={t`Remove ${attachment.file.name}`}
+                    onRemove={() => onRemoveAttachment(attachment)}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={ATTACHMENT_ACCEPT}
+          className="hidden"
+          onChange={(event) => void onAttachmentPick(event.target.files)}
+        />
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t`Attach file`}
+          disabled={disabled}
+          onClick={() => fileInputRef.current?.click()}
+          className={cn(
+            "col-start-1 size-8 shrink-0 self-end rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+            expandedLayout && (hasAttachmentContent ? "row-start-3" : "row-start-2"),
+          )}
+        >
+          <Plus size={16} strokeWidth={2} />
+        </Button>
+        <div
+          className={cn(
+            "flex min-w-0 items-center",
+            expandedLayout ? "col-span-3 col-start-1" : "col-start-2",
+            hasAttachmentContent ? "row-start-2" : "row-start-1",
+          )}
+        >
+          <MessageInput
             ref={textareaRef}
+            onExpandedChange={setComposerExpanded}
+            getInlineWidth={getInlineWidth}
+            inlineActionsRef={composerActionsRef}
             value={draft}
             onChange={(event) => updateDraft(event.target.value)}
             onPaste={handlePaste}
@@ -6030,15 +6071,14 @@ const Composer = memo(function Composer({
             name="chat-message"
             autoComplete="off"
             dir="auto"
-            rows={1}
-            className="rk-scroll max-h-25 min-h-[24px] min-w-[8rem] flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-[15.5px] leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-40"
           />
         </div>
         <div
           ref={composerActionsRef}
-          className={`col-start-3 flex shrink-0 items-center gap-2 justify-self-end ${
-            expanded ? "row-start-2" : ""
-          }`}
+          className={cn(
+            "col-start-3 flex shrink-0 items-center gap-1.5 self-end justify-self-end",
+            expandedLayout && (hasAttachmentContent ? "row-start-3" : "row-start-2"),
+          )}
         >
           {onVoice && draft.trim().length === 0 ? (
             <Button
@@ -6060,7 +6100,7 @@ const Composer = memo(function Composer({
                 aria-label={t`Send`}
                 disabled={sending || !canSend || disabled}
                 onClick={send}
-                className="size-8 rounded-full bg-white text-black hover:bg-white/90 shadow-sm transition-transform active:scale-95"
+                className="size-8 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95"
               >
                 <ArrowUp size={16} strokeWidth={2.2} />
               </Button>
@@ -6081,7 +6121,7 @@ const Composer = memo(function Composer({
               aria-label={t`Send`}
               disabled={sending || !canSend || disabled}
               onClick={send}
-              className="size-8 shrink-0 rounded-full bg-white text-black hover:bg-white/90 shadow-sm transition-transform active:scale-95 disabled:bg-white/10 disabled:text-muted-foreground/30 disabled:shadow-none"
+              className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95 disabled:bg-accent disabled:text-muted-foreground/40 disabled:shadow-none"
             >
               <ArrowUp size={16} strokeWidth={2.2} />
             </Button>
@@ -6091,38 +6131,6 @@ const Composer = memo(function Composer({
     </fieldset>
   );
 });
-
-type ComposerLayout = { barHeight: number; fieldX: number; fieldY: number };
-
-/** Screen coordinates; the bar grows upward from its bottom edge. */
-function readComposerLayout(
-  bar: HTMLElement | null,
-  field: HTMLElement | null,
-): ComposerLayout | null {
-  if (!bar || !field) return null;
-  const fieldBox = field.getBoundingClientRect();
-  return {
-    barHeight: bar.getBoundingClientRect().height,
-    fieldX: fieldBox.left,
-    fieldY: fieldBox.top,
-  };
-}
-
-/** Hides the scrollbar while measuring and leaves the height at 0. */
-function measureTextareaHeight(textarea: HTMLTextAreaElement, width?: number) {
-  const { style } = textarea;
-  style.overflowY = "hidden";
-  if (width !== undefined) {
-    style.flex = "none";
-    style.width = `${width}px`;
-  }
-  style.height = "0px";
-  const height = textarea.scrollHeight;
-  style.overflowY = "";
-  style.flex = "";
-  style.width = "";
-  return height;
-}
 
 function slashActionLabel(id: SlashActionId) {
   switch (id) {
@@ -6193,37 +6201,6 @@ function previewMessageText(message: ThreadMessage): string {
   const attachment = replyAttachment(message.blocks);
   if (attachment) return attachment.kind === "image" ? t`Photo` : attachment.name || t`Attachment`;
   return t`Message`;
-}
-
-function formatRosterTime(isoDate?: string | null): string {
-  if (!isoDate) return "";
-  try {
-    const d = new Date(isoDate);
-    if (Number.isNaN(d.getTime())) return "";
-    const locale = i18n.locale || "en";
-    const now = new Date();
-    const isToday =
-      d.getDate() === now.getDate() &&
-      d.getMonth() === now.getMonth() &&
-      d.getFullYear() === now.getFullYear();
-    if (isToday) {
-      return d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
-    }
-    const yesterday = new Date(now);
-    yesterday.setDate(now.getDate() - 1);
-    const isYesterday =
-      d.getDate() === yesterday.getDate() &&
-      d.getMonth() === yesterday.getMonth() &&
-      d.getFullYear() === yesterday.getFullYear();
-    if (isYesterday) return t`Yesterday`;
-    const diffDays = Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDays < 7) {
-      return d.toLocaleDateString(locale, { weekday: "short" });
-    }
-    return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
-  } catch {
-    return "";
-  }
 }
 
 function MessageHoverActions({
@@ -6404,13 +6381,14 @@ const MessageView = memo(function MessageView({
   onSpeak,
   onOpenComputer,
   showToolActivity,
+  hoverActions,
 }: {
   artifactTarget: ArtifactTarget;
   canAnswer: boolean;
   message: ThreadMessage;
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
   onOpenBot: (botId: string) => void;
-  onOpenPeerMessages: (peer: { peerBotId: string; peerBotName: string }) => void;
+  onOpenPeerMessages: (peer: { botId?: string; peerBotId: string; peerBotName: string }) => void;
   speakerName?: string;
   memberName?: (botId: string | undefined) => string | undefined;
   peerBot: (botId: string) => { name?: string; color: string; status?: string } | undefined;
@@ -6424,6 +6402,7 @@ const MessageView = memo(function MessageView({
   onSpeak: () => void;
   onOpenComputer: (botId?: string) => void;
   showToolActivity: boolean;
+  hoverActions?: ReactNode;
 }) {
   const { t } = useLingui();
   const isNarration =
@@ -6438,24 +6417,30 @@ const MessageView = memo(function MessageView({
 
   const replyBotId = message.replyPreview?.botId ?? replyParent?.botId;
   const speakerBot = message.botId ? peerBot?.(message.botId) : undefined;
-  const speakerColorDef = useMemo(
-    () => resolvePersonaColorDef(message.botId ?? "bot", speakerBot?.color),
-    [message.botId, speakerBot?.color],
-  );
   const messageContext = (
     <>
       {speakerName ? (
         <div
-          className="mb-1.5 flex items-center gap-2 text-[13px] font-semibold tracking-tight"
+          className="mb-1.5 flex min-w-0 items-center gap-2 text-[11px] font-medium text-foreground"
           dir="auto"
-          style={{ color: speakerColorDef.light }}
         >
           <BotAvatar
             color={speakerBot?.color ?? FALLBACK_BOT_COLOR}
             identity={message.botId}
-            size={22}
+            size={24}
           />
-          {speakerName}
+          <span className="min-w-0 truncate">{speakerName}</span>
+          {!isLive ? (
+            <time
+              dateTime={message.createdAt}
+              className="shrink-0 text-[10px] font-normal text-muted-foreground"
+            >
+              {new Date(message.createdAt).toLocaleTimeString(i18n.locale || "en", {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </time>
+          ) : null}
         </div>
       ) : null}
       <ReplyLine
@@ -6479,17 +6464,20 @@ const MessageView = memo(function MessageView({
       return (
         <>
           {messageContext}
-          <ToolOnlyNarration blocks={visibleNarrationBlocks} live={isLive} />
+          <div className="relative w-fit max-w-full">
+            <ToolOnlyNarration blocks={visibleNarrationBlocks} live={isLive} />
+            {hoverActions}
+          </div>
         </>
       );
     }
     return (
       <>
         {messageContext}
-        <div className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full">
+        <div className="relative w-fit max-w-full [@media(hover:none)]:w-full">
           <div
             data-testid="message-bot-bubble"
-            className="max-w-full space-y-2.5 rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
+            className="ms-8 max-w-full space-y-2.5 rounded-[18px] rounded-ss-[5px] bg-muted px-[15px] py-2.5 text-[14px] leading-[1.7] text-foreground/90"
             dir="auto"
           >
             {visibleNarrationBlocks.map((block, i) => {
@@ -6532,6 +6520,7 @@ const MessageView = memo(function MessageView({
               </button>
             ) : null}
           </div>
+          {hoverActions}
         </div>
       </>
     );
@@ -6539,342 +6528,351 @@ const MessageView = memo(function MessageView({
   return (
     <>
       {messageContext}
-      {message.blocks.map((block, i) => {
-        if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
-          return (
-            <StandaloneToolActivity
-              key={i}
-              live={isLive}
-              steps={block.steps}
-              stepCount={toolStepCount(block.steps)}
-              durationMs={block.durationMs}
-            />
-          );
-        }
-        if (isToolActivityBlock(block)) return null;
-        if (block.kind === "handoff") {
-          const from = memberName?.(block.fromBotId) ?? t`bot`;
-          const to = memberName?.(block.toBotId) ?? t`bot`;
-          return (
-            <div
-              key={i}
-              className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
-            >
-              <span>
-                ↪ {to} ← {from}
-              </span>
-              <span>{block.text}</span>
-            </div>
-          );
-        }
-        if (block.kind === "bot_message_sent" || block.kind === "bot_message_received") {
-          const sent = block.kind === "bot_message_sent";
-          const peer = sent ? block.toBotName : block.fromBotName;
-          const peerBotId = sent ? block.toBotId : block.fromBotId;
-          const label = sent ? t`Messaged ${peer}` : t`Message from ${peer}`;
-          return (
-            <CollaborationMarker
-              key={i}
-              ariaLabel={label}
-              color={peerBot(peerBotId)?.color ?? FALLBACK_BOT_COLOR}
-              identity={peerBotId}
-              label={label}
-              onClick={() => onOpenPeerMessages({ peerBotId, peerBotName: peer })}
-            />
-          );
-        }
-        if (block.kind === "channel_message") {
-          return (
-            <div
-              key={i}
-              className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
-            >
-              <span>
-                {messageProviderLabel(block.provider, block.transport)} · {block.fromLabel}:{" "}
-                {block.text}
-              </span>
-            </div>
-          );
-        }
-        if (block.kind === "meta") {
-          return (
-            <div
-              key={i}
-              className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
-            >
-              <span className="text-warning">◷</span>
-              <span>{block.text}</span>
-            </div>
-          );
-        }
-        if (block.kind === "progress") {
-          return (
-            <div
-              key={i}
-              className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full"
-            >
-              <div
-                data-testid="message-bot-bubble"
-                className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
-                dir="auto"
-              >
-                <ChatMarkdown streaming>{block.text}</ChatMarkdown>
-              </div>
-            </div>
-          );
-        }
-        if (block.kind === "subagent") {
-          const running = block.status === "running";
-          const failed = block.status === "failed";
-          return (
-            <div
-              key={i}
-              className="w-[min(420px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-[15px] font-medium text-foreground" dir="auto">
-                  {block.name}
-                </span>
-                <span
-                  className={`rounded-full px-[11px] py-1 text-[13px] ${
-                    failed
-                      ? "bg-destructive/15 text-destructive"
-                      : running
-                        ? "bg-warning/15 text-warning"
-                        : "bg-success/15 text-success"
-                  }`}
-                  style={{
-                    animation: running ? "rkPulse 1.2s ease-in-out infinite" : undefined,
-                  }}
-                >
-                  {running ? <Trans>subagent</Trans> : block.status}
-                </span>
-              </div>
-              <div className="mt-2 text-[13.5px] text-muted-foreground">{block.task}</div>
-              {block.progress || block.result ? (
-                <div className="mt-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
-                  <ChatMarkdown streaming={running}>
-                    {block.result || block.progress || ""}
-                  </ChatMarkdown>
-                </div>
-              ) : null}
-            </div>
-          );
-        }
-        if (block.kind === "child_bot") {
-          const removed = block.status === "deleted" || block.status === "archived";
-          return (
-            <button
-              key={i}
-              type="button"
-              disabled={removed}
-              onClick={() => onOpenBot(block.botId)}
-              className="w-[min(340px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4 text-start disabled:opacity-60"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[15px] font-medium text-foreground" dir="auto">
-                  {block.name}
-                </span>
-                <span
-                  className={`rounded-full px-[11px] py-1 text-[13px] ${
-                    removed ? "bg-destructive/15 text-destructive" : "bg-success/15 text-success"
-                  }`}
-                >
-                  {block.status === "archived" ? (
-                    <Trans>archived</Trans>
-                  ) : block.status === "deleted" ? (
-                    <Trans>deleted</Trans>
-                  ) : (
-                    <Trans>bot</Trans>
-                  )}
-                </span>
-              </div>
-              <div className="mt-2 text-[14.5px] leading-[1.5] text-foreground/75" dir="auto">
-                {removed
-                  ? block.status === "archived"
-                    ? t`Archived. Chat, memory, and files kept.`
-                    : t`Removed with chat, computer, and memory.`
-                  : block.title || t`Opened its thread.`}
-              </div>
-            </button>
-          );
-        }
-        if (block.kind === "choice") {
-          const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
-          if (!botId) return null;
-          return <ChoiceCard key={i} botId={botId} block={block} onBotChanged={onBotChanged} />;
-        }
-        if (block.kind === "app_connect") {
-          const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
-          if (!botId) return null;
-          return (
-            <div key={i} className="flex justify-start py-1">
-              <AppConnectCard botId={botId} block={block} />
-            </div>
-          );
-        }
-        if (block.kind === "chart") {
-          return (
-            <div key={i} className="flex justify-start">
-              <ChartBlockView name={block.name} spec={block.spec} data={block.data} />
-            </div>
-          );
-        }
-        if (block.kind === "mcp_approval") {
-          const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
-          if (!botId) return null;
-          return (
-            <div key={i} className="flex justify-start">
-              <McpApprovalCard botId={botId} threadId={message.threadId} block={block} />
-            </div>
-          );
-        }
-        if (block.kind === "image") {
-          return (
-            <div
-              key={i}
-              className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <ArtifactImage
-                target={artifactTarget}
-                artifactId={block.artifactId}
-                name={block.name}
+      <div className="relative">
+        {message.blocks.map((block, i) => {
+          if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
+            return (
+              <StandaloneToolActivity
+                key={i}
+                live={isLive}
+                steps={block.steps}
+                stepCount={toolStepCount(block.steps)}
+                durationMs={block.durationMs}
               />
-            </div>
-          );
-        }
-        if (block.kind === "file") {
-          return (
-            <div
-              key={i}
-              className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <ArtifactFileCard
-                target={artifactTarget}
-                artifactId={block.artifactId}
-                name={block.name}
-                mimeType={block.mimeType}
-                size={block.size}
-              />
-            </div>
-          );
-        }
-        if (block.kind === "text" && message.role === "user") {
-          // User bubbles stay literal text on web and mobile. Only explicit URLs
-          // and email addresses are links, so a sent address is tappable without
-          // formatting bold or headings.
-          return (
-            <div key={i} className="flex w-fit max-w-full justify-end [@media(hover:none)]:w-full">
+            );
+          }
+          if (isToolActivityBlock(block)) return null;
+          if (block.kind === "handoff") {
+            const from = memberName?.(block.fromBotId) ?? t`bot`;
+            const to = memberName?.(block.toBotId) ?? t`bot`;
+            return (
               <div
-                data-testid="message-user-bubble"
-                data-quote-message-id={quoteMessageId}
-                className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[20px] bg-chat-user px-[18px] py-3 text-[15.5px] leading-[1.45] text-chat-user-foreground"
-                dir="auto"
+                key={i}
+                className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
               >
-                <LinkifiedText>{block.text}</LinkifiedText>
+                <span>
+                  ↪ {to} ← {from}
+                </span>
+                <span>{block.text}</span>
               </div>
-            </div>
-          );
-        }
-        if (block.kind === "text") {
-          return (
-            <div
-              key={i}
-              className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full"
-            >
+            );
+          }
+          if (block.kind === "bot_message_sent" || block.kind === "bot_message_received") {
+            const sent = block.kind === "bot_message_sent";
+            const peer = sent ? block.toBotName : block.fromBotName;
+            const peerBotId = sent ? block.toBotId : block.fromBotId;
+            const label = sent ? t`Messaged ${peer}` : t`Message from ${peer}`;
+            return (
+              <CollaborationMarker
+                key={i}
+                ariaLabel={label}
+                color={peerBot(peerBotId)?.color ?? FALLBACK_BOT_COLOR}
+                identity={peerBotId}
+                label={sent ? t`Messaged` : t`Message from`}
+                peerName={peer}
+                onClick={() =>
+                  onOpenPeerMessages({ botId: message.botId, peerBotId, peerBotName: peer })
+                }
+              />
+            );
+          }
+          if (block.kind === "channel_message") {
+            return (
               <div
-                data-testid="message-bot-bubble"
-                className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
-                dir="auto"
+                key={i}
+                className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
               >
-                <div data-quote-message-id={quoteMessageId}>
-                  <ChatMarkdown>{block.text}</ChatMarkdown>
+                <span>
+                  {messageProviderLabel(block.provider, block.transport)} · {block.fromLabel}:{" "}
+                  {block.text}
+                </span>
+              </div>
+            );
+          }
+          if (block.kind === "meta") {
+            return (
+              <div
+                key={i}
+                className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
+              >
+                <span className="text-warning">◷</span>
+                <span>{block.text}</span>
+              </div>
+            );
+          }
+          if (block.kind === "progress") {
+            return (
+              <div
+                key={i}
+                className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full"
+              >
+                <div
+                  data-testid="message-bot-bubble"
+                  className="ms-8 max-w-full rounded-[18px] rounded-ss-[5px] bg-muted px-[15px] py-2.5 text-[14px] leading-[1.7] text-foreground/90"
+                  dir="auto"
+                >
+                  <ChatMarkdown streaming>{block.text}</ChatMarkdown>
                 </div>
-                {voiceReady ? (
-                  <button
-                    type="button"
-                    aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
-                    onClick={onSpeak}
-                    className="mt-2 text-[12px] text-muted-foreground hover:text-foreground"
+              </div>
+            );
+          }
+          if (block.kind === "subagent") {
+            const running = block.status === "running";
+            const failed = block.status === "failed";
+            return (
+              <div
+                key={i}
+                className="w-[min(420px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[15px] font-medium text-foreground" dir="auto">
+                    {block.name}
+                  </span>
+                  <span
+                    className={`rounded-full px-[11px] py-1 text-[13px] ${
+                      failed
+                        ? "bg-destructive/15 text-destructive"
+                        : running
+                          ? "bg-warning/15 text-warning"
+                          : "bg-success/15 text-success"
+                    }`}
+                    style={{
+                      animation: running ? "rkPulse 1.2s ease-in-out infinite" : undefined,
+                    }}
                   >
-                    {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
-                  </button>
+                    {running ? <Trans>subagent</Trans> : block.status}
+                  </span>
+                </div>
+                <div className="mt-2 text-[13.5px] text-muted-foreground">{block.task}</div>
+                {block.progress || block.result ? (
+                  <div className="mt-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
+                    <ChatMarkdown streaming={running}>
+                      {block.result || block.progress || ""}
+                    </ChatMarkdown>
+                  </div>
                 ) : null}
               </div>
-            </div>
-          );
-        }
-        if (block.kind === "card") {
-          return (
-            <div key={i} className="flex justify-start">
-              <div className="flex flex-col gap-2 rounded-[20px] bg-muted px-5 py-4">
-                {block.lines.map((line) => (
-                  <div key={line.k} className="flex items-baseline gap-2.5 text-[15px]">
-                    <span className="text-success">✓</span>
-                    <span className="font-semibold text-white">{line.k}</span>
-                    <span className="text-muted-foreground">→</span>
-                    <span>{line.v}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        }
-        if (block.kind === "ask") {
-          return (
-            <AskCard
-              key={i}
-              block={block}
-              canAnswer={canAnswer}
-              onAnswer={(text, username) => onAnswer(message, text, username)}
-            />
-          );
-        }
-        if (block.kind === "cloud_agent") return <CloudAgentCard key={i} block={block} />;
-        if (block.kind === "skill_draft") {
-          return (
-            <div key={i} className="flex justify-start">
-              <SkillDraftCard block={block} onRefresh={onRefresh} onAddRoutine={onAddRoutine} />
-            </div>
-          );
-        }
-        if (block.kind === "computer") {
-          return (
-            <div
-              key={i}
-              data-testid="computer-card"
-              className="w-[340px] rounded-[18px] border border-border bg-muted px-[18px] py-4"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[15px] font-medium text-foreground">
-                  <Trans>Computer</Trans>
-                </span>
-                <span
-                  className={
-                    block.state === "Needs you"
-                      ? "rounded-full bg-warning/15 px-[11px] py-1 text-[13px] text-warning"
-                      : "rounded-full bg-success/15 px-[11px] py-1 text-[13px] text-success"
-                  }
-                >
-                  {block.state}
-                </span>
-              </div>
-              <div className="my-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
-                <ChatMarkdown>{block.text}</ChatMarkdown>
-              </div>
-              <Button
+            );
+          }
+          if (block.kind === "child_bot") {
+            const removed = block.status === "deleted" || block.status === "archived";
+            return (
+              <button
+                key={i}
                 type="button"
-                size="sm"
-                data-testid="computer-card-open"
-                onClick={() => onOpenComputer(message.botId)}
+                disabled={removed}
+                onClick={() => onOpenBot(block.botId)}
+                className="w-[min(340px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4 text-start disabled:opacity-60"
               >
-                <Trans>Open</Trans>
-              </Button>
-            </div>
-          );
-        }
-        return null;
-      })}
+                <div className="flex items-center justify-between">
+                  <span className="text-[15px] font-medium text-foreground" dir="auto">
+                    {block.name}
+                  </span>
+                  <span
+                    className={`rounded-full px-[11px] py-1 text-[13px] ${
+                      removed ? "bg-destructive/15 text-destructive" : "bg-success/15 text-success"
+                    }`}
+                  >
+                    {block.status === "archived" ? (
+                      <Trans>archived</Trans>
+                    ) : block.status === "deleted" ? (
+                      <Trans>deleted</Trans>
+                    ) : (
+                      <Trans>bot</Trans>
+                    )}
+                  </span>
+                </div>
+                <div className="mt-2 text-[14.5px] leading-[1.5] text-foreground/75" dir="auto">
+                  {removed
+                    ? block.status === "archived"
+                      ? t`Archived. Chat, memory, and files kept.`
+                      : t`Removed with chat, computer, and memory.`
+                    : block.title || t`Opened its thread.`}
+                </div>
+              </button>
+            );
+          }
+          if (block.kind === "choice") {
+            const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
+            if (!botId) return null;
+            return <ChoiceCard key={i} botId={botId} block={block} onBotChanged={onBotChanged} />;
+          }
+          if (block.kind === "app_connect") {
+            const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
+            if (!botId) return null;
+            return (
+              <div key={i} className="flex justify-start py-1">
+                <AppConnectCard botId={botId} block={block} />
+              </div>
+            );
+          }
+          if (block.kind === "chart") {
+            return (
+              <div key={i} className="flex justify-start">
+                <ChartBlockView name={block.name} spec={block.spec} data={block.data} />
+              </div>
+            );
+          }
+          if (block.kind === "mcp_approval") {
+            const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
+            if (!botId) return null;
+            return (
+              <div key={i} className="flex justify-start">
+                <McpApprovalCard botId={botId} threadId={message.threadId} block={block} />
+              </div>
+            );
+          }
+          if (block.kind === "image") {
+            return (
+              <div
+                key={i}
+                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <ArtifactImage
+                  target={artifactTarget}
+                  artifactId={block.artifactId}
+                  name={block.name}
+                />
+              </div>
+            );
+          }
+          if (block.kind === "file") {
+            return (
+              <div
+                key={i}
+                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <ArtifactFileCard
+                  target={artifactTarget}
+                  artifactId={block.artifactId}
+                  name={block.name}
+                  mimeType={block.mimeType}
+                  size={block.size}
+                />
+              </div>
+            );
+          }
+          if (block.kind === "text" && message.role === "user") {
+            // User bubbles stay literal text on web and mobile. Only explicit URLs
+            // and email addresses are links, so a sent address is tappable without
+            // formatting bold or headings.
+            return (
+              <div
+                key={i}
+                className="flex w-fit max-w-full justify-end [@media(hover:none)]:w-full"
+              >
+                <div
+                  data-testid="message-user-bubble"
+                  data-quote-message-id={quoteMessageId}
+                  className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[18px] bg-chat-user px-[15px] py-2.5 text-[14px] leading-[1.7] text-chat-user-foreground"
+                  dir="auto"
+                >
+                  <LinkifiedText>{block.text}</LinkifiedText>
+                </div>
+              </div>
+            );
+          }
+          if (block.kind === "text") {
+            return (
+              <div
+                key={i}
+                className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full"
+              >
+                <div
+                  data-testid="message-bot-bubble"
+                  className="ms-8 max-w-full rounded-[18px] rounded-ss-[5px] bg-muted px-[15px] py-2.5 text-[14px] leading-[1.7] text-foreground/90"
+                  dir="auto"
+                >
+                  <div data-quote-message-id={quoteMessageId}>
+                    <ChatMarkdown>{block.text}</ChatMarkdown>
+                  </div>
+                  {voiceReady ? (
+                    <button
+                      type="button"
+                      aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
+                      onClick={onSpeak}
+                      className="mt-2 text-[12px] text-muted-foreground hover:text-foreground"
+                    >
+                      {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            );
+          }
+          if (block.kind === "card") {
+            return (
+              <div key={i} className="flex justify-start">
+                <div className="flex flex-col gap-2 rounded-[20px] bg-muted px-5 py-4">
+                  {block.lines.map((line) => (
+                    <div key={line.k} className="flex items-baseline gap-2.5 text-[15px]">
+                      <span className="text-success">✓</span>
+                      <span className="font-semibold text-white">{line.k}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <span>{line.v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          }
+          if (block.kind === "ask") {
+            return (
+              <AskCard
+                key={i}
+                block={block}
+                canAnswer={canAnswer}
+                onAnswer={(text, username) => onAnswer(message, text, username)}
+              />
+            );
+          }
+          if (block.kind === "cloud_agent") return <CloudAgentCard key={i} block={block} />;
+          if (block.kind === "skill_draft") {
+            return (
+              <div key={i} className="flex justify-start">
+                <SkillDraftCard block={block} onRefresh={onRefresh} onAddRoutine={onAddRoutine} />
+              </div>
+            );
+          }
+          if (block.kind === "computer") {
+            return (
+              <div
+                key={i}
+                data-testid="computer-card"
+                className="w-[340px] rounded-[18px] border border-border bg-muted px-[18px] py-4"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[15px] font-medium text-foreground">
+                    <Trans>Computer</Trans>
+                  </span>
+                  <span
+                    className={
+                      block.state === "Needs you"
+                        ? "rounded-full bg-warning/15 px-[11px] py-1 text-[13px] text-warning"
+                        : "rounded-full bg-success/15 px-[11px] py-1 text-[13px] text-success"
+                    }
+                  >
+                    {block.state}
+                  </span>
+                </div>
+                <div className="my-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
+                  <ChatMarkdown>{block.text}</ChatMarkdown>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  data-testid="computer-card-open"
+                  onClick={() => onOpenComputer(message.botId)}
+                >
+                  <Trans>Open</Trans>
+                </Button>
+              </div>
+            );
+          }
+          return null;
+        })}
+        {hoverActions}
+      </div>
     </>
   );
 });

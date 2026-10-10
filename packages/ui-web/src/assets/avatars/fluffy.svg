@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="new-title">
+<title id="new-title">Cream fluffy companion</title>
+<defs>
+<linearGradient id="new-bg" x1="20" y1="0" x2="110" y2="128" gradientUnits="userSpaceOnUse"><stop stop-color="#e8e3d7"/><stop offset="1" stop-color="#d8d1c0"/></linearGradient>
+<linearGradient id="new-coat" x1="35" y1="22" x2="92" y2="125" gradientUnits="userSpaceOnUse"><stop stop-color="#f9f4e7"/><stop offset="1" stop-color="#e6dbc1"/></linearGradient>
+<clipPath id="new-frame"><rect width="128" height="128" rx="32"/></clipPath>
+</defs>
+<g clip-path="url(#new-frame)">
+<rect width="128" height="128" fill="url(#new-bg)"/>
+<path fill="url(#new-coat)" stroke="#c5b496" stroke-width="1.75" paint-order="stroke" d="M19 128c-2-12 3-17 9-22 1-9 10-15 18-13 8-9 23-7 30-2 11-5 21 1 23 11 10 3 15 15 12 26Z"/>
+<path fill="#ebe1c8" d="M48 105q16-10 33-1c7 7 9 15 8 24H41q0-15 7-23Z"/>
+<path fill="url(#new-coat)" stroke="#c5b496" stroke-width="1.75" paint-order="stroke" d="M29 47c-11-3-10-14-3-20-1-9 8-15 18-11 6-10 17-9 23-3 8-7 19-3 22 7 11-2 20 6 18 15 10 5 9 17 1 22 4 8 0 16-6 19 0 13-15 24-36 24-21 0-39-9-42-24-9-7-8-20 5-29Z"/>
+<path fill="#fff9ed" opacity=".72" d="M37 44c5-12 17-18 29-18 17 0 28 10 29 22-11-9-21-8-30-6-13-5-21-2-28 2Z"/>
+<path fill="#eee4cf" d="M46 71c4-11 26-15 37-4 8 9 1 24-16 25-16 0-25-10-21-21Z"/>
+<ellipse cx="49" cy="58" rx="3.5" ry="4.3" fill="#625746"/><ellipse cx="82" cy="59" rx="3.5" ry="4.3" fill="#625746"/>
+<path d="M44 49q5-2 10 1m23 0q5-2 10 0" fill="none" stroke="#bcad91" stroke-width="2" stroke-linecap="round"/>
+<ellipse cx="36" cy="73" rx="5" ry="3" fill="#dec8ab" opacity=".55"/><ellipse cx="94" cy="73" rx="4" ry="3" fill="#dec8ab" opacity=".55"/>
+<path fill="#96836a" d="M61 73q6-4 11 0-1 6-6 6-4-1-5-6Z"/>
+<path d="M66 79v3m-7 1q7 6 14-1" fill="none" stroke="#ac987b" stroke-width="2" stroke-linecap="round"/>
+</g>
+</svg>

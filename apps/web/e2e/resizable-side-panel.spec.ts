@@ -38,13 +38,26 @@ test("computer rail resizes its preview and remembers width", async ({ page }, t
     .poll(async () => Math.round((await panel.boundingBox())!.width))
     .toBe(preferredWidth);
   await page.setViewportSize({ width: 1000, height: 1000 });
-  await expect(separator).toHaveAttribute("aria-valuemax", "364");
-  await expect.poll(async () => Math.round((await panel.boundingBox())!.width)).toBe(364);
+  await expect(separator).toHaveAttribute("aria-valuemax", "400");
+  await expect.poll(async () => Math.round((await panel.boundingBox())!.width)).toBe(400);
   expect(await page.evaluate(() => localStorage.getItem("rakazo:right-panel-width"))).toBe(
     String(preferredWidth),
   );
+  await page.setViewportSize({ width: 800, height: 1000 });
+  const sidebar = page.getByTestId("bots-sidebar");
+  await expect(sidebar).toHaveAttribute("data-sidebar-compact", "true");
+  await expect(sidebar).toHaveCSS("width", "88px");
+  await expect(separator).toHaveAttribute("aria-valuemax", "392");
+  await expect.poll(async () => Math.round((await panel.boundingBox())!.width)).toBe(392);
+  expect(Math.round((await page.locator("main").boundingBox())!.width)).toBeGreaterThanOrEqual(320);
+  expect(await page.evaluate(() => localStorage.getItem("rakazo:right-panel-width"))).toBe(
+    String(preferredWidth),
+  );
+  await captureScreenshot(page, testInfo, "computer-compact-rail");
   await page.setViewportSize({ width: 1500, height: 1000 });
-  await expect(separator).toHaveAttribute("aria-valuemax", "864");
+  await expect(sidebar).toHaveAttribute("data-sidebar-compact", "false");
+  await expect(sidebar).toHaveCSS("width", "280px");
+  await expect(separator).toHaveAttribute("aria-valuemax", "900");
   await expect
     .poll(async () => Math.round((await panel.boundingBox())!.width))
     .toBe(preferredWidth);

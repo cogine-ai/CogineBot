@@ -9,15 +9,16 @@ describe("collaboration transcript markers", () => {
         ariaLabel="Message from Research"
         color="#14B8A6"
         identity="research"
-        label="Message from Research"
+        label="Message from"
+        peerName="Research"
         onClick={() => undefined}
       />,
     );
 
     expect(html).toContain('data-testid="peer-receipt-chip"');
     expect(html).toContain('aria-label="Message from Research"');
-    expect(html).toContain('class="flex justify-start"');
-    expect(html).toContain('class="inline-flex max-w-full');
+    expect(html).toContain('class="flex justify-start ps-8"');
+    expect(html).toContain('class="inline-flex min-h-8 max-w-full');
     expect(html).toContain('class="truncate"');
     expect(html).toContain("rakazo-bot-avatar");
     expect(html).toContain("Message from Research");

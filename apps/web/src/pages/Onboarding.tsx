@@ -531,15 +531,7 @@ export function OnboardingPage() {
       for (const serverId of integrationServers) {
         await rpc.mcp.assignments.approve({ botId: bot.id, serverId });
       }
-      // Onboarding continues conversationally in the thread: greeting first,
-      // then the focus choice (immediate for the first bot).
-      const started = await rpc.onboarding
-        .start({ botId: bot.id })
-        .then(() => true)
-        .catch(() => false);
-      if (started) {
-        await rpc.onboarding.promptFocus({ botId: bot.id }).catch(() => undefined);
-      }
+      await rpc.onboarding.start({ botId: bot.id }).catch(() => undefined);
       navigate(`/app/${bot.id}`);
     } catch (err) {
       createStartedRef.current = false;

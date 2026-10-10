@@ -71,10 +71,13 @@ describe("window chrome", () => {
     expect(shell.match(/className="app-no-drag grid h-\[30px\] w-\[34px\]/g)).toHaveLength(1);
   });
 
-  it("moves window chrome into the conversation header when the bots sidebar is collapsed", () => {
+  it("keeps window chrome in the persistent sidebar while chat views change", () => {
     const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "../pages");
     const shell = readFileSync(path.join(root, "Shell.tsx"), "utf8");
-    expect(shell).toContain("{botsSidebarCollapsed && desktopBridge() ? <WindowChrome /> : null}");
+    const sidebar = shell.slice(shell.indexOf("<aside"), shell.indexOf("</aside>"));
+    expect(sidebar).toContain("{desktopBridge() ? (");
+    expect(sidebar).toContain("<WindowChrome />");
+    expect(shell.match(/<WindowChrome \/>/g)).toHaveLength(1);
   });
 
   it("puts Electron window chrome on the artifacts page, which has no sidebar", () => {

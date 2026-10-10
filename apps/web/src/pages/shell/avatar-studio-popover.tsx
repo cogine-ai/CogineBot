@@ -13,6 +13,7 @@ import {
   GROK_BOT_COLORS,
   GrokShapePreview,
   parseBotAvatar,
+  usePortraitDefaults,
 } from "@rakazo/ui-web";
 import { Check, Pencil, Upload, X } from "lucide-react";
 import { type ClipboardEvent, type DragEvent, useRef, useState } from "react";
@@ -34,6 +35,7 @@ export function AvatarStudioPopover({
   onChange,
   disabled = false,
 }: AvatarStudioPopoverProps) {
+  const portraitDefaults = usePortraitDefaults();
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"bot" | "upload">("bot");
   const [dragOver, setDragOver] = useState(false);
@@ -227,32 +229,34 @@ export function AvatarStudioPopover({
                 </div>
               </div>
 
-              <div className="border-t border-border pt-2">
-                <div className="mb-2 text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-                  <Trans>Color</Trans>
+              {!portraitDefaults || !isDefaultLook ? (
+                <div className="border-t border-border pt-2">
+                  <div className="mb-2 text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+                    <Trans>Color</Trans>
+                  </div>
+                  <div className="grid grid-cols-6 place-items-center gap-2">
+                    {GROK_BOT_COLORS.map((color) => {
+                      const selected =
+                        currentColor.toLowerCase() === color.toLowerCase() && !parsed.isImage;
+                      return (
+                        <button
+                          key={color}
+                          type="button"
+                          onClick={() => selectColor(color)}
+                          aria-label={t`Color ${color}`}
+                          aria-pressed={selected}
+                          className={`size-6 rounded-full border transition-transform hover:scale-110 active:scale-95 focus-visible:ring-2 focus-visible:ring-ring ${
+                            selected
+                              ? "scale-105 border-transparent ring-2 ring-foreground ring-offset-2 ring-offset-popover"
+                              : "border-border"
+                          }`}
+                          style={{ backgroundColor: color }}
+                        />
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="grid grid-cols-6 place-items-center gap-2">
-                  {GROK_BOT_COLORS.map((color) => {
-                    const selected =
-                      currentColor.toLowerCase() === color.toLowerCase() && !parsed.isImage;
-                    return (
-                      <button
-                        key={color}
-                        type="button"
-                        onClick={() => selectColor(color)}
-                        aria-label={t`Color ${color}`}
-                        aria-pressed={selected}
-                        className={`size-6 rounded-full border transition-transform hover:scale-110 active:scale-95 focus-visible:ring-2 focus-visible:ring-ring ${
-                          selected
-                            ? "scale-105 border-transparent ring-2 ring-foreground ring-offset-2 ring-offset-popover"
-                            : "border-border"
-                        }`}
-                        style={{ backgroundColor: color }}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
+              ) : null}
             </div>
           ) : (
             <button

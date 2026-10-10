@@ -220,6 +220,61 @@ describe("BotAvatar", () => {
     expect(html).not.toContain("rakazo-organic-avatar");
   });
 
+  it("uses stable companion portraits only when the desktop presentation opts in", () => {
+    const portrait = (color: string, status?: string) =>
+      renderToString(
+        <AvatarStyleProvider value="robot" portraitDefaults>
+          <BotAvatar color={color} identity="stable-bot-id" status={status} />
+        </AvatarStyleProvider>,
+      );
+    const idle = portrait("#8B5CF6");
+    const working = portrait("#10B981", "running");
+    const portraitSource = idle.match(/<img src="([^"]+)"/)?.[1];
+    expect(portraitSource).toMatch(
+      /\/assets\/avatars\/(fox|seal|cat|dinosaur|rabbit|fluffy)\.svg$/,
+    );
+    expect(working).toContain(`src="${portraitSource}"`);
+    expect(idle).not.toContain("rakazo-bot-avatar-visor");
+    expect(idle).not.toContain("grok-character-eyes");
+    expect(working).toContain('data-working="true"');
+    expect(idle).toContain('data-working="false"');
+    expect(idle).toContain("min-width:36px;min-height:36px;flex:none;aspect-ratio:1");
+  });
+
+  it("preserves uploaded images and explicit shape choices with portraits enabled", () => {
+    const image = renderToString(
+      <AvatarStyleProvider value="robot" portraitDefaults>
+        <BotAvatar color="data:image/webp;base64,abc" identity="stable-bot-id" size={24} />
+      </AvatarStyleProvider>,
+    );
+    expect(image).toContain('src="data:image/webp;base64,abc"');
+    expect(image).not.toContain("rakazo-bot-portrait");
+    expect(image).toContain("min-width:24px;min-height:24px;flex:none;aspect-ratio:1");
+
+    const shape = renderToString(
+      <AvatarStyleProvider value="organic" portraitDefaults>
+        <BotAvatar color={`${DEFAULT_GROK_BOT_COLOR}::shape_3`} identity="stable-bot-id" />
+      </AvatarStyleProvider>,
+    );
+    expect(shape).toContain("grok-character-eyes");
+    expect(shape).not.toContain("rakazo-bot-portrait");
+  });
+
+  it.each(["robot", "organic"] as const)(
+    "keeps explicit %s style previews when portraits are enabled",
+    (variant) => {
+      const html = renderToString(
+        <AvatarStyleProvider value="robot" portraitDefaults>
+          <BotAvatar color={DEFAULT_GROK_BOT_COLOR} identity="preview" variant={variant} />
+        </AvatarStyleProvider>,
+      );
+      expect(html).not.toContain("rakazo-bot-portrait");
+      expect(html).toContain(
+        variant === "robot" ? "rakazo-bot-avatar-visor" : "rakazo-organic-avatar",
+      );
+    },
+  );
+
   it("fills the organic body with the resolved palette hex when the custom color is invalid", () => {
     const fallback = resolvePersonaColorDef("maya", "#zzzzzz");
     const html = renderToString(<BotAvatar color="#zzzzzz" identity="maya" variant="organic" />);

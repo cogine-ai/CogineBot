@@ -21,7 +21,8 @@ test("bot settings open Avatar Studio on the Bot tab", async ({ page }, testInfo
   await expect(studio.getByRole("button", { name: "Generate" })).toHaveCount(0);
   await expect(studio.getByTestId("avatar-studio-bot-tab")).toBeVisible();
   await expect(studio.getByText("Shape", { exact: true })).toBeVisible();
-  await expect(studio.getByText("Color", { exact: true })).toBeVisible();
+  await expect(studio.getByText("Color", { exact: true })).toHaveCount(0);
+  await expect(studio.locator(".rakazo-bot-portrait")).toHaveCount(1);
 
   const defaultLook = studio.getByTestId("avatar-studio-default");
   const wedge = studio.getByRole("button", { name: "wedge", exact: true });
@@ -32,22 +33,23 @@ test("bot settings open Avatar Studio on the Bot tab", async ({ page }, testInfo
   await expect(wedge).toHaveAttribute("aria-pressed", "true");
   await expect(defaultLook).toHaveAttribute("aria-pressed", "false");
   await expect(studio.locator(".rakazo-bot-avatar-visor")).toHaveCount(0);
+  await expect(studio.getByText("Color", { exact: true })).toBeVisible();
+  await studio.getByRole("button", { name: "Color #EAB308" }).click();
+  await expect(defaultLook).toHaveAttribute("aria-pressed", "false");
+  await expect(wedge).toHaveAttribute("aria-pressed", "true");
 
   await defaultLook.click();
   await expect(defaultLook).toHaveAttribute("aria-pressed", "true");
   await expect(wedge).toHaveAttribute("aria-pressed", "false");
-  await expect(studio.locator(".rakazo-bot-avatar-visor")).toHaveCount(1);
-  await expect(studio.locator(".rakazo-bot-avatar-eyes").first()).toBeVisible();
-
-  await studio.getByRole("button", { name: "Color #EAB308" }).click();
-  await expect(defaultLook).toHaveAttribute("aria-pressed", "true");
-  await expect(wedge).toHaveAttribute("aria-pressed", "false");
+  await expect(studio.locator(".rakazo-bot-portrait")).toHaveCount(1);
+  await expect(studio.getByText("Color", { exact: true })).toHaveCount(0);
 
   await wedge.click();
   await studio.getByRole("button", { name: "Reset", exact: true }).click();
   await expect(defaultLook).toHaveAttribute("aria-pressed", "true");
   await expect(wedge).toHaveAttribute("aria-pressed", "false");
-  await expect(studio.locator(".rakazo-bot-avatar-visor")).toHaveCount(1);
+  await expect(studio.locator(".rakazo-bot-portrait")).toHaveCount(1);
+  await expect(studio.getByText("Color", { exact: true })).toHaveCount(0);
 
   await captureScreenshot(page, testInfo, "avatar-studio-bot-tab");
 });

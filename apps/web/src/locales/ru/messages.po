@@ -14,8 +14,8 @@ msgstr ""
 "Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 
 #: src/pages/Shell.tsx
-msgid " (unread)"
-msgstr " (непрочитано)"
+#~ msgid " (unread)"
+#~ msgstr " (непрочитано)"
 
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
@@ -141,6 +141,10 @@ msgstr "{hours} ч назад"
 #: src/pages/ActivityList.tsx
 msgid "{minutes}m ago"
 msgstr "{minutes} мин назад"
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (unread)"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -557,7 +561,6 @@ msgid "Arguments"
 msgstr "Аргументы"
 
 #: src/pages/Artifacts.tsx
-#: src/pages/Shell.tsx
 msgid "Artifacts"
 msgstr ""
 
@@ -945,7 +948,6 @@ msgstr "Секрет клиента"
 #: src/components/ErrorBoundary.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/PeerMessagesOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 #: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/WindowChrome.tsx
@@ -959,6 +961,10 @@ msgstr ""
 #: src/pages/shell/message-cards.tsx
 msgid "Close chart"
 msgstr "Закрыть график"
+
+#: src/pages/PeerMessagesOverlay.tsx
+msgid "Close chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Close computer"
@@ -1019,11 +1025,14 @@ msgstr "Облако"
 msgid "Code"
 msgstr "Код"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Collapse {0}"
 msgstr "Свернуть {0}"
+
+#: src/pages/Shell.tsx
+msgid "Collapse {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Color"
@@ -1707,9 +1716,17 @@ msgstr "Создайте раздел и переместите в него {0}.
 msgid "Create account"
 msgstr "Зарегистрироваться"
 
+#: src/pages/Shell.tsx
+msgid "Create Bot"
+msgstr ""
+
 #: src/pages/GroupPanel.tsx
 msgid "Create group"
 msgstr "Создать группу"
+
+#: src/pages/Shell.tsx
+msgid "Create group chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
@@ -1729,6 +1746,7 @@ msgid "Create Routine"
 msgstr "Создать задачу"
 
 #: src/components/AskCard.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Create space"
 msgstr "Создайте пространство"
@@ -2133,11 +2151,14 @@ msgstr "Токен Executor"
 msgid "Expand"
 msgstr "Развернуть"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Expand {0}"
 msgstr "Развернуть {0}"
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Export"
@@ -2192,6 +2213,7 @@ msgid "File is too large to upload."
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Shell.tsx
 msgid "Files"
 msgstr ""
 
@@ -2342,8 +2364,8 @@ msgid "Hi, this is how I'll sound when I read replies out loud."
 msgstr "Привет, вот как я буду звучать, когда буду читать ответы вслух."
 
 #: src/pages/Shell.tsx
-msgid "Hide bots"
-msgstr "Скрыть ботов"
+#~ msgid "Hide bots"
+#~ msgstr "Скрыть ботов"
 
 #: src/pages/Auth.tsx
 msgid "Hide password"
@@ -2757,12 +2779,20 @@ msgid "Message event"
 msgstr "Событие сообщения"
 
 #: src/pages/Shell.tsx
+msgid "Message from"
+msgstr ""
+
+#: src/pages/Shell.tsx
 msgid "Message from {peer}"
 msgstr "Сообщение от {peer}"
 
 #: src/pages/Shell.tsx
 msgid "Message…"
 msgstr "Сообщение…"
+
+#: src/pages/Shell.tsx
+msgid "Messaged"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Messaged {peer}"
@@ -2884,6 +2914,10 @@ msgstr "Переместить в"
 #: src/components/call/CallCard.tsx
 msgid "Mute"
 msgstr "Выключить микрофон"
+
+#: src/pages/Shell.tsx
+msgid "My space"
+msgstr ""
 
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
@@ -3145,8 +3179,12 @@ msgstr "Открыть"
 
 #. placeholder {0}: group.title
 #: src/pages/Shell.tsx
-msgid "Open {0}"
-msgstr "Открыть {0}"
+#~ msgid "Open {0}"
+#~ msgstr "Открыть {0}"
+
+#: src/pages/Shell.tsx
+msgid "Open {displayTitle}"
+msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
 #: src/pages/ModelSettingsOverlay.tsx
@@ -3552,6 +3590,10 @@ msgstr "Удалено, но обновить список не удалось."
 #: src/pages/PluginsOverlay.tsx
 msgid "Removing…"
 msgstr "Удаление…"
+
+#: src/pages/Shell.tsx
+msgid "Rename"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
@@ -4207,6 +4249,10 @@ msgstr "Поддерживает рассуждения"
 msgid "Switch bot"
 msgstr "Сменить бота"
 
+#: src/pages/Shell.tsx
+msgid "Switch space"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Switching…"
 msgstr "Переключение…"
@@ -4310,8 +4356,8 @@ msgid "This cannot be undone."
 msgstr "Это невозможно отменить."
 
 #: src/pages/PeerMessagesOverlay.tsx
-msgid "This chat is view-only"
-msgstr "Этот чат доступен только для просмотра"
+#~ msgid "This chat is view-only"
+#~ msgstr "Этот чат доступен только для просмотра"
 
 #: src/pages/HostComputerPrompt.tsx
 msgid "this computer"
@@ -4716,7 +4762,6 @@ msgstr ""
 msgid "year"
 msgstr ""
 
-#: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Yesterday"
 msgstr "Вчера"
