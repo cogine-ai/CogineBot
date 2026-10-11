@@ -1,7 +1,7 @@
 import { i18n } from "@lingui/core";
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
-import { ChatMarkdown, LinkifiedText } from "@rakazo/chat-ui/web";
+import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type {
   AgentSkillCatalogEntry,
   Bot,
@@ -93,7 +93,6 @@ import {
   Box,
   Check,
   ChevronDown,
-  Clock,
   Copy,
   Gauge,
   Layers,
@@ -109,7 +108,6 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
-  Puzzle,
   Reply,
   Search,
   Settings,
@@ -284,6 +282,7 @@ import {
   RenameBotSectionDialog,
   RenameSpaceDialog,
 } from "./shell/dialogs";
+import { MentionIdentity, SentMentionText, useBotIdentityTextColor } from "./shell/mention-display";
 import {
   AppConnectCard,
   ArtifactImage,
@@ -3679,6 +3678,7 @@ export function ShellPage() {
               }}
               memberName={resolveTranscriptMemberName}
               peerBot={resolveTranscriptBot}
+              mentionTargets={composerMentionTargets}
               onRefresh={refreshActiveThread}
               onBotChanged={refreshBots}
               onAddRoutine={addSkillRoutine}
@@ -4820,6 +4820,7 @@ const Transcript = memo(function Transcript({
   onOpenPeerMessages,
   memberName,
   peerBot,
+  mentionTargets,
   onRefresh,
   onBotChanged,
   onAddRoutine,
@@ -4851,6 +4852,7 @@ const Transcript = memo(function Transcript({
   onOpenPeerMessages: (peer: { botId?: string; peerBotId: string; peerBotName: string }) => void;
   memberName?: (botId: string | undefined) => string | undefined;
   peerBot: (botId: string) => { name?: string; color: string; status?: string } | undefined;
+  mentionTargets: readonly ComposerMention[];
   onRefresh: () => Promise<void>;
   onBotChanged: () => Promise<void>;
   onAddRoutine: (name: string, prompt: string) => void;
@@ -5206,6 +5208,7 @@ const Transcript = memo(function Transcript({
                         }
                         memberName={memberName}
                         peerBot={peerBot}
+                        mentionTargets={mentionTargets}
                         replyParent={
                           message.replyToMessageId
                             ? messageById.get(message.replyToMessageId)
@@ -5233,7 +5236,7 @@ const Transcript = memo(function Transcript({
                       />
                     </div>
                   </div>
-                  {!peerReceipt && !message.id.startsWith("progress:") ? (
+                  {!peerReceipt && message.role !== "bot" && !message.id.startsWith("progress:") ? (
                     <time
                       dateTime={message.createdAt}
                       data-testid="message-hover-time"
@@ -5478,13 +5481,55 @@ const Composer = memo(function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerBarRef = useRef<HTMLDivElement>(null);
   const composerActionsRef = useRef<HTMLDivElement>(null);
+  const composerMentionsRef = useRef<HTMLDivElement>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
+  const [mentionsOverflow, setMentionsOverflow] = useState(false);
+  useLayoutEffect(() => {
+    const bar = composerBarRef.current;
+    const mentions = composerMentionsRef.current;
+    if (!bar || !mentions) {
+      setMentionsOverflow(false);
+      return;
+    }
+    function measureMentions() {
+      if (!bar || !mentions) return;
+      const middleWidth = Number.parseFloat(
+        getComputedStyle(bar).gridTemplateColumns.split(" ")[1] ?? "0",
+      );
+      const compactWidth = middleWidth * 0.65;
+      const gap = Number.parseFloat(getComputedStyle(mentions).columnGap) || 0;
+      const chips = Array.from(mentions.children);
+      // Compare against the compact row even while expanded, so wrapping cannot toggle the layout.
+      const neededWidth = chips.reduce(
+        (width, chip) => width + Math.min(chip.getBoundingClientRect().width, compactWidth),
+        Math.max(0, chips.length - 1) * gap,
+      );
+      setMentionsOverflow(neededWidth > compactWidth + 1);
+    }
+    measureMentions();
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measureMentions);
+    });
+    observer.observe(bar);
+    observer.observe(mentions);
+    for (const chip of mentions.children) observer.observe(chip);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [selectedMentions]);
   const getInlineWidth = useCallback(() => {
     const bar = composerBarRef.current;
     if (!bar) return 0;
     const columns = getComputedStyle(bar).gridTemplateColumns.split(" ");
-    return Number.parseFloat(columns[1] ?? "0");
-  }, []);
+    const middleWidth = Number.parseFloat(columns[1] ?? "0");
+    const mentionsWidth = selectedMentions.length
+      ? Math.min(composerMentionsRef.current?.scrollWidth ?? 0, middleWidth * 0.65)
+      : 0;
+    return Math.max(40, middleWidth - mentionsWidth - (mentionsWidth ? 8 : 0));
+  }, [selectedMentions.length]);
   const [replyAnnouncement, setReplyAnnouncement] = useState("");
   // What the live region currently holds — a send disarming the reply clears
   // "reply" text, while an explicit cancel must keep "Reply cancelled".
@@ -5535,9 +5580,11 @@ const Composer = memo(function Composer({
     };
   }, [onRunErrorPresented, runError, runErrorId]);
 
+  const mentionQueryPattern = /(?:^|\s)@([^@\r\n]*)$/;
+
   function updateDraft(value: string) {
     setDraft(value);
-    const mentionMatch = /(?:^|\s)@([\w-]*)$/.exec(value);
+    const mentionMatch = mentionQueryPattern.exec(value);
     setMentionQuery(mentionMatch ? (mentionMatch[1] ?? "") : null);
     // `/` only at the start of the draft so forced skills expand (`Use skill:` / `/Name` prefix).
     const slashMatch = selectedSkill === null ? /^\/([^\n]*)$/.exec(value) : null;
@@ -5551,7 +5598,9 @@ const Composer = memo(function Composer({
   }
 
   function insertMention(mention: ComposerMention) {
-    setDraft((current) => current.replace(/@([\w-]*)$/, ""));
+    setDraft((current) =>
+      current.replace(mentionQueryPattern, (match) => match.slice(0, match.lastIndexOf("@"))),
+    );
     setMentionQuery(null);
     setMentionHighlightIndex(0);
     setSelectedMentions((current) =>
@@ -5707,7 +5756,7 @@ const Composer = memo(function Composer({
   const showComposerPlaceholder =
     draft.length === 0 && selectedSkill === null && selectedMentions.length === 0;
   const hasAttachmentContent = pendingAttachments.length > 0 || attachmentNotice !== null;
-  const expandedLayout = composerExpanded || hasAttachmentContent;
+  const expandedLayout = composerExpanded || mentionsOverflow || hasAttachmentContent;
   const replyName = replyTarget ? (replyTargetName ?? previewMessageText(replyTarget)) : "";
   const replyNameRef = useRef(replyName);
   replyNameRef.current = replyName;
@@ -5802,330 +5851,370 @@ const Composer = memo(function Composer({
           }}
         />
       ) : null}
-      {mentionPickerOpen ? (
-        <div
-          id={mentionListboxId}
-          role="listbox"
-          aria-label={t`Mentions`}
-          data-testid="mention-picker"
-          className="mb-2 overflow-hidden rounded-[14px] border border-border bg-muted"
-        >
-          {mentionOptions.map((mention, index) => {
-            const optionId = `${mentionListboxId}-option-${index}`;
-            const highlighted = index === activeMentionIndex;
-            return (
-              <button
-                id={optionId}
-                key={mentionChipKey(mention)}
-                type="button"
-                role="option"
-                aria-selected={highlighted}
-                aria-label={t`@${mention.name}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => insertMention(mention)}
-                // Opening the list under a stationary pointer must not steal the keyboard highlight.
-                onMouseMove={() => setMentionHighlightIndex(index)}
-                className={`flex w-full items-start gap-3 px-4 py-2.5 text-start hover:bg-accent ${
-                  highlighted ? "bg-accent" : ""
-                }`}
-              >
-                <MentionOptionIcon mention={mention} />
-                <span className="min-w-0">
-                  <span dir="auto" className="block text-[14px] text-foreground">
-                    @{mention.name}
+      <div className="relative">
+        {mentionPickerOpen ? (
+          <div
+            id={mentionListboxId}
+            role="listbox"
+            aria-label={t`Mentions`}
+            data-testid="mention-picker"
+            className="rk-scroll absolute bottom-full left-0 z-50 mb-2 max-h-[320px] w-[360px] max-w-full overflow-y-auto rounded-[14px] border border-border bg-popover p-1.5 text-popover-foreground shadow-lg"
+          >
+            {mentionOptions.map((mention, index) => {
+              const optionId = `${mentionListboxId}-option-${index}`;
+              const highlighted = index === activeMentionIndex;
+              const routineOwner =
+                mention.kind === "routine"
+                  ? mentionTargets?.find(
+                      (target) => target.kind === "bot" && target.id === mention.botId,
+                    )?.name
+                  : undefined;
+              return (
+                <button
+                  id={optionId}
+                  key={mentionChipKey(mention)}
+                  type="button"
+                  role="option"
+                  aria-selected={highlighted}
+                  aria-label={t`@${mention.name}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => insertMention(mention)}
+                  // Opening the list under a stationary pointer must not steal the keyboard highlight.
+                  onMouseMove={() => setMentionHighlightIndex(index)}
+                  className={`flex h-9 w-full items-center gap-2 rounded-[8px] px-2 text-start text-[13px] leading-5 hover:bg-accent ${
+                    highlighted ? "bg-accent" : ""
+                  }`}
+                >
+                  <span className="min-w-0 flex-1">
+                    <MentionIdentity mention={mention} showAt={false} truncateName />
                   </span>
-                  {mention.subtitle ? (
-                    <span dir="auto" className="block truncate text-[12.5px] text-muted-foreground">
-                      {mention.subtitle}
+                  {(mention.kind === "connector" || mention.kind === "routine") &&
+                  mention.subtitle ? (
+                    <span
+                      title={mention.subtitle}
+                      className="max-w-[40%] min-w-0 truncate text-[12px] text-muted-foreground"
+                    >
+                      {mention.kind === "routine"
+                        ? (routineOwner ?? mention.subtitle)
+                        : mention.authStatus === "connected"
+                          ? t`Connected`
+                          : t`Needs auth`}
                     </span>
                   ) : null}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-      {showSlashPicker ? (
-        <div
-          data-testid="slash-picker"
-          className="mb-2 overflow-hidden rounded-[14px] border border-border bg-muted"
-        >
-          {slashSkillOptions.map((skill) => (
-            <button
-              key={skill.id}
-              type="button"
-              aria-label={t`Skill ${skill.name}`}
-              onClick={() => insertSkill(skill)}
-              className="flex w-full items-start gap-3 px-4 py-2.5 text-start hover:bg-accent"
-            >
-              <Box size={16} strokeWidth={1.7} className="mt-0.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0">
-                <span dir="auto" className="block text-[14px] text-foreground">
-                  {skill.name}
-                </span>
-                <span dir="auto" className="block truncate text-[12.5px] text-muted-foreground">
-                  {truncateSlashDescription(skill.description)}
-                </span>
-              </span>
-            </button>
-          ))}
-          {slashActionOptions.map((action) => {
-            const label = slashActionLabel(action.id);
-            return (
-              <button
-                key={action.id}
-                type="button"
-                aria-label={label}
-                onClick={() => runSlashAction(action.id)}
-                className="flex w-full items-center gap-3 px-4 py-2.5 text-start hover:bg-accent"
-              >
-                <Settings size={16} strokeWidth={1.7} className="shrink-0 text-muted-foreground" />
-                <span className="text-[14px] text-foreground">{label}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-      {selectedSkill || selectedMentions.length > 0 ? (
-        <div data-testid="composer-context" className="mb-2 flex min-w-0 flex-wrap gap-1.5">
-          {selectedSkill ? (
-            <span
-              data-testid="skill-chip"
-              className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[13px] text-foreground"
-            >
-              <Box size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground/70" />
-              <span dir="auto" className="truncate">
-                {selectedSkill.name}
-              </span>
-              <button
-                type="button"
-                aria-label={t`Remove skill ${selectedSkill.name}`}
-                onClick={() => setSelectedSkill(null)}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X size={12} strokeWidth={2} />
-              </button>
-            </span>
-          ) : null}
-          {selectedMentions.map((mention) => (
-            <span
-              key={mentionChipKey(mention)}
-              data-testid="mention-chip"
-              data-mention-kind={mention.kind}
-              className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[13px] text-foreground"
-            >
-              <MentionChipIcon mention={mention} />
-              <span dir="auto" className="truncate">
-                {mention.name}
-              </span>
-              <button
-                type="button"
-                aria-label={t`Remove mention ${mention.name}`}
-                onClick={() =>
-                  setSelectedMentions((current) =>
-                    current.filter(
-                      (selected) => mentionChipKey(selected) !== mentionChipKey(mention),
-                    ),
-                  )
-                }
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X size={12} strokeWidth={2} />
-              </button>
-            </span>
-          ))}
-        </div>
-      ) : null}
-      <div
-        ref={composerBarRef}
-        data-testid="composer-bar"
-        data-expanded={expandedLayout ? "true" : "false"}
-        className={cn(
-          "grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 border border-border bg-muted px-3 transition-colors focus-within:border-ring",
-          expandedLayout ? "gap-y-2 pt-3 pb-2 rounded-[20px]" : "py-[7px] rounded-[26px]",
-        )}
-      >
-        {hasAttachmentContent ? (
+                  <span
+                    data-testid="mention-kind-label"
+                    className="ms-auto shrink-0 text-[12px] text-muted-foreground"
+                  >
+                    {mentionTypeLabel(mention)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {showSlashPicker ? (
           <div
-            data-testid="composer-attachments"
-            className="col-span-3 col-start-1 row-start-1 min-w-0"
+            data-testid="slash-picker"
+            className="mb-2 overflow-hidden rounded-[14px] border border-border bg-muted"
           >
-            {attachmentNotice ? (
-              <div
-                role="status"
-                data-testid="composer-attachment-notice"
-                className="mb-2 text-[12px] leading-4 text-muted-foreground"
+            {slashSkillOptions.map((skill) => (
+              <button
+                key={skill.id}
+                type="button"
+                aria-label={t`Skill ${skill.name}`}
+                onClick={() => insertSkill(skill)}
+                className="flex w-full items-start gap-3 px-4 py-2.5 text-start hover:bg-accent"
               >
-                {attachmentNotice}
-              </div>
-            ) : null}
-            {pendingAttachments.length ? (
-              <div className="flex flex-wrap gap-2">
-                {pendingAttachments.map((attachment) => (
-                  <AttachmentPreview
-                    key={attachment.id}
-                    name={attachment.file.name}
-                    mimeType={
-                      inferAttachmentMimeType(attachment.file.name, attachment.file.type) ?? ""
-                    }
-                    previewUrl={attachment.previewUrl}
-                    removeLabel={t`Remove ${attachment.file.name}`}
-                    onRemove={() => onRemoveAttachment(attachment)}
+                <Box
+                  size={16}
+                  strokeWidth={1.7}
+                  className="mt-0.5 shrink-0 text-muted-foreground"
+                />
+                <span className="min-w-0">
+                  <span dir="auto" className="block text-[14px] text-foreground">
+                    {skill.name}
+                  </span>
+                  <span dir="auto" className="block truncate text-[12.5px] text-muted-foreground">
+                    {truncateSlashDescription(skill.description)}
+                  </span>
+                </span>
+              </button>
+            ))}
+            {slashActionOptions.map((action) => {
+              const label = slashActionLabel(action.id);
+              return (
+                <button
+                  key={action.id}
+                  type="button"
+                  aria-label={label}
+                  onClick={() => runSlashAction(action.id)}
+                  className="flex w-full items-center gap-3 px-4 py-2.5 text-start hover:bg-accent"
+                >
+                  <Settings
+                    size={16}
+                    strokeWidth={1.7}
+                    className="shrink-0 text-muted-foreground"
                   />
-                ))}
-              </div>
+                  <span className="text-[14px] text-foreground">{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {selectedSkill ? (
+          <div data-testid="composer-context" className="mb-2 flex min-w-0 flex-wrap gap-1.5">
+            {selectedSkill ? (
+              <span
+                data-testid="skill-chip"
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[13px] text-foreground"
+              >
+                <Box size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground/70" />
+                <span dir="auto" className="truncate">
+                  {selectedSkill.name}
+                </span>
+                <button
+                  type="button"
+                  aria-label={t`Remove skill ${selectedSkill.name}`}
+                  onClick={() => setSelectedSkill(null)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X size={12} strokeWidth={2} />
+                </button>
+              </span>
             ) : null}
           </div>
         ) : null}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept={ATTACHMENT_ACCEPT}
-          className="hidden"
-          onChange={(event) => void onAttachmentPick(event.target.files)}
-        />
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={t`Attach file`}
-          disabled={disabled}
-          onClick={() => fileInputRef.current?.click()}
-          className={cn(
-            "col-start-1 size-8 shrink-0 self-end rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-            expandedLayout && (hasAttachmentContent ? "row-start-3" : "row-start-2"),
-          )}
-        >
-          <Plus size={16} strokeWidth={2} />
-        </Button>
         <div
+          ref={composerBarRef}
+          data-testid="composer-bar"
+          data-expanded={expandedLayout ? "true" : "false"}
           className={cn(
-            "flex min-w-0 items-center",
-            expandedLayout ? "col-span-3 col-start-1" : "col-start-2",
-            hasAttachmentContent ? "row-start-2" : "row-start-1",
+            "grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 border border-border bg-muted px-3 transition-colors focus-within:border-ring",
+            expandedLayout ? "gap-y-2 pt-3 pb-2 rounded-[20px]" : "py-[7px] rounded-[26px]",
           )}
         >
-          <MessageInput
-            ref={textareaRef}
-            onExpandedChange={setComposerExpanded}
-            getInlineWidth={getInlineWidth}
-            inlineActionsRef={composerActionsRef}
-            value={draft}
-            onChange={(event) => updateDraft(event.target.value)}
-            onPaste={handlePaste}
-            onKeyDown={(event) => {
-              if (
-                event.key === "Backspace" &&
-                draft.length === 0 &&
-                (selectedSkill !== null || selectedMentions.length > 0)
-              ) {
-                event.preventDefault();
-                removeLastChip();
-                return;
-              }
-              const action = resolveMentionPickerKey({
-                key: event.key,
-                shiftKey: event.shiftKey,
-                isComposing: event.nativeEvent.isComposing || event.keyCode === 229,
-                optionCount: mentionOptions.length,
-                highlightedIndex: activeMentionIndex,
-              });
-              if (action.type === "complete") {
-                const mention = mentionOptions[action.index];
-                if (!mention) return;
-                event.preventDefault();
-                insertMention(mention);
-                return;
-              }
-              if (action.type === "move") {
-                event.preventDefault();
-                setMentionHighlightIndex(action.index);
-                return;
-              }
-              if (action.type === "dismiss") {
-                event.preventDefault();
-                setMentionQuery(null);
-                setMentionHighlightIndex(0);
-                return;
-              }
-              if (action.type === "send") {
-                event.preventDefault();
-                send();
-              }
-            }}
-            disabled={disabled}
-            placeholder={
-              showComposerPlaceholder
-                ? activeName
-                  ? t`Message ${activeName}`
-                  : t`Message…`
-                : undefined
-            }
-            aria-label={activeName ? t`Message ${activeName}` : t`Message`}
-            role="combobox"
-            aria-autocomplete="list"
-            aria-haspopup="listbox"
-            aria-expanded={mentionPickerOpen}
-            aria-controls={mentionPickerOpen ? mentionListboxId : undefined}
-            aria-activedescendant={activeMentionOptionId}
-            name="chat-message"
-            autoComplete="off"
-            dir="auto"
-          />
-        </div>
-        <div
-          ref={composerActionsRef}
-          className={cn(
-            "col-start-3 flex shrink-0 items-center gap-1.5 self-end justify-self-end",
-            expandedLayout && (hasAttachmentContent ? "row-start-3" : "row-start-2"),
-          )}
-        >
-          {onVoice && draft.trim().length === 0 ? (
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label={t`Voice`}
-              title={t`Voice`}
-              disabled={disabled}
-              onClick={onVoice}
-              className="size-8 shrink-0 rounded-full text-foreground/75"
+          {hasAttachmentContent ? (
+            <div
+              data-testid="composer-attachments"
+              className="col-span-3 col-start-1 row-start-1 min-w-0"
             >
-              <Mic size={16} strokeWidth={1.8} />
-            </Button>
+              {attachmentNotice ? (
+                <div
+                  role="status"
+                  data-testid="composer-attachment-notice"
+                  className="mb-2 text-[12px] leading-4 text-muted-foreground"
+                >
+                  {attachmentNotice}
+                </div>
+              ) : null}
+              {pendingAttachments.length ? (
+                <div className="flex flex-wrap gap-2">
+                  {pendingAttachments.map((attachment) => (
+                    <AttachmentPreview
+                      key={attachment.id}
+                      name={attachment.file.name}
+                      mimeType={
+                        inferAttachmentMimeType(attachment.file.name, attachment.file.type) ?? ""
+                      }
+                      previewUrl={attachment.previewUrl}
+                      removeLabel={t`Remove ${attachment.file.name}`}
+                      onRemove={() => onRemoveAttachment(attachment)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
           ) : null}
-          {running ? (
-            <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={ATTACHMENT_ACCEPT}
+            className="hidden"
+            onChange={(event) => void onAttachmentPick(event.target.files)}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={t`Attach file`}
+            disabled={disabled}
+            onClick={() => fileInputRef.current?.click()}
+            className={cn(
+              "col-start-1 size-8 shrink-0 self-end rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              expandedLayout && (hasAttachmentContent ? "row-start-3" : "row-start-2"),
+            )}
+          >
+            <Plus size={16} strokeWidth={2} />
+          </Button>
+          <div
+            className={cn(
+              "flex min-w-0 items-center gap-x-2 gap-y-1.5",
+              expandedLayout && "flex-wrap",
+              expandedLayout ? "col-span-3 col-start-1" : "col-start-2",
+              hasAttachmentContent ? "row-start-2" : "row-start-1",
+            )}
+          >
+            {selectedMentions.length > 0 ? (
+              <div
+                ref={composerMentionsRef}
+                data-testid="composer-mentions"
+                className={cn(
+                  "flex w-max shrink-0 items-center gap-x-1.5 gap-y-1.5",
+                  expandedLayout
+                    ? "max-w-full flex-wrap"
+                    : "max-w-[65%] overflow-x-auto [scrollbar-width:none]",
+                )}
+              >
+                {selectedMentions.map((mention) => (
+                  <span
+                    key={mentionChipKey(mention)}
+                    data-testid="mention-chip"
+                    data-mention-kind={mention.kind}
+                    className="group/mention inline-flex max-w-full shrink-0 items-center gap-0.5 text-[13px] leading-5"
+                  >
+                    <MentionIdentity mention={mention} showAt={false} truncateName />
+                    <button
+                      type="button"
+                      aria-label={t`Remove mention ${mention.name}`}
+                      onClick={() => {
+                        setSelectedMentions((current) =>
+                          current.filter(
+                            (selected) => mentionChipKey(selected) !== mentionChipKey(mention),
+                          ),
+                        );
+                        focusComposer();
+                      }}
+                      className="grid size-4 shrink-0 place-items-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/mention:opacity-100 focus:opacity-100"
+                    >
+                      <X size={10} strokeWidth={2} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <MessageInput
+              ref={textareaRef}
+              onExpandedChange={setComposerExpanded}
+              getInlineWidth={getInlineWidth}
+              inlineActionsRef={composerActionsRef}
+              value={draft}
+              onChange={(event) => updateDraft(event.target.value)}
+              onPaste={handlePaste}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Backspace" &&
+                  draft.length === 0 &&
+                  (selectedSkill !== null || selectedMentions.length > 0)
+                ) {
+                  event.preventDefault();
+                  removeLastChip();
+                  return;
+                }
+                const action = resolveMentionPickerKey({
+                  key: event.key,
+                  shiftKey: event.shiftKey,
+                  isComposing: event.nativeEvent.isComposing || event.keyCode === 229,
+                  optionCount: mentionOptions.length,
+                  highlightedIndex: activeMentionIndex,
+                });
+                if (action.type === "complete") {
+                  const mention = mentionOptions[action.index];
+                  if (!mention) return;
+                  event.preventDefault();
+                  insertMention(mention);
+                  return;
+                }
+                if (action.type === "move") {
+                  event.preventDefault();
+                  setMentionHighlightIndex(action.index);
+                  return;
+                }
+                if (action.type === "dismiss") {
+                  event.preventDefault();
+                  setMentionQuery(null);
+                  setMentionHighlightIndex(0);
+                  return;
+                }
+                if (action.type === "send") {
+                  event.preventDefault();
+                  send();
+                }
+              }}
+              disabled={disabled}
+              placeholder={
+                showComposerPlaceholder
+                  ? activeName
+                    ? t`Message ${activeName}`
+                    : t`Message…`
+                  : undefined
+              }
+              aria-label={activeName ? t`Message ${activeName}` : t`Message`}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-haspopup="listbox"
+              aria-expanded={mentionPickerOpen}
+              aria-controls={mentionPickerOpen ? mentionListboxId : undefined}
+              aria-activedescendant={activeMentionOptionId}
+              name="chat-message"
+              className={expandedLayout ? "basis-full" : undefined}
+              autoComplete="off"
+              dir="auto"
+            />
+          </div>
+          <div
+            ref={composerActionsRef}
+            className={cn(
+              "col-start-3 flex shrink-0 items-center gap-1.5 self-end justify-self-end",
+              expandedLayout && (hasAttachmentContent ? "row-start-3" : "row-start-2"),
+            )}
+          >
+            {onVoice && draft.trim().length === 0 ? (
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={t`Voice`}
+                title={t`Voice`}
+                disabled={disabled}
+                onClick={onVoice}
+                className="size-8 shrink-0 rounded-full text-foreground/75"
+              >
+                <Mic size={16} strokeWidth={1.8} />
+              </Button>
+            ) : null}
+            {running ? (
+              <>
+                <Button
+                  size="icon"
+                  aria-label={t`Send`}
+                  disabled={sending || !canSend || disabled}
+                  onClick={send}
+                  className="size-8 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95"
+                >
+                  <ArrowUp size={16} strokeWidth={2.2} />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label={t`Stop`}
+                  disabled={sending}
+                  onClick={() => void onStop()}
+                  className="size-8 rounded-full border border-border bg-muted text-foreground/80 shadow-sm transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <Square size={11} strokeWidth={0} fill="currentColor" />
+                </Button>
+              </>
+            ) : (
               <Button
                 size="icon"
                 aria-label={t`Send`}
                 disabled={sending || !canSend || disabled}
                 onClick={send}
-                className="size-8 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95"
+                className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95 disabled:bg-accent disabled:text-muted-foreground/40 disabled:shadow-none"
               >
                 <ArrowUp size={16} strokeWidth={2.2} />
               </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                aria-label={t`Stop`}
-                disabled={sending}
-                onClick={() => void onStop()}
-                className="size-8 rounded-full border border-border bg-muted text-foreground/80 shadow-sm transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <Square size={11} strokeWidth={0} fill="currentColor" />
-              </Button>
-            </>
-          ) : (
-            <Button
-              size="icon"
-              aria-label={t`Send`}
-              disabled={sending || !canSend || disabled}
-              onClick={send}
-              className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95 disabled:bg-accent disabled:text-muted-foreground/40 disabled:shadow-none"
-            >
-              <ArrowUp size={16} strokeWidth={2.2} />
-            </Button>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </fieldset>
@@ -6143,45 +6232,18 @@ function slashActionLabel(id: SlashActionId) {
   }
 }
 
-function MentionOptionIcon({ mention }: { mention: ComposerMention }) {
-  if (mention.kind === "routine") {
-    return <Clock size={16} strokeWidth={1.7} className="mt-0.5 shrink-0 text-muted-foreground" />;
+function mentionTypeLabel(mention: ComposerMention) {
+  switch (mention.kind) {
+    case "bot":
+    case "everyone":
+      return t`Bot`;
+    case "group":
+      return t`Group`;
+    case "routine":
+      return t`Routine`;
+    case "connector":
+      return t`App`;
   }
-  if (mention.kind === "connector") {
-    return <Puzzle size={16} strokeWidth={1.7} className="mt-0.5 shrink-0 text-muted-foreground" />;
-  }
-  if (mention.kind === "group") {
-    return (
-      <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full bg-accent text-[9px] text-foreground/75">
-        G
-      </span>
-    );
-  }
-  if (mention.kind === "everyone") {
-    return (
-      <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full bg-accent text-[9px] text-foreground/75">
-        @
-      </span>
-    );
-  }
-  return <BotAvatar color={mention.color ?? FALLBACK_BOT_COLOR} identity={mention.id} size={16} />;
-}
-
-function MentionChipIcon({ mention }: { mention: ComposerMention }) {
-  if (mention.kind === "routine") {
-    return <Clock size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground/70" />;
-  }
-  if (mention.kind === "connector") {
-    return <Puzzle size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground/70" />;
-  }
-  if (mention.kind === "group" || mention.kind === "everyone") {
-    return (
-      <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-accent text-[9px] text-foreground/75">
-        {mention.kind === "group" ? "G" : "@"}
-      </span>
-    );
-  }
-  return <BotAvatar color={mention.color ?? FALLBACK_BOT_COLOR} identity={mention.id} size={16} />;
 }
 
 function previewMessageText(message: ThreadMessage): string {
@@ -6371,6 +6433,7 @@ const MessageView = memo(function MessageView({
   speakerName,
   memberName,
   peerBot,
+  mentionTargets,
   replyParent,
   onJumpToMessage,
   onRefresh,
@@ -6392,6 +6455,7 @@ const MessageView = memo(function MessageView({
   speakerName?: string;
   memberName?: (botId: string | undefined) => string | undefined;
   peerBot: (botId: string) => { name?: string; color: string; status?: string } | undefined;
+  mentionTargets: readonly ComposerMention[];
   replyParent?: ThreadMessage;
   onJumpToMessage?: (messageId: string) => void;
   onRefresh: () => Promise<void>;
@@ -6417,6 +6481,7 @@ const MessageView = memo(function MessageView({
 
   const replyBotId = message.replyPreview?.botId ?? replyParent?.botId;
   const speakerBot = message.botId ? peerBot?.(message.botId) : undefined;
+  const speakerColor = useBotIdentityTextColor(speakerBot?.color);
   const messageContext = (
     <>
       {speakerName ? (
@@ -6429,7 +6494,9 @@ const MessageView = memo(function MessageView({
             identity={message.botId}
             size={24}
           />
-          <span className="min-w-0 truncate">{speakerName}</span>
+          <span className="min-w-0 truncate" style={{ color: speakerColor }}>
+            {speakerName}
+          </span>
           {!isLive ? (
             <time
               dateTime={message.createdAt}
@@ -6767,7 +6834,7 @@ const MessageView = memo(function MessageView({
                   className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[18px] bg-chat-user px-[15px] py-2.5 text-[14px] leading-[1.7] text-chat-user-foreground"
                   dir="auto"
                 >
-                  <LinkifiedText>{block.text}</LinkifiedText>
+                  <SentMentionText text={block.text} targets={mentionTargets} />
                 </div>
               </div>
             );

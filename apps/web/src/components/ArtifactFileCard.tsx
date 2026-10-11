@@ -42,14 +42,16 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
 
   if (!previewable) {
     return (
-      <div>
+      <div className="min-w-0 max-w-full">
         <button
           type="button"
           onClick={() => void startDownload()}
-          className="rounded-2xl border border-border bg-card px-4 py-3 text-left text-[14px] text-foreground hover:bg-accent"
+          className="block max-w-full rounded-2xl border border-border bg-card px-4 py-3 text-left text-[14px] text-foreground hover:bg-accent"
         >
-          <div className="font-medium">{props.name}</div>
-          <div className="mt-1 text-muted-foreground">
+          <div className="truncate font-medium" title={props.name}>
+            {props.name}
+          </div>
+          <div className="mt-1 truncate text-muted-foreground">
             {props.mimeType} · {formatBytes(props.size)}
           </div>
         </button>
@@ -60,8 +62,8 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
 
   return (
     <>
-      <div>
-        <div className="flex min-w-[280px] overflow-hidden rounded-2xl border border-border bg-card text-left text-foreground">
+      <div className="min-w-0 max-w-full">
+        <div className="flex w-80 min-w-0 max-w-full overflow-hidden rounded-2xl border border-border bg-card text-left text-foreground">
           <button
             ref={previewButton}
             type="button"
@@ -76,8 +78,10 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
                 <FileText size={21} strokeWidth={1.8} />
               )}
             </span>
-            <span className="min-w-0">
-              <span className="block truncate text-[14px] font-medium">{props.name}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[14px] font-medium" title={props.name}>
+                {props.name}
+              </span>
               <span className="mt-0.5 block text-[13px] text-muted-foreground">
                 {formatBytes(props.size)}
               </span>
@@ -159,7 +163,10 @@ function FilePreview({
   return (
     <>
       <header className="flex h-14 shrink-0 items-center gap-1 border-b border-border px-5">
-        <DialogTitle className="min-w-0 flex-1 truncate text-[14px] leading-5 font-medium text-foreground">
+        <DialogTitle
+          title={name}
+          className="min-w-0 flex-1 truncate text-[14px] leading-5 font-medium text-foreground"
+        >
           {name}
         </DialogTitle>
         <Button
@@ -222,7 +229,7 @@ function FilePreview({
 
 function DownloadError({ message }: { message: string }) {
   return (
-    <div role="alert" className="mt-2 text-left text-[13px] text-destructive">
+    <div role="alert" className="mt-2 wrap-anywhere text-left text-[13px] text-destructive">
       {message}
     </div>
   );
