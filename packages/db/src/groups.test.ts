@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createGroupRepos } from "./groups.js";
 import { IsolationError } from "./scope.js";
+import type * as ThreadListingModule from "./thread-listing.js";
+import { loadThreadAttention } from "./thread-listing.js";
+
+vi.mock("./thread-listing.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof ThreadListingModule>()),
+  loadThreadAttention: vi.fn(async () => new Map()),
+}));
+beforeEach(() => vi.mocked(loadThreadAttention).mockReset().mockResolvedValue(new Map()));
 
 describe("listSpaceGroupsForSpaces", () => {
   it("loads and maps compact cross-space group fields", async () => {
@@ -52,6 +60,7 @@ describe("listSpaceGroupsForSpaces", () => {
         ],
         preview: "Escalation pending",
         unread: true,
+        attentionMessageId: null,
         updatedAt: "2026-08-20T00:00:00.000Z",
       },
     ]);
@@ -84,6 +93,35 @@ describe("group conversation previews", () => {
       { bot: { id: "bot-2", name: "Blue", color: "blue", runs: [] } },
     ],
   };
+
+  it("maps the current approval target consistently in group and cross-space rows", async () => {
+    vi.mocked(loadThreadAttention).mockResolvedValue(
+      new Map([
+        [
+          "thread-1",
+          {
+            attentionMessageId: "approval-current",
+            answerableApprovalMessageIds: ["approval-current"],
+          },
+        ],
+      ]),
+    );
+    const prisma = {
+      chatGroup: {
+        findMany: vi.fn(async () => [
+          {
+            ...group,
+            thread: { id: "thread-1", unread: true, messages: [] },
+          },
+        ]),
+      },
+    } as unknown as PrismaClient;
+    const repos = createGroupRepos(prisma);
+    expect((await repos.listGroups(actor))[0]?.attentionMessageId).toBe("approval-current");
+    expect(
+      (await repos.listSpaceGroupsForSpaces(actor, [actor.spaceId]))[0]?.attentionMessageId,
+    ).toBe("approval-current");
+  });
 
   it("skips progress and peer activity before the last conversation sentence", async () => {
     const messages = [

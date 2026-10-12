@@ -1,8 +1,16 @@
 import type { Actor } from "@rakazo/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createRepos } from "./repos.js";
 import { IsolationError } from "./scope.js";
+import type * as ThreadListingModule from "./thread-listing.js";
+import { loadThreadAttention } from "./thread-listing.js";
+
+vi.mock("./thread-listing.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof ThreadListingModule>()),
+  loadThreadAttention: vi.fn(async () => new Map()),
+}));
+beforeEach(() => vi.mocked(loadThreadAttention).mockReset().mockResolvedValue(new Map()));
 
 const actor: Actor = {
   userId: "user-1",
@@ -47,6 +55,24 @@ function reposFor(memoryScope: string | null) {
 }
 
 describe("createRepos.listBots", () => {
+  it("maps the same current approval target into full and cross-space navigation rows", async () => {
+    vi.mocked(loadThreadAttention).mockResolvedValue(
+      new Map([
+        [
+          baseBot.thread.id,
+          {
+            attentionMessageId: "approval-current",
+            answerableApprovalMessageIds: ["approval-current"],
+          },
+        ],
+      ]),
+    );
+    const repos = reposFor(null);
+    expect((await repos.listBots(actor))[0]?.attentionMessageId).toBe("approval-current");
+    expect(
+      (await repos.listSpaceBotsForSpaces(actor, [actor.spaceId]))[0]?.attentionMessageId,
+    ).toBe("approval-current");
+  });
   it("passes memoryScope through as null when unset", async () => {
     await expect(reposFor(null).listBots(actor)).resolves.toEqual([
       expect.objectContaining({ memoryScope: null }),
@@ -408,6 +434,7 @@ describe("createRepos.listSpaceBotsForSpaces", () => {
         pinned: true,
         sectionId: null,
         unread: true,
+        attentionMessageId: null,
         parentBotId: null,
         preview: "Waiting for a reply",
         status: "running",

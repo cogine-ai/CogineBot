@@ -93,7 +93,7 @@ async function rewriteCards(
   tx: Prisma.TransactionClient,
   actor: Actor,
   threads: ApprovalThread[],
-  input: { botId?: string; serverId: string; status: ApprovalBlock["status"] },
+  input: { botId: string; serverId: string; status: ApprovalBlock["status"] },
   selectable: (block: ApprovalBlock) => boolean,
 ): Promise<{ seqs: ThreadSeq[]; flipped: number; dismissed: boolean; connected: boolean }> {
   const seqs: ThreadSeq[] = [];
@@ -102,10 +102,14 @@ async function rewriteCards(
   let connected = false;
   for (const thread of threads) {
     const messages = await tx.message.findMany({
-      where: { threadId: thread.id },
+      where: {
+        threadId: thread.id,
+        botId: input.botId,
+        thread: { spaceId: actor.spaceId, userId: actor.userId },
+        blocks: { array_contains: [{ kind: "mcp_approval", serverId: input.serverId }] },
+      },
       select: { id: true, botId: true, blocks: true },
       orderBy: { createdAt: "desc" },
-      take: 100,
     });
     for (const message of messages) {
       if (message.botId && message.botId !== input.botId) continue;
@@ -177,6 +181,23 @@ export async function resolveMcpApprovalCards<T>(
   );
   for (const event of committed.seqs) await deps.events.notify(event.threadId, event.seq);
   return committed.value;
+}
+
+/** Commit newly granted Settings permissions and their pending cards together. */
+export async function connectPendingMcpApprovals(
+  tx: Prisma.TransactionClient,
+  actor: Actor,
+  input: { botId: string; serverId: string },
+): Promise<ThreadSeq[]> {
+  const threads = await threadsForBot(tx, actor, input.botId);
+  const painted = await rewriteCards(
+    tx,
+    actor,
+    threads,
+    { ...input, status: "connected" },
+    (block) => block.status === "pending",
+  );
+  return painted.seqs;
 }
 
 /** A removed assignment must not leave its card saying the server is connected.

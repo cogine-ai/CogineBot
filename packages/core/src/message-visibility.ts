@@ -27,6 +27,20 @@ export function isPeerReceiptBlocks(blocks: readonly MessageBlock[]): boolean {
   );
 }
 
+/** Newly reachable MCP-only peer rows expose their approval blocks, not hidden activity. */
+export function peerVisibleMessageBlocks(
+  blocks: readonly MessageBlock[],
+  includeText = true,
+): readonly MessageBlock[] | null {
+  if (
+    isPeerReceiptBlocks(blocks) ||
+    blocks.some((block) => block.kind === "ask" || (includeText && block.kind === "text"))
+  )
+    return blocks;
+  const approvals = blocks.filter((block) => block.kind === "mcp_approval");
+  return approvals.length ? approvals : null;
+}
+
 /** Drop peer-run activity/replies; optionally keep sent/received receipt rows. */
 export function userVisibleMessages<T extends PresentableMessage>(
   messages: readonly T[],
@@ -40,13 +54,13 @@ export function userVisibleMessages<T extends PresentableMessage>(
   ]);
   const includePeerReceipts = options.includePeerReceipts === true;
 
-  return messages.filter((message) => {
-    if (isPeerReceiptBlocks(message.blocks)) return includePeerReceipts;
-    if (!message.runId || !peerRunIds.has(message.runId)) return true;
-    // Keep peer-run ask cards, and (unless the caller opts out) the bot's own text reply.
-    const includeText = options.includeDelegatedReplyText !== false;
-    return message.blocks.some(
-      (block) => block.kind === "ask" || (includeText && block.kind === "text"),
+  return messages.flatMap((message) => {
+    if (isPeerReceiptBlocks(message.blocks)) return includePeerReceipts ? [message] : [];
+    if (!message.runId || !peerRunIds.has(message.runId)) return [message];
+    const blocks = peerVisibleMessageBlocks(
+      message.blocks,
+      options.includeDelegatedReplyText !== false,
     );
+    return blocks ? [blocks === message.blocks ? message : { ...message, blocks }] : [];
   });
 }

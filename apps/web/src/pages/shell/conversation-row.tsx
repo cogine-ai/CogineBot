@@ -9,6 +9,7 @@ type ConversationRowProps = Omit<ComponentPropsWithoutRef<"button">, "children">
   compact: boolean;
   selected: boolean;
   unread: boolean;
+  approvalPending?: boolean;
   bot?: boolean;
 };
 
@@ -20,6 +21,7 @@ export function ConversationRow({
   compact,
   selected,
   unread,
+  approvalPending,
   bot,
   className,
   ...buttonProps
@@ -29,7 +31,9 @@ export function ConversationRow({
     <button
       type="button"
       {...buttonProps}
-      aria-label={unread ? t`${name} (unread)` : name}
+      aria-label={
+        approvalPending ? t`${name} (approval pending)` : unread ? t`${name} (unread)` : name
+      }
       aria-current={selected ? "page" : undefined}
       title={compact ? name : undefined}
       data-sidebar-compact={compact ? "true" : "false"}
@@ -42,11 +46,15 @@ export function ConversationRow({
     >
       <span className="relative flex size-10 shrink-0 items-center justify-center">
         {avatar}
-        {unread ? (
+        {approvalPending || unread ? (
           <span
-            data-roster-unread
+            data-conversation-attention={approvalPending ? "approval" : "unread"}
+            data-roster-unread={approvalPending ? undefined : ""}
             aria-hidden="true"
-            className="absolute end-0.5 bottom-0.5 size-2 rounded-full bg-link ring-2 ring-sidebar"
+            className={cn(
+              "absolute end-0.5 bottom-0.5 size-2 rounded-full ring-2 ring-sidebar",
+              approvalPending ? "bg-warning" : "bg-link",
+            )}
           />
         ) : null}
       </span>

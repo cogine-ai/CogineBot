@@ -221,7 +221,9 @@ import {
   toComputerStatus,
 } from "./computer-status.js";
 import { searchIntegrationCatalog } from "./integration-catalog.js";
+import type { ThreadSeq } from "./mcp-approval.js";
 import {
+  connectPendingMcpApprovals,
   dismissMcpServerApprovals,
   resolveMcpApprovalCards,
   revertConnectedMcpApprovals,
@@ -257,7 +259,7 @@ import {
   isPeerRun,
   loadAllMessages,
   loadMessagePage,
-  shouldForwardPeerThreadEvent,
+  projectPeerThreadEvent,
 } from "./thread-message-pages.js";
 import {
   reactToThreadMessage,
@@ -2105,8 +2107,25 @@ export function createRouter(deps: RouterDeps) {
             const event = next.value;
             // Filtered peer events also restart the heartbeat, so check before skipping them.
             await assertStillAuthorized();
-            if (await isPeerRun(deps.prisma, event.runId, peerRunCache)) {
-              if (!shouldForwardPeerThreadEvent(event)) continue;
+            let sourceRunId = event.runId;
+            if (
+              !sourceRunId &&
+              (event.type === "thread.message.created" ||
+                event.type === "thread.message.updated") &&
+              typeof event.payload.messageId === "string"
+            ) {
+              // Approval repaints can outlive their Run; classify without reopening history writes.
+              const source = await deps.prisma.message.findFirst({
+                where: { id: event.payload.messageId, threadId: target.threadId },
+                select: { runId: true },
+              });
+              sourceRunId = source?.runId ?? undefined;
+            }
+            if (await isPeerRun(deps.prisma, sourceRunId, peerRunCache)) {
+              const visible = projectPeerThreadEvent(event);
+              if (!visible) continue;
+              yield visible;
+              continue;
             }
             yield event;
           }
@@ -4131,6 +4150,8 @@ export function createRouter(deps: RouterDeps) {
               select: { serverId: true },
             });
             const nextIds = new Set(input.assignments.map((assignment) => assignment.serverId));
+            const previousIds = new Set(previous.map((row) => row.serverId));
+            const added = [...nextIds].filter((serverId) => !previousIds.has(serverId));
             const removed = previous
               .map((row) => row.serverId)
               .filter((serverId) => !nextIds.has(serverId));
@@ -4152,18 +4173,25 @@ export function createRouter(deps: RouterDeps) {
                   allowedTools: assignment.allowedTools as Prisma.InputJsonValue,
                 })),
               });
-            const seqs = (
-              await Promise.all(
-                removed.map((serverId) =>
-                  revertConnectedMcpApprovals(
-                    onboardingDeps,
-                    context.actor,
-                    { botId: bot.id, serverId, status: "pending" },
-                    tx,
-                  ),
-                ),
-              )
-            ).flat();
+            const seqs: ThreadSeq[] = [];
+            for (const serverId of removed) {
+              seqs.push(
+                ...(await revertConnectedMcpApprovals(
+                  onboardingDeps,
+                  context.actor,
+                  { botId: bot.id, serverId, status: "pending" },
+                  tx,
+                )),
+              );
+            }
+            for (const serverId of added) {
+              seqs.push(
+                ...(await connectPendingMcpApprovals(tx, context.actor, {
+                  botId: bot.id,
+                  serverId,
+                })),
+              );
+            }
             const rows = await tx.botMcpServer.findMany({
               where: {
                 botId: bot.id,
@@ -5959,6 +5987,7 @@ async function spaceNavigationDto(
           pinned: bot.pinned,
           sectionId: bot.sectionId,
           unread: bot.unread,
+          attentionMessageId: bot.attentionMessageId ?? null,
           preview: bot.preview,
           status: bot.status,
           updatedAt: bot.updatedAt,
@@ -5972,6 +6001,7 @@ async function spaceNavigationDto(
           members: group.members,
           preview: group.preview,
           unread: group.unread,
+          attentionMessageId: group.attentionMessageId ?? null,
           updatedAt: group.updatedAt,
         })),
         externalConversations: externalConversations.filter(

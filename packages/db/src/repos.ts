@@ -7,6 +7,7 @@ import { BotSectionNameConflictError, IsolationError } from "./scope.js";
 import { lockSpaceForContentCreation } from "./spaces.js";
 import {
   activeRunSelection,
+  loadThreadAttention,
   loadThreadPreviews,
   SIDEBAR_PREVIEW_MESSAGE_WINDOW,
 } from "./thread-listing.js";
@@ -56,6 +57,7 @@ function mapBot(
   },
   preview = "",
   status = "idle",
+  attentionMessageId: string | null = null,
 ): Bot {
   if (!bot.thread) {
     throw new IsolationError("Bot is missing its thread");
@@ -73,6 +75,7 @@ function mapBot(
     sectionId: bot.sectionId,
     archivedAt: bot.archivedAt?.toISOString() ?? null,
     unread: bot.thread.unread,
+    attentionMessageId,
     parentBotId: bot.parentBotId,
     memoryScope: bot.memoryScope as "isolated" | "shared" | null,
     threadId: bot.thread.id,
@@ -148,10 +151,16 @@ export function createRepos(prisma: PrismaClient) {
       },
       orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
     });
-    const previews = await loadThreadPreviews(
-      prisma,
-      bots.map((bot) => bot.thread),
-    );
+    const [previews, attention] = await Promise.all([
+      loadThreadPreviews(
+        prisma,
+        bots.map((bot) => bot.thread),
+      ),
+      loadThreadAttention(
+        prisma,
+        bots.flatMap((bot) => (bot.thread ? [bot.thread.id] : [])),
+      ),
+    ]);
     return bots.map((bot) => {
       if (!bot.thread) throw new IsolationError("Bot is missing its thread");
       return {
@@ -164,6 +173,7 @@ export function createRepos(prisma: PrismaClient) {
         pinned: bot.pinned,
         sectionId: bot.sectionId,
         unread: bot.thread.unread,
+        attentionMessageId: attention.get(bot.thread.id)?.attentionMessageId ?? null,
         parentBotId: bot.parentBotId,
         preview: previews.get(bot.thread.id) ?? "",
         status: bot.runs[0]?.status ?? "idle",
@@ -300,12 +310,23 @@ export function createRepos(prisma: PrismaClient) {
         },
         orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
       });
-      const previews = await loadThreadPreviews(
-        prisma,
-        bots.map((bot) => bot.thread),
-      );
+      const [previews, attention] = await Promise.all([
+        loadThreadPreviews(
+          prisma,
+          bots.map((bot) => bot.thread),
+        ),
+        loadThreadAttention(
+          prisma,
+          bots.flatMap((bot) => (bot.thread ? [bot.thread.id] : [])),
+        ),
+      ]);
       return bots.map((bot) =>
-        mapBot(bot, previews.get(bot.thread?.id ?? "") ?? "", bot.runs[0]?.status ?? "idle"),
+        mapBot(
+          bot,
+          previews.get(bot.thread?.id ?? "") ?? "",
+          bot.runs[0]?.status ?? "idle",
+          attention.get(bot.thread?.id ?? "")?.attentionMessageId ?? null,
+        ),
       );
     },
 

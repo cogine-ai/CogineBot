@@ -62,6 +62,8 @@ test("actions run by default while optional confirmations live in advanced user 
   const deny = page.getByRole("button", { name: "Deny", exact: true });
   await expect(alwaysAllow).toBeVisible();
   await expect(deny).toBeVisible();
+  const conversation = page.locator(`[data-roster-bot-id="${activeBotId(page)}"]`);
+  await expect(conversation.locator('[data-conversation-attention="approval"]')).toBeVisible();
   const allowBox = await allowOnce.boundingBox();
   const alwaysBox = await alwaysAllow.boundingBox();
   const denyBox = await deny.boundingBox();
@@ -81,6 +83,7 @@ test("actions run by default while optional confirmations live in advanced user 
   await expect(page.getByText("Denied", { exact: true })).toBeVisible();
   await waitForRunIdle(page);
   await expectComposerReady(page);
+  await expect(conversation.locator('[data-conversation-attention="approval"]')).toHaveCount(0);
   await captureScreenshot(page, testInfo, "54-action-confirmation-denied");
 
   await requestDestinationWrite(page, "write this to the destination crm once more");

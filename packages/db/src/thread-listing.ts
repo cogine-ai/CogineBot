@@ -1,6 +1,164 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { ACTIVE_RUN_STATUSES, plainTextFromMarkdown, userVisibleMessages } from "@rakazo/core";
-import type { PrismaClient } from "./client.js";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import {
+  ACTIVE_RUN_STATUSES,
+  isApprovalAskBlock,
+  plainTextFromMarkdown,
+  userVisibleMessages,
+} from "@rakazo/core";
+import type { Prisma, PrismaClient } from "./client.js";
+
+/** Callers supply thread ids already resolved through their owned conversation lists/target. */
+export async function loadThreadAttention(
+  prisma: PrismaClient | Prisma.TransactionClient,
+  scopedThreadIds: readonly string[],
+): Promise<
+  Map<string, { attentionMessageId: string | null; answerableApprovalMessageIds: string[] }>
+> {
+  const result = new Map<
+    string,
+    { attentionMessageId: string | null; answerableApprovalMessageIds: string[] }
+  >();
+  if (!scopedThreadIds.length) return result;
+  const threads = await prisma.thread.findMany({
+    where: { id: { in: [...new Set(scopedThreadIds)] } },
+    select: { id: true, spaceId: true, userId: true },
+  });
+  for (const thread of threads) {
+    result.set(thread.id, { attentionMessageId: null, answerableApprovalMessageIds: [] });
+  }
+  if (!threads.length) return result;
+  const scope = new Map(threads.map((thread) => [thread.id, thread]));
+  const waitingRuns = await prisma.run.findMany({
+    where: {
+      status: "waiting_input",
+      OR: threads.map((thread) => ({
+        threadId: thread.id,
+        spaceId: thread.spaceId,
+        userId: thread.userId,
+        bot: { spaceId: thread.spaceId, userId: thread.userId },
+      })),
+    },
+    select: { id: true, threadId: true, spaceId: true, userId: true, botId: true },
+  });
+  const runs = new Map(waitingRuns.map((run) => [run.id, run]));
+  const messages = await prisma.message.findMany({
+    where: {
+      threadId: { in: threads.map((thread) => thread.id) },
+      role: "bot",
+      OR: [
+        {
+          runId: { in: waitingRuns.map((run) => run.id) },
+          blocks: { array_contains: [{ kind: "ask" }] },
+        },
+        { blocks: { array_contains: [{ kind: "mcp_approval", status: "pending" }] } },
+      ],
+    },
+    select: { id: true, threadId: true, seq: true, botId: true, runId: true, blocks: true },
+    orderBy: [{ seq: "asc" }, { id: "asc" }],
+  });
+  const candidates = messages.flatMap((message) => {
+    const parsed = MessageBlockSchema.array().safeParse(message.blocks);
+    return parsed.success ? [{ ...message, blocks: parsed.data }] : [];
+  });
+  const asks = candidates.flatMap((message) => {
+    const block = message.blocks.find(
+      (candidate) => candidate.kind === "ask" && candidate.status !== "answered",
+    );
+    const run = message.runId ? runs.get(message.runId) : undefined;
+    const thread = scope.get(message.threadId);
+    if (
+      block?.kind !== "ask" ||
+      !isApprovalAskBlock(block) ||
+      !run ||
+      !thread ||
+      run.threadId !== thread.id ||
+      run.spaceId !== thread.spaceId ||
+      run.userId !== thread.userId
+    )
+      return [];
+    return [{ message, run, effectId: block.approvalEffectId! }];
+  });
+  const effects = asks.length
+    ? await prisma.externalEffect.findMany({
+        where: {
+          id: { in: [...new Set(asks.map((ask) => ask.effectId))] },
+          status: "intended",
+          OR: asks.map((ask) => ({ runId: ask.run.id, spaceId: ask.run.spaceId })),
+        },
+        select: { id: true, runId: true, spaceId: true },
+      })
+    : [];
+  const effectsById = new Map(effects.map((effect) => [effect.id, effect]));
+  const validAsks = new Set(
+    asks
+      .filter((ask) => {
+        const effect = effectsById.get(ask.effectId);
+        return effect?.runId === ask.run.id && effect.spaceId === ask.run.spaceId;
+      })
+      .map((ask) => ask.message.id),
+  );
+  const mcp = candidates.flatMap((message) =>
+    message.blocks.flatMap((block) =>
+      block.kind === "mcp_approval" && block.status === "pending" && message.botId
+        ? [{ message, serverId: block.serverId, botId: message.botId }]
+        : [],
+    ),
+  );
+  const [bots, servers, assignments] = mcp.length
+    ? await Promise.all([
+        prisma.bot.findMany({
+          where: { id: { in: [...new Set(mcp.map((card) => card.botId))] } },
+          select: { id: true, spaceId: true, userId: true },
+        }),
+        prisma.mcpServer.findMany({
+          where: { id: { in: [...new Set(mcp.map((card) => card.serverId))] }, enabled: true },
+          select: { id: true, spaceId: true, userId: true },
+        }),
+        prisma.botMcpServer.findMany({
+          where: {
+            botId: { in: [...new Set(mcp.map((card) => card.botId))] },
+            serverId: { in: [...new Set(mcp.map((card) => card.serverId))] },
+          },
+          select: { botId: true, serverId: true, spaceId: true, userId: true },
+        }),
+      ])
+    : [[], [], []];
+  const botsById = new Map(bots.map((bot) => [bot.id, bot]));
+  const serversById = new Map(servers.map((server) => [server.id, server]));
+  const assigned = new Set(
+    assignments.map((assignment) => `${assignment.botId}:${assignment.serverId}`),
+  );
+  const validMcp = new Set(
+    mcp
+      .filter((card) => {
+        const thread = scope.get(card.message.threadId);
+        const bot = botsById.get(card.botId);
+        const server = serversById.get(card.serverId);
+        return (
+          thread &&
+          bot?.spaceId === thread.spaceId &&
+          bot.userId === thread.userId &&
+          server?.spaceId === thread.spaceId &&
+          server.userId === thread.userId &&
+          !assigned.has(`${card.botId}:${card.serverId}`)
+        );
+      })
+      .map((card) => card.message.id),
+  );
+  for (const message of candidates) {
+    const attention = result.get(message.threadId);
+    if (!attention) continue;
+    if (validAsks.has(message.id)) attention.answerableApprovalMessageIds.push(message.id);
+    if (
+      (validAsks.has(message.id) || validMcp.has(message.id)) &&
+      attention.attentionMessageId === null
+    ) {
+      attention.attentionMessageId = message.id;
+    }
+  }
+  return result;
+}
 
 export const SIDEBAR_PREVIEW_MESSAGE_WINDOW = 16;
 

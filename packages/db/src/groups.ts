@@ -9,6 +9,7 @@ import { lockSpaceForContentCreation } from "./spaces.js";
 import {
   activeRunSelection,
   activeRunStatuses,
+  loadThreadAttention,
   loadThreadPreviews,
   previewFromBlocks,
   SIDEBAR_PREVIEW_MESSAGE_WINDOW,
@@ -44,6 +45,7 @@ type GroupRecord = {
   createdAt: Date;
   updatedAt: Date;
   preview?: string;
+  attentionMessageId?: string | null;
   thread: {
     id: string;
     unread: boolean;
@@ -61,7 +63,15 @@ type GroupRecord = {
 
 type SpaceGroupRecord = Pick<
   GroupRecord,
-  "id" | "spaceId" | "name" | "pinned" | "sectionId" | "updatedAt" | "members" | "preview"
+  | "id"
+  | "spaceId"
+  | "name"
+  | "pinned"
+  | "sectionId"
+  | "updatedAt"
+  | "members"
+  | "preview"
+  | "attentionMessageId"
 > & {
   thread: {
     id: string;
@@ -93,6 +103,7 @@ function mapGroup(group: GroupRecord): Group {
     threadId: group.thread.id,
     preview,
     unread: group.thread.unread,
+    attentionMessageId: group.attentionMessageId ?? null,
     updatedAt: group.updatedAt.toISOString(),
     createdAt: group.createdAt.toISOString(),
   };
@@ -109,6 +120,7 @@ function mapSpaceGroup(group: SpaceGroupRecord): SpaceGroup {
     members: mapGroupMembers(group.members),
     preview: group.preview ?? previewFromBlocks(group.thread.messages[0]?.blocks),
     unread: group.thread.unread,
+    attentionMessageId: group.attentionMessageId ?? null,
     updatedAt: group.updatedAt.toISOString(),
   };
 }
@@ -266,14 +278,26 @@ async function resumeArchivedGroupTeardown(tx: Prisma.TransactionClient, threadI
 }
 
 export function createGroupRepos(prisma: PrismaClient) {
-  async function withPreviews<T extends { thread: GroupRecord["thread"] }>(groups: T[]) {
-    const previews = await loadThreadPreviews(
-      prisma,
-      groups.map((group) => group.thread),
-    );
+  async function withPreviews<T extends { thread: GroupRecord["thread"] }>(
+    groups: T[],
+    includeAttention = false,
+  ) {
+    const [previews, attention] = await Promise.all([
+      loadThreadPreviews(
+        prisma,
+        groups.map((group) => group.thread),
+      ),
+      includeAttention
+        ? loadThreadAttention(
+            prisma,
+            groups.flatMap((group) => (group.thread ? [group.thread.id] : [])),
+          )
+        : Promise.resolve(new Map()),
+    ]);
     return groups.map((group) => ({
       ...group,
       preview: previews.get(group.thread?.id ?? "") ?? "",
+      attentionMessageId: attention.get(group.thread?.id ?? "")?.attentionMessageId ?? null,
     }));
   }
 
@@ -307,7 +331,7 @@ export function createGroupRepos(prisma: PrismaClient) {
       },
       orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
     });
-    return (await withPreviews(groups))
+    return (await withPreviews(groups, true))
       .filter((group) => hasMinimumActiveMembers(group.members))
       .map((group) => mapSpaceGroup(group));
   }
@@ -323,7 +347,7 @@ export function createGroupRepos(prisma: PrismaClient) {
         include: groupInclude,
         orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
       });
-      return (await withPreviews(groups))
+      return (await withPreviews(groups, true))
         .filter((group) => hasMinimumActiveMembers(group.members))
         .map((group) => mapGroup(group as GroupRecord));
     },

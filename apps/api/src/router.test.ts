@@ -3149,6 +3149,7 @@ describe("bot model auth on save", () => {
         update: botUpdate,
       },
       spaceModelPreference: { findFirst: preferenceFindFirst },
+      thread: { findMany: vi.fn(async () => []) },
       userModelCredential: { findFirst: vi.fn(async () => null) },
       secret: { findFirst: secretFindFirst },
       $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),

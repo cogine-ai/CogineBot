@@ -1,6 +1,6 @@
 import type { MessageBlock, ThreadMessage, ThreadMessagePage } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
-import { callIdFromClientNonce, isPeerReceiptBlocks } from "@rakazo/core";
+import { callIdFromClientNonce, isPeerReceiptBlocks, peerVisibleMessageBlocks } from "@rakazo/core";
 import { messageReplyPreview } from "@rakazo/core/message-quote";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 
@@ -118,17 +118,11 @@ async function withoutPeerRunMessages<T extends { runId: string | null; blocks: 
     select: { id: true },
   });
   const peerRunIds = new Set(peerRuns.map((run) => run.id));
-  return rows.filter((row) => {
-    if (!row.runId || !peerRunIds.has(row.runId)) return true;
-    // Keep peer receipts (chips), ask cards, and the bot's own text reply.
-    const blocks = row.blocks as MessageBlock[];
-    return blocks.some(
-      (block) =>
-        block.kind === "bot_message_sent" ||
-        block.kind === "bot_message_received" ||
-        block.kind === "ask" ||
-        block.kind === "text",
-    );
+  return rows.flatMap((row) => {
+    if (!row.runId || !peerRunIds.has(row.runId)) return [row];
+    const original = row.blocks as MessageBlock[];
+    const blocks = peerVisibleMessageBlocks(original);
+    return blocks ? [blocks === original ? row : { ...row, blocks: [...blocks] }] : [];
   });
 }
 
@@ -153,6 +147,12 @@ export function shouldForwardPeerThreadEvent(event: {
   type: string;
   payload: { blocks?: unknown };
 }): boolean {
+  return projectPeerThreadEvent(event) !== null;
+}
+
+export function projectPeerThreadEvent<T extends { type: string; payload: { blocks?: unknown } }>(
+  event: T,
+): T | null {
   if (
     event.type === "run.completed" ||
     event.type === "run.failed" ||
@@ -160,25 +160,20 @@ export function shouldForwardPeerThreadEvent(event: {
     event.type === "run.waiting_input" ||
     event.type === "computer.takeover.requested"
   ) {
-    return true;
+    return event;
   }
   if (event.type !== "thread.message.created" && event.type !== "thread.message.updated") {
-    return false;
+    return null;
   }
   const blocks = event.payload.blocks;
-  return (
-    Array.isArray(blocks) &&
-    blocks.some(
-      (block) =>
-        !!block &&
-        typeof block === "object" &&
-        "kind" in block &&
-        (block.kind === "bot_message_received" ||
-          block.kind === "bot_message_sent" ||
-          block.kind === "ask" ||
-          block.kind === "text"),
-    )
-  );
+  if (!Array.isArray(blocks)) return null;
+  const presentable = blocks.filter(
+    (block) => block && typeof block === "object" && "kind" in block,
+  ) as MessageBlock[];
+  const visible = peerVisibleMessageBlocks(presentable);
+  if (!visible) return null;
+  if (visible === presentable) return event;
+  return { ...event, payload: { ...event.payload, blocks: [...visible] } };
 }
 
 function toThreadMessage(row: {

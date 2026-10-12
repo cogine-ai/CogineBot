@@ -41,6 +41,7 @@ import {
   groupVoiceChats,
   inferAttachmentMimeType,
   isActive,
+  isApprovalAskBlock,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
   isToolActivityBlock,
@@ -481,6 +482,9 @@ export function ShellPage() {
     peerBotId: string;
     peerBotName: string;
   } | null>(null);
+  const peerConversationRef = useRef(peerConversation);
+  peerConversationRef.current = peerConversation;
+  const hadPeerConversation = useRef(false);
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [routinesBotId, setRoutinesBotId] = useState<string | null>(null);
   const [taughtSkills, setTaughtSkills] = useState<TaughtSkill[]>([]);
@@ -780,6 +784,7 @@ export function ShellPage() {
     olderCursor: number | null;
   } | null>(null);
   const manuallyUnread = useRef(new Set<string>());
+  const unreadRequests = useRef(new Map<string, Promise<unknown>>());
   const readVisibleGroups = useRef(new Set<string>());
   const notifiedBrowserEvents = useRef(new Set<string>());
   const pendingBrowserNotifications = useRef(new Map<string, PendingBrowserNotification>());
@@ -850,32 +855,67 @@ export function ShellPage() {
       );
     });
   }, []);
-  const markBotRead = useCallback(
-    async (id: string) => {
-      await rpc.threads.markRead({ botId: id });
-      manuallyUnread.current.delete(id);
-      updateBotUnread(id, false);
+  const setConversationUnread = useCallback(
+    async (target: { botId: string } | { groupId: string }, unread: boolean) => {
+      const id = "botId" in target ? target.botId : target.groupId;
+      const actor = groupSettingsActor.current;
+      const spaceId = selectedSpaceId() ?? actor.spaceId;
+      const sameActor = () =>
+        spaceId === actor.spaceId &&
+        actor.userId === groupSettingsActor.current.userId &&
+        actor.spaceId === groupSettingsActor.current.spaceId &&
+        spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId);
+      const wasManual = manuallyUnread.current.has(id);
+      if (unread) manuallyUnread.current.add(id);
+      else manuallyUnread.current.delete(id);
+      // Preserve the user's last read/unread intent when an earlier request is still in flight.
+      const previous = unreadRequests.current.get(id);
+      const request = (previous ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() => {
+          if (!sameActor()) throw new DOMException("Conversation changed", "AbortError");
+          return unread ? rpc.threads.markUnread(target) : rpc.threads.markRead(target);
+        });
+      unreadRequests.current.set(id, request);
+      try {
+        await request;
+        if (!sameActor() || unreadRequests.current.get(id) !== request) return;
+        if ("botId" in target) updateBotUnread(id, unread);
+        else {
+          setGroups((current) =>
+            current.map((group) => (group.id === id ? { ...group, unread } : group)),
+          );
+        }
+      } catch (err) {
+        if (sameActor() && unreadRequests.current.get(id) === request) {
+          if (wasManual) manuallyUnread.current.add(id);
+          else manuallyUnread.current.delete(id);
+        }
+        throw err;
+      } finally {
+        if (unreadRequests.current.get(id) === request) unreadRequests.current.delete(id);
+      }
     },
     [updateBotUnread],
   );
+  const markBotRead = useCallback(
+    (id: string) => setConversationUnread({ botId: id }, false),
+    [setConversationUnread],
+  );
   const markBotUnread = useCallback(
-    async (id: string) => {
-      manuallyUnread.current.add(id);
-      try {
-        await rpc.threads.markUnread({ botId: id });
-      } catch (err) {
-        manuallyUnread.current.delete(id);
-        throw err;
-      }
-      updateBotUnread(id, true);
-    },
-    [updateBotUnread],
+    (id: string) => setConversationUnread({ botId: id }, true),
+    [setConversationUnread],
   );
   // A bot the user marked unread by hand stays unread until they open it again,
   // otherwise the auto-read below would undo the action on the next window focus.
   const markBotReadIfVisible = useCallback(
     (id: string) => {
-      if (manuallyUnread.current.has(id)) return;
+      if (
+        activeBotId.current !== id ||
+        peerConversationRef.current ||
+        manuallyUnread.current.has(id)
+      )
+        return;
       if (document.visibilityState === "visible" && document.hasFocus()) {
         void markBotRead(id).catch(() => undefined);
       }
@@ -1154,10 +1194,11 @@ export function ShellPage() {
     const before = snapshot.olderCursor;
     setLoadingOlder(true);
     try {
-      const page = await rpc.threads.messages({
-        ...(targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! }),
-        before,
-      });
+      const target = targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! };
+      const [page, snap] = await Promise.all([
+        rpc.threads.messages({ ...target, before }),
+        rpc.threads.get(target),
+      ]);
       if (
         epoch !== historyEpoch.current ||
         activeBotId.current !== targetBotId ||
@@ -1165,11 +1206,19 @@ export function ShellPage() {
       )
         return;
       expandedHistoryThread.current = page.threadId;
-      updateSnapshot((prev) => prependThreadMessagePage(prev, page));
+      const current = reconcileRefreshedThread(
+        snapshotRef.current,
+        snap,
+        computerRef.current,
+        true,
+      );
+      commitSnapshot(prependThreadMessagePage(current.snapshot, page));
       window.requestAnimationFrame(() => {
         const element = messageScroll.current;
         if (element) element.scrollTop += element.scrollHeight - previousHeight;
       });
+    } catch {
+      // Leave the existing page and approval controls intact; the next load can retry.
     } finally {
       setLoadingOlder(false);
     }
@@ -1432,9 +1481,18 @@ export function ShellPage() {
           }
           if (event.payload.role === "bot") markBotReadIfVisible(active.id);
         }
+        const approvalUpdate =
+          (event.type === "thread.message.created" || event.type === "thread.message.updated") &&
+          Array.isArray(event.payload.blocks) &&
+          event.payload.blocks.some(
+            (block) => block.kind === "ask" || block.kind === "mcp_approval",
+          );
+        if (approvalUpdate || event.type === "run.waiting_input")
+          void refreshBots().catch(() => undefined);
         if (
           isRunTerminalEvent(event) ||
           event.type === "run.waiting_input" ||
+          event.type === "thread.message.updated" ||
           event.type === "skill.teaching.stopped"
         ) {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
@@ -1455,26 +1513,18 @@ export function ShellPage() {
     readVisibleGroups.current.delete(groupId);
     const markVisibleGroupRead = () => {
       if (
+        activeGroupId.current !== groupId ||
+        peerConversationRef.current ||
+        manuallyUnread.current.has(groupId) ||
         document.visibilityState !== "visible" ||
         !document.hasFocus() ||
         readVisibleGroups.current.has(groupId)
       )
         return;
       readVisibleGroups.current.add(groupId);
-      void rpc.threads
-        .markRead({ groupId })
-        .then(() => {
-          setGroups((current) => {
-            const group = current.find((candidate) => candidate.id === groupId);
-            if (!group?.unread) return current;
-            return current.map((candidate) =>
-              candidate.id === groupId ? { ...candidate, unread: false } : candidate,
-            );
-          });
-        })
-        .catch(() => {
-          readVisibleGroups.current.delete(groupId);
-        });
+      void setConversationUnread({ groupId }, false).catch(() => {
+        readVisibleGroups.current.delete(groupId);
+      });
     };
     markVisibleGroupRead();
     window.addEventListener("focus", markVisibleGroupRead);
@@ -1526,11 +1576,21 @@ export function ShellPage() {
         if (
           event.type === "run.started" ||
           event.type === "bot.updated" ||
-          isRunTerminalEvent(event)
+          isRunTerminalEvent(event) ||
+          event.type === "run.waiting_input" ||
+          ((event.type === "thread.message.created" || event.type === "thread.message.updated") &&
+            Array.isArray(event.payload.blocks) &&
+            event.payload.blocks.some(
+              (block) => block.kind === "ask" || block.kind === "mcp_approval",
+            ))
         ) {
           void refreshBots().catch(() => undefined);
         }
-        if (isRunTerminalEvent(event) || event.type === "run.waiting_input") {
+        if (
+          isRunTerminalEvent(event) ||
+          event.type === "run.waiting_input" ||
+          event.type === "thread.message.updated"
+        ) {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
           void refreshGroupThread(groupId).catch(() => undefined);
         }
@@ -1541,7 +1601,27 @@ export function ShellPage() {
       document.removeEventListener("visibilitychange", markVisibleGroupRead);
       abort.abort();
     };
-  }, [activeGroup?.id, groupId, notifyBrowserForEvent]);
+  }, [activeGroup?.id, groupId, notifyBrowserForEvent, setConversationUnread]);
+
+  useEffect(() => {
+    const closed = hadPeerConversation.current && !peerConversation;
+    hadPeerConversation.current = Boolean(peerConversation);
+    if (!closed) return;
+    if (activeGroupId.current) {
+      const id = activeGroupId.current;
+      manuallyUnread.current.delete(id);
+      readVisibleGroups.current.delete(id);
+      if (
+        !manuallyUnread.current.has(id) &&
+        document.visibilityState === "visible" &&
+        document.hasFocus()
+      )
+        void setConversationUnread({ groupId: id }, false).catch(() => undefined);
+    } else if (activeBotId.current) {
+      manuallyUnread.current.delete(activeBotId.current);
+      markBotReadIfVisible(activeBotId.current);
+    }
+  }, [peerConversation, markBotReadIfVisible, setConversationUnread]);
 
   const sidebarGroups = useMemo(() => {
     const sidebarSpaces =
@@ -1684,7 +1764,12 @@ export function ShellPage() {
     });
   }
 
-  async function jumpToMessage(target: { botId?: string; groupId?: string; messageId: string }) {
+  async function jumpToMessage(target: {
+    botId?: string;
+    groupId?: string;
+    messageId: string;
+    attention?: boolean;
+  }) {
     const threadTarget = searchHitThreadTarget(target);
     const savedGroupAtStart = target.groupId
       ? savedGroupUpdates.current.get(target.groupId)
@@ -1692,7 +1777,7 @@ export function ShellPage() {
     const epoch = historyEpoch.current;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
-    const [snap, page] = await Promise.all([
+    const [snap, requestedPage] = await Promise.all([
       rpc.threads.get(threadTarget),
       rpc.threads.messages({ ...threadTarget, around: { messageId: target.messageId } }),
     ]);
@@ -1702,14 +1787,31 @@ export function ShellPage() {
     if (epoch !== historyEpoch.current || jumpId !== jumpGeneration.current) return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
-    const targetInPage = userVisibleMessages(page.messages, { includePeerReceipts: true }).some(
-      (message) => message.id === target.messageId,
-    );
+    const messageId = target.attention ? (snap.attentionMessageId ?? null) : target.messageId;
+    const page =
+      messageId && messageId !== target.messageId
+        ? await rpc.threads.messages({ ...threadTarget, around: { messageId } })
+        : requestedPage;
+    if (epoch !== historyEpoch.current || jumpId !== jumpGeneration.current) return;
+    if (target.groupId && activeGroupId.current !== target.groupId) return;
+    if (target.botId && activeBotId.current !== target.botId) return;
+    const current = snapshotRef.current;
+    if (target.attention && current?.threadId === snap.threadId && current.cursor > snap.cursor) {
+      // Decisions can arrive while the around page is loading. Never restore stale approvals.
+      if (target.groupId) await refreshGroupThread(target.groupId);
+      else if (target.botId) await refreshThread(target.botId);
+      return;
+    }
+    const targetInPage =
+      messageId !== null &&
+      userVisibleMessages(page.messages, { includePeerReceipts: true }).some(
+        (message) => message.id === messageId,
+      );
     expandedHistoryThread.current = targetInPage ? page.threadId : null;
     pinnedAroundRef.current = targetInPage
       ? {
           ...threadTarget,
-          messageId: target.messageId,
+          messageId: messageId!,
           threadId: page.threadId,
           messages: page.messages,
           olderCursor: page.olderCursor,
@@ -1744,7 +1846,7 @@ export function ShellPage() {
     if (targetInPage) {
       // The transcript owns the scroll: it retries until the pinned row is
       // mounted and unfollows the tail, so live commits cannot cancel it.
-      setScrollRequest({ messageId: target.messageId, nonce: jumpId });
+      setScrollRequest({ messageId: messageId!, nonce: jumpId });
     } else {
       window.requestAnimationFrame(() => {
         if (epoch !== historyEpoch.current || jumpId !== jumpGeneration.current) return;
@@ -1770,12 +1872,17 @@ export function ShellPage() {
     const messageId = searchParams.get("m");
     const routineId = searchParams.get("routine");
     if (inGroup && groupId && messageId) {
-      void jumpToMessage({ groupId, messageId }).finally(() => {
-        // Keep expandedHistoryThread; only strip the jump URL so refresh does not remount.
-        const next = new URLSearchParams(searchParams);
-        next.delete("m");
-        setSearchParams(next, { replace: true });
-      });
+      void jumpToMessage({ groupId, messageId, attention: searchParams.get("attention") === "1" })
+        .catch(() => undefined)
+        .finally(() => {
+          if (activeGroupId.current !== groupId || searchParamsRef.current.get("m") !== messageId)
+            return;
+          // Keep expandedHistoryThread; only strip the jump URL so refresh does not remount.
+          const next = new URLSearchParams(searchParams);
+          next.delete("m");
+          next.delete("attention");
+          setSearchParams(next, { replace: true });
+        });
       return;
     }
     if (!active) return;
@@ -1794,11 +1901,20 @@ export function ShellPage() {
       setSearchParams(next, { replace: true });
     }
     if (messageId) {
-      void jumpToMessage({ botId: active.id, messageId }).finally(() => {
-        const next = new URLSearchParams(searchParams);
-        next.delete("m");
-        setSearchParams(next, { replace: true });
-      });
+      void jumpToMessage({
+        botId: active.id,
+        messageId,
+        attention: searchParams.get("attention") === "1",
+      })
+        .catch(() => undefined)
+        .finally(() => {
+          if (activeBotId.current !== active.id || searchParamsRef.current.get("m") !== messageId)
+            return;
+          const next = new URLSearchParams(searchParams);
+          next.delete("m");
+          next.delete("attention");
+          setSearchParams(next, { replace: true });
+        });
     }
   }, [active?.id, groupId, inGroup, routines, routinesBotId, searchParams, setSearchParams]);
   const activeSnapshot = inNewChat
@@ -1820,6 +1936,10 @@ export function ShellPage() {
   }, [updateComposerDraft]);
   const currentRuns = activeThreadRuns(activeSnapshot);
   const answerableAskMessageId = latestAnswerableAskMessageId(activeSnapshot);
+  const answerableApprovalMessageIds = useMemo(
+    () => new Set(activeSnapshot?.answerableApprovalMessageIds),
+    [activeSnapshot?.answerableApprovalMessageIds],
+  );
   const workingRuns = currentRuns.filter((run) =>
     ["running", "queued", "leased"].includes(run.status),
   );
@@ -2048,6 +2168,16 @@ export function ShellPage() {
         answer: text,
         ...(username ? { username } : {}),
       });
+      updateSnapshot((prev) =>
+        prev?.threadId === message.threadId
+          ? {
+              ...prev,
+              answerableApprovalMessageIds: prev.answerableApprovalMessageIds?.filter((id) =>
+                prev.messages.some((row) => row.id === id && row.runId !== message.runId),
+              ),
+            }
+          : prev,
+      );
       if (groupId && activeGroupId.current === groupId) {
         await refreshGroupThreadRef.current(groupId);
       } else if (botId && activeBotId.current === botId) {
@@ -3385,11 +3515,38 @@ export function ShellPage() {
                                 reorderRosterBot(item.chat.id, target, groupBotIds);
                               }}
                               onClick={() => {
-                                openSpaceChat(
-                                  item.chat.spaceId,
+                                const target =
+                                  item.kind === "bot"
+                                    ? { botId: item.chat.id }
+                                    : { groupId: item.chat.id };
+                                const path =
                                   item.kind === "bot"
                                     ? `/app/${item.chat.id}`
-                                    : `/app/g/${item.chat.id}`,
+                                    : `/app/g/${item.chat.id}`;
+                                const messageId = item.chat.attentionMessageId;
+                                if (item.chat.spaceId === bootstrapMe?.spaceId) {
+                                  setPeerConversation(null);
+                                  manuallyUnread.current.delete(item.chat.id);
+                                  readVisibleGroups.current.delete(item.chat.id);
+                                  if (selected) {
+                                    void setConversationUnread(target, false).catch(
+                                      () => undefined,
+                                    );
+                                    if (messageId)
+                                      void jumpToMessage({
+                                        ...target,
+                                        messageId,
+                                        attention: true,
+                                      }).catch(() => undefined);
+                                    else openSpaceChat(item.chat.spaceId, path);
+                                    return;
+                                  }
+                                }
+                                openSpaceChat(
+                                  item.chat.spaceId,
+                                  messageId
+                                    ? `${path}?m=${encodeURIComponent(messageId)}&attention=1`
+                                    : path,
                                 );
                               }}
                               onContextMenu={(event) => {
@@ -3408,6 +3565,7 @@ export function ShellPage() {
                               compact={compactSidebar}
                               selected={selected}
                               unread={item.chat.unread}
+                              approvalPending={Boolean(item.chat.attentionMessageId)}
                               className={
                                 item.kind === "bot"
                                   ? "cursor-grab active:cursor-grabbing"
@@ -3823,6 +3981,7 @@ export function ShellPage() {
               olderCursor={activeSnapshot?.olderCursor ?? null}
               loadingOlder={loadingOlder}
               answerableAskMessageId={answerableAskMessageId}
+              answerableApprovalMessageIds={answerableApprovalMessageIds}
               running={transcriptRunning}
               workingBots={workingBots}
               onLoadOlder={loadOlder}
@@ -4397,18 +4556,9 @@ export function ShellPage() {
                 const request = unread ? markBotUnread(contextBot.id) : markBotRead(contextBot.id);
                 void request.catch(() => undefined);
               } else {
-                const request = unread
-                  ? rpc.threads.markUnread({ groupId: contextGroup!.id })
-                  : rpc.threads.markRead({ groupId: contextGroup!.id });
-                void request
-                  .then(() =>
-                    setGroups((current) =>
-                      current.map((group) =>
-                        group.id === contextGroup!.id ? { ...group, unread } : group,
-                      ),
-                    ),
-                  )
-                  .catch(() => undefined);
+                void setConversationUnread({ groupId: contextGroup!.id }, unread).catch(
+                  () => undefined,
+                );
               }
             }}
             onMoveToSection={(sectionId) => {
@@ -5013,6 +5163,7 @@ const Transcript = memo(function Transcript({
   olderCursor,
   loadingOlder,
   answerableAskMessageId,
+  answerableApprovalMessageIds,
   running,
   workingBots,
   onLoadOlder,
@@ -5045,6 +5196,7 @@ const Transcript = memo(function Transcript({
   olderCursor: number | null;
   loadingOlder: boolean;
   answerableAskMessageId: string | null;
+  answerableApprovalMessageIds: ReadonlySet<string>;
   running: boolean;
   workingBots: GroupAvatarMember[];
   onLoadOlder: () => void | Promise<void>;
@@ -5397,7 +5549,11 @@ const Transcript = memo(function Transcript({
                       <MessageView
                         artifactTarget={artifactTarget}
                         message={message}
-                        canAnswer={message.id === answerableAskMessageId}
+                        canAnswer={
+                          message.blocks.some(isApprovalAskBlock)
+                            ? answerableApprovalMessageIds.has(message.id)
+                            : message.id === answerableAskMessageId
+                        }
                         onOpenBot={onOpenBot}
                         onOpenPeerMessages={onOpenPeerMessages}
                         onAnswer={onAnswer}
@@ -6594,7 +6750,29 @@ function applyThreadEvent(
   publishComputerCommand(event);
   if (isThreadSnapshotEvent(event)) {
     const next = reduceThreadSnapshot(snapshotRef.current, event);
-    commitSnapshot(next);
+    const blocks = event.payload.blocks;
+    const answeredApproval =
+      event.type === "thread.message.updated" &&
+      Array.isArray(blocks) &&
+      blocks.some((block) => isApprovalAskBlock(block) && block.status === "answered");
+    const invalidateRun =
+      event.runId &&
+      (isRunTerminalEvent(event) || event.type === "run.started" || answeredApproval);
+    commitSnapshot(
+      next && (invalidateRun || event.type === "thread.cleared")
+        ? {
+            ...next,
+            answerableApprovalMessageIds:
+              event.type === "thread.cleared"
+                ? []
+                : next.answerableApprovalMessageIds?.filter((id) =>
+                    next.messages.some(
+                      (message) => message.id === id && message.runId !== event.runId,
+                    ),
+                  ),
+          }
+        : next,
+    );
   }
   if (isComputerStatusEvent(event)) {
     const next = reduceComputerStatus(computerRef.current, event);

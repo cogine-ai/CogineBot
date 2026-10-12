@@ -4,10 +4,55 @@ import {
   isPeerRun,
   loadAllMessages,
   loadMessagePage,
+  projectPeerThreadEvent,
   shouldForwardPeerThreadEvent,
 } from "./thread-message-pages.js";
 
 describe("thread message pages", () => {
+  it("projects new peer MCP approvals consistently in normal/around pages and SSE", async () => {
+    const approval = {
+      kind: "mcp_approval",
+      name: "Example",
+      serverId: "server-1",
+      status: "pending",
+      transport: "stdio",
+      endpoint: null,
+      needsOAuth: false,
+    };
+    const original = {
+      id: "mcp-target",
+      threadId: "thread-1",
+      seq: 4,
+      role: "bot",
+      botId: "bot-1",
+      runId: "run-peer",
+      replyToMessageId: null,
+      createdAt: new Date("2026-10-12T00:00:00.000Z"),
+      blocks: [{ kind: "steps", steps: [{ label: "Private tool activity", count: 1 }] }, approval],
+    };
+    const prisma = {
+      message: { findMany: vi.fn(async () => [original]), count: vi.fn(async () => 0) },
+      run: { findMany: vi.fn(async () => [{ id: "run-peer" }]) },
+    } as unknown as PrismaClient;
+    const normal = await loadMessagePage(prisma, "thread-1", undefined, 5);
+    const around = await loadMessagePage(prisma, "thread-1", undefined, 5, {
+      messageId: original.id,
+      seq: original.seq,
+    });
+    expect(normal.messages[0]?.blocks).toEqual([approval]);
+    expect(around.messages[0]?.blocks).toEqual([approval]);
+    const raw = await loadMessagePage(prisma, "thread-1", undefined, 5, undefined, true);
+    expect(raw.messages[0]?.blocks).toHaveLength(2);
+    const created = {
+      type: "thread.message.created",
+      payload: { messageId: original.id, blocks: original.blocks },
+    };
+    const updated = { ...created, type: "thread.message.updated" };
+    expect(projectPeerThreadEvent(created)?.payload.blocks).toEqual([approval]);
+    expect(projectPeerThreadEvent(updated)?.payload.blocks).toEqual([approval]);
+    expect(shouldForwardPeerThreadEvent(created)).toBe(true);
+    expect(created.payload.blocks).toHaveLength(2);
+  });
   it("caches peer-run classification for live events", async () => {
     const findUnique = vi.fn(async () => ({ trigger: "bot_message" }));
     const prisma = { run: { findUnique } } as unknown as PrismaClient;

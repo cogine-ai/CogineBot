@@ -2,8 +2,10 @@ import type { SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor, MessageBlock } from "@rakazo/contracts";
 import { callClientNonce } from "@rakazo/core";
 import type * as MessageQuoteModule from "@rakazo/core/message-quote";
+import type * as DbModule from "@rakazo/db";
 import type { PrismaClient } from "@rakazo/db";
-import { describe, expect, it, vi } from "vitest";
+import { loadThreadAttention } from "@rakazo/db";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cancelSupersededQueuedRuns,
   reactToThreadMessage,
@@ -13,6 +15,12 @@ import {
   threadHead,
   threadSnapshot,
 } from "./thread-target.js";
+
+vi.mock("@rakazo/db", async (importOriginal) => ({
+  ...(await importOriginal<typeof DbModule>()),
+  loadThreadAttention: vi.fn(async () => new Map()),
+}));
+beforeEach(() => vi.mocked(loadThreadAttention).mockReset().mockResolvedValue(new Map()));
 
 // Passthrough mock: every hint derives for real except the sentinel that
 // exercises the "derivation must never cost the send" path.
@@ -171,6 +179,47 @@ describe("reaction messages", () => {
 });
 
 describe("threadSnapshot", () => {
+  it("returns current approval metadata for Bot and group without replacing the primary Run", async () => {
+    const ids = ["approval-one", "approval-two", "approval-three"];
+    vi.mocked(loadThreadAttention).mockResolvedValue(
+      new Map([
+        [
+          "thread-1",
+          {
+            attentionMessageId: ids[0]!,
+            answerableApprovalMessageIds: ids,
+          },
+        ],
+      ]),
+    );
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+      message: { findMany: vi.fn().mockResolvedValue([]) },
+      event: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn() },
+      run: { findFirst: botRunFindFirst([]) },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    const direct = await threadSnapshot({ prisma }, {
+      kind: "bot",
+      botId: "bot-1",
+      threadId: "thread-1",
+      bot: { computer: null },
+    } as ThreadTarget);
+    expect(direct.run).toBeNull();
+    expect(direct.attentionMessageId).toBe(ids[0]);
+    expect(direct.answerableApprovalMessageIds).toEqual(ids);
+    expect(loadThreadAttention).toHaveBeenCalledWith(tx, ["thread-1"]);
+    const group = await threadSnapshot(
+      { prisma: groupPrisma(groupRunFindMany({})) },
+      groupTarget(),
+    );
+    expect(group.run).toBeNull();
+    expect(group.attentionMessageId).toBe(ids[0]);
+    expect(group.answerableApprovalMessageIds).toEqual(ids);
+  });
+
   it("reloads tool-only live messages for an active run", async () => {
     const run = {
       id: "run-1",
