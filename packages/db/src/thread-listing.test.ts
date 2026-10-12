@@ -25,4 +25,21 @@ describe("previewFromBlocks", () => {
     expect(previewFromBlocks([{ kind: "steps", steps: [] }])).toBe("");
     expect(previewFromBlocks(undefined)).toBe("");
   });
+
+  it("keeps operational text and peer bodies out of the conversation preview", () => {
+    expect(
+      previewFromBlocks([
+        { kind: "progress", text: "Using browser" },
+        { kind: "bot_message_received", text: "Internal reply" },
+        { kind: "text", text: "Let's meet by the lake." },
+      ]),
+    ).toBe("Let's meet by the lake.");
+  });
+
+  it("shows a real filename for an attachment-only message", () => {
+    expect(previewFromBlocks([{ kind: "file", name: "weekend-plan.pdf" }])).toBe(
+      "weekend-plan.pdf",
+    );
+    expect(previewFromBlocks([{ kind: "image", name: "lake.png" }])).toBe("lake.png");
+  });
 });

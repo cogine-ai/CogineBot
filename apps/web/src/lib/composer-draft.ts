@@ -47,7 +47,7 @@ let nextVersion = 1;
 export function makeComposerDraftKey(input: {
   userId: string;
   spaceId: string;
-  targetKind: "bot" | "group";
+  targetKind: "bot" | "group" | "new-chat";
   targetId: string;
 }): string {
   return JSON.stringify([input.userId, input.spaceId, input.targetKind, input.targetId]);
@@ -55,6 +55,21 @@ export function makeComposerDraftKey(input: {
 
 export function readComposerDraft(key: string | null): ComposerDraft {
   return (key ? drafts.get(key) : undefined) ?? EMPTY_DRAFT;
+}
+
+/** Carry edits made during the first send into the new thread without replacing another draft. */
+export function moveComposerDraft(from: string, to: string): boolean {
+  const draft = drafts.get(from);
+  if (!draft) return true;
+  if (drafts.has(to)) return false;
+  drafts.set(to, {
+    ...draft,
+    attachments: draft.attachments.map((attachment) => ({ ...attachment, threadKey: to })),
+  });
+  drafts.delete(from);
+  notify(from);
+  notify(to);
+  return true;
 }
 
 function notify(key: string): void {

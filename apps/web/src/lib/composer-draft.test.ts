@@ -6,6 +6,7 @@ import {
   clearSubmittedComposerDraft,
   consumeSubmittedComposerDraft,
   makeComposerDraftKey,
+  moveComposerDraft,
   readComposerDraft,
   subscribeComposerDraft,
   writeComposerDraft,
@@ -41,6 +42,38 @@ afterEach(() => {
 });
 
 describe("tab-local composer drafts", () => {
+  it("carries edits made during first-send into a new group, preserving files and subscriptions", () => {
+    const pendingKey = makeComposerDraftKey({ ...identity, targetKind: "new-chat" });
+    const groupKey = makeComposerDraftKey({ ...identity, targetKind: "group" });
+    const file = new File(["more"], "more.txt");
+    writeComposerDraft(pendingKey, {
+      text: "Next thought",
+      selectedSkill: skill,
+      selectedMentions: [mention],
+      attachments: [{ id: "next-file", threadKey: pendingKey, file }],
+    });
+    const listener = vi.fn();
+    const unsubscribe = subscribeComposerDraft(groupKey, listener);
+    expect(moveComposerDraft(pendingKey, groupKey)).toBe(true);
+    expect(readComposerDraft(pendingKey).text).toBe("");
+    const moved = readComposerDraft(groupKey);
+    expect(moved.text).toBe("Next thought");
+    expect(moved.selectedSkill).toBe(skill);
+    expect(moved.selectedMentions).toEqual([mention]);
+    expect(moved.attachments[0]?.file).toBe(file);
+    expect(moved.attachments[0]?.threadKey).toBe(groupKey);
+    expect(listener).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  it("never replaces an existing Bot draft while moving a first-message draft", () => {
+    const pendingKey = makeComposerDraftKey({ ...identity, targetKind: "new-chat" });
+    writeComposerDraft(pendingKey, { text: "New thought" });
+    writeComposerDraft(key, { text: "Existing thought" });
+    expect(moveComposerDraft(pendingKey, key)).toBe(false);
+    expect(readComposerDraft(pendingKey).text).toBe("New thought");
+    expect(readComposerDraft(key).text).toBe("Existing thought");
+  });
   it("restores the full text, selected skill, mentions, File and quote when returning to a thread", () => {
     const file = new File(["first\nsecond"], "notes.txt", { type: "text/plain" });
     const saved = writeComposerDraft(key, {

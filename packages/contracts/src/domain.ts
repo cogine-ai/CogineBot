@@ -136,6 +136,7 @@ const GroupBotIds = z
 export const CreateGroupInput = z.object({
   name: z.string().trim().min(1).max(80),
   botIds: GroupBotIds,
+  clientNonce: z.string().min(1).max(200).optional(),
 });
 export type CreateGroupInput = z.infer<typeof CreateGroupInput>;
 

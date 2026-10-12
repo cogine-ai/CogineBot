@@ -102,6 +102,7 @@ async function main() {
         "packages/testkit/src/journeys.test.ts",
         "packages/testkit/src/authorization.test.ts",
         "packages/testkit/src/attachments.test.ts",
+        "packages/testkit/src/group-creation.postgres.test.ts",
         "packages/testkit/src/voice.test.ts",
         "packages/testkit/src/search.test.ts",
         "packages/testkit/src/executor-lifecycle.test.ts",

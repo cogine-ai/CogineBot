@@ -64,6 +64,27 @@ describe("composer send retries", () => {
     attempts.finish("thread-a", fresh, false);
     expect(attempts.acquire("thread-a", "payload")).toBe(fresh);
   });
+
+  it("clears only a deleted group's attempt without changing another draft's retry", () => {
+    const attempts = store();
+    const deleted = attempts.acquire("pending-group", "payload")!;
+    deleted.uploadedArtifactIds.set("file-a", "deleted-group-artifact");
+    const other = attempts.acquire("other-thread", "other-payload")!;
+    other.uploadedArtifactIds.set("file-b", "other-artifact");
+    attempts.finish("other-thread", other, false);
+
+    attempts.clear("pending-group");
+
+    expect(attempts.isCurrent("pending-group", deleted)).toBe(false);
+    const fresh = attempts.acquire("pending-group", "payload")!;
+    expect(fresh.clientNonce).not.toBe(deleted.clientNonce);
+    expect(fresh.uploadedArtifactIds.size).toBe(0);
+    attempts.finish("pending-group", deleted, true);
+    expect(attempts.isCurrent("pending-group", fresh)).toBe(true);
+    const retry = attempts.acquire("other-thread", "other-payload")!;
+    expect(retry).toBe(other);
+    expect(retry.uploadedArtifactIds.get("file-b")).toBe("other-artifact");
+  });
 });
 
 describe("composer send payload identity", () => {

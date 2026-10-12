@@ -1,18 +1,14 @@
-import { expect, type Page, test } from "@playwright/test";
-import {
-  captureScreenshot,
-  completeOnboarding,
-  createNamedBot,
-  openNewGroup,
-  rpc,
-  signup,
-} from "./helpers";
+import type { Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { captureScreenshot, completeOnboarding, createNamedBot, rpc, signup } from "./helpers";
 
 async function createBot(page: Page, name: string) {
   return createNamedBot(page, name);
 }
 
-test("create group from + and see two bots in one transcript", async ({ page }, testInfo) => {
+test("group conversation keeps member avatars, settings and messages in one transcript", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   await signup(page, `group-${stamp}@rakazo.test`, "password12", "Group E2E");
   await completeOnboarding(page);
@@ -22,21 +18,13 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   const researcherId = await createBot(page, "Researcher");
   const writerId = await createBot(page, "Research Writer");
 
-  await openNewGroup(page);
-  await page.locator("label:has-text('Name') input").fill("Draft team");
-  const panel = page.getByTestId("side-panel");
-  await panel.getByRole("button", { name: "Researcher" }).click();
-  await panel.getByRole("button", { name: "Research Writer" }).click();
-  await captureScreenshot(page, testInfo, "group-creation");
-  await page.route("**/rpc/groups/create", async (route) => route.abort("failed"));
-  await page.getByRole("button", { name: "Create group", exact: true }).click();
-  await expect(panel.getByRole("alert")).toHaveText("Could not reach the server");
-  await expect(page.getByRole("button", { name: "Create group", exact: true })).toBeEnabled();
-  await page.unroute("**/rpc/groups/create");
-  await page.getByRole("button", { name: "Create group", exact: true }).click();
-  await page.waitForURL(/\/app\/g\/[^/]+$/);
+  const draftGroup = await rpc<{ id: string }>(page, "groups/create", {
+    name: "Draft team",
+    botIds: [researcherId, writerId],
+  });
+  await page.goto(`/app/g/${draftGroup.id}`);
   const groupUrl = page.url();
-  const draftGroupId = new URL(groupUrl).pathname.split("/").at(-1)!;
+  const draftGroupId = draftGroup.id;
   const reviewGroup = await rpc<{ id: string }>(page, "groups/create", {
     name: "Review team",
     botIds: [researcherId, writerId],

@@ -184,6 +184,7 @@ import {
   clearComposerDrafts,
   consumeSubmittedComposerDraft,
   makeComposerDraftKey,
+  moveComposerDraft,
   readComposerDraft,
 } from "../lib/composer-draft";
 import { composerSendAttempts, composerSendSignature } from "../lib/composer-send-attempt";
@@ -199,9 +200,11 @@ import {
   calculateDesktopWorkspaceLayout,
   useDesktopWorkspaceLayout,
 } from "../lib/desktop-workspace-layout";
+import { syncSavedGroupSnapshot } from "../lib/group-settings-state";
 import { localTimezone } from "../lib/local-timezone";
 import { copyableMessageText } from "../lib/message-text";
 import { messageProviderLabel } from "../lib/messaging";
+import { groupCreationIntent, newChatDraft } from "../lib/new-chat";
 import {
   isFileDrag,
   isFilePaste,
@@ -255,7 +258,7 @@ import { useComposerDraft } from "../lib/use-composer-draft";
 import { errorText } from "../lib/user-error";
 import { ActivityList } from "./ActivityList";
 import type { ContextMenuPosition } from "./BotContextMenu";
-import { CreateGroupForm, GroupSettings, memberName } from "./GroupPanel";
+import { GroupSettings, memberName } from "./GroupPanel";
 import { HostComputerPrompt } from "./HostComputerPrompt";
 import { ResizableSidePanel } from "./ResizableSidePanel";
 import {
@@ -271,6 +274,7 @@ import type { SettingsSection } from "./SettingsOverlay";
 import { SpaceSearchResults } from "./SpaceSearch";
 import { BotSettings, CreateBotForm } from "./shell/bot-panel";
 import { ComposerReplyPreview, ReplyLine, TimeSeparator } from "./shell/chat-context";
+import { ChatRecipients } from "./shell/chat-recipients";
 import { CommandPalette, isCommandPaletteHotkey } from "./shell/command-palette";
 import { ConversationRow } from "./shell/conversation-row";
 import {
@@ -282,6 +286,7 @@ import {
   RenameBotSectionDialog,
   RenameSpaceDialog,
 } from "./shell/dialogs";
+import { GroupTitle } from "./shell/group-title";
 import { MentionIdentity, SentMentionText, useBotIdentityTextColor } from "./shell/mention-display";
 import {
   AppConnectCard,
@@ -495,6 +500,7 @@ export function ShellPage() {
   const computerRef = useRef<ComputerStatus | null>(null);
   const threadRefreshEpoch = useRef(0);
   const groupRefreshEpoch = useRef(0);
+  const savedGroupUpdates = useRef(new Map<string, Group>());
   const botsRefreshEpoch = useRef(0);
   const botsRefreshApplied = useRef(0);
   const archivedBotsRefreshEpoch = useRef(0);
@@ -566,6 +572,12 @@ export function ShellPage() {
   const mobileSidebarSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
   const [draggedBotId, setDraggedBotId] = useState<string | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [pendingChat, setPendingChat] = useState(newChatDraft);
+  const inNewChat = searchParams.has("new-chat");
+  const pendingChatRef = useRef(pendingChat);
+  pendingChatRef.current = pendingChat;
+  const inNewChatRef = useRef(inNewChat);
+  inNewChatRef.current = inNewChat;
   const [botsSidebarCollapsed, setBotsSidebarCollapsed] = useState(false);
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
@@ -777,19 +789,19 @@ export function ShellPage() {
   const autoSpokenBotId = useRef<string | null>(null);
 
   const inGroup = Boolean(groupId);
-  const active = inGroup ? undefined : (bots.find((b) => b.id === botId) ?? bots[0]);
+  const active = inGroup || inNewChat ? undefined : (bots.find((b) => b.id === botId) ?? bots[0]);
   const computerBot =
     (computerBotId ? bots.find((bot) => bot.id === computerBotId) : undefined) ?? active;
   computerOpenRef.current = computerOpen;
   computerBotIdRef.current = computerBotId ?? active?.id;
-  const activeGroup = groups.find((group) => group.id === groupId);
+  const activeGroup = inNewChat ? undefined : groups.find((group) => group.id === groupId);
   const draftScopeKey =
-    userId && bootstrapMe?.spaceId && (groupId || active?.id)
+    userId && bootstrapMe?.spaceId && (inNewChat || groupId || active?.id)
       ? makeComposerDraftKey({
           userId,
           spaceId: bootstrapMe.spaceId,
-          targetKind: inGroup ? "group" : "bot",
-          targetId: inGroup ? groupId! : active!.id,
+          targetKind: inNewChat ? "new-chat" : inGroup ? "group" : "bot",
+          targetId: inNewChat ? pendingChat.id : inGroup ? groupId! : active!.id,
         })
       : null;
   const { draft: composerDraft, updateDraft: updateComposerDraft } =
@@ -819,7 +831,9 @@ export function ShellPage() {
   const activeBotId = useRef<string | undefined>(inGroup ? undefined : active?.id);
   activeBotId.current = inGroup ? undefined : active?.id;
   const activeGroupId = useRef<string | undefined>(groupId);
-  activeGroupId.current = groupId;
+  activeGroupId.current = inNewChat ? undefined : groupId;
+  const groupSettingsActor = useRef({ userId, spaceId: bootstrapMe?.spaceId });
+  groupSettingsActor.current = { userId, spaceId: bootstrapMe?.spaceId };
   const screenRequest = useRef(0);
   const contextBot =
     botMenu?.kind === "bot" ? bots.find((bot) => bot.id === botMenu.id) : undefined;
@@ -1672,6 +1686,9 @@ export function ShellPage() {
 
   async function jumpToMessage(target: { botId?: string; groupId?: string; messageId: string }) {
     const threadTarget = searchHitThreadTarget(target);
+    const savedGroupAtStart = target.groupId
+      ? savedGroupUpdates.current.get(target.groupId)
+      : undefined;
     const epoch = historyEpoch.current;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
@@ -1699,8 +1716,11 @@ export function ShellPage() {
         }
       : null;
     if (targetInPage) initiallyScrolledThread.current = page.threadId;
+    const savedGroup = target.groupId ? savedGroupUpdates.current.get(target.groupId) : undefined;
+    const jumpSnapshot =
+      savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
     commitSnapshot({
-      ...snap,
+      ...jumpSnapshot,
       messages: targetInPage ? page.messages : snap.messages,
       olderCursor: targetInPage ? page.olderCursor : snap.olderCursor,
     });
@@ -1781,13 +1801,15 @@ export function ShellPage() {
       });
     }
   }, [active?.id, groupId, inGroup, routines, routinesBotId, searchParams, setSearchParams]);
-  const activeSnapshot = inGroup
-    ? snapshot?.groupId === groupId
-      ? snapshot
-      : null
-    : snapshot?.botId === active?.id
-      ? snapshot
-      : null;
+  const activeSnapshot = inNewChat
+    ? null
+    : inGroup
+      ? snapshot?.groupId === groupId
+        ? snapshot
+        : null
+      : snapshot?.botId === active?.id
+        ? snapshot
+        : null;
   // Keep the armed reply even when its parent leaves the loaded page: the
   // server resolves a paged-out target and degrades a deleted one to a plain
   // reply instead of failing the send.
@@ -1851,7 +1873,7 @@ export function ShellPage() {
     () =>
       buildComposerMentionOptions({
         query: "",
-        includeEveryone: inGroup,
+        includeEveryone: inGroup || (inNewChat && pendingChat.botIds.length > 1),
         currentGroupId: groupId,
         bots: bots.map((bot) => ({ id: bot.id, name: bot.name, color: bot.color })),
         groups: groups.map((group) => ({ id: group.id, name: group.name })),
@@ -1864,13 +1886,23 @@ export function ShellPage() {
         })),
         connectors: mentionConnectors,
       }),
-    [bots, groupId, groups, inGroup, mentionConnectors, mentionRoutines],
+    [
+      bots,
+      groupId,
+      groups,
+      inGroup,
+      inNewChat,
+      pendingChat.botIds.length,
+      mentionConnectors,
+      mentionRoutines,
+    ],
   );
   const shellReady =
     initialBotsLoaded &&
-    (inGroup
-      ? Boolean(activeGroup && activeSnapshot)
-      : bots.length === 0 || Boolean(active && activeSnapshot));
+    (inNewChat ||
+      (inGroup
+        ? Boolean(activeGroup && activeSnapshot)
+        : bots.length === 0 || Boolean(active && activeSnapshot)));
   const refreshThreadRef = useRef(refreshThread);
   refreshThreadRef.current = refreshThread;
   const refreshGroupThreadRef = useRef(refreshGroupThread);
@@ -2108,8 +2140,13 @@ export function ShellPage() {
     ): Promise<boolean> => {
       const initialBotTarget = activeBotId.current;
       const initialGroupTarget = activeGroupId.current;
+      const newChat = inNewChatRef.current ? pendingChatRef.current : null;
       const originThreadKey = draftScopeKey;
-      if ((!initialBotTarget && !initialGroupTarget) || !originThreadKey || sendingRef.current)
+      if (
+        (!initialBotTarget && !initialGroupTarget && !newChat?.botIds.length) ||
+        !originThreadKey ||
+        sendingRef.current
+      )
         return false;
       const submitted = readComposerDraft(originThreadKey);
       if (submitted.version !== submittedVersion) return false;
@@ -2123,16 +2160,23 @@ export function ShellPage() {
       const reroutedToGroup = Boolean(
         plan.rerouteGroupId && plan.rerouteGroupId !== initialGroupTarget,
       );
-      const groupTarget = plan.rerouteGroupId ?? initialGroupTarget;
-      const botTarget = reroutedToGroup ? undefined : initialBotTarget;
-      const target = groupTarget ? { groupId: groupTarget } : { botId: botTarget };
+      let groupTarget = plan.rerouteGroupId ?? initialGroupTarget;
+      const botTarget = reroutedToGroup
+        ? undefined
+        : newChat?.botIds.length === 1
+          ? newChat.botIds[0]
+          : initialBotTarget;
+      let target = groupTarget ? { groupId: groupTarget } : { botId: botTarget };
       const replyToMessageId = reroutedToGroup ? undefined : submitted.replyTarget?.id;
       const replyQuote = reroutedToGroup ? undefined : submitted.replyQuote;
       const attempt = composerSendAttempts.acquire(
         originThreadKey,
         composerSendSignature({
           text: plan.trimmed,
-          target,
+          target:
+            newChat && newChat.botIds.length > 1 && !reroutedToGroup
+              ? { groupId: `new-chat:${newChat.id}:${newChat.botIds.join(",")}` }
+              : target,
           mentions: plan.mentionPayload,
           routineIds: plan.routineIds,
           attachments,
@@ -2159,6 +2203,21 @@ export function ShellPage() {
       setSendError(null);
       let succeeded = false;
       try {
+        if (newChat && plan.shouldSend && !reroutedToGroup && newChat.botIds.length > 1) {
+          const creation = groupCreationIntent(newChat, botsRef.current);
+          setPendingChat((current) => (current.id === newChat.id ? { ...newChat } : current));
+          if (!newChat.groupId) {
+            const group = await rpc.groups.create(creation, context);
+            newChat.groupId = group.id;
+            setPendingChat((current) => (current.id === newChat.id ? { ...newChat } : current));
+            setGroups((current) =>
+              current.some((item) => item.id === group.id) ? current : [group, ...current],
+            );
+          }
+          groupTarget = newChat.groupId;
+          target = { groupId: groupTarget };
+        }
+        if (!isCurrentAttempt()) return false;
         if (plan.shouldRunRoutines) {
           await Promise.all(
             plan.routineIds.map(async (routineId) => {
@@ -2221,7 +2280,21 @@ export function ShellPage() {
         consumeSubmittedComposerDraft(originThreadKey, submitted);
         if (stillHere()) setAttachmentNotice(null);
         void refreshBots().catch(() => undefined);
-        if (reroutedToGroup && groupTarget && stillHere()) navigate(`/app/g/${groupTarget}`);
+        if (newChat && (plan.shouldSend || reroutedToGroup)) {
+          const targetId = groupTarget ?? botTarget!;
+          const destinationKey = makeComposerDraftKey({
+            userId: userId!,
+            spaceId: bootstrapMe!.spaceId,
+            targetKind: groupTarget ? "group" : "bot",
+            targetId,
+          });
+          if (moveComposerDraft(originThreadKey, destinationKey)) {
+            setPendingChat((current) => (current.id === newChat.id ? newChatDraft() : current));
+          }
+          // A pre-existing destination draft stays intact; any newer source edits
+          // remain in the pending chat instead of replacing it.
+          if (stillHere()) navigate(groupTarget ? `/app/g/${groupTarget}` : `/app/${targetId}`);
+        } else if (reroutedToGroup && groupTarget && stillHere()) navigate(`/app/g/${groupTarget}`);
         if (groupTarget) void refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
         else if (botTarget) void refreshThreadRef.current(botTarget).catch(() => undefined);
         return true;
@@ -2235,7 +2308,7 @@ export function ShellPage() {
         setSending(false);
       }
     },
-    [draftScopeKey, bootstrapMe?.spaceId, flushPendingBrowserNotifications, navigate, t],
+    [draftScopeKey, bootstrapMe?.spaceId, userId, flushPendingBrowserNotifications, navigate, t],
   );
   const stopRun = useCallback(async () => {
     if (sending) return;
@@ -2349,14 +2422,54 @@ export function ShellPage() {
     if (text && id) void speaker.speak(text, { botId: id, messageId: message.id });
   }, []);
 
-  async function createGroup(input: { name: string; botIds: string[] }) {
-    const group = await rpc.groups.create(input);
-    setGroups((current) =>
-      current.some((item) => item.id === group.id) ? current : [group, ...current],
-    );
-    navigate(`/app/g/${group.id}`);
+  function openNewChat() {
     setPanel(null);
-    await refreshBots().catch(() => undefined);
+    const params = new URLSearchParams(searchParams);
+    params.delete("routine");
+    params.delete("m");
+    params.set("new-chat", "1");
+    setSearchParams(params);
+  }
+
+  function closeNewChat() {
+    const params = new URLSearchParams(searchParams);
+    params.delete("new-chat");
+    setSearchParams(params);
+  }
+
+  function resetPendingChatCreation(botIds: string[]) {
+    const current = pendingChatRef.current;
+    const next = {
+      ...current,
+      botIds,
+      groupId: null,
+      creation: null,
+      creationNonce: newClientNonce(),
+    };
+    // Keep the draft key and files, but discard receipts for an invalid target.
+    if (userId && bootstrapMe?.spaceId) {
+      composerSendAttempts.clear(
+        makeComposerDraftKey({
+          userId,
+          spaceId: bootstrapMe.spaceId,
+          targetKind: "new-chat",
+          targetId: current.id,
+        }),
+      );
+    }
+    pendingChatRef.current = next;
+    setPendingChat((draft) => (draft.id === current.id ? next : draft));
+  }
+
+  function releaseDeletedPendingGroup(deletedGroupId: string) {
+    const current = pendingChatRef.current;
+    if (current.groupId === deletedGroupId) resetPendingChatCreation(current.botIds);
+  }
+
+  function removePendingRecipient(botId: string) {
+    const current = pendingChatRef.current;
+    if (current.botIds.includes(botId))
+      resetPendingChatCreation(current.botIds.filter((id) => id !== botId));
   }
 
   function setBotsSidebarCollapsedPref(collapsed: boolean) {
@@ -2990,7 +3103,7 @@ export function ShellPage() {
                   onClick={() => {
                     setCreateMenuOpen(false);
                     setMobileSidebarOpen(false);
-                    setPanel("create-group");
+                    openNewChat();
                   }}
                 >
                   <LayoutGrid size={16} className="text-muted-foreground" />
@@ -3574,69 +3687,122 @@ export function ShellPage() {
             peerConversation && "pointer-events-none invisible absolute inset-0",
           )}
         >
-          <div className="app-drag flex items-center justify-between border-b border-sidebar-border px-3 py-[17px] md:px-[22px]">
-            <div className="flex min-w-0 items-center gap-2">
-              <button
-                type="button"
-                aria-label={t`Open navigation`}
-                onClick={() => setMobileSidebarOpen(true)}
-                className="app-no-drag grid h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground/75 hover:bg-accent md:hidden"
-              >
-                <Menu size={19} strokeWidth={1.7} />
-              </button>
-              <button
-                type="button"
-                data-testid="bot-settings-trigger"
-                onClick={() => setPanel(inGroup ? "group-settings" : "settings")}
-                className="app-no-drag flex min-w-0 items-center gap-3"
-              >
-                {inGroup ? (
-                  <GroupAvatar
-                    members={activeSnapshot?.members ?? activeGroup?.members ?? []}
-                    size={26}
-                  />
-                ) : active ? (
-                  <BotAvatar
-                    color={active.color}
-                    identity={active.id}
-                    size={26}
-                    status={active.status}
-                  />
-                ) : null}
-                <span className="min-w-0">
-                  <span
-                    className="block truncate text-[16px] font-medium text-foreground"
-                    dir="auto"
-                  >
-                    {inGroup
-                      ? (activeGroup?.name ?? activeSnapshot?.groupName ?? t`Group`)
-                      : (active?.name ?? t`Select a bot`)}
-                  </span>
-                </span>
-              </button>
-            </div>
-            <div className="flex items-center gap-1">
-              {!inGroup && active ? (
+          <div className="app-drag flex items-center justify-between gap-3 border-b border-sidebar-border px-3 py-[17px] md:px-[22px]">
+            {inNewChat ? (
+              <>
+                <ChatRecipients
+                  bots={bots}
+                  selectedBotIds={pendingChat.botIds}
+                  disabled={sending || Boolean(pendingChat.groupId)}
+                  onSelectedBotIdsChange={(botIds) => {
+                    setPendingChat((current) => ({
+                      ...current,
+                      botIds,
+                      creation: null,
+                      creationNonce: newClientNonce(),
+                    }));
+                    setSendError(null);
+                  }}
+                />
                 <button
                   type="button"
-                  title={t`Agent computer`}
-                  onClick={() => {
-                    const next = panel === "computer" ? null : "computer";
-                    setPanel(next);
-                    if (next === "computer" && active) {
-                      // Refresh run/computer so Take control isn't stuck on a stale busyBotName.
-                      void refreshThread(active.id).catch(() => undefined);
-                    }
-                  }}
-                  data-active={panel === "computer" ? "" : undefined}
-                  className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
+                  data-testid="chat-close"
+                  title={t`Close chat`}
+                  aria-label={t`Close chat`}
+                  onClick={closeNewChat}
+                  className="app-no-drag grid size-8 shrink-0 self-start place-items-center rounded-lg text-muted-foreground hover:bg-accent"
                 >
-                  <Monitor size={18} strokeWidth={1.6} className="text-foreground/75" />
+                  <X size={17} />
                 </button>
-              ) : null}
-            </div>
+              </>
+            ) : (
+              <>
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="app-no-drag flex min-w-0 items-center gap-3">
+                    <button
+                      type="button"
+                      aria-label={t`Open navigation`}
+                      onClick={() => setMobileSidebarOpen(true)}
+                      className="app-no-drag grid h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground/75 hover:bg-accent md:hidden"
+                    >
+                      <Menu size={19} strokeWidth={1.7} />
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="bot-settings-trigger"
+                      onClick={() => setPanel(inGroup ? "group-settings" : "settings")}
+                      className="app-no-drag flex min-w-0 items-center gap-3"
+                    >
+                      {inGroup ? (
+                        <GroupAvatar
+                          members={activeSnapshot?.members ?? activeGroup?.members ?? []}
+                          size={26}
+                        />
+                      ) : active ? (
+                        <BotAvatar
+                          color={active.color}
+                          identity={active.id}
+                          size={26}
+                          status={active.status}
+                        />
+                      ) : null}
+                      {!inGroup ? (
+                        <span className="min-w-0">
+                          <span
+                            className="block truncate text-[16px] font-medium text-foreground"
+                            dir="auto"
+                          >
+                            {inGroup
+                              ? (activeGroup?.name ?? activeSnapshot?.groupName ?? t`Group`)
+                              : (active?.name ?? t`Select a bot`)}
+                          </span>
+                        </span>
+                      ) : null}
+                    </button>
+                    {inGroup ? (
+                      <GroupTitle
+                        key={activeGroup?.id ?? groupId}
+                        className="text-[16px]"
+                        name={activeGroup?.name ?? activeSnapshot?.groupName ?? t`Group`}
+                        onRename={async (name) => {
+                          const updated = await rpc.groups.update({ groupId: groupId!, name });
+                          if (!updated?.id || updated.id !== groupId)
+                            throw new Error(t`Could not save group`);
+                          setGroups((current) =>
+                            current.map((group) => (group.id === updated.id ? updated : group)),
+                          );
+                          await refreshGroupThread(groupId!).catch(() => undefined);
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  {!inGroup && active ? (
+                    <button
+                      type="button"
+                      title={t`Agent computer`}
+                      onClick={() => {
+                        const next = panel === "computer" ? null : "computer";
+                        setPanel(next);
+                        if (next === "computer" && active) {
+                          // Refresh run/computer so Take control isn't stuck on a stale busyBotName.
+                          void refreshThread(active.id).catch(() => undefined);
+                        }
+                      }}
+                      data-active={panel === "computer" ? "" : undefined}
+                      className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
+                    >
+                      <Monitor size={18} strokeWidth={1.6} className="text-foreground/75" />
+                    </button>
+                  ) : null}
+                </div>
+              </>
+            )}
           </div>
-          {!active && !activeGroup && initialBotsLoaded ? (
+          {inNewChat ? (
+            <div data-testid="pending-group-chat" className="min-h-0 flex-1" />
+          ) : !active && !activeGroup && initialBotsLoaded ? (
             <div className="grid flex-1 place-items-center">
               <Button onClick={() => setPanel("create")}>
                 <Plus size={16} aria-hidden="true" />
@@ -3693,16 +3859,25 @@ export function ShellPage() {
               <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
             </div>
           ) : null}
-          {active || activeGroup ? (
+          {active || activeGroup || inNewChat ? (
             <Composer
               draftKey={draftScopeKey}
               key={draftScopeKey}
               active={!peerConversation}
               draftState={composerDraft}
               onDraftChange={updateComposerDraft}
-              activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
+              activeName={
+                inNewChat
+                  ? pendingChat.botIds
+                      .map((id) => bots.find((bot) => bot.id === id)?.name)
+                      .filter(Boolean)
+                      .join(", ")
+                  : inGroup
+                    ? (activeGroup?.name ?? activeSnapshot?.groupName)
+                    : active?.name
+              }
               running={composerRunning}
-              disabled={Boolean(recordingSkill)}
+              disabled={Boolean(recordingSkill) || (inNewChat && pendingChat.botIds.length === 0)}
               pendingAttachments={activePendingAttachments}
               attachmentNotice={
                 attachmentNotice?.scopeKey === draftScopeKey ? attachmentNotice.text : null
@@ -3944,30 +4119,54 @@ export function ShellPage() {
                 })}
               </div>
             ) : null}
-            {panel === "create-group" ? (
-              <CreateGroupForm
-                bots={bots}
-                onCancel={() => setPanel(null)}
-                onCreate={(input) => createGroup(input)}
-              />
-            ) : null}
             {panel === "group-settings" && activeGroup ? (
               <GroupSettings
                 key={activeGroup.id}
                 group={activeGroup}
                 bots={bots}
+                onClose={() => setPanel(null)}
                 onSave={async (input) => {
+                  const actor = groupSettingsActor.current;
                   const updated = await rpc.groups.update({ groupId: activeGroup.id, ...input });
+                  if (
+                    actor.userId !== groupSettingsActor.current.userId ||
+                    actor.spaceId !== groupSettingsActor.current.spaceId ||
+                    updated.spaceId !== actor.spaceId
+                  )
+                    return;
+                  const latest = savedGroupUpdates.current.get(updated.id);
+                  if (latest && latest.updatedAt > updated.updatedAt) return;
+                  savedGroupUpdates.current.set(updated.id, updated);
+                  // Reads started before the save must not restore the previous roster.
+                  if (activeGroupId.current === updated.id) groupRefreshEpoch.current += 1;
+                  botsRefreshEpoch.current += 1;
+                  botsRefreshApplied.current = botsRefreshEpoch.current;
                   setGroups((current) =>
-                    current.map((group) => (group.id === updated.id ? updated : group)),
+                    current.map((group) =>
+                      group.id === updated.id
+                        ? {
+                            ...group,
+                            name: updated.name,
+                            members: updated.members,
+                            updatedAt:
+                              group.updatedAt > updated.updatedAt
+                                ? group.updatedAt
+                                : updated.updatedAt,
+                          }
+                        : group,
+                    ),
                   );
-                  setPanel(null);
-                  await Promise.all([refreshBots(), refreshGroupThread(activeGroup.id)]).catch(
-                    () => undefined,
-                  );
+                  updateSnapshot((current) => syncSavedGroupSnapshot(current, updated));
+                  void Promise.all([
+                    refreshBots(),
+                    activeGroupId.current === updated.id
+                      ? refreshGroupThreadRef.current(updated.id)
+                      : Promise.resolve(),
+                  ]).catch(() => undefined);
                 }}
                 onRemove={async () => {
                   await rpc.groups.remove({ groupId: activeGroup.id });
+                  releaseDeletedPendingGroup(activeGroup.id);
                   const remainingGroups = groups.filter((group) => group.id !== activeGroup.id);
                   setGroups(remainingGroups);
                   setPanel(null);
@@ -4275,7 +4474,11 @@ export function ShellPage() {
               const request = contextBot
                 ? rpc.bots.archive({ botId: contextBot.id })
                 : rpc.groups.archive({ groupId: contextGroup!.id });
-              void request.then(() => refreshBots(true));
+              void request.then(() => {
+                if (contextBot) removePendingRecipient(contextBot.id);
+                else releaseDeletedPendingGroup(contextGroup!.id);
+                return refreshBots(true);
+              });
             }}
             onDelete={() => {
               if (contextBot) setDeleteTarget(contextBot);
@@ -4343,6 +4546,7 @@ export function ShellPage() {
             onCancel={() => setDeleteTarget(null)}
             onConfirm={async (deleteMemories) => {
               await rpc.bots.remove({ botId: deleteTarget.id, deleteMemories });
+              removePendingRecipient(deleteTarget.id);
               setDeleteTarget(null);
               setPanel(null);
               await refreshBots(true);
@@ -4357,6 +4561,7 @@ export function ShellPage() {
             onCancel={() => setDeleteGroupTarget(null)}
             onConfirm={async () => {
               await rpc.groups.remove({ groupId: deleteGroupTarget.id });
+              releaseDeletedPendingGroup(deleteGroupTarget.id);
               setDeleteGroupTarget(null);
               setPanel(null);
               await refreshBots(true);

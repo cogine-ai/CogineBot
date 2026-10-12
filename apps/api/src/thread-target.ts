@@ -30,6 +30,7 @@ import {
   createRepos,
   createThreadMessageInTransaction,
   expireComputerExecutionLeases,
+  groupMemberOrderBy,
   IsolationError,
   lockOwnedGroup,
   touchGroupUpdatedAt,
@@ -267,7 +268,7 @@ async function lockAndLoadGroupMembers(
       members: {
         where: { bot: { archivedAt: null } },
         include: { bot: { select: { id: true, name: true, color: true } } },
-        orderBy: { createdAt: "asc" },
+        orderBy: groupMemberOrderBy,
       },
     },
   });

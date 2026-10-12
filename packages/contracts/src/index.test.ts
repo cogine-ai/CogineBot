@@ -286,6 +286,19 @@ describe("contracts", () => {
     ).toBe(false);
   });
 
+  it("accepts optional bounded group creation nonces without changing legacy input", () => {
+    const input = { name: "Planning", botIds: ["bot-1", "bot-2"] };
+    expect(CreateGroupInput.parse(input)).toEqual(input);
+    expect(CreateGroupInput.parse({ ...input, clientNonce: "group-draft-1" })).toEqual({
+      ...input,
+      clientNonce: "group-draft-1",
+    });
+    expect(CreateGroupInput.safeParse({ ...input, clientNonce: "" }).success).toBe(false);
+    expect(CreateGroupInput.safeParse({ ...input, clientNonce: "n".repeat(201) }).success).toBe(
+      false,
+    );
+  });
+
   it("keeps model OAuth start results mode-specific", () => {
     const shared = {
       loginId: "login-1",

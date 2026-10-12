@@ -173,6 +173,8 @@ import {
   findModelCredential,
   findSpaceMemoryConfig,
   formatMessagingLinkCode,
+  GroupCreationConflictError,
+  groupMemberOrderBy,
   InvalidSpaceNameError,
   IsolationError,
   issueMessagingLinkCode,
@@ -1898,6 +1900,9 @@ export function createRouter(deps: RouterDeps) {
         try {
           return await groupRepos.createGroup(context.actor, input);
         } catch (error) {
+          if (error instanceof GroupCreationConflictError) {
+            throw new ORPCError("CONFLICT", { message: error.message });
+          }
           throw mapSpaceLifecycleError(error);
         }
       }),
@@ -2221,7 +2226,7 @@ export function createRouter(deps: RouterDeps) {
               archivedAt: null,
               thread: { id: target.threadId },
             },
-            include: { members: { orderBy: { createdAt: "asc" } } },
+            include: { members: { orderBy: groupMemberOrderBy } },
           });
           const botId = group?.members[0]?.botId;
           if (!botId) throw new IsolationError();

@@ -130,8 +130,9 @@ test("desktop shell uses persistent Bot and group lists and keeps existing entry
     await expect(page.getByTestId("create-bot-form")).toBeVisible();
     await page.getByRole("button", { name: "Cancel new bot", exact: true }).click();
     await openNewGroup(page);
-    await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "create-group");
-    await page.getByRole("button", { name: "Cancel new group", exact: true }).click();
+    await expect(page.getByTestId("pending-group-chat")).toBeVisible();
+    await expect(page.getByTestId("chat-recipients")).toBeVisible();
+    await page.getByTestId("chat-close").click();
 
     const footerAvatar = page.getByTestId("user-menu-trigger");
     const files = page.getByTestId("sidebar-files-trigger");
