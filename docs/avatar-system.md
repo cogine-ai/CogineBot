@@ -5,7 +5,7 @@ The avatar identifies a companion before its name is read. All conversation surf
 ## Appearance
 
 - Use the eleven Gaze silhouettes in this order: circle, square, triangle, pentagon, hexagon, octagon, diamond, pill, column, egg, arch. Body geometry and eye placement live in `@rakazo/core`, shared by web and native rendering.
-- Resolve the initial silhouette and eyes deterministically from the Bot identity. An explicit silhouette overrides only the body choice. Preserve the Bot's existing identity color; do not assign colors by role or current activity.
+- Resolve the initial silhouette and eyes deterministically from the Bot identity. An explicit silhouette overrides only the body choice. Preserve the Bot's existing identity color; do not assign colors by role or current activity. The companion palette and artwork ink belong to the shared `@rakazo/ui-tokens` source.
 - Frame the static SVG with `viewBox="10 10 80 80"`. Keep a square, nonshrinking frame at every size. Group avatars compose member avatars using the existing member order and count layout.
 - Uploaded images retain the existing centered square crop, 256 px WebP storage, and circular presentation. They remain images during activity.
 - Replace the previous global Robot/Organic appearance selector with this single companion system. Appearance editing belongs to each Bot. The existing preference contract is left unchanged; this UI work does not migrate records or change backend behavior.

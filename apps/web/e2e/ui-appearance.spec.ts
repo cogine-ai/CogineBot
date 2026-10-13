@@ -8,6 +8,17 @@ import {
   signup,
 } from "./helpers";
 
+async function backgroundToken(page: Page, token: "--sidebar-accent" | "--muted") {
+  return page.evaluate((name) => {
+    const probe = document.createElement("span");
+    probe.style.backgroundColor = `var(${name})`;
+    document.body.append(probe);
+    const color = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return color;
+  }, token);
+}
+
 async function captureSidebarSearchSelected(
   page: Page,
   testInfo: Parameters<typeof captureScreenshot>[1],
@@ -120,8 +131,10 @@ test("Bot and group navigation share a hover tone and account menu items are con
   const readChiefBg = () => chief.evaluate((el) => getComputedStyle(el).backgroundColor);
   await expect.poll(readChiefBg).toBe("rgba(0, 0, 0, 0)");
 
+  const sidebarAccent = await backgroundToken(page, "--sidebar-accent");
   await chief.hover();
-  await expect.poll(readChiefBg).not.toBe("rgba(0, 0, 0, 0)");
+  // Wait for the shared hover token, not an intermediate transition alpha.
+  await expect.poll(readChiefBg).toBe(sidebarAccent);
   const chiefBg = await readChiefBg();
   await captureScreenshot(page, testInfo, "sidebar-row-hover");
 
@@ -135,14 +148,7 @@ test("Bot and group navigation share a hover tone and account menu items are con
   await page.getByTestId("user-menu-trigger").click();
   const settings = page.getByRole("button", { name: "Settings", exact: true });
   const integrations = page.getByRole("button", { name: "Integrations", exact: true });
-  const mutedBg = await settings.evaluate(() => {
-    const probe = document.createElement("span");
-    probe.style.backgroundColor = "var(--muted)";
-    document.body.append(probe);
-    const color = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return color;
-  });
+  const mutedBg = await backgroundToken(page, "--muted");
   const readSettingsBg = () => settings.evaluate((el) => getComputedStyle(el).backgroundColor);
   await settings.hover();
   await expect.poll(readSettingsBg).toBe(mutedBg);

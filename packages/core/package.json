@@ -52,6 +52,7 @@
   "dependencies": {
     "@observablehq/plot": "0.6.17",
     "@rakazo/contracts": "workspace:*",
+    "@rakazo/ui-tokens": "workspace:*",
     "croner": "10.0.1",
     "d3-dsv": "3.0.1",
     "dotenv": "17.4.2",

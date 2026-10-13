@@ -1,8 +1,21 @@
 import { BOT_AVATAR_SHAPE_COUNT, parseBotAvatarValue } from "@rakazo/contracts";
+import { GAZE_BOT_COLORS as tokenColors, GAZE_INK_COLOR as tokenInk } from "@rakazo/ui-tokens";
 import { describe, expect, it } from "vitest";
-import { GAZE_SHAPE_KEYS, GAZE_SHAPES, resolveGazeAvatar } from "./gaze-avatar.js";
+import {
+  GAZE_BOT_COLORS,
+  GAZE_INK_COLOR,
+  GAZE_SHAPE_KEYS,
+  GAZE_SHAPES,
+  resolveGazeAvatar,
+} from "./gaze-avatar.js";
 
 describe("shared Gaze avatar geometry", () => {
+  it("re-exports companion colors from the shared UI token source", () => {
+    expect(GAZE_BOT_COLORS).toBe(tokenColors);
+    expect(GAZE_INK_COLOR).toBe(tokenInk);
+    expect(GAZE_BOT_COLORS).toHaveLength(8);
+  });
+
   it("resolves every persisted shape to the same geometry on every surface", () => {
     expect(GAZE_SHAPE_KEYS).toHaveLength(BOT_AVATAR_SHAPE_COUNT);
     GAZE_SHAPE_KEYS.forEach((key, shapeIndex) => {

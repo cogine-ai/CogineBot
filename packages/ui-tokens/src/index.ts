@@ -125,6 +125,19 @@ export const tokens = darkTokens;
 
 export const RADIUS = "0.75rem";
 
+/** Companion artwork colors stay fixed across themes to preserve identity. */
+export const GAZE_INK_COLOR = "#18252D";
+export const GAZE_BOT_COLORS = [
+  "#F5A15D",
+  "#62A8EC",
+  "#A78BE4",
+  "#56C4B7",
+  "#E88EB1",
+  "#9BA5AE",
+  "#EF6E65",
+  "#E4C05D",
+] as const;
+
 export const botColors = [
   "#3EC5A8",
   "#F5A03C",

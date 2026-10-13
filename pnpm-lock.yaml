@@ -761,6 +761,9 @@ importers:
       '@rakazo/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@rakazo/ui-tokens':
+        specifier: workspace:*
+        version: link:../ui-tokens
       croner:
         specifier: 10.0.1
         version: 10.0.1

@@ -1,20 +1,11 @@
 import { avatarIdentitySeed } from "./avatar-shape.js";
 
+export { GAZE_BOT_COLORS, GAZE_INK_COLOR } from "@rakazo/ui-tokens";
+
 /** Static Gaze artwork, derived from DiceBear's CC0 Gaze definition.
  * Source: https://www.dicebear.com/styles/gaze/ (styles 10.6.0).
  */
 export const GAZE_VIEWBOX = "10 10 80 80";
-export const GAZE_INK_COLOR = "#18252D";
-export const GAZE_BOT_COLORS = [
-  "#F5A15D",
-  "#62A8EC",
-  "#A78BE4",
-  "#56C4B7",
-  "#E88EB1",
-  "#9BA5AE",
-  "#EF6E65",
-  "#E4C05D",
-] as const;
 
 export const GAZE_SHAPE_KEYS = [
   "circle",
