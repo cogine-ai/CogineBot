@@ -1,8 +1,16 @@
 import type { Actor } from "@rakazo/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createRepos } from "./repos.js";
 import { IsolationError } from "./scope.js";
+import type * as ThreadListingModule from "./thread-listing.js";
+import { loadThreadAttention } from "./thread-listing.js";
+
+vi.mock("./thread-listing.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof ThreadListingModule>()),
+  loadThreadAttention: vi.fn(async () => new Map()),
+}));
+beforeEach(() => vi.mocked(loadThreadAttention).mockReset().mockResolvedValue(new Map()));
 
 const actor: Actor = {
   userId: "user-1",
@@ -47,6 +55,24 @@ function reposFor(memoryScope: string | null) {
 }
 
 describe("createRepos.listBots", () => {
+  it("maps the same current approval target into full and cross-space navigation rows", async () => {
+    vi.mocked(loadThreadAttention).mockResolvedValue(
+      new Map([
+        [
+          baseBot.thread.id,
+          {
+            attentionMessageId: "approval-current",
+            answerableApprovalMessageIds: ["approval-current"],
+          },
+        ],
+      ]),
+    );
+    const repos = reposFor(null);
+    expect((await repos.listBots(actor))[0]?.attentionMessageId).toBe("approval-current");
+    expect(
+      (await repos.listSpaceBotsForSpaces(actor, [actor.spaceId]))[0]?.attentionMessageId,
+    ).toBe("approval-current");
+  });
   it("passes memoryScope through as null when unset", async () => {
     await expect(reposFor(null).listBots(actor)).resolves.toEqual([
       expect.objectContaining({ memoryScope: null }),
@@ -86,6 +112,48 @@ describe("createRepos.listBots", () => {
     });
   });
 
+  it("includes a peer-run text reply that is visible in the conversation", async () => {
+    const prisma = {
+      bot: {
+        findMany: vi.fn(async () => [
+          {
+            ...baseBot,
+            thread: {
+              ...baseBot.thread,
+              messages: [
+                {
+                  seq: 3,
+                  runId: "peer-run",
+                  blocks: [
+                    {
+                      kind: "bot_message_received",
+                      fromBotId: "bot-2",
+                      fromBotName: "Blue",
+                      text: "Receipt body",
+                    },
+                  ],
+                },
+                {
+                  seq: 2,
+                  runId: "peer-run",
+                  blocks: [{ kind: "text", text: "Blue found a quiet cafe nearby." }],
+                },
+                {
+                  seq: 1,
+                  runId: "user-run",
+                  blocks: [{ kind: "text", text: "Ask Blue for a place." }],
+                },
+              ],
+            },
+          },
+        ]),
+      },
+      run: { findMany: vi.fn(async () => [{ id: "peer-run" }]) },
+    };
+    const bots = await createRepos(prisma as unknown as PrismaClient).listBots(actor);
+    expect(bots[0]?.preview).toBe("Blue found a quiet cafe nearby.");
+  });
+
   it("classifies unseen runs in older pages and retains negative results between pages", async () => {
     const prisma = {
       bot: {
@@ -95,7 +163,11 @@ describe("createRepos.listBots", () => {
             thread: {
               ...baseBot.thread,
               messages: [
-                { seq: 30, runId: "peer-new", blocks: [{ kind: "text", text: "Hidden" }] },
+                {
+                  seq: 30,
+                  runId: "peer-new",
+                  blocks: [{ kind: "steps", steps: [{ label: "New peer activity", count: 1 }] }],
+                },
               ],
             },
           },
@@ -111,11 +183,19 @@ describe("createRepos.listBots", () => {
         findMany: vi
           .fn()
           .mockResolvedValueOnce([
-            { seq: 20, runId: "peer-old", blocks: [{ kind: "text", text: "Also hidden" }] },
+            {
+              seq: 20,
+              runId: "peer-old",
+              blocks: [{ kind: "steps", steps: [{ label: "Older peer activity", count: 1 }] }],
+            },
             { seq: 19, runId: "user-old", blocks: [] },
           ])
           .mockResolvedValueOnce([
-            { seq: 10, runId: "peer-old", blocks: [{ kind: "text", text: "Still hidden" }] },
+            {
+              seq: 10,
+              runId: "peer-old",
+              blocks: [{ kind: "steps", steps: [{ label: "More peer activity", count: 1 }] }],
+            },
             { seq: 9, runId: "user-old", blocks: [{ kind: "text", text: "Visible answer" }] },
           ]),
       },
@@ -132,7 +212,7 @@ describe("createRepos.listBots", () => {
     expect(prisma.message.findMany).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps bot-to-bot run output out of sidebar previews", async () => {
+  it("keeps peer receipts and operational activity out of sidebar previews", async () => {
     const findMany = vi.fn(async () => [
       {
         ...baseBot,
@@ -141,7 +221,7 @@ describe("createRepos.listBots", () => {
           messages: [
             {
               runId: "run-peer",
-              blocks: [{ kind: "text", text: "Echoed peer reply" }],
+              blocks: [{ kind: "steps", steps: [{ label: "Peer activity", count: 1 }] }],
             },
             {
               runId: "run-peer",
@@ -184,7 +264,7 @@ describe("createRepos.listBots", () => {
     );
   });
 
-  it("skips a peer-run preview tail when the receipt is outside the window", async () => {
+  it("skips peer activity when its receipt is outside the window", async () => {
     const prisma = {
       bot: {
         findMany: vi.fn(async () => [
@@ -195,7 +275,7 @@ describe("createRepos.listBots", () => {
               messages: [
                 {
                   runId: "run-peer",
-                  blocks: [{ kind: "text", text: "Echoed peer reply" }],
+                  blocks: [{ kind: "steps", steps: [{ label: "Peer activity", count: 1 }] }],
                 },
                 { runId: "run-user", blocks: [{ kind: "text", text: "Visible answer" }] },
               ],
@@ -231,7 +311,7 @@ describe("createRepos.listBots", () => {
                 {
                   seq: 20,
                   runId: "run-peer",
-                  blocks: [{ kind: "text", text: "Echoed peer reply" }],
+                  blocks: [{ kind: "steps", steps: [{ label: "Peer activity", count: 1 }] }],
                 },
               ],
             },
@@ -258,10 +338,34 @@ describe("createRepos.listBots", () => {
 
   it("uses a visible message from the fourth older window for preview", async () => {
     const peerWindows = [
-      [{ seq: 80, runId: "run-peer", blocks: [{ kind: "text", text: "peer 80" }] }],
-      [{ seq: 60, runId: "run-peer", blocks: [{ kind: "text", text: "peer 60" }] }],
-      [{ seq: 40, runId: "run-peer", blocks: [{ kind: "text", text: "peer 40" }] }],
-      [{ seq: 20, runId: "run-peer", blocks: [{ kind: "text", text: "peer 20" }] }],
+      [
+        {
+          seq: 80,
+          runId: "run-peer",
+          blocks: [{ kind: "steps", steps: [{ label: "Peer 80", count: 1 }] }],
+        },
+      ],
+      [
+        {
+          seq: 60,
+          runId: "run-peer",
+          blocks: [{ kind: "steps", steps: [{ label: "Peer 60", count: 1 }] }],
+        },
+      ],
+      [
+        {
+          seq: 40,
+          runId: "run-peer",
+          blocks: [{ kind: "steps", steps: [{ label: "Peer 40", count: 1 }] }],
+        },
+      ],
+      [
+        {
+          seq: 20,
+          runId: "run-peer",
+          blocks: [{ kind: "steps", steps: [{ label: "Peer 20", count: 1 }] }],
+        },
+      ],
       [{ seq: 1, runId: "run-user", blocks: [{ kind: "text", text: "Fourth-window answer" }] }],
     ];
     let windowIndex = 0;
@@ -330,6 +434,7 @@ describe("createRepos.listSpaceBotsForSpaces", () => {
         pinned: true,
         sectionId: null,
         unread: true,
+        attentionMessageId: null,
         parentBotId: null,
         preview: "Waiting for a reply",
         status: "running",

@@ -90,8 +90,27 @@ export async function openNewGroup(page: Page) {
 }
 
 export async function openNewSpace(page: Page) {
-  await page.getByTestId("create-menu-trigger").click();
+  await page.getByTestId("space-menu-trigger").click();
   await page.getByTestId("create-new-space").click();
+}
+
+export async function openIntegrations(page: Page) {
+  await page.getByTestId("user-menu-trigger").click();
+  await page.getByRole("button", { name: "Integrations", exact: true }).click();
+}
+
+export async function openActivityMenu(page: Page) {
+  await page.getByTestId("user-menu-trigger").click();
+  const activity = page.locator("button[data-activity-mode]");
+  await expect(activity).toBeVisible();
+  return activity;
+}
+
+export async function expectActivityMode(page: Page, enabled: boolean) {
+  const activity = await openActivityMenu(page);
+  await expect(activity).toHaveAttribute("aria-pressed", String(enabled));
+  await expect(activity).toHaveAttribute("data-activity-mode", enabled ? "on" : "off");
+  await page.keyboard.press("Escape");
 }
 
 /** Open the create form from the + picker, submit, and wait for the new chat. */

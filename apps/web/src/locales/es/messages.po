@@ -13,10 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: src/pages/Shell.tsx
-msgid " (unread)"
-msgstr " (sin leer)"
-
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "{0, plural, one {# model} other {# models}}"
@@ -33,11 +29,6 @@ msgstr ""
 #: src/pages/Onboarding.tsx
 msgid "{0, plural, one {Waiting for sign-in — the link expires in about # minute.} other {Waiting for sign-in — the link expires in about # minutes.}}"
 msgstr ""
-
-#. placeholder {0}: file.name
-#: src/pages/Shell.tsx
-msgid "{0} (max {ATTACHMENT_MAX_COUNT} attachments)"
-msgstr "{0} (máx. {ATTACHMENT_MAX_COUNT} archivos adjuntos)"
 
 #. placeholder {0}: file.name
 #: src/pages/Shell.tsx
@@ -141,6 +132,14 @@ msgstr "hace {hours} h"
 #: src/pages/ActivityList.tsx
 msgid "{minutes}m ago"
 msgstr "hace {minutes} min"
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (approval pending)"
+msgstr ""
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (unread)"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -363,6 +362,10 @@ msgstr "Agregar servidor"
 msgid "Add server URL"
 msgstr ""
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Add someone…"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
 msgstr "Agregar a la rutina"
@@ -519,6 +522,10 @@ msgstr "Clave de API"
 msgid "API key header"
 msgstr "Encabezado de clave de API"
 
+#: src/pages/Shell.tsx
+msgid "App"
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Appearance"
 msgstr "Apariencia"
@@ -557,7 +564,6 @@ msgid "Arguments"
 msgstr "Argumentos"
 
 #: src/pages/Artifacts.tsx
-#: src/pages/Shell.tsx
 msgid "Artifacts"
 msgstr "Artefactos"
 
@@ -656,12 +662,8 @@ msgid "Available to this bot's shell commands as {commandVariable}"
 msgstr "Disponible para los comandos de shell de este bot como {commandVariable}"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Avatar Studio"
-msgstr "Estudio de avatares"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Avatars"
-msgstr "Avatares"
+msgid "Avatar image"
+msgstr ""
 
 #: src/components/computer/FilesApp.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -794,10 +796,6 @@ msgstr "Cancelar"
 msgid "Cancel new bot"
 msgstr "Cancelar nuevo bot"
 
-#: src/pages/GroupPanel.tsx
-msgid "Cancel new group"
-msgstr "Cancelar nuevo grupo"
-
 #: src/pages/shell/chat-context.tsx
 msgid "Cancel reply"
 msgstr "Cancelar respuesta"
@@ -892,10 +890,6 @@ msgstr "Comprobando…"
 msgid "Checkout has local changes. Clean it before updating."
 msgstr "El checkout tiene cambios locales. Límpialo antes de actualizar."
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose a bot shape, color, or upload an image"
-msgstr "Elige una forma y color del bot, o sube una imagen"
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Choose a bot…"
 msgstr "Elige un bot…"
@@ -905,8 +899,12 @@ msgid "Choose a new password"
 msgstr "Elige una contraseña nueva"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose file"
-msgstr "Elegir archivo"
+msgid "Choose an image file"
+msgstr ""
+
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Choose image"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Choose which connected model Rakazo uses."
@@ -945,9 +943,7 @@ msgstr ""
 #: src/components/ErrorBoundary.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/PeerMessagesOverlay.tsx
 #: src/pages/RoutineEditor.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/WindowChrome.tsx
 msgid "Close"
 msgstr "Cerrar"
@@ -959,6 +955,11 @@ msgstr ""
 #: src/pages/shell/message-cards.tsx
 msgid "Close chart"
 msgstr "Cerrar gráfico"
+
+#: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
+msgid "Close chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Close computer"
@@ -994,6 +995,7 @@ msgstr "Cerrar configuración de modelos"
 msgid "Close navigation"
 msgstr "Cerrar navegación"
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/Shell.tsx
 msgid "Close panel"
 msgstr "Cerrar panel"
@@ -1019,15 +1021,14 @@ msgstr "Nube"
 msgid "Code"
 msgstr "Código"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Collapse {0}"
 msgstr "Contraer {0}"
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Color"
-msgstr "Color"
+#: src/pages/Shell.tsx
+msgid "Collapse {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Color {color}"
@@ -1153,6 +1154,7 @@ msgstr "Conectar Treg"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connected"
@@ -1317,10 +1319,6 @@ msgstr "No se pudo continuar"
 #: src/pages/shell/bot-panel.tsx
 msgid "Could not create bot"
 msgstr "No se pudo crear el bot"
-
-#: src/pages/GroupPanel.tsx
-msgid "Could not create group"
-msgstr "No se pudo crear el grupo"
 
 #: src/pages/shell/dialogs.tsx
 msgid "Could not create section"
@@ -1499,6 +1497,10 @@ msgstr ""
 msgid "Could not open file"
 msgstr ""
 
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Could not open image. Try again."
+msgstr ""
+
 #: src/pages/LocalSettings.tsx
 msgid "Could not open local settings. Start the local server and create its owner account, then try again."
 msgstr ""
@@ -1585,6 +1587,8 @@ msgid "Could not save backup models"
 msgstr "No se pudieron guardar los modelos de respaldo."
 
 #: src/pages/GroupPanel.tsx
+#: src/pages/Shell.tsx
+#: src/pages/shell/group-title.tsx
 msgid "Could not save group"
 msgstr "No se pudo guardar el grupo"
 
@@ -1684,10 +1688,6 @@ msgstr ""
 msgid "Couldn't load messaging settings"
 msgstr "No se pudo cargar la configuración de mensajería"
 
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Couldn't update avatars"
-msgstr "No se pudieron actualizar los avatares"
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Couldn't update messaging settings"
 msgstr "No se pudo actualizar la configuración de mensajería"
@@ -1707,9 +1707,13 @@ msgstr "Crea una sección y mueve {0} a ella."
 msgid "Create account"
 msgstr "Crear cuenta"
 
-#: src/pages/GroupPanel.tsx
-msgid "Create group"
-msgstr "Crear grupo"
+#: src/pages/Shell.tsx
+msgid "Create Bot"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Create group chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
@@ -1729,6 +1733,7 @@ msgid "Create Routine"
 msgstr "Crear rutina"
 
 #: src/components/AskCard.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Create space"
 msgstr "Crear space"
@@ -1741,7 +1746,6 @@ msgstr "Crea tu Rakazo"
 msgid "Created"
 msgstr "Creado"
 
-#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Creating…"
@@ -1812,7 +1816,6 @@ msgstr "Rechazar"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Default"
 msgstr "Predeterminado"
 
@@ -1985,9 +1988,12 @@ msgid "Don’t have an account?"
 msgstr "¿No tienes una cuenta?"
 
 #: src/pages/ActivityList.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Done"
 msgstr "Listo"
+
+#: src/pages/shell/group-title.tsx
+msgid "Double-click to rename"
+msgstr ""
 
 #: src/components/computer/FilesApp.tsx
 #: src/pages/Artifacts.tsx
@@ -2133,11 +2139,14 @@ msgstr "Token de Executor"
 msgid "Expand"
 msgstr "Expandir"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Expand {0}"
 msgstr "Expandir {0}"
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Export"
@@ -2192,6 +2201,7 @@ msgid "File is too large to upload."
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Shell.tsx
 msgid "Files"
 msgstr ""
 
@@ -2291,6 +2301,10 @@ msgstr "Evento de Git"
 msgid "Group"
 msgstr "Grupo"
 
+#: src/pages/shell/group-title.tsx
+msgid "Group name"
+msgstr ""
+
 #: src/pages/GroupPanel.tsx
 msgid "Group settings"
 msgstr "Configuración del grupo"
@@ -2340,10 +2354,6 @@ msgstr "Escuchar una muestra"
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Hi, this is how I'll sound when I read replies out loud."
 msgstr "Hola, así sonaré cuando lea las respuestas en voz alta."
-
-#: src/pages/Shell.tsx
-msgid "Hide bots"
-msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Hide password"
@@ -2713,10 +2723,6 @@ msgstr ""
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "Miembros ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 
-#: src/pages/GroupPanel.tsx
-msgid "Members (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
-msgstr "Miembros (elige {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
-
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -2757,12 +2763,20 @@ msgid "Message event"
 msgstr ""
 
 #: src/pages/Shell.tsx
+msgid "Message from"
+msgstr ""
+
+#: src/pages/Shell.tsx
 msgid "Message from {peer}"
 msgstr "Mensaje de {peer}"
 
 #: src/pages/Shell.tsx
 msgid "Message…"
 msgstr "Mensaje…"
+
+#: src/pages/Shell.tsx
+msgid "Messaged"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Messaged {peer}"
@@ -2885,6 +2899,10 @@ msgstr "Mover a"
 msgid "Mute"
 msgstr "Silenciar"
 
+#: src/pages/Shell.tsx
+msgid "My space"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
 #: src/pages/GroupPanel.tsx
@@ -2899,13 +2917,13 @@ msgstr "Nombre"
 msgid "Name this bot"
 msgstr "Nombra este bot"
 
-#: src/pages/GroupPanel.tsx
-msgid "Name this group"
-msgstr "Nombra este grupo"
-
 #: src/pages/RoutineEditor.tsx
 msgid "Name this routine"
 msgstr "Nombra esta rutina"
+
+#: src/pages/Shell.tsx
+msgid "Needs auth"
+msgstr ""
 
 #: src/pages/ActivityList.tsx
 msgid "Needs input"
@@ -2922,10 +2940,6 @@ msgstr ""
 #: src/pages/shell/bot-panel.tsx
 msgid "New bot"
 msgstr "Nuevo bot"
-
-#: src/pages/GroupPanel.tsx
-msgid "New group"
-msgstr "Nuevo grupo"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "New open-work item"
@@ -2973,6 +2987,7 @@ msgstr "Sin autenticación"
 msgid "No bot activity yet."
 msgstr "Aún no hay actividad del bot."
 
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/shell/command-palette.tsx
 msgid "No bots"
 msgstr ""
@@ -3038,6 +3053,7 @@ msgid "No remote MCP servers found"
 msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
 msgstr "Sin resultados"
@@ -3143,10 +3159,9 @@ msgstr ""
 msgid "Open"
 msgstr "Abrir"
 
-#. placeholder {0}: group.title
 #: src/pages/Shell.tsx
-msgid "Open {0}"
-msgstr "Abrir {0}"
+msgid "Open {displayTitle}"
+msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
 #: src/pages/ModelSettingsOverlay.tsx
@@ -3222,10 +3237,6 @@ msgstr "O conecta una clave de API"
 #: src/pages/Onboarding.tsx
 msgid "Or paste an API key"
 msgstr "O pega una clave de API"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Organic"
-msgstr "Orgánico"
 
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
@@ -3399,6 +3410,10 @@ msgstr ""
 msgid "Recent"
 msgstr "Recientes"
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Recipients"
+msgstr ""
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
 msgstr "Reconectar OAuth"
@@ -3503,7 +3518,9 @@ msgid "Remove"
 msgstr "Quitar"
 
 #. placeholder {0}: attachment.file.name
+#. placeholder {0}: bot.name
 #: src/pages/Shell.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "Remove {0}"
 msgstr "Quitar {0}"
 
@@ -3552,6 +3569,10 @@ msgstr "Eliminado, pero falló la actualización de la lista"
 #: src/pages/PluginsOverlay.tsx
 msgid "Removing…"
 msgstr "Quitando…"
+
+#: src/pages/Shell.tsx
+msgid "Rename"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
@@ -3685,10 +3706,6 @@ msgstr "Revisa la configuración del proveedor y vuelve a probar."
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "Revocar"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Robot"
-msgstr "Robot"
 
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Room guidance"
@@ -3952,10 +3969,6 @@ msgstr "Configuración: Uso"
 msgid "Setup help"
 msgstr "Ayuda de configuración"
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Shape"
-msgstr "Forma"
-
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Shared"
@@ -4124,6 +4137,10 @@ msgstr "SSO no está disponible temporalmente. Inténtalo de nuevo."
 msgid "Start {trialDays}-day free trial"
 msgstr ""
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Start a chat with…"
+msgstr ""
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Start recording"
 msgstr "Iniciar grabación"
@@ -4205,6 +4222,10 @@ msgstr "Admite razonamiento"
 
 #: src/pages/shell/command-palette.tsx
 msgid "Switch bot"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Switch space"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4309,10 +4330,6 @@ msgstr ""
 msgid "This cannot be undone."
 msgstr "Esto no se puede deshacer."
 
-#: src/pages/PeerMessagesOverlay.tsx
-msgid "This chat is view-only"
-msgstr "Este chat es de solo lectura"
-
 #: src/pages/HostComputerPrompt.tsx
 msgid "this computer"
 msgstr "esta computadora"
@@ -4396,6 +4413,7 @@ msgid "To {0}"
 msgstr ""
 
 #: src/pages/shell/bot-picker.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "To:"
 msgstr "Para:"
 
@@ -4485,6 +4503,10 @@ msgstr "Desfijar"
 #: src/pages/Shell.tsx
 msgid "Unsupported file type: {0}"
 msgstr "Tipo de archivo no compatible: {0}"
+
+#: src/pages/Shell.tsx
+msgid "Up to {ATTACHMENT_MAX_COUNT} attachments. {overLimit} not added."
+msgstr ""
 
 #: src/components/DesktopUpdates.tsx
 #: src/components/SoftwareUpdateSection.tsx
@@ -4716,7 +4738,6 @@ msgstr ""
 msgid "year"
 msgstr ""
 
-#: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Yesterday"
 msgstr "Ayer"

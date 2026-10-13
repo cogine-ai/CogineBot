@@ -1,18 +1,14 @@
-import { expect, type Page, test } from "@playwright/test";
-import {
-  captureScreenshot,
-  completeOnboarding,
-  createNamedBot,
-  openNewGroup,
-  rpc,
-  signup,
-} from "./helpers";
+import type { Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { captureScreenshot, completeOnboarding, createNamedBot, rpc, signup } from "./helpers";
 
 async function createBot(page: Page, name: string) {
   return createNamedBot(page, name);
 }
 
-test("create group from + and see two bots in one transcript", async ({ page }, testInfo) => {
+test("group conversation keeps member avatars, settings and messages in one transcript", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   await signup(page, `group-${stamp}@rakazo.test`, "password12", "Group E2E");
   await completeOnboarding(page);
@@ -22,21 +18,13 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   const researcherId = await createBot(page, "Researcher");
   const writerId = await createBot(page, "Research Writer");
 
-  await openNewGroup(page);
-  await page.locator("label:has-text('Name') input").fill("Draft team");
-  const panel = page.getByTestId("side-panel");
-  await panel.getByRole("button", { name: "Researcher" }).click();
-  await panel.getByRole("button", { name: "Research Writer" }).click();
-  await captureScreenshot(page, testInfo, "group-creation");
-  await page.route("**/rpc/groups/create", async (route) => route.abort("failed"));
-  await page.getByRole("button", { name: "Create group", exact: true }).click();
-  await expect(panel.getByRole("alert")).toHaveText("Could not reach the server");
-  await expect(page.getByRole("button", { name: "Create group", exact: true })).toBeEnabled();
-  await page.unroute("**/rpc/groups/create");
-  await page.getByRole("button", { name: "Create group", exact: true }).click();
-  await page.waitForURL(/\/app\/g\/[^/]+$/);
+  const draftGroup = await rpc<{ id: string }>(page, "groups/create", {
+    name: "Draft team",
+    botIds: [researcherId, writerId],
+  });
+  await page.goto(`/app/g/${draftGroup.id}`);
   const groupUrl = page.url();
-  const draftGroupId = new URL(groupUrl).pathname.split("/").at(-1)!;
+  const draftGroupId = draftGroup.id;
   const reviewGroup = await rpc<{ id: string }>(page, "groups/create", {
     name: "Review team",
     botIds: [researcherId, writerId],
@@ -97,10 +85,21 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await expect(groupAvatar.locator(".rakazo-bot-avatar")).toHaveCount(2);
   const workingAvatar = groupAvatar.locator('[data-working="true"]');
   await expect(workingAvatar).toHaveCount(1);
-  await expect(workingAvatar.locator(".rakazo-bot-avatar-ring")).toHaveCSS(
-    "animation-name",
-    "rakazo-avatar-spin",
-  );
+  const memberIds = groupSnapshot.members?.map((member) => member.botId) ?? [];
+  await expect
+    .poll(() =>
+      groupAvatar
+        .locator(".rakazo-bot-avatar")
+        .evaluateAll((avatars) =>
+          avatars.map((avatar) => avatar.getAttribute("data-avatar-identity")),
+        ),
+    )
+    .toEqual(memberIds);
+  await expect(workingAvatar).toHaveAttribute("data-avatar-identity", memberIds[0]!);
+  await expect(workingAvatar.locator(".avatar-activity")).toHaveAttribute("data-motion", "active");
+  await expect(workingAvatar.locator(".avatar-activity-motion > svg")).toBeVisible();
+  await expect(groupAvatar.locator('[data-working="false"] .rakazo-gaze-avatar')).toBeVisible();
+  await expect(workingAvatar.locator(".rakazo-bot-avatar-ring")).toHaveCount(0);
   await captureScreenshot(page, testInfo, "group-avatar-active");
   await page.unroute("**/rpc/groups/list");
   await page.unroute("**/rpc/threads/get");
@@ -129,7 +128,9 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await sidebar.getByRole("button", { name: /^Review team/ }).click();
   await expect(page.getByRole("combobox", { name: "Message Review team" })).toHaveValue("");
   await sidebar.getByRole("button", { name: /^Draft team/ }).click();
-  await expect(page.getByRole("combobox", { name: "Message Draft team" })).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: "Message Draft team" })).toHaveValue(
+    "@Researcher unfinished draft",
+  );
 
   const composer = page.getByRole("combobox", { name: "Message Draft team" });
   await composer.fill("@Res");
@@ -151,7 +152,7 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await expect(transcript.getByText("Researcher", { exact: true }).first()).toBeVisible();
   await expect(transcript.getByText("Research Writer", { exact: true }).first()).toBeVisible();
   const researcherSpeak = transcript
-    .locator("div")
+    .locator("[data-message-id]")
     .filter({ has: page.getByText("Researcher", { exact: true }) })
     .filter({ has: page.getByRole("button", { name: "Speak this reply" }) })
     .first()

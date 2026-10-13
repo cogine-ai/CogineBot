@@ -1,6 +1,7 @@
 import type { MessageBlock, ThreadMessage } from "@rakazo/contracts";
 
 export interface PeerMessage {
+  id: string;
   messageId: string;
   direction: "sent" | "received";
   peerBotId: string;
@@ -23,14 +24,20 @@ export function isPeerBlock(block: MessageBlock): block is PeerBlock {
   return block.kind === "bot_message_sent" || block.kind === "bot_message_received";
 }
 
-export function peerMessagesFrom(messages: readonly ThreadMessage[]): PeerMessage[] {
+export function peerMessagesFrom(
+  messages: readonly ThreadMessage[],
+  botId?: string,
+): PeerMessage[] {
   const collected: PeerMessage[] = [];
   for (const message of messages) {
-    for (const block of message.blocks) {
+    // A group thread can contain receipts from several Bots to the same peer.
+    if (botId && message.botId && message.botId !== botId) continue;
+    for (const [index, block] of message.blocks.entries()) {
       if (!isPeerBlock(block)) continue;
       collected.push(
         block.kind === "bot_message_sent"
           ? {
+              id: `${message.threadId}:${message.id}:${index}`,
               messageId: message.id,
               direction: "sent",
               peerBotId: block.toBotId,
@@ -39,6 +46,7 @@ export function peerMessagesFrom(messages: readonly ThreadMessage[]): PeerMessag
               createdAt: message.createdAt,
             }
           : {
+              id: `${message.threadId}:${message.id}:${index}`,
               messageId: message.id,
               direction: "received",
               peerBotId: block.fromBotId,
@@ -53,9 +61,12 @@ export function peerMessagesFrom(messages: readonly ThreadMessage[]): PeerMessag
 }
 
 /** One conversation per peer, most recently active first. */
-export function peerConversations(messages: readonly ThreadMessage[]): PeerConversation[] {
+export function peerConversations(
+  messages: readonly ThreadMessage[],
+  botId?: string,
+): PeerConversation[] {
   const byPeer = new Map<string, PeerConversation>();
-  for (const peerMessage of peerMessagesFrom(messages)) {
+  for (const peerMessage of peerMessagesFrom(messages, botId)) {
     const existing = byPeer.get(peerMessage.peerBotId);
     if (existing) {
       existing.messages.push(peerMessage);

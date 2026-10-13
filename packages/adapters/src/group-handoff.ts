@@ -1,12 +1,13 @@
 import { runContinueJob } from "@rakazo/adapter-kit";
 import { MessageBlock } from "@rakazo/contracts";
 import { botMessageHopExhausted, nextBotMessageHop, renderGroupMembersContext } from "@rakazo/core";
+import type { PrismaClient } from "@rakazo/db";
 import {
   appendEventInTransaction,
   createThreadMessageInTransaction,
+  groupMemberOrderBy,
   IsolationError,
   lockOwnedGroup,
-  type PrismaClient,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -40,7 +41,7 @@ export async function handoffToGroupBot(
           members: {
             where: { bot: { archivedAt: null } },
             include: { bot: { select: { id: true, name: true } } },
-            orderBy: { createdAt: "asc" },
+            orderBy: groupMemberOrderBy,
           },
         },
       }),
@@ -200,7 +201,7 @@ export async function loadGroupContext(
         include: {
           bot: { select: { id: true, name: true, title: true, description: true } },
         },
-        orderBy: { createdAt: "asc" },
+        orderBy: groupMemberOrderBy,
       },
     },
   });

@@ -1,6 +1,7 @@
 import type * as db from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
+  connectPendingMcpApprovals,
   dismissMcpServerApprovals,
   resolveMcpApprovalCards,
   revertConnectedMcpApprovals,
@@ -29,6 +30,7 @@ function jsonContains(value: unknown, needle: unknown): boolean {
 
 function fixture(blocks: unknown[]) {
   const tx = {
+    thread: { findMany: vi.fn(async () => [{ id: "group-thread", botId: null }]) },
     message: {
       findMany: vi.fn(async () => [{ id: "card-message", botId: "bot", blocks }]),
       update: vi.fn(),
@@ -100,7 +102,14 @@ describe("resolveMcpApprovalCards", () => {
       select: { id: true, botId: true },
     });
     expect(tx.message.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { threadId: "group-thread" } }),
+      expect.objectContaining({
+        where: {
+          threadId: "group-thread",
+          botId: "bot",
+          thread: { spaceId: "space", userId: "user" },
+          blocks: { array_contains: [{ kind: "mcp_approval", serverId: "srv-a" }] },
+        },
+      }),
     );
     expect(tx.message.update).toHaveBeenCalledWith({
       where: { id: "card-message" },
@@ -180,6 +189,82 @@ describe("resolveMcpApprovalCards", () => {
     );
     expect(effect).toHaveBeenCalledWith(tx, { assign: false });
     expect(tx.message.update).not.toHaveBeenCalled();
+  });
+
+  it("records a dismissal beyond 100 unrelated messages and rejects its late approval", async () => {
+    const blocks = [
+      {
+        kind: "mcp_approval",
+        name: "Approval",
+        serverId: "srv-a",
+        transport: "stdio",
+        endpoint: null,
+        needsOAuth: false,
+        status: "pending",
+      },
+    ];
+    const { deps, actor, tx } = fixture(blocks);
+    const card = { id: "card-message", botId: "bot", blocks };
+    const rows = [
+      ...Array.from({ length: 101 }, (_, index) => ({
+        id: `message-${index}`,
+        botId: "bot",
+        blocks: [{ kind: "text", text: "New message" }],
+      })),
+      card,
+    ];
+    tx.message.findMany = vi.fn(
+      async (query: { where?: { blocks?: { array_contains?: unknown } }; take?: number }) => {
+        const needle = query.where?.blocks?.array_contains;
+        const matching = needle ? rows.filter((row) => jsonContains(row.blocks, needle)) : rows;
+        return query.take ? matching.slice(0, query.take) : matching;
+      },
+    );
+    tx.message.update = vi.fn(async (query: { data: { blocks: typeof blocks } }) => {
+      card.blocks = query.data.blocks;
+    });
+    await resolveMcpApprovalCards(deps, actor, {
+      botId: "bot",
+      serverId: "srv-a",
+      status: "dismissed",
+      threadId: "group-thread",
+    });
+    expect(card.blocks[0]?.status).toBe("dismissed");
+    const effect = vi.fn();
+    await resolveMcpApprovalCards(
+      deps,
+      actor,
+      {
+        botId: "bot",
+        serverId: "srv-a",
+        status: "connected",
+        threadId: "group-thread",
+      },
+      effect,
+    );
+    expect(effect).toHaveBeenCalledWith(tx, { assign: false });
+    expect(card.blocks[0]?.status).toBe("dismissed");
+  });
+
+  it("connects only pending matching cards inside the Settings assignment transaction", async () => {
+    const blocks = [
+      { kind: "mcp_approval", name: "Open", serverId: "srv-a", status: "pending" },
+      { kind: "mcp_approval", name: "Connected", serverId: "srv-a", status: "connected" },
+      { kind: "mcp_approval", name: "Dismissed", serverId: "srv-a", status: "dismissed" },
+      { kind: "mcp_approval", name: "Other", serverId: "srv-b", status: "pending" },
+    ];
+    const { deps, actor, tx } = fixture(blocks);
+    await expect(
+      connectPendingMcpApprovals(tx as unknown as db.Prisma.TransactionClient, actor, {
+        botId: "bot",
+        serverId: "srv-a",
+      }),
+    ).resolves.toEqual([{ threadId: "group-thread", seq: 1 }]);
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: "card-message" },
+      data: { blocks: [{ ...blocks[0], status: "connected" }, blocks[1], blocks[2], blocks[3]] },
+    });
+    expect(deps.events.notify).not.toHaveBeenCalled();
   });
 
   it("still assigns from settings after a card was dismissed", async () => {

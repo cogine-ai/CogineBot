@@ -13,10 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
-#: src/pages/Shell.tsx
-msgid " (unread)"
-msgstr " (अपठित)"
-
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "{0, plural, one {# model} other {# models}}"
@@ -33,11 +29,6 @@ msgstr ""
 #: src/pages/Onboarding.tsx
 msgid "{0, plural, one {Waiting for sign-in — the link expires in about # minute.} other {Waiting for sign-in — the link expires in about # minutes.}}"
 msgstr ""
-
-#. placeholder {0}: file.name
-#: src/pages/Shell.tsx
-msgid "{0} (max {ATTACHMENT_MAX_COUNT} attachments)"
-msgstr "{0} (अधिकतम {ATTACHMENT_MAX_COUNT} अटैचमेंट)"
 
 #. placeholder {0}: file.name
 #: src/pages/Shell.tsx
@@ -141,6 +132,14 @@ msgstr "{hours} घंटे पहले"
 #: src/pages/ActivityList.tsx
 msgid "{minutes}m ago"
 msgstr "{minutes} मिनट पहले"
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (approval pending)"
+msgstr ""
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (unread)"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -363,6 +362,10 @@ msgstr "सर्वर जोड़ें"
 msgid "Add server URL"
 msgstr ""
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Add someone…"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
 msgstr "रूटीन में जोड़ें"
@@ -519,6 +522,10 @@ msgstr "API कुंजी"
 msgid "API key header"
 msgstr "API कुंजी हेडर"
 
+#: src/pages/Shell.tsx
+msgid "App"
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Appearance"
 msgstr "रूप"
@@ -557,7 +564,6 @@ msgid "Arguments"
 msgstr "आर्ग्युमेंट"
 
 #: src/pages/Artifacts.tsx
-#: src/pages/Shell.tsx
 msgid "Artifacts"
 msgstr ""
 
@@ -656,11 +662,7 @@ msgid "Available to this bot's shell commands as {commandVariable}"
 msgstr "इस बॉट के शेल कमांड के लिए {commandVariable} के रूप में उपलब्ध"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Avatar Studio"
-msgstr "अवतार स्टूडियो"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Avatars"
+msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
@@ -794,10 +796,6 @@ msgstr "रद्द करें"
 msgid "Cancel new bot"
 msgstr "नया बॉट रद्द करें"
 
-#: src/pages/GroupPanel.tsx
-msgid "Cancel new group"
-msgstr "नया समूह रद्द करें"
-
 #: src/pages/shell/chat-context.tsx
 msgid "Cancel reply"
 msgstr "उत्तर रद्द करें"
@@ -892,10 +890,6 @@ msgstr ""
 msgid "Checkout has local changes. Clean it before updating."
 msgstr ""
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose a bot shape, color, or upload an image"
-msgstr "बॉट का आकार और रंग चुनें, या छवि अपलोड करें"
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Choose a bot…"
 msgstr ""
@@ -905,8 +899,12 @@ msgid "Choose a new password"
 msgstr "नया पासवर्ड चुनें"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose file"
-msgstr "फ़ाइल चुनें"
+msgid "Choose an image file"
+msgstr ""
+
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Choose image"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Choose which connected model Rakazo uses."
@@ -945,9 +943,7 @@ msgstr ""
 #: src/components/ErrorBoundary.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/PeerMessagesOverlay.tsx
 #: src/pages/RoutineEditor.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/WindowChrome.tsx
 msgid "Close"
 msgstr "बंद करें"
@@ -959,6 +955,11 @@ msgstr ""
 #: src/pages/shell/message-cards.tsx
 msgid "Close chart"
 msgstr "चार्ट बंद करें"
+
+#: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
+msgid "Close chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Close computer"
@@ -994,6 +995,7 @@ msgstr "मॉडल सेटिंग्स बंद करें"
 msgid "Close navigation"
 msgstr "नेविगेशन बंद करें"
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/Shell.tsx
 msgid "Close panel"
 msgstr "पैनल बंद करें"
@@ -1019,15 +1021,14 @@ msgstr "क्लाउड"
 msgid "Code"
 msgstr "कोड"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Collapse {0}"
 msgstr ""
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Color"
-msgstr "रंग"
+#: src/pages/Shell.tsx
+msgid "Collapse {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Color {color}"
@@ -1153,6 +1154,7 @@ msgstr "Treg कनेक्ट करें"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connected"
@@ -1317,10 +1319,6 @@ msgstr "जारी नहीं रखा जा सका"
 #: src/pages/shell/bot-panel.tsx
 msgid "Could not create bot"
 msgstr "बॉट नहीं बनाया जा सका"
-
-#: src/pages/GroupPanel.tsx
-msgid "Could not create group"
-msgstr "समूह नहीं बनाया जा सका"
 
 #: src/pages/shell/dialogs.tsx
 msgid "Could not create section"
@@ -1499,6 +1497,10 @@ msgstr ""
 msgid "Could not open file"
 msgstr ""
 
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Could not open image. Try again."
+msgstr ""
+
 #: src/pages/LocalSettings.tsx
 msgid "Could not open local settings. Start the local server and create its owner account, then try again."
 msgstr ""
@@ -1585,6 +1587,8 @@ msgid "Could not save backup models"
 msgstr "बैकअप मॉडल सहेजे नहीं जा सके।"
 
 #: src/pages/GroupPanel.tsx
+#: src/pages/Shell.tsx
+#: src/pages/shell/group-title.tsx
 msgid "Could not save group"
 msgstr "समूह सहेजा नहीं जा सका"
 
@@ -1684,10 +1688,6 @@ msgstr ""
 msgid "Couldn't load messaging settings"
 msgstr ""
 
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Couldn't update avatars"
-msgstr ""
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Couldn't update messaging settings"
 msgstr ""
@@ -1707,9 +1707,13 @@ msgstr "एक सेक्शन बनाएं और {0} को उसमे
 msgid "Create account"
 msgstr "खाता बनाएं"
 
-#: src/pages/GroupPanel.tsx
-msgid "Create group"
-msgstr "समूह बनाएं"
+#: src/pages/Shell.tsx
+msgid "Create Bot"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Create group chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
@@ -1729,6 +1733,7 @@ msgid "Create Routine"
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Create space"
 msgstr ""
@@ -1741,7 +1746,6 @@ msgstr "अपना Rakazo बनाएं"
 msgid "Created"
 msgstr ""
 
-#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Creating…"
@@ -1812,7 +1816,6 @@ msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Default"
 msgstr "डिफ़ॉल्ट"
 
@@ -1985,9 +1988,12 @@ msgid "Don’t have an account?"
 msgstr "खाता नहीं है?"
 
 #: src/pages/ActivityList.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Done"
 msgstr "पूर्ण"
+
+#: src/pages/shell/group-title.tsx
+msgid "Double-click to rename"
+msgstr ""
 
 #: src/components/computer/FilesApp.tsx
 #: src/pages/Artifacts.tsx
@@ -2133,10 +2139,13 @@ msgstr "Executor टोकन"
 msgid "Expand"
 msgstr "विस्तृत करें"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Expand {0}"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}"
 msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
@@ -2192,6 +2201,7 @@ msgid "File is too large to upload."
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Shell.tsx
 msgid "Files"
 msgstr ""
 
@@ -2291,6 +2301,10 @@ msgstr ""
 msgid "Group"
 msgstr "समूह"
 
+#: src/pages/shell/group-title.tsx
+msgid "Group name"
+msgstr ""
+
 #: src/pages/GroupPanel.tsx
 msgid "Group settings"
 msgstr "समूह सेटिंग्स"
@@ -2340,10 +2354,6 @@ msgstr "एक नमूना सुनें"
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Hi, this is how I'll sound when I read replies out loud."
 msgstr "नमस्ते, उत्तर पढ़कर सुनाते समय मेरी आवाज़ ऐसी होगी।"
-
-#: src/pages/Shell.tsx
-msgid "Hide bots"
-msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Hide password"
@@ -2713,10 +2723,6 @@ msgstr ""
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "सदस्य ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 
-#: src/pages/GroupPanel.tsx
-msgid "Members (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
-msgstr "सदस्य ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} चुनें)"
-
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -2757,12 +2763,20 @@ msgid "Message event"
 msgstr ""
 
 #: src/pages/Shell.tsx
+msgid "Message from"
+msgstr ""
+
+#: src/pages/Shell.tsx
 msgid "Message from {peer}"
 msgstr "{peer} का संदेश"
 
 #: src/pages/Shell.tsx
 msgid "Message…"
 msgstr "संदेश…"
+
+#: src/pages/Shell.tsx
+msgid "Messaged"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Messaged {peer}"
@@ -2885,6 +2899,10 @@ msgstr "यहां ले जाएं"
 msgid "Mute"
 msgstr "म्यूट करें"
 
+#: src/pages/Shell.tsx
+msgid "My space"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
 #: src/pages/GroupPanel.tsx
@@ -2899,12 +2917,12 @@ msgstr "नाम"
 msgid "Name this bot"
 msgstr "इस बॉट को नाम दें"
 
-#: src/pages/GroupPanel.tsx
-msgid "Name this group"
-msgstr "इस समूह को नाम दें"
-
 #: src/pages/RoutineEditor.tsx
 msgid "Name this routine"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Needs auth"
 msgstr ""
 
 #: src/pages/ActivityList.tsx
@@ -2922,10 +2940,6 @@ msgstr ""
 #: src/pages/shell/bot-panel.tsx
 msgid "New bot"
 msgstr "नया बॉट"
-
-#: src/pages/GroupPanel.tsx
-msgid "New group"
-msgstr "नया समूह"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "New open-work item"
@@ -2973,6 +2987,7 @@ msgstr "कोई प्रमाणीकरण नहीं"
 msgid "No bot activity yet."
 msgstr "अभी तक कोई बॉट गतिविधि नहीं।"
 
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/shell/command-palette.tsx
 msgid "No bots"
 msgstr ""
@@ -3038,6 +3053,7 @@ msgid "No remote MCP servers found"
 msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
 msgstr "कोई परिणाम नहीं"
@@ -3143,9 +3159,8 @@ msgstr ""
 msgid "Open"
 msgstr "खोलें"
 
-#. placeholder {0}: group.title
 #: src/pages/Shell.tsx
-msgid "Open {0}"
+msgid "Open {displayTitle}"
 msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
@@ -3222,10 +3237,6 @@ msgstr "या एक API कुंजी कनेक्ट करें"
 #: src/pages/Onboarding.tsx
 msgid "Or paste an API key"
 msgstr "या एक API कुंजी पेस्ट करें"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Organic"
-msgstr ""
 
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
@@ -3399,6 +3410,10 @@ msgstr ""
 msgid "Recent"
 msgstr "हाल के"
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Recipients"
+msgstr ""
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
 msgstr "OAuth पुनः कनेक्ट करें"
@@ -3503,7 +3518,9 @@ msgid "Remove"
 msgstr "हटाएं"
 
 #. placeholder {0}: attachment.file.name
+#. placeholder {0}: bot.name
 #: src/pages/Shell.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "Remove {0}"
 msgstr "{0} हटाएं"
 
@@ -3552,6 +3569,10 @@ msgstr "हटाया गया, लेकिन सूची रिफ़्�
 #: src/pages/PluginsOverlay.tsx
 msgid "Removing…"
 msgstr "हटाया जा रहा है…"
+
+#: src/pages/Shell.tsx
+msgid "Rename"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
@@ -3684,10 +3705,6 @@ msgstr "प्रोवाइडर सेटिंग्स की समीक
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
-msgstr ""
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Robot"
 msgstr ""
 
 #: src/pages/ExternalConversationSettings.tsx
@@ -3952,10 +3969,6 @@ msgstr "सेटिंग्स: उपयोग"
 msgid "Setup help"
 msgstr "सेटअप सहायता"
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Shape"
-msgstr "आकार"
-
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Shared"
@@ -4124,6 +4137,10 @@ msgstr "SSO अस्थायी रूप से उपलब्ध नही�
 msgid "Start {trialDays}-day free trial"
 msgstr ""
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Start a chat with…"
+msgstr ""
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Start recording"
 msgstr "रिकॉर्डिंग शुरू करें"
@@ -4205,6 +4222,10 @@ msgstr "सोचने की क्षमता का समर्थन क�
 
 #: src/pages/shell/command-palette.tsx
 msgid "Switch bot"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Switch space"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4309,10 +4330,6 @@ msgstr ""
 msgid "This cannot be undone."
 msgstr "इसे पूर्ववत नहीं किया जा सकता।"
 
-#: src/pages/PeerMessagesOverlay.tsx
-msgid "This chat is view-only"
-msgstr "यह चैट केवल देखने के लिए है"
-
 #: src/pages/HostComputerPrompt.tsx
 msgid "this computer"
 msgstr "यह कंप्यूटर"
@@ -4396,6 +4413,7 @@ msgid "To {0}"
 msgstr ""
 
 #: src/pages/shell/bot-picker.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "To:"
 msgstr "प्रति:"
 
@@ -4485,6 +4503,10 @@ msgstr "पिन हटाएं"
 #: src/pages/Shell.tsx
 msgid "Unsupported file type: {0}"
 msgstr "असमर्थित फ़ाइल प्रकार: {0}"
+
+#: src/pages/Shell.tsx
+msgid "Up to {ATTACHMENT_MAX_COUNT} attachments. {overLimit} not added."
+msgstr ""
 
 #: src/components/DesktopUpdates.tsx
 #: src/components/SoftwareUpdateSection.tsx
@@ -4716,7 +4738,6 @@ msgstr ""
 msgid "year"
 msgstr ""
 
-#: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Yesterday"
 msgstr "कल"

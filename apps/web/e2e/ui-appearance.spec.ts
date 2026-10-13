@@ -1,5 +1,23 @@
 import { expect, type Page, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, createNamedBot, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  createNamedBot,
+  rpc,
+  signup,
+} from "./helpers";
+
+async function backgroundToken(page: Page, token: "--sidebar-accent" | "--muted") {
+  return page.evaluate((name) => {
+    const probe = document.createElement("span");
+    probe.style.backgroundColor = `var(${name})`;
+    document.body.append(probe);
+    const color = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return color;
+  }, token);
+}
 
 async function captureSidebarSearchSelected(
   page: Page,
@@ -13,16 +31,17 @@ async function captureSidebarSearchSelected(
   await expect(selected).toBeVisible();
   await search.scrollIntoViewIfNeeded();
 
-  const searchBox = await search.boundingBox();
-  const selectedBox = await selected.boundingBox();
-  expect(searchBox).toBeTruthy();
-  expect(selectedBox).toBeTruthy();
-  if (searchBox && selectedBox) {
-    expect(Math.abs(searchBox.x - selectedBox.x)).toBeLessThanOrEqual(1);
-    expect(
-      Math.abs(searchBox.x + searchBox.width - (selectedBox.x + selectedBox.width)),
-    ).toBeLessThanOrEqual(1);
-  }
+  const searchBox = (await search.boundingBox())!;
+  const createBox = (await page.getByTestId("create-menu-trigger").boundingBox())!;
+  const sidebarBox = (await aside.boundingBox())!;
+  const inputBox = (await search.locator("input").boundingBox())!;
+  const selectedBox = (await selected.boundingBox())!;
+  expect(searchBox.x).toBeGreaterThanOrEqual(sidebarBox.x);
+  expect(searchBox.x + searchBox.width).toBeLessThanOrEqual(createBox.x);
+  expect(createBox.x + createBox.width).toBeLessThanOrEqual(sidebarBox.x + sidebarBox.width);
+  expect(inputBox.width).toBeGreaterThanOrEqual(100);
+  expect(selectedBox.x).toBeGreaterThanOrEqual(sidebarBox.x);
+  expect(selectedBox.x + selectedBox.width).toBeLessThanOrEqual(sidebarBox.x + sidebarBox.width);
 
   const box = await aside.boundingBox();
   if (box) {
@@ -95,13 +114,16 @@ test("account settings appearance control switches to light mode", async ({ page
   await captureSidebarSearchSelected(page, testInfo, "sidebar-search-selected-dark");
 });
 
-test("sidebar bot rows hover with the same tone as the integrations row", async ({
+test("Bot and group navigation share a hover tone and account menu items are consistent", async ({
   page,
 }, testInfo) => {
   const stamp = Date.now();
   await signup(page, `ui-hover-${stamp}@rakazo.test`, "password12", "Hover QA");
   await completeOnboarding(page, testInfo);
-  await createNamedBot(page, "Second Bot");
+  const chiefId = activeBotId(page);
+  const secondId = await createNamedBot(page, "Second Bot");
+  await rpc(page, "groups/create", { name: "Weekend companions", botIds: [chiefId, secondId] });
+  await page.reload();
 
   const sidebar = page.locator("aside").first();
   const chief = sidebar.getByRole("button", { name: /^Chief/ }).first();
@@ -109,14 +131,32 @@ test("sidebar bot rows hover with the same tone as the integrations row", async 
   const readChiefBg = () => chief.evaluate((el) => getComputedStyle(el).backgroundColor);
   await expect.poll(readChiefBg).toBe("rgba(0, 0, 0, 0)");
 
+  const sidebarAccent = await backgroundToken(page, "--sidebar-accent");
   await chief.hover();
-  await expect.poll(readChiefBg).not.toBe("rgba(0, 0, 0, 0)");
+  // Wait for the shared hover token, not an intermediate transition alpha.
+  await expect.poll(readChiefBg).toBe(sidebarAccent);
   const chiefBg = await readChiefBg();
   await captureScreenshot(page, testInfo, "sidebar-row-hover");
 
-  const integrations = sidebar.getByRole("button", { name: "Integrations", exact: true });
+  const group = sidebar.getByRole("button", { name: /^Weekend companions/ });
+  await group.hover();
+  await expect
+    .poll(() => group.evaluate((el) => getComputedStyle(el).backgroundColor))
+    .toBe(chiefBg);
+  await captureScreenshot(page, testInfo, "sidebar-group-hover");
+
+  await page.getByTestId("user-menu-trigger").click();
+  const settings = page.getByRole("button", { name: "Settings", exact: true });
+  const integrations = page.getByRole("button", { name: "Integrations", exact: true });
+  const mutedBg = await backgroundToken(page, "--muted");
+  const readSettingsBg = () => settings.evaluate((el) => getComputedStyle(el).backgroundColor);
+  await settings.hover();
+  await expect.poll(readSettingsBg).toBe(mutedBg);
+  const menuBg = await readSettingsBg();
+  expect(menuBg).not.toBe("rgba(0, 0, 0, 0)");
   await integrations.hover();
   await expect
     .poll(() => integrations.evaluate((el) => getComputedStyle(el).backgroundColor))
-    .toBe(chiefBg);
+    .toBe(menuBg);
+  await captureScreenshot(page, testInfo, "account-menu-hover");
 });

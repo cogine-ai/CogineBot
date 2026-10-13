@@ -1,16 +1,16 @@
-export { type AvatarStyle, AvatarStyleProvider, useAvatarStyle } from "./avatar-style.js";
+export { AccountAvatar } from "./account-avatar.js";
+export { AttachmentPreview } from "./attachment-preview.js";
 export {
   BotAvatar,
   DEFAULT_GROK_BOT_COLOR,
   defaultBotAvatarValue,
+  GazeShapePreview,
   GROK_BOT_COLORS,
-  GROK_MASCOT_SHAPES,
-  GrokShapePreview,
   parseBotAvatar,
   resolvePersonaColorDef,
-  resolvePersonaShape,
   Wordmark,
 } from "./bot-avatar.js";
+export { CogineBotWordmark } from "./cogine-bot-wordmark.js";
 export * from "./components/ui/alert-dialog.js";
 export * from "./components/ui/badge.js";
 export * from "./components/ui/button.js";
@@ -38,4 +38,5 @@ export * from "./components/ui/toggle.js";
 export * from "./components/ui/tooltip.js";
 export { GroupAvatar, type GroupAvatarMember, type GroupAvatarProps } from "./group-avatar.js";
 export { cn } from "./lib/utils.js";
+export * from "./message-input.js";
 export { ModelThinkingOptions } from "./model-thinking-options.js";

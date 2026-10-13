@@ -1,8 +1,6 @@
 /**
- * Shared working-avatar choreography used by mobile (Reanimated) and mirrored
- * by web CSS in `@rakazo/ui-web` (`styles.css` organic working keyframes).
- *
- * Duration families and transform midpoints must stay aligned across surfaces.
+ * Native working-avatar choreography used by mobile (Reanimated).
+ * Web activity uses its own shared procedural SVG frame source.
  */
 
 export interface WorkingAvatarFrame {
@@ -15,7 +13,7 @@ export interface WorkingAvatarFrame {
   eyeOffsetY: number;
 }
 
-/** Per shape-family loop length in ms — keep in sync with web CSS animation durations. */
+/** Per shape-family native loop length in ms. */
 export const WORKING_AVATAR_DURATIONS_MS = [
   1800, 1350, 1600, 2400, 2400, 1350, 1100, 1350, 1600, 1350,
 ] as const;

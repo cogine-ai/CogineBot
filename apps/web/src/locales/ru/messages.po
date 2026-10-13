@@ -13,10 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 
-#: src/pages/Shell.tsx
-msgid " (unread)"
-msgstr " (непрочитано)"
-
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "{0, plural, one {# model} other {# models}}"
@@ -33,11 +29,6 @@ msgstr ""
 #: src/pages/Onboarding.tsx
 msgid "{0, plural, one {Waiting for sign-in — the link expires in about # minute.} other {Waiting for sign-in — the link expires in about # minutes.}}"
 msgstr ""
-
-#. placeholder {0}: file.name
-#: src/pages/Shell.tsx
-msgid "{0} (max {ATTACHMENT_MAX_COUNT} attachments)"
-msgstr "{0} (макс. {ATTACHMENT_MAX_COUNT} вложений)"
 
 #. placeholder {0}: file.name
 #: src/pages/Shell.tsx
@@ -141,6 +132,14 @@ msgstr "{hours} ч назад"
 #: src/pages/ActivityList.tsx
 msgid "{minutes}m ago"
 msgstr "{minutes} мин назад"
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (approval pending)"
+msgstr ""
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (unread)"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -363,6 +362,10 @@ msgstr "Добавить сервер"
 msgid "Add server URL"
 msgstr "Добавьте URL сервера"
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Add someone…"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
 msgstr "Добавить в задачу"
@@ -519,6 +522,10 @@ msgstr "API-ключ"
 msgid "API key header"
 msgstr "Заголовок ключа API"
 
+#: src/pages/Shell.tsx
+msgid "App"
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Appearance"
 msgstr "Внешний вид"
@@ -557,7 +564,6 @@ msgid "Arguments"
 msgstr "Аргументы"
 
 #: src/pages/Artifacts.tsx
-#: src/pages/Shell.tsx
 msgid "Artifacts"
 msgstr ""
 
@@ -656,12 +662,8 @@ msgid "Available to this bot's shell commands as {commandVariable}"
 msgstr "Доступна командам оболочки этого бота как {commandVariable}"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Avatar Studio"
-msgstr "Студия аватаров"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Avatars"
-msgstr "Аватары"
+msgid "Avatar image"
+msgstr ""
 
 #: src/components/computer/FilesApp.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -794,10 +796,6 @@ msgstr "Отмена"
 msgid "Cancel new bot"
 msgstr "Отменить создание бота"
 
-#: src/pages/GroupPanel.tsx
-msgid "Cancel new group"
-msgstr "Отменить создание группы"
-
 #: src/pages/shell/chat-context.tsx
 msgid "Cancel reply"
 msgstr "Отменить ответ"
@@ -892,10 +890,6 @@ msgstr "Проверка…"
 msgid "Checkout has local changes. Clean it before updating."
 msgstr "В checkout есть локальные изменения. Очистите его перед обновлением."
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose a bot shape, color, or upload an image"
-msgstr "Выберите форму и цвет бота или загрузите изображение"
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Choose a bot…"
 msgstr "Выбрать бота…"
@@ -905,8 +899,12 @@ msgid "Choose a new password"
 msgstr "Выберите новый пароль"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose file"
-msgstr "Выбрать файл"
+msgid "Choose an image file"
+msgstr ""
+
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Choose image"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Choose which connected model Rakazo uses."
@@ -945,9 +943,7 @@ msgstr "Секрет клиента"
 #: src/components/ErrorBoundary.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/PeerMessagesOverlay.tsx
 #: src/pages/RoutineEditor.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/WindowChrome.tsx
 msgid "Close"
 msgstr "Закрыть"
@@ -959,6 +955,11 @@ msgstr ""
 #: src/pages/shell/message-cards.tsx
 msgid "Close chart"
 msgstr "Закрыть график"
+
+#: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
+msgid "Close chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Close computer"
@@ -994,6 +995,7 @@ msgstr "Закрыть настройки модели"
 msgid "Close navigation"
 msgstr "Закрыть навигацию"
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/Shell.tsx
 msgid "Close panel"
 msgstr "Закрыть панель"
@@ -1019,15 +1021,14 @@ msgstr "Облако"
 msgid "Code"
 msgstr "Код"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Collapse {0}"
 msgstr "Свернуть {0}"
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Color"
-msgstr "Цвет"
+#: src/pages/Shell.tsx
+msgid "Collapse {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Color {color}"
@@ -1153,6 +1154,7 @@ msgstr "Подключить Treg"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connected"
@@ -1317,10 +1319,6 @@ msgstr "Не удалось продолжить"
 #: src/pages/shell/bot-panel.tsx
 msgid "Could not create bot"
 msgstr "Не удалось создать бота"
-
-#: src/pages/GroupPanel.tsx
-msgid "Could not create group"
-msgstr "Не удалось создать группу"
 
 #: src/pages/shell/dialogs.tsx
 msgid "Could not create section"
@@ -1499,6 +1497,10 @@ msgstr ""
 msgid "Could not open file"
 msgstr ""
 
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Could not open image. Try again."
+msgstr ""
+
 #: src/pages/LocalSettings.tsx
 msgid "Could not open local settings. Start the local server and create its owner account, then try again."
 msgstr "Не удалось открыть локальные настройки. Запустите локальный сервер и создайте учетную запись владельца, затем повторите попытку."
@@ -1585,6 +1587,8 @@ msgid "Could not save backup models"
 msgstr "Не удалось сохранить резервные модели."
 
 #: src/pages/GroupPanel.tsx
+#: src/pages/Shell.tsx
+#: src/pages/shell/group-title.tsx
 msgid "Could not save group"
 msgstr "Не удалось сохранить группу"
 
@@ -1684,10 +1688,6 @@ msgstr ""
 msgid "Couldn't load messaging settings"
 msgstr "Не удалось загрузить настройки обмена сообщениями."
 
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Couldn't update avatars"
-msgstr "Не удалось обновить аватары"
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Couldn't update messaging settings"
 msgstr "Не удалось обновить настройки обмена сообщениями."
@@ -1707,9 +1707,13 @@ msgstr "Создайте раздел и переместите в него {0}.
 msgid "Create account"
 msgstr "Зарегистрироваться"
 
-#: src/pages/GroupPanel.tsx
-msgid "Create group"
-msgstr "Создать группу"
+#: src/pages/Shell.tsx
+msgid "Create Bot"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Create group chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
@@ -1729,6 +1733,7 @@ msgid "Create Routine"
 msgstr "Создать задачу"
 
 #: src/components/AskCard.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Create space"
 msgstr "Создайте пространство"
@@ -1741,7 +1746,6 @@ msgstr "Создайте свой Rakazo"
 msgid "Created"
 msgstr "Создано"
 
-#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Creating…"
@@ -1812,7 +1816,6 @@ msgstr "Отклонить"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Default"
 msgstr "По умолчанию"
 
@@ -1985,9 +1988,12 @@ msgid "Don’t have an account?"
 msgstr "У вас нет учетной записи?"
 
 #: src/pages/ActivityList.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Done"
 msgstr "Готово"
+
+#: src/pages/shell/group-title.tsx
+msgid "Double-click to rename"
+msgstr ""
 
 #: src/components/computer/FilesApp.tsx
 #: src/pages/Artifacts.tsx
@@ -2133,11 +2139,14 @@ msgstr "Токен Executor"
 msgid "Expand"
 msgstr "Развернуть"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Expand {0}"
 msgstr "Развернуть {0}"
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Export"
@@ -2192,6 +2201,7 @@ msgid "File is too large to upload."
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Shell.tsx
 msgid "Files"
 msgstr ""
 
@@ -2291,6 +2301,10 @@ msgstr "Git-событие"
 msgid "Group"
 msgstr "Группа"
 
+#: src/pages/shell/group-title.tsx
+msgid "Group name"
+msgstr ""
+
 #: src/pages/GroupPanel.tsx
 msgid "Group settings"
 msgstr "Настройки группы"
@@ -2340,10 +2354,6 @@ msgstr "Прослушать образец"
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Hi, this is how I'll sound when I read replies out loud."
 msgstr "Привет, вот как я буду звучать, когда буду читать ответы вслух."
-
-#: src/pages/Shell.tsx
-msgid "Hide bots"
-msgstr "Скрыть ботов"
 
 #: src/pages/Auth.tsx
 msgid "Hide password"
@@ -2713,10 +2723,6 @@ msgstr ""
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "Участники ({GROUP_MEMBER_MIN} – {GROUP_MEMBER_MAX})"
 
-#: src/pages/GroupPanel.tsx
-msgid "Members (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
-msgstr "Участники (выберите {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
-
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -2757,12 +2763,20 @@ msgid "Message event"
 msgstr "Событие сообщения"
 
 #: src/pages/Shell.tsx
+msgid "Message from"
+msgstr ""
+
+#: src/pages/Shell.tsx
 msgid "Message from {peer}"
 msgstr "Сообщение от {peer}"
 
 #: src/pages/Shell.tsx
 msgid "Message…"
 msgstr "Сообщение…"
+
+#: src/pages/Shell.tsx
+msgid "Messaged"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Messaged {peer}"
@@ -2885,6 +2899,10 @@ msgstr "Переместить в"
 msgid "Mute"
 msgstr "Выключить микрофон"
 
+#: src/pages/Shell.tsx
+msgid "My space"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
 #: src/pages/GroupPanel.tsx
@@ -2899,13 +2917,13 @@ msgstr "Имя"
 msgid "Name this bot"
 msgstr "Назовите этого бота"
 
-#: src/pages/GroupPanel.tsx
-msgid "Name this group"
-msgstr "Назовите эту группу"
-
 #: src/pages/RoutineEditor.tsx
 msgid "Name this routine"
 msgstr "Назовите эту задачу"
+
+#: src/pages/Shell.tsx
+msgid "Needs auth"
+msgstr ""
 
 #: src/pages/ActivityList.tsx
 msgid "Needs input"
@@ -2922,10 +2940,6 @@ msgstr "Требуется ваше участие"
 #: src/pages/shell/bot-panel.tsx
 msgid "New bot"
 msgstr "Новый бот"
-
-#: src/pages/GroupPanel.tsx
-msgid "New group"
-msgstr "Новая группа"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "New open-work item"
@@ -2973,6 +2987,7 @@ msgstr "Нет аутентификации"
 msgid "No bot activity yet."
 msgstr "Активности бота пока нет."
 
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/shell/command-palette.tsx
 msgid "No bots"
 msgstr "Нет ботов"
@@ -3038,6 +3053,7 @@ msgid "No remote MCP servers found"
 msgstr "Удаленные MCP-серверы не найдены"
 
 #: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
 msgstr "Нет результатов"
@@ -3143,10 +3159,9 @@ msgstr "Удалить можно только пустые пространст
 msgid "Open"
 msgstr "Открыть"
 
-#. placeholder {0}: group.title
 #: src/pages/Shell.tsx
-msgid "Open {0}"
-msgstr "Открыть {0}"
+msgid "Open {displayTitle}"
+msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
 #: src/pages/ModelSettingsOverlay.tsx
@@ -3222,10 +3237,6 @@ msgstr "Или подключить API-ключ"
 #: src/pages/Onboarding.tsx
 msgid "Or paste an API key"
 msgstr "Или вставьте ключ API"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Organic"
-msgstr "Органичный"
 
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
@@ -3399,6 +3410,10 @@ msgstr ""
 msgid "Recent"
 msgstr "Недавние"
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Recipients"
+msgstr ""
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
 msgstr "Переподключить OAuth"
@@ -3503,7 +3518,9 @@ msgid "Remove"
 msgstr "Удалить"
 
 #. placeholder {0}: attachment.file.name
+#. placeholder {0}: bot.name
 #: src/pages/Shell.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "Remove {0}"
 msgstr "Удалить {0}"
 
@@ -3552,6 +3569,10 @@ msgstr "Удалено, но обновить список не удалось."
 #: src/pages/PluginsOverlay.tsx
 msgid "Removing…"
 msgstr "Удаление…"
+
+#: src/pages/Shell.tsx
+msgid "Rename"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
@@ -3685,10 +3706,6 @@ msgstr "Проверьте настройки поставщика и повто
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "Отозвать"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Robot"
-msgstr "Робот"
 
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Room guidance"
@@ -3952,10 +3969,6 @@ msgstr "Настройки: Использование"
 msgid "Setup help"
 msgstr "Помощь по настройке"
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Shape"
-msgstr "Форма"
-
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Shared"
@@ -4124,6 +4137,10 @@ msgstr "SSO временно недоступен. Попробуйте снов
 msgid "Start {trialDays}-day free trial"
 msgstr ""
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Start a chat with…"
+msgstr ""
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Start recording"
 msgstr "Начать запись"
@@ -4206,6 +4223,10 @@ msgstr "Поддерживает рассуждения"
 #: src/pages/shell/command-palette.tsx
 msgid "Switch bot"
 msgstr "Сменить бота"
+
+#: src/pages/Shell.tsx
+msgid "Switch space"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Switching…"
@@ -4309,10 +4330,6 @@ msgstr ""
 msgid "This cannot be undone."
 msgstr "Это невозможно отменить."
 
-#: src/pages/PeerMessagesOverlay.tsx
-msgid "This chat is view-only"
-msgstr "Этот чат доступен только для просмотра"
-
 #: src/pages/HostComputerPrompt.tsx
 msgid "this computer"
 msgstr "этот компьютер"
@@ -4396,6 +4413,7 @@ msgid "To {0}"
 msgstr ""
 
 #: src/pages/shell/bot-picker.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "To:"
 msgstr "К:"
 
@@ -4485,6 +4503,10 @@ msgstr "Открепить"
 #: src/pages/Shell.tsx
 msgid "Unsupported file type: {0}"
 msgstr "Неподдерживаемый тип файла: {0}."
+
+#: src/pages/Shell.tsx
+msgid "Up to {ATTACHMENT_MAX_COUNT} attachments. {overLimit} not added."
+msgstr ""
 
 #: src/components/DesktopUpdates.tsx
 #: src/components/SoftwareUpdateSection.tsx
@@ -4716,7 +4738,6 @@ msgstr ""
 msgid "year"
 msgstr ""
 
-#: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Yesterday"
 msgstr "Вчера"

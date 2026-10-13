@@ -1,18 +1,23 @@
 import type { ParsedBotAvatar } from "@rakazo/contracts";
 import { parseBotAvatarValue } from "@rakazo/contracts";
-import { resolvePersonaColorDef, shippedBotAvatarShapePath } from "@rakazo/core";
+import type { ResolvedGazeAvatar } from "@rakazo/core";
+import { GAZE_INK_COLOR, resolveGazeAvatar } from "@rakazo/core";
 
 export type MobileBotAvatarPresentation =
-  | Exclude<ParsedBotAvatar, { kind: "shape" }>
-  | { kind: "shape"; color: string; shapeIndex: number; shapePath: string; eyeColor: string };
+  | Exclude<ParsedBotAvatar, { kind: "shape" } | { kind: "color" }>
+  | (ResolvedGazeAvatar & { kind: "shape" | "color"; color: string; eyeColor: string });
 
-/** Resolve a stored `bots.color` value for native rendering, including shape paths. */
-export function mobileBotAvatarPresentation(color: string): MobileBotAvatarPresentation {
+/** Use the same persisted shape, identity, and expression on native and web. */
+export function mobileBotAvatarPresentation(
+  color: string,
+  identity = color,
+): MobileBotAvatarPresentation {
   const parsed = parseBotAvatarValue(color);
-  if (parsed.kind !== "shape") return parsed;
+  if (parsed.kind !== "shape" && parsed.kind !== "color") return parsed;
   return {
-    ...parsed,
-    shapePath: shippedBotAvatarShapePath(parsed.shapeIndex),
-    eyeColor: resolvePersonaColorDef("preview", parsed.color).eyeColor,
+    kind: parsed.kind,
+    color: parsed.color,
+    eyeColor: GAZE_INK_COLOR,
+    ...resolveGazeAvatar(identity, parsed.kind === "shape" ? parsed.shapeIndex : undefined),
   };
 }

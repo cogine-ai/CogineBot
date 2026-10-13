@@ -8,7 +8,7 @@ import {
   signup,
 } from "./helpers";
 
-test("create opens form, then empty chat; picker lists bots; sidebar collapses", async ({
+test("create opens the existing form and sidebar keeps a compact avatar rail", async ({
   page,
 }, testInfo) => {
   const stamp = Date.now();
@@ -18,11 +18,11 @@ test("create opens form, then empty chat; picker lists bots; sidebar collapses",
   await page.waitForURL(/\/app\/[^/]+$/);
 
   await page.getByTestId("create-menu-trigger").click();
-  const picker = page.getByTestId("bot-create-picker");
+  const picker = page.getByTestId("create-menu");
   await expect(picker).toBeVisible();
-  await expect(picker.getByPlaceholder("Search")).toBeVisible();
   await expect(picker.getByTestId("create-new-bot")).toBeVisible();
-  await expect(picker.getByText("Chief", { exact: true })).toBeVisible();
+  await expect(picker.getByTestId("create-new-group")).toBeVisible();
+  await expect(picker.getByTestId("create-new-space")).toHaveCount(0);
   await captureScreenshot(page, testInfo, "plus-picker-bots");
 
   await picker.getByTestId("create-new-bot").click();
@@ -47,74 +47,53 @@ test("create opens form, then empty chat; picker lists bots; sidebar collapses",
 
   await page.getByTestId("minimize-bots-sidebar").click();
   await expect(page.getByTestId("bots-sidebar")).toHaveAttribute("data-collapsed", "true");
-  const edge = page.getByTestId("bots-sidebar-edge");
-  await expect(edge).toBeVisible();
+  await expect(page.getByTestId("bots-sidebar")).toHaveCSS("width", "88px");
   const restore = page.getByTestId("restore-bots-sidebar");
   await expect(restore).toBeVisible();
+  await expect(
+    page.getByTestId("bots-sidebar").locator(".rakazo-bot-avatar").first(),
+  ).toBeVisible();
   await captureScreenshot(page, testInfo, "bots-sidebar-collapsed");
 
+  await page.reload();
+  await expect(page.getByTestId("bots-sidebar")).toHaveAttribute("data-collapsed", "true");
+  await expect(page.getByTestId("bots-sidebar")).toHaveCSS("width", "88px");
   await restore.click();
   await expect(page.getByTestId("bots-sidebar")).toHaveAttribute("data-collapsed", "false");
+  await expect(page.getByTestId("bots-sidebar")).toHaveCSS("width", "280px");
   await expect(restore).toHaveCount(0);
-
-  await page.getByTestId("minimize-bots-sidebar").click();
-  await expect(page.getByTestId("bots-sidebar")).toHaveAttribute("data-collapsed", "true");
-
-  const box = await edge.boundingBox();
-  expect(box).toBeTruthy();
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box!.x + 80, box!.y + box!.height / 2, { steps: 8 });
-  await page.mouse.up();
-  await expect(page.getByTestId("bots-sidebar")).toHaveAttribute("data-collapsed", "false");
   await captureScreenshot(page, testInfo, "bots-sidebar-expanded");
 });
 
-test("picker rows explain groups and spaces", async ({ page }, testInfo) => {
+test("creation menu stays concise and Space creation remains in the Space menu", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   await signup(page, `picker-info-${stamp}@rakazo.test`, "password12", "Picker Info");
   await completeOnboarding(page);
-  await page.goto("/app");
-  await page.waitForURL(/\/app\/[^/]+$/);
 
   await page.getByTestId("create-menu-trigger").click();
-  const picker = page.getByTestId("bot-create-picker");
-  await expect(picker).toBeVisible();
-
-  await picker.getByTestId("create-new-group").hover();
-  const groupInfo = picker.getByTestId("picker-info-group");
-  await expect.poll(() => groupInfo.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
-  await captureScreenshot(page, testInfo, "picker-group-info-hover");
-  await groupInfo.click();
-  const dialog = page.getByTestId("picker-info-dialog");
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Groups", { exact: true })).toBeVisible();
-  await expect(dialog).toContainText("same thread");
-  await expect(page.getByTestId("side-panel")).not.toHaveAttribute("data-panel", "create-group");
-  await captureScreenshot(page, testInfo, "picker-group-info-dialog");
-  await dialog.getByRole("button", { name: "Close" }).click();
-  await expect(dialog).toBeHidden();
-
-  await page.getByTestId("create-menu-trigger").click();
-  const spaceInfo = picker.getByTestId("picker-info-space");
-  await expect.poll(() => spaceInfo.evaluate((el) => getComputedStyle(el).opacity)).toBe("0");
-  await picker.getByTestId("create-new-space").hover();
-  await expect.poll(() => spaceInfo.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
-  await spaceInfo.click();
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Spaces", { exact: true })).toBeVisible();
-  await expect(dialog).toContainText("own bots and groups");
-  await captureScreenshot(page, testInfo, "picker-space-info-dialog");
+  const picker = page.getByTestId("create-menu");
+  await expect(picker.getByTestId("create-new-bot")).toBeVisible();
+  await expect(picker.getByTestId("create-new-group")).toBeVisible();
+  await expect(picker.getByTestId("create-new-space")).toHaveCount(0);
+  await expect(page.getByTestId("picker-info-dialog")).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "concise-create-menu");
   await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
+
+  await page.getByTestId("space-menu-trigger").click();
+  await expect(page.getByTestId("create-new-space")).toBeVisible();
+  await captureScreenshot(page, testInfo, "space-create-menu");
+  await page.getByTestId("create-new-space").click();
+  await expect(page.getByRole("dialog", { name: "New space" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
-test("later bot waits before showing the focus card; sending cancels it", async ({ page }) => {
+test("new companions start in chat without a delayed focus card", async ({ page }) => {
   const stamp = Date.now();
   await signup(page, `focus-delay-${stamp}@rakazo.test`, "password12", "Focus Delay");
   await completeOnboarding(page);
-  // First bot from onboarding shows the focus card immediately.
-  await expect(page.getByText("What do you want me on first?", { exact: true })).toBeVisible();
+  await expect(page.getByText("What do you want me on first?", { exact: true })).toHaveCount(0);
 
   await page.clock.install();
   await createBotFromPicker(page);
@@ -124,7 +103,7 @@ test("later bot waits before showing the focus card; sending cancels it", async 
   await page.clock.fastForward(9_000);
   await expect(page.getByText("What do you want me on first?", { exact: true })).toHaveCount(0);
   await page.clock.fastForward(1_500);
-  await expect(page.getByText("What do you want me on first?", { exact: true })).toBeVisible();
+  await expect(page.getByText("What do you want me on first?", { exact: true })).toHaveCount(0);
 
   await createBotFromPicker(page, { name: "Later Bot" });
   await expect(page.getByText("What do you want me on first?", { exact: true })).toHaveCount(0);
@@ -133,8 +112,8 @@ test("later bot waits before showing the focus card; sending cancels it", async 
   const composer = page.getByRole("combobox", { name: "Message Later Bot", exact: true });
   await expect(composer).toBeEditable();
   await composer.fill("I'll set this up myself");
-  // Send must finish before the delay is advanced: cancel runs after a successful
-  // RPC, and promptFocus will still post if the clock fires while send is in flight.
+  // The existing intro run and a normal reply remain available; elapsed time
+  // must never add a separate setup card above the ongoing conversation.
   const sent = page.waitForResponse(
     (response) => response.url().includes("/rpc/threads/send") && response.ok(),
   );

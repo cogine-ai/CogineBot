@@ -1,14 +1,15 @@
 import {
-  BOT_COLORS,
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   type ComputerMode,
   normalizeCreateBotProfile,
+  parseBotAvatarValue,
   type ThinkingLevel,
 } from "@rakazo/contracts";
 import {
   connectedModelChoices,
+  GAZE_BOT_COLORS,
   modelOptionKey,
   parseModelOptionKey,
   resolveSelectableModelId,
@@ -49,7 +50,8 @@ export default function BotSettingsScreen() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [color, setColor] = useState<string>(BOT_COLORS[0]);
+  const [color, setColor] = useState<string>(GAZE_BOT_COLORS[0]);
+  const parsedColor = parseBotAvatarValue(color);
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [modelKey, setModelKey] = useState("");
@@ -308,20 +310,34 @@ export default function BotSettingsScreen() {
           contentContainerStyle={{ gap: 10, marginTop: 8 }}
           accessibilityRole="radiogroup"
         >
-          {BOT_COLORS.map((option, index) => (
+          {GAZE_BOT_COLORS.map((option, index) => (
             <Pressable
               key={option}
               accessibilityRole="radio"
               accessibilityLabel={t("Color {number}", { number: index + 1 })}
-              accessibilityState={{ checked: color === option }}
-              onPress={() => setColor(option)}
+              accessibilityState={{
+                checked:
+                  (parsedColor.kind === "color" || parsedColor.kind === "shape") &&
+                  parsedColor.color.toUpperCase() === option,
+              }}
+              onPress={() =>
+                setColor(
+                  parsedColor.kind === "shape"
+                    ? `${option}::shape_${parsedColor.shapeIndex}`
+                    : option,
+                )
+              }
               style={{
                 width: 36,
                 height: 36,
                 borderRadius: 18,
                 backgroundColor: option,
                 borderWidth: 3,
-                borderColor: color === option ? tokens.foreground : "transparent",
+                borderColor:
+                  (parsedColor.kind === "color" || parsedColor.kind === "shape") &&
+                  parsedColor.color.toUpperCase() === option
+                    ? tokens.foreground
+                    : "transparent",
               }}
             />
           ))}

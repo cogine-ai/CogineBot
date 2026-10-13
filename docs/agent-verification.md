@@ -23,6 +23,19 @@ command. Nightly verification never starts computer sandboxes or requests model
 or sandbox credentials.
 Missing live credentials mean **not run**, not a passing model evaluation.
 
+## Mobile dependency validation
+
+`pnpm check` validates installed mobile native packages against
+`expo/bundledNativeModules.json` from the exact Expo SDK in the lockfile, then
+runs TypeScript. It also rejects missing packages and installed versions that
+do not match their declared ranges. The SDK check needs no network and is not
+disabled by `EXPO_OFFLINE`.
+
+Run `pnpm --filter @rakazo/mobile run doctor` separately to compare against Expo's
+latest remote SDK recommendations. That catalog can recommend newer patches
+without any repository change; dependency upgrades require their own validation.
+Neither check demonstrates native device acceptance.
+
 ## Deterministic Pi tests
 
 `packages/testkit/src/model-emulator.ts` serves a loopback OpenAI-compatible

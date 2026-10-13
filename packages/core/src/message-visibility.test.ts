@@ -1,6 +1,6 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { userVisibleMessages } from "./message-visibility.js";
+import { peerVisibleMessageBlocks, userVisibleMessages } from "./message-visibility.js";
 
 function message(id: string, runId: string, blocks: ThreadMessage["blocks"]): ThreadMessage {
   return {
@@ -33,6 +33,33 @@ const peerExchange = [
 ];
 
 describe("user-visible messages", () => {
+  it("makes MCP-only peer approvals reachable while stripping newly exposed hidden blocks", () => {
+    const approval: ThreadMessage["blocks"][number] = {
+      kind: "mcp_approval",
+      serverId: "server-1",
+      name: "Example",
+      status: "pending",
+      transport: "stdio",
+      endpoint: null,
+      needsOAuth: false,
+    };
+    const source = message("mcp", "run-peer", [
+      { kind: "steps", steps: [{ label: "Private tool activity", count: 1 }] },
+      approval,
+    ]);
+    const visible = userVisibleMessages([source], { knownPeerRunIds: ["run-peer"] });
+    expect(visible.map((item) => item.id)).toEqual(["mcp"]);
+    expect(visible[0]?.blocks).toEqual([approval]);
+    expect(source.blocks).toHaveLength(2);
+    const alreadyVisible = message("reply", "run-peer", [
+      { kind: "text", text: "Visible reply" },
+      approval,
+    ]);
+    expect(userVisibleMessages([alreadyVisible], { knownPeerRunIds: ["run-peer"] })[0]).toBe(
+      alreadyVisible,
+    );
+    expect(peerVisibleMessageBlocks([{ kind: "steps", steps: [] }])).toBeNull();
+  });
   it("hides peer activity but keeps the bot's text reply to the user", () => {
     expect(userVisibleMessages(peerExchange).map((item) => item.id)).toEqual([
       "user",

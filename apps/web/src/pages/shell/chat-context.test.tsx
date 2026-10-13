@@ -97,6 +97,32 @@ it("dismisses a composer reply with Escape", () => {
   expect(onDismiss).toHaveBeenCalledOnce();
 });
 
+it("preserves the hidden parent quote when Escape closes peer chat and reactivates on return", () => {
+  const onDismiss = vi.fn();
+  const render = (active: boolean) =>
+    root.render(
+      <ComposerReplyPreview
+        active={active}
+        author="Helper"
+        text="Keep this quote"
+        onDismiss={onDismiss}
+      />,
+    );
+  act(() => render(true));
+  act(() => render(false));
+  const peerEscape = new KeyboardEvent("keydown", { key: "Escape", cancelable: true });
+  act(() => window.dispatchEvent(peerEscape));
+  expect(onDismiss).not.toHaveBeenCalled();
+  expect(peerEscape.defaultPrevented).toBe(false);
+  expect(container.textContent).toBe("Helper: Keep this quote");
+
+  act(() => render(true));
+  const parentEscape = new KeyboardEvent("keydown", { key: "Escape", cancelable: true });
+  act(() => window.dispatchEvent(parentEscape));
+  expect(onDismiss).toHaveBeenCalledOnce();
+  expect(parentEscape.defaultPrevented).toBe(true);
+});
+
 it("keeps internal peer receipt replies out of the transcript", () => {
   act(() =>
     root.render(

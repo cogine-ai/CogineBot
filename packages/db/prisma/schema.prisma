@@ -477,21 +477,24 @@ model BotDeletion {
 }
 
 model ChatGroup {
-  id         String            @id @default(cuid())
-  spaceId    String
-  space      Space             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  userId     String
-  name       String
-  pinned     Boolean           @default(false)
-  sectionId  String?
-  section    BotSection?       @relation(fields: [sectionId], references: [id], onDelete: SetNull)
-  archivedAt DateTime?
-  createdAt  DateTime          @default(now())
-  updatedAt  DateTime          @updatedAt
-  members    ChatGroupMember[]
-  thread     Thread?
-  artifacts  Artifact[]
+  id                String            @id @default(cuid())
+  spaceId           String
+  space             Space             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId            String
+  name              String
+  clientNonce       String?
+  creationSignature String?
+  pinned            Boolean           @default(false)
+  sectionId         String?
+  section           BotSection?       @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  archivedAt        DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  members           ChatGroupMember[]
+  thread            Thread?
+  artifacts         Artifact[]
 
+  @@unique([spaceId, userId, clientNonce])
   @@index([spaceId, userId, archivedAt, pinned, updatedAt])
   @@index([sectionId])
   @@map("chat_groups")

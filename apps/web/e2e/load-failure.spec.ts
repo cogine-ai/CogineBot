@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import { captureScreenshot, completeOnboarding, openIntegrations, signup } from "./helpers";
 
 test("a failed overlay chunk keeps the shell and the draft, and Refresh loads it", async ({
   page,
@@ -13,7 +13,7 @@ test("a failed overlay chunk keeps the shell and the draft, and Refresh loads it
 
   const pluginsChunk = /\/pages\/PluginsOverlay\.tsx/;
   await page.route(pluginsChunk, (route) => route.fulfill({ status: 404 }));
-  await page.getByText("Integrations", { exact: true }).click();
+  await openIntegrations(page);
 
   const failed = page.getByRole("alertdialog", { name: "Could not load" });
   await expect(failed).toBeVisible();
@@ -24,9 +24,9 @@ test("a failed overlay chunk keeps the shell and the draft, and Refresh loads it
   await expect(composer).toHaveValue("Keep this draft");
 
   await page.unroute(pluginsChunk);
-  await page.getByText("Integrations", { exact: true }).click();
+  await openIntegrations(page);
   await failed.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.getByText("Integrations", { exact: true }).click();
+  await openIntegrations(page);
   await expect(page.getByPlaceholder("Search apps")).toBeVisible();
 });
 

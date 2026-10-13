@@ -13,10 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
-#: src/pages/Shell.tsx
-msgid " (unread)"
-msgstr " (읽지 않음)"
-
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "{0, plural, one {# model} other {# models}}"
@@ -33,11 +29,6 @@ msgstr ""
 #: src/pages/Onboarding.tsx
 msgid "{0, plural, one {Waiting for sign-in — the link expires in about # minute.} other {Waiting for sign-in — the link expires in about # minutes.}}"
 msgstr ""
-
-#. placeholder {0}: file.name
-#: src/pages/Shell.tsx
-msgid "{0} (max {ATTACHMENT_MAX_COUNT} attachments)"
-msgstr "{0} (첨부 파일 최대 {ATTACHMENT_MAX_COUNT}개)"
 
 #. placeholder {0}: file.name
 #: src/pages/Shell.tsx
@@ -141,6 +132,14 @@ msgstr "{hours}시간 전"
 #: src/pages/ActivityList.tsx
 msgid "{minutes}m ago"
 msgstr "{minutes}분 전"
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (approval pending)"
+msgstr ""
+
+#: src/pages/shell/conversation-row.tsx
+msgid "{name} (unread)"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -363,6 +362,10 @@ msgstr "서버 추가"
 msgid "Add server URL"
 msgstr ""
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Add someone…"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
 msgstr "자동 실행에 추가"
@@ -519,6 +522,10 @@ msgstr "API 키"
 msgid "API key header"
 msgstr "API 키 헤더"
 
+#: src/pages/Shell.tsx
+msgid "App"
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Appearance"
 msgstr "모양"
@@ -557,7 +564,6 @@ msgid "Arguments"
 msgstr "인자"
 
 #: src/pages/Artifacts.tsx
-#: src/pages/Shell.tsx
 msgid "Artifacts"
 msgstr ""
 
@@ -656,12 +662,8 @@ msgid "Available to this bot's shell commands as {commandVariable}"
 msgstr "이 봇의 셸 명령에서 {commandVariable}(으)로 사용 가능"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Avatar Studio"
-msgstr "아바타 스튜디오"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Avatars"
-msgstr "아바타"
+msgid "Avatar image"
+msgstr ""
 
 #: src/components/computer/FilesApp.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -794,10 +796,6 @@ msgstr "취소"
 msgid "Cancel new bot"
 msgstr "새 Bot 만들기 취소"
 
-#: src/pages/GroupPanel.tsx
-msgid "Cancel new group"
-msgstr "새 그룹 만들기 취소"
-
 #: src/pages/shell/chat-context.tsx
 msgid "Cancel reply"
 msgstr "답장 취소"
@@ -892,10 +890,6 @@ msgstr "확인 중…"
 msgid "Checkout has local changes. Clean it before updating."
 msgstr "체크아웃에 로컬 변경 사항이 있습니다. 업데이트하기 전에 정리하세요."
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose a bot shape, color, or upload an image"
-msgstr "봇 모양과 색을 고르거나 이미지를 업로드하세요"
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Choose a bot…"
 msgstr "Bot 선택…"
@@ -905,8 +899,12 @@ msgid "Choose a new password"
 msgstr "새 비밀번호 선택"
 
 #: src/pages/shell/avatar-studio-popover.tsx
-msgid "Choose file"
-msgstr "파일 선택"
+msgid "Choose an image file"
+msgstr ""
+
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Choose image"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Choose which connected model Rakazo uses."
@@ -945,9 +943,7 @@ msgstr ""
 #: src/components/ErrorBoundary.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/PeerMessagesOverlay.tsx
 #: src/pages/RoutineEditor.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/WindowChrome.tsx
 msgid "Close"
 msgstr "닫기"
@@ -959,6 +955,11 @@ msgstr ""
 #: src/pages/shell/message-cards.tsx
 msgid "Close chart"
 msgstr "차트 닫기"
+
+#: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
+msgid "Close chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Close computer"
@@ -994,6 +995,7 @@ msgstr "AI 모델 설정 닫기"
 msgid "Close navigation"
 msgstr "메뉴 닫기"
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/Shell.tsx
 msgid "Close panel"
 msgstr "패널 닫기"
@@ -1019,15 +1021,14 @@ msgstr "클라우드"
 msgid "Code"
 msgstr "코드"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Collapse {0}"
 msgstr "{0} 접기"
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Color"
-msgstr "색상"
+#: src/pages/Shell.tsx
+msgid "Collapse {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Color {color}"
@@ -1153,6 +1154,7 @@ msgstr "Treg 연결"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connected"
@@ -1317,10 +1319,6 @@ msgstr "계속 진행하지 못했습니다."
 #: src/pages/shell/bot-panel.tsx
 msgid "Could not create bot"
 msgstr "Bot을 만들지 못했습니다."
-
-#: src/pages/GroupPanel.tsx
-msgid "Could not create group"
-msgstr "그룹을 만들지 못했습니다."
 
 #: src/pages/shell/dialogs.tsx
 msgid "Could not create section"
@@ -1499,6 +1497,10 @@ msgstr ""
 msgid "Could not open file"
 msgstr ""
 
+#: src/pages/shell/avatar-studio-popover.tsx
+msgid "Could not open image. Try again."
+msgstr ""
+
 #: src/pages/LocalSettings.tsx
 msgid "Could not open local settings. Start the local server and create its owner account, then try again."
 msgstr ""
@@ -1585,6 +1587,8 @@ msgid "Could not save backup models"
 msgstr "백업 모델을 저장하지 못했습니다."
 
 #: src/pages/GroupPanel.tsx
+#: src/pages/Shell.tsx
+#: src/pages/shell/group-title.tsx
 msgid "Could not save group"
 msgstr "그룹을 저장하지 못했습니다."
 
@@ -1684,10 +1688,6 @@ msgstr ""
 msgid "Couldn't load messaging settings"
 msgstr "메시징 설정을 불러올 수 없습니다"
 
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Couldn't update avatars"
-msgstr "아바타를 업데이트할 수 없습니다"
-
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Couldn't update messaging settings"
 msgstr "메시징 설정을 업데이트할 수 없습니다"
@@ -1707,9 +1707,13 @@ msgstr "새 섹션을 만들고 {0}을 옮깁니다."
 msgid "Create account"
 msgstr "계정 만들기"
 
-#: src/pages/GroupPanel.tsx
-msgid "Create group"
-msgstr "그룹 만들기"
+#: src/pages/Shell.tsx
+msgid "Create Bot"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Create group chat"
+msgstr ""
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
@@ -1729,6 +1733,7 @@ msgid "Create Routine"
 msgstr "자동 실행 만들기"
 
 #: src/components/AskCard.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Create space"
 msgstr "스페이스 만들기"
@@ -1741,7 +1746,6 @@ msgstr "Rakazo 계정 만들기"
 msgid "Created"
 msgstr "생성됨"
 
-#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Creating…"
@@ -1812,7 +1816,6 @@ msgstr "거절"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Default"
 msgstr "기본값"
 
@@ -1985,9 +1988,12 @@ msgid "Don’t have an account?"
 msgstr "계정이 없나요?"
 
 #: src/pages/ActivityList.tsx
-#: src/pages/shell/avatar-studio-popover.tsx
 msgid "Done"
 msgstr "완료"
+
+#: src/pages/shell/group-title.tsx
+msgid "Double-click to rename"
+msgstr ""
 
 #: src/components/computer/FilesApp.tsx
 #: src/pages/Artifacts.tsx
@@ -2133,11 +2139,14 @@ msgstr "Executor 토큰"
 msgid "Expand"
 msgstr "펼치기"
 
-#. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
 #: src/pages/Shell.tsx
 msgid "Expand {0}"
 msgstr "{0} 펼치기"
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}"
+msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Export"
@@ -2192,6 +2201,7 @@ msgid "File is too large to upload."
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Shell.tsx
 msgid "Files"
 msgstr ""
 
@@ -2291,6 +2301,10 @@ msgstr "Git 이벤트"
 msgid "Group"
 msgstr "그룹"
 
+#: src/pages/shell/group-title.tsx
+msgid "Group name"
+msgstr ""
+
 #: src/pages/GroupPanel.tsx
 msgid "Group settings"
 msgstr "그룹 설정"
@@ -2340,10 +2354,6 @@ msgstr "샘플 듣기"
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Hi, this is how I'll sound when I read replies out loud."
 msgstr "안녕하세요. 답변을 소리 내어 읽을 때 이런 목소리로 들립니다."
-
-#: src/pages/Shell.tsx
-msgid "Hide bots"
-msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Hide password"
@@ -2713,10 +2723,6 @@ msgstr ""
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "참여 Bot ({GROUP_MEMBER_MIN}~{GROUP_MEMBER_MAX}개)"
 
-#: src/pages/GroupPanel.tsx
-msgid "Members (pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
-msgstr "참여 Bot ({GROUP_MEMBER_MIN}~{GROUP_MEMBER_MAX}개 선택)"
-
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -2757,12 +2763,20 @@ msgid "Message event"
 msgstr ""
 
 #: src/pages/Shell.tsx
+msgid "Message from"
+msgstr ""
+
+#: src/pages/Shell.tsx
 msgid "Message from {peer}"
 msgstr "{peer}의 메시지"
 
 #: src/pages/Shell.tsx
 msgid "Message…"
 msgstr "메시지를 입력하세요"
+
+#: src/pages/Shell.tsx
+msgid "Messaged"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Messaged {peer}"
@@ -2885,6 +2899,10 @@ msgstr "섹션으로 이동"
 msgid "Mute"
 msgstr "음소거"
 
+#: src/pages/Shell.tsx
+msgid "My space"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
 #: src/pages/GroupPanel.tsx
@@ -2899,13 +2917,13 @@ msgstr "이름"
 msgid "Name this bot"
 msgstr "Bot 이름"
 
-#: src/pages/GroupPanel.tsx
-msgid "Name this group"
-msgstr "그룹 이름"
-
 #: src/pages/RoutineEditor.tsx
 msgid "Name this routine"
 msgstr "이 루틴의 이름을 정하세요"
+
+#: src/pages/Shell.tsx
+msgid "Needs auth"
+msgstr ""
 
 #: src/pages/ActivityList.tsx
 msgid "Needs input"
@@ -2922,10 +2940,6 @@ msgstr ""
 #: src/pages/shell/bot-panel.tsx
 msgid "New bot"
 msgstr "새 Bot 만들기"
-
-#: src/pages/GroupPanel.tsx
-msgid "New group"
-msgstr "새 그룹 만들기"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "New open-work item"
@@ -2973,6 +2987,7 @@ msgstr "인증 없음"
 msgid "No bot activity yet."
 msgstr "아직 봇 활동이 없습니다."
 
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/shell/command-palette.tsx
 msgid "No bots"
 msgstr ""
@@ -3038,6 +3053,7 @@ msgid "No remote MCP servers found"
 msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/chat-recipients.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
 msgstr "검색 결과가 없습니다"
@@ -3143,10 +3159,9 @@ msgstr ""
 msgid "Open"
 msgstr "열기"
 
-#. placeholder {0}: group.title
 #: src/pages/Shell.tsx
-msgid "Open {0}"
-msgstr "{0} 열기"
+msgid "Open {displayTitle}"
+msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
 #: src/pages/ModelSettingsOverlay.tsx
@@ -3222,10 +3237,6 @@ msgstr "또는 API 키 연결"
 #: src/pages/Onboarding.tsx
 msgid "Or paste an API key"
 msgstr "또는 API 키 붙여넣기"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Organic"
-msgstr "자연스럽게"
 
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
@@ -3399,6 +3410,10 @@ msgstr ""
 msgid "Recent"
 msgstr "최근"
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Recipients"
+msgstr ""
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
 msgstr "OAuth 다시 연결"
@@ -3503,7 +3518,9 @@ msgid "Remove"
 msgstr "삭제"
 
 #. placeholder {0}: attachment.file.name
+#. placeholder {0}: bot.name
 #: src/pages/Shell.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "Remove {0}"
 msgstr "{0} 삭제"
 
@@ -3552,6 +3569,10 @@ msgstr "삭제했지만 목록을 새로고침하지 못했습니다."
 #: src/pages/PluginsOverlay.tsx
 msgid "Removing…"
 msgstr "삭제 중…"
+
+#: src/pages/Shell.tsx
+msgid "Rename"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
@@ -3685,10 +3706,6 @@ msgstr "서비스 설정을 확인한 뒤 다시 테스트하세요."
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "연결 해제"
-
-#: src/pages/AccountSettingsOverlay.tsx
-msgid "Robot"
-msgstr "로봇"
 
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Room guidance"
@@ -3952,10 +3969,6 @@ msgstr "설정: 사용량"
 msgid "Setup help"
 msgstr "설정 도움말"
 
-#: src/pages/shell/avatar-studio-popover.tsx
-msgid "Shape"
-msgstr "모양"
-
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Shared"
@@ -4124,6 +4137,10 @@ msgstr "SSO를 일시적으로 사용할 수 없습니다. 다시 시도하세�
 msgid "Start {trialDays}-day free trial"
 msgstr ""
 
+#: src/pages/shell/chat-recipients.tsx
+msgid "Start a chat with…"
+msgstr ""
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Start recording"
 msgstr "작업 녹화 시작"
@@ -4205,6 +4222,10 @@ msgstr "사고 모드 지원"
 
 #: src/pages/shell/command-palette.tsx
 msgid "Switch bot"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Switch space"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4309,10 +4330,6 @@ msgstr ""
 msgid "This cannot be undone."
 msgstr "이 작업은 되돌릴 수 없습니다."
 
-#: src/pages/PeerMessagesOverlay.tsx
-msgid "This chat is view-only"
-msgstr "이 채팅은 읽기 전용입니다"
-
 #: src/pages/HostComputerPrompt.tsx
 msgid "this computer"
 msgstr "이 컴퓨터"
@@ -4396,6 +4413,7 @@ msgid "To {0}"
 msgstr ""
 
 #: src/pages/shell/bot-picker.tsx
+#: src/pages/shell/chat-recipients.tsx
 msgid "To:"
 msgstr "받는 사람:"
 
@@ -4485,6 +4503,10 @@ msgstr "고정 해제"
 #: src/pages/Shell.tsx
 msgid "Unsupported file type: {0}"
 msgstr "지원하지 않는 파일 형식: {0}"
+
+#: src/pages/Shell.tsx
+msgid "Up to {ATTACHMENT_MAX_COUNT} attachments. {overLimit} not added."
+msgstr ""
 
 #: src/components/DesktopUpdates.tsx
 #: src/components/SoftwareUpdateSection.tsx
@@ -4716,7 +4738,6 @@ msgstr ""
 msgid "year"
 msgstr ""
 
-#: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Yesterday"
 msgstr "어제"

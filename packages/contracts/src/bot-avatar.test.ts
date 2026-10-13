@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOT_AVATAR_SHAPE_COUNT,
   BOT_AVATAR_VALUE_MAX_LENGTH,
   BotAvatarValueSchema,
   isBotAvatarValue,
@@ -8,6 +9,15 @@ import {
 } from "./index.js";
 
 describe("bot avatar values", () => {
+  it("round trips every persisted Gaze shape, including the final three", () => {
+    expect(BOT_AVATAR_SHAPE_COUNT).toBe(11);
+    for (let shapeIndex = 0; shapeIndex < BOT_AVATAR_SHAPE_COUNT; shapeIndex++) {
+      const color = `#62A8EC::shape_${shapeIndex}`;
+      expect(BotAvatarValueSchema.safeParse(color).success).toBe(true);
+      expect(UpdateBotInput.safeParse({ botId: "bot-1", color }).success).toBe(true);
+      expect(parseBotAvatarValue(color)).toEqual({ kind: "shape", color: "#62A8EC", shapeIndex });
+    }
+  });
   it("parses hex, encoded shapes, and data images", () => {
     expect(parseBotAvatarValue("#8B5CF6")).toEqual({ kind: "color", color: "#8B5CF6" });
     expect(parseBotAvatarValue("#8B5CF6::shape_3")).toEqual({

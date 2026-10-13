@@ -1,6 +1,12 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import {
+  captureScreenshot,
+  completeOnboarding,
+  expectActivityMode,
+  openActivityMenu,
+  signup,
+} from "./helpers";
 
 const EXPIRED_TAKEOVER = "Stopped. This was still waiting for you on the screen.";
 const EXPIRED_MESSAGE_ID = "msg-stuck-expired";
@@ -109,10 +115,9 @@ test("aged queued work is marked and an expired wait leaves a status line", asyn
     });
   });
 
-  const activityToggle = page.getByRole("button", { name: "Activity", exact: true });
-  await activityToggle.click();
+  await (await openActivityMenu(page)).click();
   await page.reload();
-  await expect(activityToggle).toHaveAttribute("aria-pressed", "true");
+  await expectActivityMode(page, true);
   await expect(page.getByText("Loading activity…")).toBeHidden({ timeout: 20_000 });
   const row = activityRow(page, "Chief");
   await expect(row).toBeVisible({ timeout: 20_000 });

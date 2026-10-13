@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createGroupRepos } from "./groups.js";
 import { IsolationError } from "./scope.js";
+import type * as ThreadListingModule from "./thread-listing.js";
+import { loadThreadAttention } from "./thread-listing.js";
+
+vi.mock("./thread-listing.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof ThreadListingModule>()),
+  loadThreadAttention: vi.fn(async () => new Map()),
+}));
+beforeEach(() => vi.mocked(loadThreadAttention).mockReset().mockResolvedValue(new Map()));
 
 describe("listSpaceGroupsForSpaces", () => {
   it("loads and maps compact cross-space group fields", async () => {
@@ -14,6 +22,7 @@ describe("listSpaceGroupsForSpaces", () => {
         sectionId: null,
         updatedAt: new Date("2026-08-20T00:00:00.000Z"),
         thread: {
+          id: "thread-1",
           unread: true,
           messages: [{ blocks: [{ kind: "text", text: "Escalation pending" }] }],
         },
@@ -51,6 +60,7 @@ describe("listSpaceGroupsForSpaces", () => {
         ],
         preview: "Escalation pending",
         unread: true,
+        attentionMessageId: null,
         updatedAt: "2026-08-20T00:00:00.000Z",
       },
     ]);
@@ -58,6 +68,121 @@ describe("listSpaceGroupsForSpaces", () => {
     expect(query.select).not.toHaveProperty("userId");
     expect(query.select).not.toHaveProperty("archivedAt");
     expect(query.select).not.toHaveProperty("createdAt");
+  });
+});
+
+describe("group conversation previews", () => {
+  const actor = {
+    spaceId: "workspace-1",
+    userId: "user-1",
+    email: "user@example.test",
+    isDeploymentOwner: false,
+  };
+  const group = {
+    id: "group-1",
+    spaceId: actor.spaceId,
+    userId: actor.userId,
+    name: "Weekend",
+    pinned: false,
+    sectionId: null,
+    archivedAt: null,
+    createdAt: new Date("2026-08-20T00:00:00.000Z"),
+    updatedAt: new Date("2026-08-20T00:00:00.000Z"),
+    members: [
+      { bot: { id: "bot-1", name: "Orange", color: "orange", runs: [] } },
+      { bot: { id: "bot-2", name: "Blue", color: "blue", runs: [] } },
+    ],
+  };
+
+  it("maps the current approval target consistently in group and cross-space rows", async () => {
+    vi.mocked(loadThreadAttention).mockResolvedValue(
+      new Map([
+        [
+          "thread-1",
+          {
+            attentionMessageId: "approval-current",
+            answerableApprovalMessageIds: ["approval-current"],
+          },
+        ],
+      ]),
+    );
+    const prisma = {
+      chatGroup: {
+        findMany: vi.fn(async () => [
+          {
+            ...group,
+            thread: { id: "thread-1", unread: true, messages: [] },
+          },
+        ]),
+      },
+    } as unknown as PrismaClient;
+    const repos = createGroupRepos(prisma);
+    expect((await repos.listGroups(actor))[0]?.attentionMessageId).toBe("approval-current");
+    expect(
+      (await repos.listSpaceGroupsForSpaces(actor, [actor.spaceId]))[0]?.attentionMessageId,
+    ).toBe("approval-current");
+  });
+
+  it("skips progress and peer activity before the last conversation sentence", async () => {
+    const messages = [
+      { seq: 4, runId: "user-run", blocks: [{ kind: "progress", text: "Opening browser" }] },
+      {
+        seq: 3,
+        runId: "peer-run",
+        blocks: [{ kind: "steps", steps: [{ label: "Private peer activity", count: 1 }] }],
+      },
+      { seq: 2, runId: "user-run", blocks: [{ kind: "text", text: "See you by the lake." }] },
+    ];
+    const prisma = {
+      chatGroup: {
+        findMany: vi.fn(async () => [
+          { ...group, thread: { id: "thread-1", unread: false, messages } },
+        ]),
+      },
+      run: { findMany: vi.fn(async () => [{ id: "peer-run" }]) },
+    };
+    const repos = createGroupRepos(prisma as unknown as PrismaClient);
+    await expect(repos.listGroups(actor)).resolves.toEqual([
+      expect.objectContaining({ preview: "See you by the lake." }),
+    ]);
+    await expect(repos.listSpaceGroupsForSpaces(actor, [actor.spaceId])).resolves.toEqual([
+      expect.objectContaining({ preview: "See you by the lake." }),
+    ]);
+  });
+
+  it("looks back through a peer-only window without loading an entire transcript", async () => {
+    const prisma = {
+      chatGroup: {
+        findFirst: vi.fn(async () => ({
+          ...group,
+          thread: {
+            id: "thread-1",
+            unread: false,
+            messages: [
+              {
+                seq: 17,
+                runId: "peer-run",
+                blocks: [{ kind: "steps", steps: [{ label: "Private activity", count: 1 }] }],
+              },
+            ],
+          },
+        })),
+      },
+      run: { findMany: vi.fn(async () => [{ id: "peer-run" }]) },
+      message: {
+        findMany: vi.fn(async () => [
+          { seq: 1, runId: null, blocks: [{ kind: "text", text: "Let's keep Saturday free." }] },
+        ]),
+      },
+    };
+    const repos = createGroupRepos(prisma as unknown as PrismaClient);
+    const result = await repos.getGroup(actor, group.id);
+    expect(repos.mapGroup(result).preview).toBe("Let's keep Saturday free.");
+    expect(prisma.message.findMany).toHaveBeenCalledExactlyOnceWith({
+      where: { threadId: "thread-1", seq: { lt: 17 } },
+      orderBy: { seq: "desc" },
+      take: 16,
+    });
   });
 });
 

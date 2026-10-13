@@ -14,7 +14,6 @@ import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { AvatarStyleProvider } from "../components/avatar-style";
 import { CallCard } from "../components/CallCard";
 import { ComputerUpdateProgress } from "../components/computer-update-progress";
 import { floatingHeaderOptions, glassHeaderOptions } from "../components/glass-title";
@@ -152,101 +151,99 @@ export default function Layout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
         {ready ? (
-          <AvatarStyleProvider>
-            <ChatContentProviders loadRemoteImages={loadRemoteImages}>
-              <ThemeProvider value={navigationTheme}>
-                <StatusBar style={resolved === "light" ? "dark" : "light"} />
-                <View style={{ flex: 1 }}>
-                  <Stack
-                    screenOptions={{
-                      headerStyle: { backgroundColor: navigationTheme.colors.background },
-                      ...floatingHeaderOptions(),
-                      headerTintColor: navigationTheme.colors.text,
-                      headerShadowVisible: false,
-                      headerBackButtonDisplayMode: "minimal",
-                      contentStyle: { backgroundColor: String(native.page) },
+          <ChatContentProviders loadRemoteImages={loadRemoteImages}>
+            <ThemeProvider value={navigationTheme}>
+              <StatusBar style={resolved === "light" ? "dark" : "light"} />
+              <View style={{ flex: 1 }}>
+                <Stack
+                  screenOptions={{
+                    headerStyle: { backgroundColor: navigationTheme.colors.background },
+                    ...floatingHeaderOptions(),
+                    headerTintColor: navigationTheme.colors.text,
+                    headerShadowVisible: false,
+                    headerBackButtonDisplayMode: "minimal",
+                    contentStyle: { backgroundColor: String(native.page) },
+                  }}
+                >
+                  <Stack.Screen name="index" options={{ headerShown: false, title: "Rakazo" }} />
+                  <Stack.Screen name="sign-in" options={{ headerShown: false }} />
+                  <Stack.Screen
+                    name="(settings)"
+                    options={{
+                      headerShown: false,
+                      // One stack of settings pages in a sheet over the screen that opened it.
+                      // Android keeps pushed pages: it has no nested stack inside a formSheet.
+                      presentation: Platform.OS === "ios" ? "formSheet" : "card",
+                      sheetAllowedDetents: [0.95],
+                      sheetGrabberVisible: false,
+                      sheetExpandsWhenScrolledToEdge: false,
+                      contentStyle: { backgroundColor: native.groupedPage },
                     }}
-                  >
-                    <Stack.Screen name="index" options={{ headerShown: false, title: "Rakazo" }} />
-                    <Stack.Screen name="sign-in" options={{ headerShown: false }} />
-                    <Stack.Screen
-                      name="(settings)"
-                      options={{
-                        headerShown: false,
-                        // One stack of settings pages in a sheet over the screen that opened it.
-                        // Android keeps pushed pages: it has no nested stack inside a formSheet.
-                        presentation: Platform.OS === "ios" ? "formSheet" : "card",
-                        sheetAllowedDetents: [0.95],
-                        sheetGrabberVisible: false,
-                        sheetExpandsWhenScrolledToEdge: false,
-                        contentStyle: { backgroundColor: native.groupedPage },
-                      }}
-                    />
-                    <Stack.Screen
-                      name="server"
-                      options={{
-                        title: t("Server"),
-                        presentation: "formSheet",
-                        sheetAllowedDetents: [0.6, 1],
-                        sheetGrabberVisible: true,
-                      }}
-                    />
-                    <Stack.Screen
-                      name="new"
-                      options={{
-                        title: t("New bot"),
-                        presentation: "modal",
-                        gestureEnabled: true,
-                        headerBackVisible: false,
-                      }}
-                    />
-                    <Stack.Screen
-                      name="new-group"
-                      options={{
-                        title: t("New group"),
-                        presentation: "modal",
-                        gestureEnabled: true,
-                      }}
-                    />
-                    <Stack.Screen
-                      name="new-space"
-                      options={{
-                        title: t("New space"),
-                        presentation: "modal",
-                        gestureEnabled: true,
-                        headerBackVisible: false,
-                      }}
-                    />
-                    <Stack.Screen name="artifacts" options={glassHeaderOptions(t("Artifacts"))} />
-                    <Stack.Screen name="artifact" options={{ title: t("Artifact") }} />
-                    <Stack.Screen name="group-thread" options={{ title: t("Group") }} />
-                    <Stack.Screen
-                      name="group-settings"
-                      options={glassHeaderOptions(t("Group settings"))}
-                    />
-                    <Stack.Screen
-                      name="bot-settings"
-                      options={glassHeaderOptions(t("Chat settings"))}
-                    />
-                    <Stack.Screen name="thread" options={{ title: t("Thread") }} />
-                    <Stack.Screen name="routine" options={glassHeaderOptions(t("Routine"))} />
-                    <Stack.Screen name="computer" options={{ title: t("Computer") }} />
-                    <Stack.Screen
-                      name="image"
-                      options={{
-                        headerShown: false,
-                        presentation: "fullScreenModal",
-                        animation: "fade",
-                      }}
-                    />
-                  </Stack>
-                  <VoicePlayerBar style={{ marginTop: 8, marginBottom: insets.bottom + 8 }} />
-                </View>
-                <ComputerUpdateProgress />
-                <CallCard />
-              </ThemeProvider>
-            </ChatContentProviders>
-          </AvatarStyleProvider>
+                  />
+                  <Stack.Screen
+                    name="server"
+                    options={{
+                      title: t("Server"),
+                      presentation: "formSheet",
+                      sheetAllowedDetents: [0.6, 1],
+                      sheetGrabberVisible: true,
+                    }}
+                  />
+                  <Stack.Screen
+                    name="new"
+                    options={{
+                      title: t("New bot"),
+                      presentation: "modal",
+                      gestureEnabled: true,
+                      headerBackVisible: false,
+                    }}
+                  />
+                  <Stack.Screen
+                    name="new-group"
+                    options={{
+                      title: t("New group"),
+                      presentation: "modal",
+                      gestureEnabled: true,
+                    }}
+                  />
+                  <Stack.Screen
+                    name="new-space"
+                    options={{
+                      title: t("New space"),
+                      presentation: "modal",
+                      gestureEnabled: true,
+                      headerBackVisible: false,
+                    }}
+                  />
+                  <Stack.Screen name="artifacts" options={glassHeaderOptions(t("Artifacts"))} />
+                  <Stack.Screen name="artifact" options={{ title: t("Artifact") }} />
+                  <Stack.Screen name="group-thread" options={{ title: t("Group") }} />
+                  <Stack.Screen
+                    name="group-settings"
+                    options={glassHeaderOptions(t("Group settings"))}
+                  />
+                  <Stack.Screen
+                    name="bot-settings"
+                    options={glassHeaderOptions(t("Chat settings"))}
+                  />
+                  <Stack.Screen name="thread" options={{ title: t("Thread") }} />
+                  <Stack.Screen name="routine" options={glassHeaderOptions(t("Routine"))} />
+                  <Stack.Screen name="computer" options={{ title: t("Computer") }} />
+                  <Stack.Screen
+                    name="image"
+                    options={{
+                      headerShown: false,
+                      presentation: "fullScreenModal",
+                      animation: "fade",
+                    }}
+                  />
+                </Stack>
+                <VoicePlayerBar style={{ marginTop: 8, marginBottom: insets.bottom + 8 }} />
+              </View>
+              <ComputerUpdateProgress />
+              <CallCard />
+            </ThemeProvider>
+          </ChatContentProviders>
         ) : (
           <View style={{ flex: 1, backgroundColor: String(native.page) }} />
         )}

@@ -30,7 +30,9 @@ import {
   createRepos,
   createThreadMessageInTransaction,
   expireComputerExecutionLeases,
+  groupMemberOrderBy,
   IsolationError,
+  loadThreadAttention,
   lockOwnedGroup,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
@@ -267,7 +269,7 @@ async function lockAndLoadGroupMembers(
       members: {
         where: { bot: { archivedAt: null } },
         include: { bot: { select: { id: true, name: true, color: true } } },
-        orderBy: { createdAt: "asc" },
+        orderBy: groupMemberOrderBy,
       },
     },
   });
@@ -345,7 +347,7 @@ export async function threadSnapshot(
       deps.prisma.$transaction(
         async (tx) => {
           await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
-          const [messagePage, last, waitingRun, busyOrFailed] = await Promise.all([
+          const [messagePage, last, waitingRun, busyOrFailed, attention] = await Promise.all([
             loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
             tx.event.findFirst({
               where: { threadId: target.threadId },
@@ -373,6 +375,7 @@ export async function threadSnapshot(
               // timestamps, matching the supersession probe below.
               orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             }),
+            loadThreadAttention(tx, [target.threadId]),
           ]);
           const run = waitingRun ?? busyOrFailed;
           // A failed run is only the thread's word while it is still the newest
@@ -414,7 +417,7 @@ export async function threadSnapshot(
                   orderBy: { seq: "asc" },
                 })
               : [];
-          return { messagePage, last, run: currentRun, liveEvents };
+          return { messagePage, last, run: currentRun, liveEvents, attention };
         },
         { timeout: 15_000, maxWait: 5_000 },
       ),
@@ -426,6 +429,9 @@ export async function threadSnapshot(
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
       run: core.run ? mapRun(core.run) : null,
+      attentionMessageId: core.attention.get(target.threadId)?.attentionMessageId ?? null,
+      answerableApprovalMessageIds:
+        core.attention.get(target.threadId)?.answerableApprovalMessageIds ?? [],
       computer: toComputerStatus(target.botId, target.bot.computer, busyBotName),
     };
   }
@@ -433,7 +439,7 @@ export async function threadSnapshot(
   const core = await deps.prisma.$transaction(
     async (tx) => {
       await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
-      const [messagePage, last, activeRuns, recentTerminals] = await Promise.all([
+      const [messagePage, last, activeRuns, recentTerminals, attention] = await Promise.all([
         loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
         tx.event.findFirst({
           where: { threadId: target.threadId },
@@ -463,6 +469,7 @@ export async function threadSnapshot(
           orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
           take: 50,
         }),
+        loadThreadAttention(tx, [target.threadId]),
       ]);
       const liveEvents =
         activeRuns.length > 0
@@ -488,6 +495,7 @@ export async function threadSnapshot(
         activeRuns,
         terminalRun: pickLatestTerminalRun(recentTerminals),
         liveEvents,
+        attention,
       };
     },
     { timeout: 15_000, maxWait: 5_000 },
@@ -510,6 +518,9 @@ export async function threadSnapshot(
           ? mapRun(primaryActiveRun)
           : null,
     activeRuns: core.activeRuns.map(mapRun),
+    attentionMessageId: core.attention.get(target.threadId)?.attentionMessageId ?? null,
+    answerableApprovalMessageIds:
+      core.attention.get(target.threadId)?.answerableApprovalMessageIds ?? [],
   };
 }
 

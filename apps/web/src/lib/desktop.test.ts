@@ -63,18 +63,31 @@ describe("window chrome", () => {
   it("keeps conversation header controls clickable", () => {
     const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "../pages");
     const shell = readFileSync(path.join(root, "Shell.tsx"), "utf8");
-    expect(shell).toContain(
-      'className="app-drag flex items-center justify-between border-b border-sidebar-border',
+    const headerClasses = shell
+      .match(/className="(app-drag [^"]*border-sidebar-border[^"]*)"/)?.[1]
+      ?.split(/\s+/);
+    expect(headerClasses).toEqual(
+      expect.arrayContaining([
+        "app-drag",
+        "flex",
+        "items-center",
+        "justify-between",
+        "border-b",
+        "border-sidebar-border",
+      ]),
     );
     expect(shell).toContain('className="app-no-drag grid h-8 w-8');
     expect(shell).toContain('className="app-no-drag flex min-w-0 items-center gap-3"');
     expect(shell.match(/className="app-no-drag grid h-\[30px\] w-\[34px\]/g)).toHaveLength(1);
   });
 
-  it("moves window chrome into the conversation header when the bots sidebar is collapsed", () => {
+  it("keeps window chrome in the persistent sidebar while chat views change", () => {
     const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "../pages");
     const shell = readFileSync(path.join(root, "Shell.tsx"), "utf8");
-    expect(shell).toContain("{botsSidebarCollapsed && desktopBridge() ? <WindowChrome /> : null}");
+    const sidebar = shell.slice(shell.indexOf("<aside"), shell.indexOf("</aside>"));
+    expect(sidebar).toContain("{desktopBridge() ? (");
+    expect(sidebar).toContain("<WindowChrome />");
+    expect(shell.match(/<WindowChrome \/>/g)).toHaveLength(1);
   });
 
   it("puts Electron window chrome on the artifacts page, which has no sidebar", () => {

@@ -67,4 +67,21 @@ describe("GroupAvatar", () => {
     );
     expect(html).toContain("+2");
   });
+
+  it("uses the same companion identity and uploaded image in fixed square frames", () => {
+    const html = renderToString(
+      <GroupAvatar
+        size={40}
+        members={[
+          { botId: "bot-a", color: "#8B5CF6" },
+          { botId: "bot-b", color: "data:image/png;base64,abc" },
+        ]}
+      />,
+    );
+    expect(html).toContain("min-width:40px;min-height:40px;flex:none;aspect-ratio:1");
+    expect(html).toContain("rakazo-gaze-avatar");
+    expect(html).toContain('src="data:image/png;base64,abc"');
+    expect(html).toContain("min-width:26px;min-height:26px;flex:none;aspect-ratio:1");
+    expect(html.match(/<img /g)).toHaveLength(1);
+  });
 });

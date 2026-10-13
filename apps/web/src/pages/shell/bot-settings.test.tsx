@@ -60,7 +60,24 @@ vi.mock("@rakazo/ui-web", () => ({
 }));
 vi.mock("../ScratchpadSection", () => ({ ScratchpadSection: () => null }));
 vi.mock("../KnowledgeSection", () => ({ KnowledgeSection: () => null }));
-vi.mock("./avatar-studio-popover", () => ({ AvatarStudioPopover: () => null }));
+vi.mock("./avatar-studio-popover", () => ({
+  AvatarStudioPopover: ({
+    value,
+    onChange,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="avatar-choice"
+      data-value={value}
+      onClick={() => onChange("#62A8EC::shape_10")}
+    >
+      Choose avatar
+    </button>
+  ),
+}));
 vi.mock("./bot-credentials", () => ({ BotCredentialsSection: () => null }));
 
 import { BotSettings } from "./bot-panel";
@@ -120,7 +137,7 @@ afterEach(() => {
   container.remove();
 });
 
-type SavePatch = { disabledBuiltinTools?: string[] };
+type SavePatch = { disabledBuiltinTools?: string[]; color?: string };
 
 function setField(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -425,5 +442,32 @@ describe("BotSettings disabled tools", () => {
     await flush();
     expect(container.textContent).toContain("Network failed");
     expect(container.textContent).not.toContain("Unknown tool");
+  });
+});
+
+describe("BotSettings avatar auto-save", () => {
+  it("shows a failed save and retries the same preview without changing Bot settings", async () => {
+    const onSave = vi
+      .fn<(patch: SavePatch) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("Network failed"))
+      .mockResolvedValue(undefined);
+    await renderSettings(onSave);
+    const choice = container.querySelector<HTMLButtonElement>('[data-testid="avatar-choice"]')!;
+    await act(async () => {
+      choice.click();
+    });
+    await flush();
+    expect(choice.dataset.value).toBe("#62A8EC::shape_10");
+    expect(container.textContent).toContain("Network failed");
+    expect(onSave).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      choice.click();
+    });
+    await flush();
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(onSave.mock.calls[1]?.[0]).toEqual(onSave.mock.calls[0]?.[0]);
+    expect(onSave.mock.calls[1]?.[0]).toHaveProperty("color", "#62A8EC::shape_10");
+    expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty("disabledBuiltinTools");
+    expect(container.textContent).not.toContain("Network failed");
   });
 });

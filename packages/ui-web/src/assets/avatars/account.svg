@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="user-title">
+<title id="user-title">Person with side-parted hair</title>
+<defs>
+<linearGradient id="user-bg" x1="20" y1="0" x2="110" y2="128" gradientUnits="userSpaceOnUse"><stop stop-color="#edf0ec"/><stop offset="1" stop-color="#e1e7e2"/></linearGradient>
+<linearGradient id="user-coat" x1="35" y1="22" x2="92" y2="125" gradientUnits="userSpaceOnUse"><stop stop-color="#91a69b"/><stop offset="1" stop-color="#708b82"/></linearGradient>
+<clipPath id="user-frame"><rect width="128" height="128" rx="32"/></clipPath>
+</defs>
+<g clip-path="url(#user-frame)">
+<rect width="128" height="128" fill="url(#user-bg)"/>
+<path fill="url(#user-coat)" d="M18 128c1-23 15-34 43-36 30-1 47 13 49 36Z"/>
+<path fill="#cca38b" d="M51 83h26v18q-13 13-26 0Z"/>
+<path fill="#b9c9bc" d="m42 96 20 12-10 11-14-18Zm43-1-23 13 12 11 17-17Z"/>
+<ellipse cx="35" cy="62" rx="6" ry="9" fill="#d7b39c"/><ellipse cx="93" cy="62" rx="6" ry="9" fill="#c9a28b"/>
+<path fill="#dfbca4" d="M35 45c1-18 14-27 29-26 20 0 31 13 31 31l-3 22C89 86 76 96 65 96 53 96 40 86 37 71Z"/>
+<path fill="#e8c9b0" d="M41 49c4-13 13-17 23-17 11 0 19 6 22 17l-1 24c-4 10-12 15-21 15-9-1-18-7-21-17Z"/>
+<path fill="#5b514c" d="M31 59c-9-22 4-41 27-42 29-3 45 13 39 43l-7 7-3-21q-8-3-21-13c-5 12-17 17-28 19l-1 15Z"/>
+<path fill="#76685e" d="M39 38c3-11 13-16 29-16-8 3-12 9-15 13l-14 9Zm29-13c15 0 24 10 24 21-8-11-15-12-23-15Z"/>
+<path d="M46 56q6-3 12 0m16-1q6-3 12 0" fill="none" stroke="#897363" stroke-width="2.3" stroke-linecap="round"/>
+<ellipse cx="52" cy="64" rx="2.7" ry="3.3" fill="#574b43"/><ellipse cx="79" cy="64" rx="2.7" ry="3.3" fill="#574b43"/>
+<path d="M64 67l-2 7 4 1m-9 6q8 6 17-1" fill="none" stroke="#ad8871" stroke-width="2" stroke-linecap="round"/>
+</g>
+</svg>
