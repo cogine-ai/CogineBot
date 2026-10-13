@@ -247,6 +247,82 @@ it("still offers Load more when filters match nothing on the loaded page", async
   }
 });
 
+it.each(
+  ["grid", "list", "index"].flatMap((view) =>
+    ["search", "date"].map((filter) => ({ view, filter })),
+  ),
+)(
+  "shows an older-page failure and retries it in an empty $filter filter in $view view",
+  async ({ view, filter }) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    if (view === "list") window.localStorage.setItem("rakazo:artifacts-view-mode", "list");
+    const current = artifact("Alpha notes", "current", "2000-01-01T12:00:00.000Z");
+    const older = artifact("Beta report", "older", "1999-01-01T12:00:00.000Z");
+    const pendingPage = deferred<{
+      items: ReturnType<typeof artifact>[];
+      nextCursor: string | null;
+    }>();
+    let olderAttempts = 0;
+    api.listSpace.mockImplementation(({ cursor }: { cursor?: string }) => {
+      if (!cursor) return Promise.resolve({ items: [current], nextCursor: "current" });
+      olderAttempts += 1;
+      return olderAttempts === 1
+        ? pendingPage.promise
+        : Promise.resolve({ items: [older], nextCursor: null });
+    });
+    const page = await renderArtifacts(
+      view === "index" ? "/app/artifacts/current" : "/app/artifacts",
+    );
+    try {
+      await act(async () => buttonNamed(page.container, "Filters").click());
+      await act(async () => {
+        if (filter === "search") {
+          typeSearch(page.container, "Beta");
+        } else {
+          const select = page.container.querySelector("select[aria-label='Filter by date']");
+          if (!(select instanceof HTMLSelectElement)) throw new Error("missing date filter");
+          select.value = "today";
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
+      expect(displayedArtifactIds(page.container)).toEqual([]);
+      expect(api.listSpace).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        pendingPage.reject(new Error("Older files are temporarily unavailable"));
+        await pendingPage.promise.catch(() => undefined);
+      });
+      const timeline = page.container.querySelector(
+        view === "index" ? "[data-testid='artifacts-index']" : "[data-testid='artifacts-browse']",
+      );
+      expect(timeline?.textContent).toContain("Older files are temporarily unavailable");
+      expect(buttonNamed(page.container, "Load more").disabled).toBe(false);
+      await act(async () => buttonNamed(page.container, "Load more").click());
+      expect(api.listSpace.mock.calls.slice(1).map(([input]) => input.cursor)).toEqual([
+        "current",
+        "current",
+      ]);
+      expect(timeline?.textContent).not.toContain("Older files are temporarily unavailable");
+      expect(displayedArtifactIds(page.container)).toEqual(filter === "search" ? ["older"] : []);
+      if (filter === "date") expect(timeline?.textContent).toContain("No artifacts found.");
+      await act(async () => {
+        if (filter === "search") {
+          typeSearch(page.container, "");
+        } else {
+          const select = page.container.querySelector("select[aria-label='Filter by date']");
+          if (!(select instanceof HTMLSelectElement)) throw new Error("missing date filter");
+          select.value = "all";
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
+      expect(displayedArtifactIds(page.container)).toEqual(["older", "current"]);
+      expect(api.listSpace).toHaveBeenCalledTimes(3);
+    } finally {
+      await page.cleanup();
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
 it.each(["grid", "list", "index"])(
   "puts older pages above the complete loaded history in %s view without resorting timestamp ties",
   async (view) => {

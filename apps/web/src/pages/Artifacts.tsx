@@ -592,6 +592,7 @@ function BrowsingPane({ viewMode, ...listing }: ArtifactListingProps & { viewMod
           className="grid min-h-40 flex-1 place-items-center text-[13px] text-muted-foreground"
           nextCursor={nextCursor}
           loadingMore={loadingMore}
+          pageError={listing.pageError}
           onLoadMore={onLoadMore}
         />
       ) : (
@@ -644,18 +645,22 @@ function EmptyArtifacts({
   className,
   nextCursor,
   loadingMore,
+  pageError,
   onLoadMore,
 }: {
   className: string;
   nextCursor: string | null;
   loadingMore: boolean;
+  pageError: string | null;
   onLoadMore: () => void;
 }) {
   return (
     <div className={className}>
       <div className="flex flex-col items-center gap-3">
-        <span>
-          {!nextCursor ? (
+        <span role={pageError ? "status" : undefined} className="text-center">
+          {pageError ? (
+            pageError
+          ) : !nextCursor ? (
             <Trans>No artifacts found.</Trans>
           ) : loadingMore ? (
             <Trans>Loading…</Trans>
@@ -699,6 +704,7 @@ function IndexPane({ selectedId, ...listing }: ArtifactListingProps & { selected
             className="grid min-h-40 flex-1 place-items-center text-center text-[13px] text-muted-foreground"
             nextCursor={nextCursor}
             loadingMore={loadingMore}
+            pageError={listing.pageError}
             onLoadMore={onLoadMore}
           />
         ) : (
