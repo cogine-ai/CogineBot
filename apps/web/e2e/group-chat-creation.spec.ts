@@ -496,17 +496,31 @@ test("six long-named recipients fit the narrow desktop with a persistent compact
     elements.map((element) => {
       const box = element.getBoundingClientRect();
       const style = getComputedStyle(element);
+      const artwork = element.querySelector(".rakazo-gaze-avatar");
+      const activity = element.querySelector(".avatar-activity");
       return {
         width: box.width,
         height: box.height,
-        radius: Number.parseFloat(style.borderRadius),
+        layoutWidth: Number.parseFloat(style.width),
+        layoutHeight: Number.parseFloat(style.height),
+        identity: element.getAttribute("data-avatar-identity"),
+        viewBox: artwork?.getAttribute("viewBox"),
+        artworkWidth: Number.parseFloat(artwork?.getAttribute("width") ?? "0"),
+        artworkHeight: Number.parseFloat(artwork?.getAttribute("height") ?? "0"),
+        motionOverflow: activity ? getComputedStyle(activity).overflow : null,
       };
     }),
   );
   expect(avatarShapes.length).toBeGreaterThanOrEqual(13);
   for (const avatar of avatarShapes) {
     expect(Math.abs(avatar.width - avatar.height)).toBeLessThanOrEqual(1);
-    expect(avatar.radius).toBeGreaterThanOrEqual(avatar.width / 2);
+    expect(avatar.identity).toBeTruthy();
+    expect(avatar.viewBox).toBe("10 10 80 80");
+    // Intrinsic artwork follows the square layout frame. Ancestor popover
+    // transitions may scale the screen bounds without distorting that frame.
+    expect(avatar.artworkWidth).toBe(avatar.layoutWidth);
+    expect(avatar.artworkHeight).toBe(avatar.layoutHeight);
+    if (avatar.motionOverflow !== null) expect(avatar.motionOverflow).toBe("hidden");
   }
   const close = (await page.getByTestId("chat-close").boundingBox())!;
   expect(close.x).toBeGreaterThanOrEqual(88);

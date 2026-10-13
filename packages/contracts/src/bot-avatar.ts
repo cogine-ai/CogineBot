@@ -1,7 +1,7 @@
 import * as z from "zod";
 
-/** Matches the eight shipped mascot shapes in `@rakazo/core`. */
-export const BOT_AVATAR_SHAPE_COUNT = 8;
+/** Matches the eleven Gaze avatar shapes in `@rakazo/core`. */
+export const BOT_AVATAR_SHAPE_COUNT = 11;
 
 /**
  * 256x256 webp data URLs from Avatar Studio stay well under this. Cap writes so

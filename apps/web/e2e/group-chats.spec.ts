@@ -85,7 +85,20 @@ test("group conversation keeps member avatars, settings and messages in one tran
   await expect(groupAvatar.locator(".rakazo-bot-avatar")).toHaveCount(2);
   const workingAvatar = groupAvatar.locator('[data-working="true"]');
   await expect(workingAvatar).toHaveCount(1);
-  await expect(workingAvatar.locator("img")).toBeVisible();
+  const memberIds = groupSnapshot.members?.map((member) => member.botId) ?? [];
+  await expect
+    .poll(() =>
+      groupAvatar
+        .locator(".rakazo-bot-avatar")
+        .evaluateAll((avatars) =>
+          avatars.map((avatar) => avatar.getAttribute("data-avatar-identity")),
+        ),
+    )
+    .toEqual(memberIds);
+  await expect(workingAvatar).toHaveAttribute("data-avatar-identity", memberIds[0]!);
+  await expect(workingAvatar.locator(".avatar-activity")).toHaveAttribute("data-motion", "active");
+  await expect(workingAvatar.locator(".avatar-activity-motion > svg")).toBeVisible();
+  await expect(groupAvatar.locator('[data-working="false"] .rakazo-gaze-avatar')).toBeVisible();
   await expect(workingAvatar.locator(".rakazo-bot-avatar-ring")).toHaveCount(0);
   await captureScreenshot(page, testInfo, "group-avatar-active");
   await page.unroute("**/rpc/groups/list");

@@ -1,0 +1,189 @@
+{
+  "kind": "Frozen public browser animation excerpts with DOM lifecycle bridge",
+  "sourcePage": "https://x.ai/news/designing-grok-bot",
+  "sourceUrl": "https://x.ai/_next/static/chunks/3xm36k4tic5a5.js",
+  "sourceBytes": 235073,
+  "sourceSha256": "0442fa0f3317ed99e82089c97197c142898b14ee4f437e064c520bfedc363355",
+  "sourceSlices": [
+    {
+      "type": "VariableDeclaration",
+      "start": 33059,
+      "end": 69828,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 33069,
+      "byteEnd": 69838,
+      "sha256": "2989223d7f773f61cdc8c881279c0aa4761a3201b0a940dea27be32fc009b85c"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 70064,
+      "end": 72038,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 70074,
+      "byteEnd": 72048,
+      "sha256": "ee77a7d5cdb2656992b38155ffabfe69f7985a0039d9f5ea087171d4e9305078"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 72274,
+      "end": 72345,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 72284,
+      "byteEnd": 72355,
+      "sha256": "8f858e598a41d13f58605a21376b7db7e2fafb2e0ad96b855deecb6b4629d59c"
+    },
+    {
+      "type": "ClassDeclaration",
+      "start": 72345,
+      "end": 73205,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 72355,
+      "byteEnd": 73215,
+      "sha256": "a401d4bdf15027912e023517e2e234c02228a2960553111ff78356151c189b9c"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 73205,
+      "end": 91161,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 73215,
+      "byteEnd": 91171,
+      "sha256": "303ba9430e9942f56595b06cf28356050f1b9fca93f914774b1fd5db95dc169a"
+    },
+    {
+      "type": "ExpressionStatement",
+      "start": 91161,
+      "end": 91201,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 91171,
+      "byteEnd": 91211,
+      "sha256": "a50512131ec98a0fe29ddfaeec1bc28dc7d23e6124d46bbe9cf5b5264091b1da"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 91985,
+      "end": 94210,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 91995,
+      "byteEnd": 94220,
+      "sha256": "392ee5b967adea3d0301713e21b20710c132594e9cebd51b808b86a750cdb8e8"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 94446,
+      "end": 94780,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 94456,
+      "byteEnd": 94790,
+      "sha256": "44160d463ca09e9d414f1f0870820f3b3b1e6c836c022e0b30ae78a2206c50d1"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 95016,
+      "end": 95179,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 95026,
+      "byteEnd": 95189,
+      "sha256": "439609978135829f94f4e1d3963bde57e4f07c89f1859b94bbaae3ea72c950b8"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 95434,
+      "end": 139036,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 95444,
+      "byteEnd": 139046,
+      "sha256": "ce7edd741023ef7677190977de8bb26dcb7df0691ce5a27617faaebda9b10748"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 139508,
+      "end": 140162,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 139518,
+      "byteEnd": 140172,
+      "sha256": "78fa50ee756c46a6efbd6f4318692dc9ba7a93ca65b49a7c5c66c105ad0c8766"
+    },
+    {
+      "type": "FunctionDeclaration",
+      "start": 140162,
+      "end": 140437,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 140172,
+      "byteEnd": 140447,
+      "sha256": "68b3f9145f623c1527ce93f89ec7a52edad735ab1bf3bc965084da075701b371"
+    },
+    {
+      "type": "FunctionDeclaration",
+      "start": 140437,
+      "end": 140807,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 140447,
+      "byteEnd": 140817,
+      "sha256": "97acd760c1953200c6cb7e724c033cbf7d5878ff26c7ac835d1ac4ad208f328e"
+    },
+    {
+      "type": "FunctionDeclaration",
+      "start": 140807,
+      "end": 140854,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 140817,
+      "byteEnd": 140864,
+      "sha256": "220cdeddf5d408a550d43ceef6919ce7d49da9b17c6f764b5b841caa26e3ad2f"
+    },
+    {
+      "type": "VariableDeclaration",
+      "start": 140854,
+      "end": 140895,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 140864,
+      "byteEnd": 140905,
+      "sha256": "2c0d55b168b8713a35a01eb4e0c6667adf2793b9f6b77adf48ebca694558c347"
+    },
+    {
+      "type": "FunctionDeclaration",
+      "start": 140895,
+      "end": 141132,
+      "offsetUnit": "UTF-16 code units (Babel AST)",
+      "byteStart": 140905,
+      "byteEnd": 141142,
+      "sha256": "7de47c6ff72a7aef8b767053bdef83a6990a7f25de4bc49e2ac9fabe0f068345"
+    }
+  ],
+  "excerptBytes": 105633,
+  "excerptSha256": "3925cca4096ba4afe9bdea971452f7c3f4b4668ec8d4af77525538703bbaea4c",
+  "preserved": [
+    "eK eye topology arrays",
+    "body shapes and ring geometry",
+    "state/expression timing tables",
+    "spring integrator",
+    "seeded random scheduler",
+    "full tW RAF engine",
+    "all morph renderers",
+    "SVG hierarchy",
+    "face-tuning helpers"
+  ],
+  "omitted": [
+    "website framework entry point",
+    "asset imports",
+    "Sentry metadata blocks",
+    "CSS-module import",
+    "unrelated website UI",
+    "demo state-tour controls"
+  ],
+  "adapter": "Native DOM hook and JSX bridge; per-frame fanout is implemented separately.",
+  "aliases": {
+    "gather": "spawning",
+    "wave": "dictating",
+    "dots": "thinking",
+    "whirl": "loading",
+    "ball": "bouncing"
+  },
+  "runtimeDependencies": ["browser DOM/SVG", "requestAnimationFrame", "performance", "matchMedia"],
+  "externalRuntimeDependencies": [],
+  "networkCallsAdded": 0,
+  "limitations": [
+    "setActive(false) still schedules RAF; consumers must call destroy() to stop.",
+    "Seeds must be integers."
+  ]
+}

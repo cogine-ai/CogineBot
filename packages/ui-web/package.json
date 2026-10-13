@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",
+    "@rakazo/contracts": "workspace:*",
     "@rakazo/core": "workspace:*",
     "@rakazo/ui-tokens": "workspace:*",
     "class-variance-authority": "0.7.1",

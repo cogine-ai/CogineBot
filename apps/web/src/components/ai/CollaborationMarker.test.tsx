@@ -25,7 +25,7 @@ describe("collaboration transcript markers", () => {
     expect(html).not.toContain("{peer}");
   });
 
-  it("animates the active bot glyph from its run status", () => {
+  it("selects companion activity from the existing active run status", () => {
     const html = renderToString(
       <ActiveBotGlyph
         bots={[{ botId: "research", color: "#14B8A6", status: "running" }]}
@@ -35,6 +35,7 @@ describe("collaboration transcript markers", () => {
 
     expect(html).toContain('role="status"');
     expect(html).toContain('data-working="true"');
-    expect(html).toContain("rakazo-bot-avatar-ring");
+    expect(html).toContain("avatar-activity");
+    expect(html).toContain("rakazo-gaze-avatar");
   });
 });

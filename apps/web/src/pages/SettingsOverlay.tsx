@@ -1,5 +1,5 @@
 import { useLingui } from "@lingui/react/macro";
-import type { AvatarStyle, SpaceMemoryConfig } from "@rakazo/contracts";
+import type { SpaceMemoryConfig } from "@rakazo/contracts";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import {
   Brain,
@@ -48,8 +48,6 @@ export function SettingsOverlay({
   usage,
   onUsageOpen,
   initialSection = "general",
-  avatarStyle,
-  onAvatarStyleChange,
   isDeploymentOwner = false,
   billingEnabled = false,
   sandboxProvider,
@@ -71,8 +69,6 @@ export function SettingsOverlay({
   } | null;
   onUsageOpen: () => void;
   initialSection?: SettingsSection;
-  avatarStyle: AvatarStyle;
-  onAvatarStyleChange: (style: AvatarStyle) => Promise<void>;
   isDeploymentOwner?: boolean;
   billingEnabled?: boolean;
   sandboxProvider?: string | null;
@@ -253,8 +249,6 @@ export function SettingsOverlay({
                 <GeneralSettingsPanels
                   email={email}
                   name={name}
-                  avatarStyle={avatarStyle}
-                  onAvatarStyleChange={onAvatarStyleChange}
                   messagingEnabled={messagingEnabled}
                   onOpenMessaging={
                     onOpenMessaging ? () => leaveSettings(onOpenMessaging) : undefined

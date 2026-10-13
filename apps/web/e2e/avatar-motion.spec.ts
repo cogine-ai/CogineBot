@@ -1,24 +1,157 @@
 import { expect, test } from "@playwright/test";
+import { captureScreenshot } from "./helpers";
 
-test("bot avatar ring stays still when reduced motion is enabled", async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
+test("active views share geometry after late mounting and history remains static", async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/e2e/fixtures/avatar-motion.html");
+  await expect(page.getByTestId("sidebar-avatar").locator(".avatar-activity")).toHaveAttribute(
+    "data-motion",
+    "active",
+  );
+  await page.getByRole("button", { name: "Toggle late view" }).click();
+  await expect(page.getByTestId("late-avatar").locator(".avatar-activity")).toHaveAttribute(
+    "data-motion",
+    "active",
+  );
+  const frames = await page
+    .locator('[data-avatar-identity="motion-a"] .avatar-activity-motion')
+    .evaluateAll((elements) =>
+      elements
+        .filter((element) => getComputedStyle(element).display !== "none")
+        .map((element) => ({
+          visual: (element as HTMLElement).dataset.visual,
+          paths: [...element.querySelectorAll("path")].map((path) => path.getAttribute("d")),
+          transforms: [...element.querySelectorAll("g")].map((group) =>
+            group.getAttribute("transform"),
+          ),
+        })),
+    );
+  expect(frames.length).toBeGreaterThanOrEqual(3);
+  for (const frame of frames) expect(frame).toEqual(frames[0]);
+  await expect(page.getByTestId("history-avatar").locator(".avatar-activity")).toHaveCount(0);
+  await expect(page.getByTestId("tiny-group").locator(".avatar-activity-motion svg")).toHaveCount(
+    0,
+  );
+  await expect(page.getByTestId("tiny-group").locator(".rakazo-gaze-avatar")).toHaveCount(3);
+  const ids = await page
+    .locator('[id^="_r_"]')
+    .evaluateAll((elements) => elements.map((element) => element.id));
+  expect(new Set(ids).size).toBe(ids.length);
+  await page.getByRole("button", { name: "Change color" }).click();
+  const colors = await page
+    .locator('[data-avatar-identity="motion-a"] .avatar-activity')
+    .evaluateAll((elements) =>
+      elements.map((element) =>
+        getComputedStyle(element).getPropertyValue("--avatar-activity-color").trim(),
+      ),
+    );
+  expect(colors.length).toBeGreaterThanOrEqual(4);
+  expect(new Set(colors)).toEqual(new Set(["#F5A15D"]));
+  await captureScreenshot(page, testInfo, "companion-activity");
+  await page.getByRole("button", { name: "Toggle activity" }).click();
+  await expect(page.locator(".avatar-activity")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
 
-  const avatar = page.locator(".rakazo-bot-avatar");
-  await expect(avatar).toBeVisible();
-  await expect(avatar).toHaveAttribute("data-working", "true");
-
-  const ring = avatar.locator(".rakazo-bot-avatar-ring");
-  await expect(ring).toBeVisible();
+test("reduced motion renders static identity without loading the motion runtime", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const runtimeRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("vendor/official-avatar-runtime"))
+      runtimeRequests.push(request.url());
+  });
+  await page.goto("/e2e/fixtures/avatar-motion.html");
+  await expect(page.getByTestId("sidebar-avatar").locator(".avatar-activity")).toHaveAttribute(
+    "data-motion",
+    "static",
+  );
   const snapshot = () =>
-    ring.evaluate((el: SVGElement) => ({
-      animationName: getComputedStyle(el).animationName,
-      transform: getComputedStyle(el).transform,
-    }));
+    page
+      .getByTestId("sidebar-avatar")
+      .locator(".rakazo-gaze-avatar")
+      .evaluate((element) => element.outerHTML);
   const first = await snapshot();
-  await page.waitForTimeout(300);
-  const second = await snapshot();
+  await page.waitForTimeout(200);
+  expect(await snapshot()).toBe(first);
+  expect(runtimeRequests).toEqual([]);
+});
 
-  expect(first.animationName).toBe("none");
-  expect(second).toEqual(first);
+test("generated activity trails preserve companion color when it changes", async ({ page }) => {
+  await page.goto("/e2e/fixtures/avatar-motion.html");
+  const effects = page.getByTestId("large-avatar").locator(".avatar-activity-motion");
+  // The unchanged official scheduler introduces trails during a working phase.
+  await expect.poll(() => effects.locator("stop").count(), { timeout: 25_000 }).toBeGreaterThan(0);
+  const effectPaint = () =>
+    effects.evaluate((element) => ({
+      stops: [...element.querySelectorAll("stop")].map((stop) => getComputedStyle(stop).stopColor),
+      particles: [...element.querySelectorAll("circle[fill], rect[fill]")]
+        .filter((particle) => particle.getAttribute("fill") !== "none")
+        .map((particle) => getComputedStyle(particle).fill),
+      eyes: [...element.querySelectorAll(".official-avatar-eye")].map(
+        (eye) => getComputedStyle(eye).fill,
+      ),
+    }));
+  const first = await effectPaint();
+  expect(new Set(first.stops)).toEqual(new Set(["rgb(98, 168, 236)"]));
+  for (const color of first.particles) expect(color).toBe("rgb(98, 168, 236)");
+  expect(new Set(first.eyes)).toEqual(new Set(["rgb(24, 37, 45)"]));
+  await page.getByRole("button", { name: "Change color" }).click();
+  await expect
+    .poll(async () => {
+      const { stops } = await effectPaint();
+      return stops.length > 0 && stops.every((color) => color === "rgb(245, 161, 93)");
+    })
+    .toBe(true);
+  expect(new Set((await effectPaint()).eyes)).toEqual(new Set(["rgb(24, 37, 45)"]));
+});
+
+test("motion destroys RAF on idle, hidden, and reduced-motion transitions", async ({ page }) => {
+  await page.addInitScript(() => {
+    const pending = new Set<number>();
+    const request = window.requestAnimationFrame.bind(window);
+    const cancel = window.cancelAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback) => {
+      const id = request((time) => {
+        pending.delete(id);
+        callback(time);
+      });
+      pending.add(id);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => {
+      pending.delete(id);
+      cancel(id);
+    };
+    Object.defineProperty(window, "avatarPendingFrames", { get: () => pending.size });
+  });
+  await page.goto("/e2e/fixtures/avatar-motion.html");
+  const active = page.getByTestId("sidebar-avatar").locator(".avatar-activity");
+  await expect(active).toHaveAttribute("data-motion", "active");
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "avatarPendingFrames")))
+    .toBeGreaterThan(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(active).toHaveAttribute("data-motion", "static");
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, "avatarPendingFrames"))).toBe(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(active).toHaveAttribute("data-motion", "active");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(active).toHaveAttribute("data-motion", "static");
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, "avatarPendingFrames"))).toBe(0);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(active).toHaveAttribute("data-motion", "active");
+  await page.getByRole("button", { name: "Toggle activity" }).click();
+  await expect(page.locator(".avatar-activity")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, "avatarPendingFrames"))).toBe(0);
 });

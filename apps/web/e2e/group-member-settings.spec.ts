@@ -1,4 +1,4 @@
-import type { Page, Route } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import { captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
@@ -79,8 +79,8 @@ async function fixture(page: Page, label: string, distinctPortraits = false) {
   await completeOnboarding(page);
   const ids: string[] = [];
   for (const [index, name] of memberNames.entries()) {
-    // Default companions share six portraits. Distinct uploaded fixture images
-    // make an incorrect Beta/Gamma substitution observable in the order test.
+    // Distinct uploaded fixtures exercise the image path and make a Beta/Gamma
+    // substitution observable alongside the Bot identity and order checks.
     const color = distinctPortraits
       ? await page.evaluate((index) => {
           const canvas = document.createElement("canvas");
@@ -176,16 +176,27 @@ async function expectDraft(page: Page) {
   await expect(bar.getByRole("button", { name: `Remove ${draftFile}`, exact: true })).toBeVisible();
 }
 
-async function portraitSources(page: Page, groupId: string) {
+async function avatarPresentations(avatars: Locator) {
+  return avatars.evaluateAll((elements) =>
+    elements.map((element) => {
+      const gaze = element.querySelector(".rakazo-gaze-avatar");
+      return {
+        identity: element.getAttribute("data-avatar-identity"),
+        image: element.querySelector("img")?.getAttribute("src") ?? null,
+        shape: gaze?.getAttribute("data-shape") ?? null,
+        eyes: gaze?.getAttribute("data-eyes") ?? null,
+        color: gaze?.querySelector("path")?.getAttribute("fill") ?? null,
+      };
+    }),
+  );
+}
+
+async function groupAvatarPresentations(page: Page, groupId: string) {
   const header = page.getByTestId("bot-settings-trigger").locator(".rakazo-group-avatar");
   const row = page.locator(`[data-roster-group-id="${groupId}"]`);
   return {
-    header: await header
-      .locator(".rakazo-bot-avatar img")
-      .evaluateAll((images) => images.map((image) => image.getAttribute("src"))),
-    sidebar: await row
-      .locator(".rakazo-bot-avatar img")
-      .evaluateAll((images) => images.map((image) => image.getAttribute("src"))),
+    header: await avatarPresentations(header.locator(".rakazo-bot-avatar")),
+    sidebar: await avatarPresentations(row.locator(".rakazo-bot-avatar")),
   };
 }
 
@@ -194,12 +205,13 @@ async function expectAvatars(page: Page, groupId: string, count: number) {
   const visible = group.members.slice(0, count <= 3 ? count : 2);
   const expected = [];
   for (const member of visible) {
-    const image = page.locator(`[data-roster-bot-id="${member.botId}"] .rakazo-bot-avatar img`);
-    await expect(image).toHaveCount(1);
-    expected.push(await image.getAttribute("src"));
+    const avatar = page.locator(`[data-roster-bot-id="${member.botId}"] .rakazo-bot-avatar`);
+    await expect(avatar).toHaveCount(1);
+    await expect(avatar).toHaveAttribute("data-avatar-identity", member.botId);
+    expected.push(...(await avatarPresentations(avatar)));
   }
   await expect
-    .poll(() => portraitSources(page, groupId))
+    .poll(() => groupAvatarPresentations(page, groupId))
     .toEqual({
       header: expected,
       sidebar: expected,
@@ -258,8 +270,8 @@ test("member changes refresh portraits in order and preserve the Space-wide ment
   await saveSettings(page);
   await expectServerMembers(page, group.id, ids.slice(0, 3));
   await expectAvatars(page, group.id, 3);
-  const initialPortraits = await portraitSources(page, group.id);
-  expect(new Set(initialPortraits.header).size).toBe(3);
+  const initialPortraits = await groupAvatarPresentations(page, group.id);
+  expect(new Set(initialPortraits.header.map((avatar) => avatar.image)).size).toBe(3);
   await expectDraft(page);
   await openSettings(page);
   await toggleMember(page, 1);
@@ -571,5 +583,65 @@ test("a saved group closes immediately while its follow-up thread refresh is sti
   } finally {
     release();
     await page.unroute("**/rpc/threads/get", handler);
+  }
+});
+
+test("a delayed inline rename response cannot restore members replaced by a newer save", async ({
+  page,
+}, testInfo) => {
+  const { ids, group } = await fixture(page, "rename-members-race");
+  let release!: () => void;
+  let arrived!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const received = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  const renamed = "Renamed companions";
+  const handler = async (route: Route) => {
+    const payload = route.request().postDataJSON() as { json?: UpdatePayload };
+    if (payload.json?.groupId !== group.id || payload.json?.name !== renamed) {
+      await route.fallback();
+      return;
+    }
+    // The server has committed the rename and captured the old member list.
+    // Delay only delivery while another update replaces those members.
+    const response = await route.fetch();
+    arrived();
+    await gate;
+    await route.fulfill({ response });
+  };
+  await page.route("**/rpc/groups/update", handler);
+  try {
+    await page.getByTestId("group-title").dblclick();
+    const titleInput = page.getByTestId("group-title-input");
+    await titleInput.fill(renamed);
+    await titleInput.press("Enter");
+    await received;
+    await expect.poll(async () => (await serverGroup(page, group.id)).name).toBe(renamed);
+
+    await openSettings(page);
+    await toggleMember(page, 1);
+    await toggleMember(page, 2);
+    await saveSettings(page);
+    await expectServerMembers(page, group.id, [ids[0], ids[2]]);
+    await expectAvatars(page, group.id, 2);
+    const renameResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/rpc/groups/update") &&
+        response.request().postDataJSON()?.json?.name === renamed,
+    );
+    release();
+    await renameResponse;
+    await expect(titleInput).toHaveCount(0);
+    await expect(page.getByTestId("group-title")).toHaveText(renamed);
+    await expectAvatars(page, group.id, 2);
+    await openSettings(page);
+    await expectSelected(page, [0, 2]);
+    await captureScreenshot(page, testInfo, "newer-members-after-delayed-rename");
+  } finally {
+    release();
+    await page.unroute("**/rpc/groups/update", handler);
   }
 });

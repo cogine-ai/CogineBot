@@ -1,21 +1,13 @@
 export { AccountAvatar } from "./account-avatar.js";
 export { AttachmentPreview } from "./attachment-preview.js";
 export {
-  type AvatarStyle,
-  AvatarStyleProvider,
-  useAvatarStyle,
-  usePortraitDefaults,
-} from "./avatar-style.js";
-export {
   BotAvatar,
   DEFAULT_GROK_BOT_COLOR,
   defaultBotAvatarValue,
+  GazeShapePreview,
   GROK_BOT_COLORS,
-  GROK_MASCOT_SHAPES,
-  GrokShapePreview,
   parseBotAvatar,
   resolvePersonaColorDef,
-  resolvePersonaShape,
   Wordmark,
 } from "./bot-avatar.js";
 export { CogineBotWordmark } from "./cogine-bot-wordmark.js";

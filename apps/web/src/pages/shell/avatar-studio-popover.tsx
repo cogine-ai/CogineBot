@@ -1,22 +1,26 @@
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import {
+  GAZE_BOT_COLORS,
+  GAZE_SHAPE_KEYS,
+  resolveGazeAvatar,
+  resolvePersonaColorDef,
+} from "@rakazo/core";
+import {
   BotAvatar,
-  DEFAULT_GROK_BOT_COLOR,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
   defaultBotAvatarValue,
-  GROK_BOT_COLORS,
-  GrokShapePreview,
+  GazeShapePreview,
+  Popover,
+  PopoverContent,
+  PopoverTitle,
+  PopoverTrigger,
   parseBotAvatar,
-  usePortraitDefaults,
 } from "@rakazo/ui-web";
-import { Check, Pencil, Upload, X } from "lucide-react";
-import { type ClipboardEvent, type DragEvent, useRef, useState } from "react";
+import { Pencil } from "lucide-react";
+import type { ClipboardEvent, DragEvent } from "react";
+import { useEffect, useRef, useState } from "react";
+
+const imageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 export interface AvatarStudioPopoverProps {
   value: string;
@@ -35,281 +39,273 @@ export function AvatarStudioPopover({
   onChange,
   disabled = false,
 }: AvatarStudioPopoverProps) {
-  const portraitDefaults = usePortraitDefaults();
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"bot" | "upload">("bot");
   const [dragOver, setDragOver] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const readerRef = useRef<FileReader | null>(null);
+  const imageAttemptRef = useRef(0);
+  const identityRef = useRef(identity);
+  const openRef = useRef(false);
+  identityRef.current = identity;
+
+  function invalidateImageAttempt() {
+    imageAttemptRef.current += 1;
+    readerRef.current?.abort();
+    readerRef.current = null;
+  }
+
+  useEffect(() => {
+    setOpen(false);
+    openRef.current = false;
+    setActiveTab("bot");
+    setImageError(null);
+    return invalidateImageAttempt;
+  }, [identity]);
 
   const parsed = parseBotAvatar(value, identity);
-  const currentColor = parsed.color || DEFAULT_GROK_BOT_COLOR;
-  const isDefaultLook = !parsed.isImage && parsed.shapeIndex === undefined;
+  const currentColor = resolvePersonaColorDef(identity || "companion", parsed.color).hex;
+  const currentShape = resolveGazeAvatar(identity || "companion", parsed.shapeIndex).shapeIndex;
+
+  function changeAvatar(next: string) {
+    invalidateImageAttempt();
+    setImageError(null);
+    onChange(next);
+  }
 
   function selectShape(shapeIndex: number) {
-    onChange(`${currentColor}::shape_${shapeIndex}`);
+    changeAvatar(`${currentColor}::shape_${shapeIndex}`);
   }
 
   function selectColor(color: string) {
-    if (parsed.shapeIndex === undefined) {
-      onChange(color);
-      return;
-    }
-    onChange(`${color}::shape_${parsed.shapeIndex}`);
+    changeAvatar(`${color}::shape_${currentShape}`);
   }
 
-  function restoreDefaultAvatar() {
-    const next = defaultBotAvatarValue(value);
-    if (next !== value) onChange(next);
+  function changeOpen(next: boolean) {
+    openRef.current = next;
+    setOpen(next);
+    setDragOver(false);
+    setImageError(null);
+    if (!next) invalidateImageAttempt();
   }
 
   function processImageFile(file: File) {
-    if (!file.type.startsWith("image/")) return;
+    invalidateImageAttempt();
+    setImageError(null);
+    if (!imageTypes.has(file.type)) {
+      setImageError(t`Choose an image file`);
+      return;
+    }
+
+    const attempt = imageAttemptRef.current;
+    const botIdentity = identity;
+    const isCurrent = () =>
+      imageAttemptRef.current === attempt && identityRef.current === botIdentity && openRef.current;
+    const failed = () => {
+      if (isCurrent()) setImageError(t`Could not open image. Try again.`);
+    };
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const src = event.target?.result as string;
-      if (!src) return;
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-        const targetSize = 256;
-        canvas.width = targetSize;
-        canvas.height = targetSize;
-        if (!ctx) return;
-
-        ctx.beginPath();
-        ctx.arc(targetSize / 2, targetSize / 2, targetSize / 2, 0, Math.PI * 2);
-        ctx.clip();
-
-        const minDim = Math.min(img.width, img.height);
-        const sx = (img.width - minDim) / 2;
-        const sy = (img.height - minDim) / 2;
-        ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, targetSize, targetSize);
-
-        onChange(canvas.toDataURL("image/webp", 0.9));
-        setOpen(false);
+    readerRef.current = reader;
+    reader.onerror = failed;
+    reader.onload = () => {
+      if (!isCurrent() || typeof reader.result !== "string") return;
+      const image = new Image();
+      image.onerror = failed;
+      image.onload = () => {
+        if (!isCurrent()) return;
+        try {
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d");
+          if (!context || !image.naturalWidth || !image.naturalHeight) {
+            failed();
+            return;
+          }
+          canvas.width = canvas.height = 256;
+          const side = Math.min(image.naturalWidth, image.naturalHeight);
+          context.drawImage(
+            image,
+            (image.naturalWidth - side) / 2,
+            (image.naturalHeight - side) / 2,
+            side,
+            side,
+            0,
+            0,
+            256,
+            256,
+          );
+          onChange(canvas.toDataURL("image/webp", 0.9));
+          changeOpen(false);
+        } catch {
+          failed();
+        }
       };
-      img.src = src;
+      image.src = reader.result;
     };
     reader.readAsDataURL(file);
   }
 
-  function handleDrop(event: DragEvent<HTMLButtonElement>) {
+  function handleDrop(event: DragEvent<HTMLFieldSetElement>) {
     event.preventDefault();
     setDragOver(false);
+    if (disabled) return;
     const file = event.dataTransfer.files?.[0];
     if (file) processImageFile(file);
   }
 
-  function handlePaste(event: ClipboardEvent<HTMLButtonElement>) {
-    const items = event.clipboardData?.items;
-    if (!items) return;
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item?.type.startsWith("image/")) continue;
-      const file = item.getAsFile();
-      if (file) {
-        processImageFile(file);
-        break;
-      }
-    }
+  function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
+    if (activeTab !== "upload" || disabled) return;
+    const file = [...event.clipboardData.items]
+      .find((item) => item.type.startsWith("image/"))
+      ?.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    processImageFile(file);
   }
 
   return (
-    <>
-      <button
-        type="button"
+    <Popover open={open} onOpenChange={changeOpen}>
+      <PopoverTrigger
         disabled={disabled}
-        onClick={() => setOpen(true)}
-        className="group relative cursor-pointer rounded-2xl outline-none transition-transform hover:scale-[1.03] focus-visible:ring-2 focus-visible:ring-ring"
+        className="group relative shrink-0 cursor-pointer rounded-full outline-none active:scale-[.98] focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
         aria-label={t`Customize bot avatar`}
         data-testid="avatar-studio-trigger"
       >
-        <BotAvatar color={value} identity={identity} size={size} status={status} />
-        <div className="absolute -right-1 -bottom-1 flex size-6 items-center justify-center rounded-full border-2 border-background bg-secondary text-foreground shadow-md transition-transform group-hover:scale-110">
-          <Pencil size={12} strokeWidth={2.2} />
+        <span className="block transition-[filter] group-hover:brightness-55 group-focus-visible:brightness-55 group-disabled:brightness-100">
+          <BotAvatar
+            color={value}
+            identity={identity}
+            size={size}
+            status={open ? undefined : status}
+          />
+        </span>
+        <span className="pointer-events-none absolute inset-0 grid place-items-center text-primary-foreground opacity-0 dark:text-foreground transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-disabled:opacity-0">
+          <Pencil size={22} strokeWidth={1.8} aria-hidden />
+        </span>
+      </PopoverTrigger>
+      <PopoverContent
+        sideOffset={12}
+        className="w-[286px] max-w-[calc(100vw-24px)] gap-0 overflow-hidden rounded-2xl p-0"
+        data-testid="avatar-studio"
+        onPaste={handlePaste}
+      >
+        <PopoverTitle className="sr-only">
+          <Trans>Customize bot avatar</Trans>
+        </PopoverTitle>
+        <div className="flex items-center gap-1 border-b border-border p-2.5 text-xs">
+          {(["bot", "upload"] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => {
+                setActiveTab(tab);
+                setImageError(null);
+              }}
+              aria-pressed={activeTab === tab}
+              className={`rounded-full px-3 py-1.5 transition-colors ${
+                activeTab === tab
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab === "bot" ? <Trans>Bot</Trans> : <Trans>Upload</Trans>}
+            </button>
+          ))}
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => changeAvatar(defaultBotAvatarValue(value))}
+            className="ms-auto rounded-lg px-2 py-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            <Trans>Reset</Trans>
+          </button>
         </div>
-      </button>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent
-          showCloseButton={false}
-          className="w-[360px] max-w-full gap-4 rounded-3xl p-5 sm:max-w-[360px]"
-          data-testid="avatar-studio"
-        >
-          <DialogHeader className="flex-row items-center justify-between space-y-0">
-            <DialogTitle className="text-[14px] font-semibold tracking-tight">
-              <Trans>Avatar Studio</Trans>
-            </DialogTitle>
-            <DialogDescription className="sr-only">
-              <Trans>Choose a bot shape, color, or upload an image</Trans>
-            </DialogDescription>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label={t`Close`}
-            >
-              <X size={16} />
-            </button>
-          </DialogHeader>
-
-          <div className="flex flex-col items-center justify-center py-2">
-            <BotAvatar color={value} identity={identity} size={78} status={status} />
-          </div>
-
-          <div className="flex items-center justify-between border-b border-border pb-1">
-            <div className="flex items-center rounded-full bg-muted p-1 text-xs">
-              <button
-                type="button"
-                onClick={() => setActiveTab("bot")}
-                aria-pressed={activeTab === "bot"}
-                className={`rounded-full px-3 py-1 font-medium transition-colors ${
-                  activeTab === "bot"
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Trans>Bot</Trans>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab("upload")}
-                aria-pressed={activeTab === "upload"}
-                className={`rounded-full px-3 py-1 font-medium transition-colors ${
-                  activeTab === "upload"
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Trans>Upload</Trans>
-              </button>
+        {activeTab === "bot" ? (
+          <div className="px-3 pt-4 pb-5" data-testid="avatar-studio-bot-tab">
+            <div className="grid grid-cols-5 place-items-center gap-x-1 gap-y-2">
+              {GAZE_SHAPE_KEYS.map((shape, shapeIndex) => (
+                <GazeShapePreview
+                  key={shape}
+                  shapeIndex={shapeIndex}
+                  identity={identity}
+                  color={currentColor}
+                  selected={!parsed.isImage && currentShape === shapeIndex}
+                  onClick={() => !disabled && selectShape(shapeIndex)}
+                />
+              ))}
             </div>
-
-            <button
-              type="button"
-              onClick={restoreDefaultAvatar}
-              className="px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <Trans>Reset</Trans>
-            </button>
-          </div>
-
-          {activeTab === "bot" ? (
-            <div className="space-y-4 pt-1" data-testid="avatar-studio-bot-tab">
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-                    <Trans>Shape</Trans>
-                  </div>
+            <div className="mt-5 grid grid-cols-5 place-items-center gap-x-1 gap-y-1">
+              {GAZE_BOT_COLORS.map((color) => {
+                const selected =
+                  currentColor.toLowerCase() === color.toLowerCase() && !parsed.isImage;
+                return (
                   <button
+                    key={color}
                     type="button"
-                    data-testid="avatar-studio-default"
-                    aria-pressed={isDefaultLook}
-                    onClick={restoreDefaultAvatar}
-                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                      isDefaultLook
-                        ? "bg-secondary text-foreground"
-                        : "text-muted-foreground hover:text-foreground"
+                    disabled={disabled}
+                    onClick={() => selectColor(color)}
+                    aria-label={t`Color ${color}`}
+                    aria-pressed={selected}
+                    className={`grid size-9 place-items-center rounded-full border p-1 transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring ${
+                      selected ? "border-muted-foreground" : "border-transparent"
                     }`}
                   >
-                    <Trans>Default</Trans>
+                    <span className="size-6 rounded-full" style={{ backgroundColor: color }} />
                   </button>
-                </div>
-                <div className="grid grid-cols-4 place-items-center gap-2">
-                  {[0, 1, 2, 3, 4, 5, 6, 7].map((shapeIndex) => (
-                    <GrokShapePreview
-                      key={shapeIndex}
-                      shapeIndex={shapeIndex}
-                      color={currentColor}
-                      selected={!parsed.isImage && parsed.shapeIndex === shapeIndex}
-                      onClick={() => selectShape(shapeIndex)}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {!portraitDefaults || !isDefaultLook ? (
-                <div className="border-t border-border pt-2">
-                  <div className="mb-2 text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-                    <Trans>Color</Trans>
-                  </div>
-                  <div className="grid grid-cols-6 place-items-center gap-2">
-                    {GROK_BOT_COLORS.map((color) => {
-                      const selected =
-                        currentColor.toLowerCase() === color.toLowerCase() && !parsed.isImage;
-                      return (
-                        <button
-                          key={color}
-                          type="button"
-                          onClick={() => selectColor(color)}
-                          aria-label={t`Color ${color}`}
-                          aria-pressed={selected}
-                          className={`size-6 rounded-full border transition-transform hover:scale-110 active:scale-95 focus-visible:ring-2 focus-visible:ring-ring ${
-                            selected
-                              ? "scale-105 border-transparent ring-2 ring-foreground ring-offset-2 ring-offset-popover"
-                              : "border-border"
-                          }`}
-                          style={{ backgroundColor: color }}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
+                );
+              })}
             </div>
-          ) : (
-            <button
-              type="button"
+          </div>
+        ) : (
+          <div className="p-3">
+            <fieldset
               aria-label={t`Image upload area`}
               onDragOver={(event) => {
                 event.preventDefault();
-                setDragOver(true);
+                if (!disabled) setDragOver(true);
               }}
               onDragLeave={() => setDragOver(false)}
               onDrop={handleDrop}
-              onPaste={handlePaste}
-              onClick={() => fileInputRef.current?.click()}
-              className={`flex w-full flex-col items-center justify-center rounded-xl border border-dashed p-6 text-center transition-colors ${
-                dragOver
-                  ? "border-primary bg-primary/10"
-                  : "border-border bg-muted hover:border-foreground/30"
+              className={`rounded-xl border border-dashed transition-colors ${
+                dragOver ? "border-foreground bg-muted" : "border-border"
               }`}
+              data-testid="avatar-studio-drop-zone"
             >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) processImageFile(file);
-                }}
-              />
-              <div className="mb-2 grid size-10 place-items-center rounded-full bg-secondary text-muted-foreground">
-                <Upload size={18} strokeWidth={1.8} />
+              <div className="flex min-h-[220px] flex-col items-center justify-center gap-4">
+                <p className="text-xs text-muted-foreground">
+                  <Trans>Drag, drop, or paste an image</Trans>
+                </p>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <Trans>Choose image</Trans>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  disabled={disabled}
+                  className="hidden"
+                  aria-label={t`Avatar image`}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) processImageFile(file);
+                    event.target.value = "";
+                  }}
+                />
               </div>
-              <p className="text-[12.5px] font-medium text-muted-foreground">
-                <Trans>Drag, drop, or paste an image</Trans>
+            </fieldset>
+            {imageError ? (
+              <p role="status" className="mt-3 text-center text-xs text-destructive">
+                {imageError}
               </p>
-              <span className="mt-3 rounded-lg bg-secondary px-3 py-1.5 text-xs font-medium text-foreground">
-                <Trans>Choose file</Trans>
-              </span>
-            </button>
-          )}
-
-          <DialogFooter className="border-border sm:justify-end">
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="flex items-center gap-1.5 rounded-xl bg-secondary px-4 py-1.5 text-[13px] font-medium text-foreground transition-colors hover:bg-accent"
-            >
-              <Check size={14} />
-              <Trans>Done</Trans>
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+            ) : null}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }

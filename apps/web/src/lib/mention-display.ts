@@ -1,5 +1,17 @@
 import type { ComposerMention } from "@rakazo/core";
 
+/** Refresh only the rendered avatar, preserving the draft recipient and send text. */
+export function currentMentionAppearance(
+  mention: ComposerMention,
+  targets: readonly ComposerMention[] | undefined,
+): ComposerMention {
+  if (mention.kind !== "bot") return mention;
+  const current = targets?.find((target) => target.kind === "bot" && target.id === mention.id);
+  return current?.color !== undefined && current.color !== mention.color
+    ? { ...mention, color: current.color }
+    : mention;
+}
+
 export type SentMentionPart =
   | { kind: "mention"; text: string; mention: ComposerMention }
   | { kind: "text"; text: string };

@@ -77,9 +77,9 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   const studio = page.getByTestId("avatar-studio");
   await expect(studio).toBeVisible();
   await expect(studio.getByTestId("avatar-studio-bot-tab")).toBeVisible();
-  await studio.getByRole("button", { name: "wedge", exact: true }).click();
-  await studio.getByRole("button", { name: "Color #EAB308" }).click();
-  await studio.getByRole("button", { name: "Done", exact: true }).click();
+  await studio.getByRole("button", { name: "triangle", exact: true }).click();
+  await studio.getByRole("button", { name: "Color #E4C05D" }).click();
+  await studio.press("Escape");
   await expect(studio).toBeHidden();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(botList.getByRole("button", { name: /^Researcher/ })).toBeVisible();
@@ -94,8 +94,15 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   const settings = page.getByTestId("bot-settings");
   await settings.getByTestId("avatar-studio-trigger").click();
   await expect(studio).toBeVisible();
-  await expect(studio.getByRole("button", { name: "Color #EAB308" })).toHaveClass(/ring-2/);
-  await studio.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(studio.getByRole("button", { name: "triangle", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(studio.getByRole("button", { name: "Color #E4C05D" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await studio.press("Escape");
   const modelSelect = settings.locator("label:has-text('Model') select");
   const teamComputer = settings.getByRole("button", { name: "Team" });
   const openWork = settings.getByTestId("bot-scratchpad");

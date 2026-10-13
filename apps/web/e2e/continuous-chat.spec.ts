@@ -339,7 +339,9 @@ test("composer grows to six rows, retains drafts and raw line breaks, and safely
       Number.parseFloat(style.paddingLeft) -
       Number.parseFloat(style.paddingRight);
     let sentence = "A longer thought, with room to breathe. ";
-    while (context.measureText(sentence).width < contentWidth * 1.3) {
+    // Span enough of the wide row to add another row at the 800 px desktop,
+    // accounting for the expanded field filling the former button columns.
+    while (context.measureText(sentence).width < contentWidth * 1.6) {
       sentence += "A longer thought, with room to breathe. ";
     }
     return sentence;

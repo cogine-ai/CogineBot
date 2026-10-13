@@ -130,7 +130,7 @@ jobs:
         if: matrix.lane == 'web'
         run: |
           set -euo pipefail
-          pnpm test:e2e -- --sandbox=fake --runtime=scripted '--spec=(artifact-preview|artifacts-tab|markdown-table|peer-messages|spaces|desktop-shell|continuous-chat|composer-paste|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
+          pnpm test:e2e -- --sandbox=fake --runtime=scripted '--spec=(artifact-preview|artifacts-tab|markdown-table|peer-messages|spaces|desktop-shell|continuous-chat|composer-paste|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|avatar-editor|avatar-motion|avatar-style|bot-crud|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel|consequential-approval|graphql-integrations|load-failure|mcp-oauth|stuck-work)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
       - name: Retain successful synthetic UI screenshots
         if: matrix.lane == 'web' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

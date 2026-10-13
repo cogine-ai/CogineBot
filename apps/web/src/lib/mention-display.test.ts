@@ -1,6 +1,6 @@
 import type { ComposerMention } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
-import { splitSentMentionText } from "./mention-display";
+import { currentMentionAppearance, splitSentMentionText } from "./mention-display";
 
 const bot = (id: string, name: string): ComposerMention => ({ kind: "bot", id, name });
 const ada = bot("ada", "Ada");
@@ -114,5 +114,50 @@ describe("sent mention visual identities", () => {
     expect(decorated("@Ada hello", [])).toEqual([]);
     expect(decorated("@ \n hello", [bot("empty", " "), bot("newline", "\n")])).toEqual([]);
     expect(splitSentMentionText("", [ada])).toEqual([]);
+  });
+});
+
+describe("draft mention appearance", () => {
+  it("uses a current Bot avatar without changing stored identity, name or other send metadata", () => {
+    const saved: ComposerMention = Object.freeze({
+      kind: "bot",
+      id: "ada",
+      name: "Former Ada",
+      subtitle: "Saved context",
+      color: "#F5A15D::shape_0",
+    });
+    const current: ComposerMention = {
+      kind: "bot",
+      id: "ada",
+      name: "Current Ada",
+      color: "#62A8EC::shape_10",
+    };
+    expect(currentMentionAppearance(saved, [current])).toEqual({
+      ...saved,
+      color: current.color,
+    });
+    expect(saved.color).toBe("#F5A15D::shape_0");
+    expect(saved.name).toBe("Former Ada");
+  });
+
+  it("matches by Bot kind and identity, preserving missing targets and unrelated mentions", () => {
+    const saved: ComposerMention = { ...ada, color: "#F5A15D::shape_0" };
+    expect(
+      currentMentionAppearance(saved, [
+        { ...saved, id: "another", color: "#62A8EC::shape_10" },
+        { ...saved, kind: "group", color: "#62A8EC::shape_10" },
+      ]),
+    ).toBe(saved);
+    expect(currentMentionAppearance(saved, [ada])).toBe(saved);
+    expect(currentMentionAppearance(saved, undefined)).toBe(saved);
+    const group: ComposerMention = { ...saved, kind: "group" };
+    expect(currentMentionAppearance(group, [{ ...saved, color: "#62A8EC" }])).toBe(group);
+  });
+
+  it("reflects an uploaded avatar and retains unchanged appearance references", () => {
+    const saved: ComposerMention = { ...ada, color: "#F5A15D::shape_0" };
+    const uploaded = { ...ada, color: "data:image/webp;base64,Zml4dHVyZQ==" };
+    expect(currentMentionAppearance(saved, [uploaded]).color).toBe(uploaded.color);
+    expect(currentMentionAppearance(saved, [saved])).toBe(saved);
   });
 });

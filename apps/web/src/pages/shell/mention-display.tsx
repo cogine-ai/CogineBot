@@ -1,19 +1,13 @@
 import { LinkifiedText } from "@rakazo/chat-ui/web";
 import type { ComposerMention } from "@rakazo/core";
-import {
-  BotAvatar,
-  DEFAULT_GROK_BOT_COLOR,
-  parseBotAvatar,
-  usePortraitDefaults,
-} from "@rakazo/ui-web";
+import { BotAvatar, DEFAULT_GROK_BOT_COLOR, parseBotAvatar } from "@rakazo/ui-web";
 import { AtSign, Clock, Puzzle, Users } from "lucide-react";
 import { splitSentMentionText } from "../../lib/mention-display";
 
 export function useBotIdentityTextColor(color?: string): string | undefined {
-  const portraitDefaults = usePortraitDefaults();
   if (!color) return undefined;
   const avatar = parseBotAvatar(color);
-  if (avatar.isImage || (portraitDefaults && avatar.shapeIndex === undefined)) return undefined;
+  if (avatar.isImage) return undefined;
   return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(avatar.color) ? avatar.color : undefined;
 }
 

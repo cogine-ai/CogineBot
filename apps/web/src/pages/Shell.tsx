@@ -68,7 +68,6 @@ import {
 import {
   AccountAvatar,
   AttachmentPreview,
-  AvatarStyleProvider,
   BotAvatar,
   Button,
   CogineBotWordmark,
@@ -203,6 +202,7 @@ import {
 } from "../lib/desktop-workspace-layout";
 import { syncSavedGroupSnapshot } from "../lib/group-settings-state";
 import { localTimezone } from "../lib/local-timezone";
+import { currentMentionAppearance } from "../lib/mention-display";
 import { copyableMessageText } from "../lib/message-text";
 import { messageProviderLabel } from "../lib/messaging";
 import { groupCreationIntent, newChatDraft } from "../lib/new-chat";
@@ -1056,6 +1056,43 @@ export function ShellPage() {
     },
     [navigate],
   );
+
+  function applySavedGroupUpdate(updated: Group, actor: typeof groupSettingsActor.current) {
+    if (
+      actor.userId !== groupSettingsActor.current.userId ||
+      actor.spaceId !== groupSettingsActor.current.spaceId ||
+      updated.spaceId !== actor.spaceId
+    )
+      return;
+    const latest = savedGroupUpdates.current.get(updated.id);
+    // Both inline renames and member saves return a complete roster. A response
+    // captured by an earlier update must not restore members replaced later.
+    if (latest && latest.updatedAt > updated.updatedAt) return;
+    savedGroupUpdates.current.set(updated.id, updated);
+    // Reads started before the save must not restore the previous roster.
+    if (activeGroupId.current === updated.id) groupRefreshEpoch.current += 1;
+    botsRefreshEpoch.current += 1;
+    botsRefreshApplied.current = botsRefreshEpoch.current;
+    setGroups((current) =>
+      current.map((group) =>
+        group.id === updated.id
+          ? {
+              ...group,
+              name: updated.name,
+              members: updated.members,
+              updatedAt: group.updatedAt > updated.updatedAt ? group.updatedAt : updated.updatedAt,
+            }
+          : group,
+      ),
+    );
+    updateSnapshot((current) => syncSavedGroupSnapshot(current, updated));
+    void Promise.all([
+      refreshBots(),
+      activeGroupId.current === updated.id
+        ? refreshGroupThreadRef.current(updated.id)
+        : Promise.resolve(),
+    ]).catch(() => undefined);
+  }
 
   function snapTranscriptToEndAfterFrame() {
     const queuedElement = messageScroll.current;
@@ -3923,13 +3960,11 @@ export function ShellPage() {
                         className="text-[16px]"
                         name={activeGroup?.name ?? activeSnapshot?.groupName ?? t`Group`}
                         onRename={async (name) => {
+                          const actor = groupSettingsActor.current;
                           const updated = await rpc.groups.update({ groupId: groupId!, name });
                           if (!updated?.id || updated.id !== groupId)
                             throw new Error(t`Could not save group`);
-                          setGroups((current) =>
-                            current.map((group) => (group.id === updated.id ? updated : group)),
-                          );
-                          await refreshGroupThread(groupId!).catch(() => undefined);
+                          applySavedGroupUpdate(updated, actor);
                         }}
                       />
                     ) : null}
@@ -4287,41 +4322,7 @@ export function ShellPage() {
                 onSave={async (input) => {
                   const actor = groupSettingsActor.current;
                   const updated = await rpc.groups.update({ groupId: activeGroup.id, ...input });
-                  if (
-                    actor.userId !== groupSettingsActor.current.userId ||
-                    actor.spaceId !== groupSettingsActor.current.spaceId ||
-                    updated.spaceId !== actor.spaceId
-                  )
-                    return;
-                  const latest = savedGroupUpdates.current.get(updated.id);
-                  if (latest && latest.updatedAt > updated.updatedAt) return;
-                  savedGroupUpdates.current.set(updated.id, updated);
-                  // Reads started before the save must not restore the previous roster.
-                  if (activeGroupId.current === updated.id) groupRefreshEpoch.current += 1;
-                  botsRefreshEpoch.current += 1;
-                  botsRefreshApplied.current = botsRefreshEpoch.current;
-                  setGroups((current) =>
-                    current.map((group) =>
-                      group.id === updated.id
-                        ? {
-                            ...group,
-                            name: updated.name,
-                            members: updated.members,
-                            updatedAt:
-                              group.updatedAt > updated.updatedAt
-                                ? group.updatedAt
-                                : updated.updatedAt,
-                          }
-                        : group,
-                    ),
-                  );
-                  updateSnapshot((current) => syncSavedGroupSnapshot(current, updated));
-                  void Promise.all([
-                    refreshBots(),
-                    activeGroupId.current === updated.id
-                      ? refreshGroupThreadRef.current(updated.id)
-                      : Promise.resolve(),
-                  ]).catch(() => undefined);
+                  applySavedGroupUpdate(updated, actor);
                 }}
                 onRemove={async () => {
                   await rpc.groups.remove({ groupId: activeGroup.id });
@@ -4934,7 +4935,6 @@ export function ShellPage() {
             usage={usage}
             onUsageOpen={refreshUsage}
             initialSection={settingsSection}
-            avatarStyle={bootstrapMe?.avatarStyle ?? "robot"}
             isDeploymentOwner={bootstrapMe?.isDeploymentOwner === true}
             billingEnabled={bootstrapMe?.billingEnabled === true}
             sandboxProvider={bootstrapMe?.sandboxProvider}
@@ -4945,10 +4945,6 @@ export function ShellPage() {
             onOpenMessaging={() => {
               setSettingsOpen(false);
               setMessagingSettingsOpen(true);
-            }}
-            onAvatarStyleChange={async (avatarStyle) => {
-              const nextMe = await rpc.preferences.update({ avatarStyle });
-              setBootstrapMe(nextMe);
             }}
             memoryConfig={memoryProviderConfig}
             onMemoryConfigChange={(config) => {
@@ -5141,14 +5137,7 @@ export function ShellPage() {
     </div>
   );
 
-  return (
-    <AvatarStyleProvider
-      value={bootstrapMe?.avatarStyle ?? "robot"}
-      portraitDefaults={bootstrapMe?.avatarStyle !== "organic"}
-    >
-      {shell}
-    </AvatarStyleProvider>
-  );
+  return shell;
 }
 
 const Transcript = memo(function Transcript({
@@ -6433,7 +6422,11 @@ const Composer = memo(function Composer({
                     data-mention-kind={mention.kind}
                     className="group/mention inline-flex max-w-full shrink-0 items-center gap-0.5 text-[13px] leading-5"
                   >
-                    <MentionIdentity mention={mention} showAt={false} truncateName />
+                    <MentionIdentity
+                      mention={currentMentionAppearance(mention, mentionTargets)}
+                      showAt={false}
+                      truncateName
+                    />
                     <button
                       type="button"
                       aria-label={t`Remove mention ${mention.name}`}

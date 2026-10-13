@@ -219,12 +219,16 @@ test("chat composer controls are vertically centered", async ({ page }, testInfo
     clientHeight: element.clientHeight,
     scrollHeight: element.scrollHeight,
     bottom: element.getBoundingClientRect().bottom,
+    lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+    padding:
+      Number.parseFloat(getComputedStyle(element).paddingTop) +
+      Number.parseFloat(getComputedStyle(element).paddingBottom),
   }));
   const sendTop = await bar
     .getByRole("button", { name: "Send", exact: true })
     .evaluate((element) => element.getBoundingClientRect().top);
   expect(fieldBox.scrollHeight).toBeGreaterThan(fieldBox.clientHeight);
-  expect(fieldBox.clientHeight).toBeLessThanOrEqual(104);
+  expect(fieldBox.clientHeight).toBeLessThanOrEqual(fieldBox.lineHeight * 6 + fieldBox.padding);
   // Round both edges; a fractional bottom can sit just under a pixel past the slack.
   expect(Math.round(fieldBox.bottom)).toBeLessThanOrEqual(Math.round(sendTop) + 2);
   await captureScreenshot(page, testInfo, "composer-wrapped");
