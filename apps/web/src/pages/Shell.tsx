@@ -117,14 +117,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import type { ClipboardEvent, DragEvent, MutableRefObject, ReactNode, RefObject } from "react";
 import {
-  type ClipboardEvent,
-  type DragEvent,
   Fragment,
-  type MutableRefObject,
   memo,
-  type ReactNode,
-  type RefObject,
   Suspense,
   useCallback,
   useEffect,
