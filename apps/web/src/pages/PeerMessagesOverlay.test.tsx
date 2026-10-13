@@ -313,9 +313,10 @@ describe("inline peer chat", () => {
       ],
     };
     const reply = receipt("direct-reply", 2, "Direct response", "received");
+    let directHistory = [reply];
     vi.mocked(rpc.threads.messages).mockImplementation(async (input) => ({
       threadId: input.groupId ? "group-thread" : "direct",
-      messages: input.groupId ? [groupSend, anotherMember] : [reply],
+      messages: input.groupId ? [groupSend, anotherMember] : directHistory,
       olderCursor: null,
     }));
     await render({
@@ -353,6 +354,7 @@ describe("inline peer chat", () => {
     act(() => stream.applyEvent(event));
     expect(rows()).toHaveLength(3);
     expect(container.textContent).toContain("Live direct response");
+    directHistory = [];
     act(() => stream.applyEvent({ ...event, seq: 7, type: "thread.cleared", payload: {} }));
     expect(rows()).toHaveLength(1);
     expect(container.textContent).toContain("Group request");
@@ -360,5 +362,105 @@ describe("inline peer chat", () => {
     expect(props.onClose).toHaveBeenCalledOnce();
     await act(async () => root.render(null));
     expect(stream.signal.aborted).toBe(true);
+  });
+
+  it("clears one thread without treating its event cursor as a message cutoff", async () => {
+    const groupSend = receipt("group-send", 1, "Group request", "sent", "group-thread");
+    const oldReply = receipt("old-reply", 2, "Before clear", "received");
+    const pendingHistory = deferred<Awaited<ReturnType<typeof rpc.threads.messages>>>();
+    let directHistory: ThreadMessage[] = [];
+    vi.mocked(rpc.threads.messages).mockImplementation((input) => {
+      if (input.groupId) {
+        return Promise.resolve({
+          threadId: "group-thread",
+          messages: [groupSend],
+          olderCursor: null,
+        });
+      }
+      if (vi.mocked(rpc.threads.messages).mock.calls.length === 1) return pendingHistory.promise;
+      return Promise.resolve({ threadId: "direct", messages: directHistory, olderCursor: null });
+    });
+    vi.mocked(rpc.threads.get).mockResolvedValue(snapshot([oldReply]));
+    await render({
+      ...props,
+      groupId: "group-one",
+      threadId: "group-thread",
+      messages: [groupSend],
+    });
+    expect(container.textContent).toContain("Before clear");
+    const historySignal = vi.mocked(rpc.threads.messages).mock.calls[0]?.[1]?.signal;
+    const stream = streams[0]!;
+    const staleSnapshot = deferred<ThreadSnapshot>();
+    vi.mocked(rpc.threads.get).mockReturnValueOnce(staleSnapshot.promise);
+    const refreshingBeforeClear = stream.refresh();
+    const clear = {
+      id: "clear-event",
+      spaceId: "space-one",
+      threadId: "direct",
+      botId: "chief",
+      seq: 100,
+      createdAt: "2026-10-11T09:03:00Z",
+      type: "thread.cleared",
+      payload: {},
+    } as ProductEvent;
+    act(() => stream.applyEvent(clear));
+    expect(rows()).toHaveLength(1);
+    expect(container.textContent).toContain("Group request");
+    expect(container.textContent).not.toContain("Before clear");
+
+    // Message sequences continue independently of the much larger event cursor.
+    const fresh = receipt("fresh-reply", 3, "After clear", "received");
+    directHistory = [fresh];
+    vi.mocked(rpc.threads.get).mockResolvedValue({ ...snapshot([fresh]), cursor: 100 });
+    await act(async () => stream.refresh());
+    expect(container.textContent).toContain("After clear");
+    expect(rows()).toHaveLength(2);
+    expect(historySignal?.aborted).toBe(true);
+    const nextReply = receipt("next-reply", 4, "Newer reply", "received");
+    act(() =>
+      stream.applyEvent({
+        ...clear,
+        id: "live-after-clear",
+        seq: 101,
+        type: "thread.message.created",
+        payload: { messageId: nextReply.id, role: "bot", blocks: nextReply.blocks },
+      }),
+    );
+    expect(container.textContent).toContain("Newer reply");
+    await act(async () => {
+      staleSnapshot.resolve(snapshot([oldReply]));
+      await refreshingBeforeClear;
+    });
+    expect(container.textContent).not.toContain("Before clear");
+    expect(container.textContent).toContain("After clear");
+    expect(container.textContent).toContain("Newer reply");
+    await act(async () =>
+      pendingHistory.resolve({
+        threadId: "direct",
+        messages: [oldReply],
+        olderCursor: null,
+      }),
+    );
+    expect(container.textContent).not.toContain("Before clear");
+    expect(container.textContent).toContain("After clear");
+    expect(container.textContent).toContain("Group request");
+
+    vi.mocked(rpc.threads.get).mockResolvedValue({ ...snapshot([fresh, nextReply]), cursor: 101 });
+    await act(async () => stream.refresh());
+    expect(rows()).toHaveLength(3);
+    expect(container.textContent).toContain("Newer reply");
+
+    vi.mocked(rpc.threads.get).mockResolvedValue({ ...snapshot([fresh, nextReply]), cursor: 120 });
+    await act(async () => stream.refresh());
+    const historyReads = vi.mocked(rpc.threads.messages).mock.calls.length;
+    act(() => {
+      stream.applyEvent({ ...clear, seq: 110 });
+      stream.applyEvent(clear);
+    });
+    expect(stream.currentSnapshot()?.cursor).toBe(120);
+    expect(rows()).toHaveLength(3);
+    expect(container.textContent).toContain("After clear");
+    expect(container.textContent).toContain("Newer reply");
+    expect(vi.mocked(rpc.threads.messages).mock.calls).toHaveLength(historyReads);
   });
 });

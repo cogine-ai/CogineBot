@@ -152,14 +152,4 @@ describe("peer history and live overlap", () => {
     };
     expect(mergePeerHistory([direct], [group])).toEqual([group, direct]);
   });
-
-  it("does not resurrect cleared messages from a late historical response", () => {
-    const old = { ...message("old", 4), threadId: "direct" };
-    const next = { ...message("next", 8), threadId: "direct" };
-    const group = { ...message("group-row", 1), threadId: "group" };
-    expect(mergePeerHistory([old, group], [old, next], new Map([["direct", 7]]))).toEqual([
-      group,
-      next,
-    ]);
-  });
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { ThreadMessagePage } from "@rakazo/contracts";
+import type { ThreadMessagePage, ThreadSnapshot } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 test("peer sources open a live exchange inside the same chat shell", async ({ page }, testInfo) => {
@@ -187,7 +187,7 @@ test("group peer sources combine stored group sends and live direct replies with
   const composer = page.getByRole("combobox", { name: "Message Companion group" });
   await expect(composer).toBeVisible();
 
-  type Receipt = { key: string; id: string; text: string };
+  type Receipt = { key: string; id: string; text: string; seq: number };
   const readReceipt = async (
     target: { botId: string } | { groupId: string },
     direction: "sent" | "received",
@@ -216,6 +216,7 @@ test("group peer sources combine stored group sends and live direct replies with
             key: `${message.threadId}:${message.id}:${index}`,
             id: message.id,
             text: block.text,
+            seq: message.seq,
           };
         }
       }
@@ -327,6 +328,42 @@ test("group peer sources combine stored group sends and live direct replies with
   ).toBeVisible();
   await expect(page).toHaveURL(groupUrl);
   await captureScreenshot(page, testInfo, "group-peer-live-direct-return");
+
+  await rpc(page, "threads/clear", { botId: chiefId });
+  const cleared = await rpc<ThreadSnapshot>(page, "threads/get", { botId: chiefId });
+  await expect(peerTranscript.locator(`[data-peer-message-id="${firstReply!.key}"]`)).toHaveCount(
+    0,
+  );
+  await expect(peerTranscript.locator(`[data-peer-message-id="${nextReply!.key}"]`)).toHaveCount(0);
+  await expect(peerTranscript.locator(`[data-peer-message-id="${firstSend!.key}"]`)).toContainText(
+    alpha,
+  );
+  await expect(peerTranscript.locator(`[data-peer-message-id="${nextSend!.key}"]`)).toContainText(
+    beta,
+  );
+  // Clearing one direct conversation leaves its group's requests in this view.
+  // Current APIs keep message sequences independent from the clear event cursor.
+  const gamma = `group-peer-after-clear-${stamp}`;
+  await sendGroupRequest(gamma);
+  let freshReply: Receipt | undefined;
+  await expect
+    .poll(
+      async () => {
+        freshReply = await readReceipt({ botId: chiefId }, "received");
+        return Boolean(freshReply);
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(true);
+  expect(freshReply!.seq).toBeLessThan(cleared.cursor);
+  await expect(peerTranscript.locator(`[data-peer-message-id="${freshReply!.key}"]`)).toContainText(
+    freshReply!.text,
+  );
+  await expect(peerTranscript.locator(`[data-peer-message-id="${firstReply!.key}"]`)).toHaveCount(
+    0,
+  );
+  await expect(peerTranscript.locator(`[data-peer-message-id="${nextReply!.key}"]`)).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "group-peer-live-after-direct-clear");
 
   await view.getByRole("button", { name: "Close chat", exact: true }).click();
   await expect(view).toHaveCount(0);

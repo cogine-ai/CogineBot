@@ -7,7 +7,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { loadPeerHistory, mergePeerHistory } from "../lib/peer-history";
 import { peerConversations } from "../lib/peer-messages";
 import { rpc, selectedSpaceId } from "../lib/rpc";
-import { reduceThreadSnapshot } from "../lib/thread-events";
+import { mergeThreadSnapshot, reduceThreadSnapshot } from "../lib/thread-events";
 import { transcriptIsNearEnd, transcriptMovedDown } from "../lib/transcript-scroll";
 import { TimeSeparator } from "./shell/chat-context";
 
@@ -56,7 +56,7 @@ function PeerMessagesContent({
   const [historyReady, setHistoryReady] = useState(false);
   const [historyFailed, setHistoryFailed] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const clearedThrough = useRef(new Map<string, number>());
+  const historyRequest = useRef<AbortController | null>(null);
   const transcript = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const lastScrollTop = useRef<number | null>(null);
@@ -83,7 +83,7 @@ function PeerMessagesContent({
 
   function appendMessages(incoming: readonly ThreadMessage[]) {
     rememberReadingPosition();
-    setMessages((current) => mergePeerHistory(current, incoming, clearedThrough.current));
+    setMessages((current) => mergePeerHistory(current, incoming));
   }
 
   useEffect(() => {
@@ -92,6 +92,7 @@ function PeerMessagesContent({
 
   useEffect(() => {
     const abort = new AbortController();
+    historyRequest.current = abort;
     setHistoryReady(false);
     setHistoryFailed(false);
     const targets = [{ botId }, ...(groupId ? [{ groupId }] : [])];
@@ -113,7 +114,10 @@ function PeerMessagesContent({
       setHistoryFailed(results.some((result) => result.status === "rejected"));
       setHistoryReady(true);
     });
-    return () => abort.abort();
+    return () => {
+      abort.abort();
+      if (historyRequest.current === abort) historyRequest.current = null;
+    };
   }, [botId, groupId, spaceId, reloadKey]);
 
   useEffect(() => {
@@ -131,9 +135,9 @@ function PeerMessagesContent({
         },
       );
       if (abort.signal.aborted) return null;
-      snapshot = next;
-      appendMessages(next.messages);
-      return next;
+      snapshot = mergeThreadSnapshot(snapshot, next);
+      appendMessages(snapshot.messages);
+      return snapshot;
     };
     void runThreadSubscription({
       signal: abort.signal,
@@ -151,10 +155,18 @@ function PeerMessagesContent({
       subscribe: (cursor) =>
         rpc.threads.subscribe({ botId, cursor }, { signal: abort.signal, context: { spaceId } }),
       applyEvent: (event) => {
+        if (!snapshot || snapshot.threadId !== event.threadId || event.seq <= snapshot.cursor)
+          return;
         snapshot = reduceThreadSnapshot(snapshot, event);
         if (event.type === "thread.cleared") {
-          clearedThrough.current.set(event.threadId, event.seq);
-          appendMessages([]);
+          // Event cursors and stored message sequences are independent. Remove
+          // this thread's rows and invalidate reads captured before the clear.
+          historyRequest.current?.abort();
+          rememberReadingPosition();
+          setMessages((current) =>
+            current.filter((message) => message.threadId !== event.threadId),
+          );
+          setReloadKey((current) => current + 1);
         } else if (
           event.type === "thread.message.created" ||
           event.type === "thread.message.updated"

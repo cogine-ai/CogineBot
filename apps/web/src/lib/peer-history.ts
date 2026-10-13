@@ -12,12 +12,9 @@ type PeerHistoryPage = {
 export function mergePeerHistory(
   history: readonly ThreadMessage[],
   incoming: readonly ThreadMessage[],
-  clearedThrough: ReadonlyMap<string, number> = new Map(),
 ): ThreadMessage[] {
   const messages = new Map<string, ThreadMessage>();
   for (const message of [...history, ...incoming]) {
-    const clearedSeq = clearedThrough.get(message.threadId);
-    if (clearedSeq !== undefined && message.seq <= clearedSeq) continue;
     const key = `${message.threadId}:${message.id}`;
     const previous = messages.get(key);
     if (!previous || message.seq >= previous.seq) messages.set(key, message);
