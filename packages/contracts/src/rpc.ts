@@ -7,6 +7,20 @@ import {
   ATTACHMENT_MAX_BASE64_LENGTH,
   ATTACHMENT_MAX_COUNT,
 } from "./attachments.js";
+import {
+  BoardEventSchema,
+  BoardSchema,
+  CommentTicketInput,
+  CreateTicketInput,
+  GetTicketInput,
+  ListTicketsInput,
+  ListTicketsOutput,
+  MoveTicketInput,
+  RenameBoardInput,
+  TicketCommentSchema,
+  TicketSchema,
+  UpdateTicketInput,
+} from "./board.js";
 import { BotSecretMetadata, BotSecretPutInput, StoredBotSecretName } from "./bot-secrets.js";
 import {
   ActionApprovalRuleSchema,
@@ -389,6 +403,8 @@ export const appContract = {
           runId: Id,
           messageId: Id,
           answer: z.string().min(1),
+          /** Carries the call id for an answer spoken during a call. */
+          clientNonce: z.string().min(1).max(200).optional(),
           /** Only for a login card; `answer` carries its password. */
           username: z.string().min(1).max(512).optional(),
         }),
@@ -556,6 +572,21 @@ export const appContract = {
       )
       .output(ScratchpadItemSchema),
     remove: oc.input(z.object({ itemId: Id })).output(z.object({ ok: z.literal(true) })),
+  },
+  boards: {
+    list: oc.output(z.array(BoardSchema)),
+    get: oc.output(BoardSchema),
+    rename: oc.input(RenameBoardInput).output(BoardSchema),
+    subscribe: oc.output(eventIterator(BoardEventSchema)),
+  },
+  tickets: {
+    list: oc.input(ListTicketsInput).output(ListTicketsOutput),
+    get: oc.input(GetTicketInput).output(TicketSchema),
+    create: oc.input(CreateTicketInput).output(TicketSchema),
+    update: oc.input(UpdateTicketInput).output(TicketSchema),
+    move: oc.input(MoveTicketInput).output(TicketSchema),
+    comment: oc.input(CommentTicketInput).output(TicketCommentSchema),
+    comments: oc.input(z.object({ ticketId: Id })).output(z.array(TicketCommentSchema)),
   },
   skills: {
     list: oc.input(botId).output(z.array(TaughtSkillSchema)),
@@ -819,6 +850,8 @@ export const appContract = {
             description: z.string().max(ARTIFACT_DESCRIPTION_MAX_LENGTH).optional(),
             mimeType: z.string().min(1),
             contentBase64: z.string().min(1).max(ATTACHMENT_MAX_BASE64_LENGTH),
+            /** Unique per upload; a retry with the same nonce returns the artifact it created. */
+            clientNonce: z.string().min(1).max(200).optional(),
           }),
         ),
       )

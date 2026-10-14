@@ -88,6 +88,7 @@ function bot(description = "Billing"): Bot {
     threadId: "thread-1",
     preview: "",
     status: "idle",
+    runErrorId: null,
     computerMode: "team",
     updatedAt: "2026-09-01T00:00:00.000Z",
     createdAt: "2026-09-01T00:00:00.000Z",

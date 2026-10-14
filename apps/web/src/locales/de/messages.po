@@ -563,10 +563,6 @@ msgstr "Archiviert. Chat, Erinnerungen und Dateien bleiben erhalten."
 msgid "Arguments"
 msgstr "Argumente"
 
-#: src/pages/Artifacts.tsx
-msgid "Artifacts"
-msgstr ""
-
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Ask before {0}"
@@ -666,6 +662,7 @@ msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 msgid "Back"
@@ -707,6 +704,15 @@ msgstr "Bearer-Token"
 
 #: src/pages/SettingsOverlay.tsx
 msgid "Billing"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "Blocked"
+msgstr ""
+
+#: src/pages/Board.tsx
+#: src/pages/Shell.tsx
+msgid "Board"
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -1046,6 +1052,10 @@ msgstr "Befehl"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Command variable"
 msgstr "Befehlsvariable"
+
+#: src/pages/Board.tsx
+msgid "Comment"
+msgstr ""
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Complete"
@@ -1692,6 +1702,7 @@ msgstr ""
 msgid "Couldn't update messaging settings"
 msgstr ""
 
+#: src/pages/Board.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/shell/dialogs.tsx
@@ -1911,6 +1922,7 @@ msgstr "Bereitstellungsstandard"
 msgid "Describe what this bot does"
 msgstr "Beschreibe, was dieser Bot macht"
 
+#: src/pages/Board.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Description"
 msgstr "Beschreibung"
@@ -1987,6 +1999,7 @@ msgstr "Docker begrenzt für mehr Sicherheit den Zugriff auf deinen Computer. We
 msgid "Don’t have an account?"
 msgstr "Du hast noch kein Konto?"
 
+#: src/lib/ticket-status.ts
 #: src/pages/ActivityList.tsx
 msgid "Done"
 msgstr "Fertig"
@@ -2098,6 +2111,10 @@ msgstr "Gib eine ganze Zahl von 1 bis 1000 für das Bilderlimit ein."
 msgid "Enter an API key before testing."
 msgstr "Gib vor dem Test einen API-Schlüssel ein."
 
+#: src/lib/roster-status.ts
+msgid "Error"
+msgstr ""
+
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/RoutineSchedule.tsx
 msgid "Every"
@@ -2201,6 +2218,7 @@ msgid "File is too large to upload."
 msgstr "Datei ist zu groß zum Hochladen."
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Artifacts.tsx
 #: src/pages/Shell.tsx
 msgid "Files"
 msgstr "Dateien"
@@ -2363,6 +2381,7 @@ msgstr ""
 msgid "Hide transcript"
 msgstr "Transkript ausblenden"
 
+#: src/lib/ticket-priority.ts
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "High"
@@ -2409,6 +2428,14 @@ msgstr "Bild-Upload-Bereich"
 #: src/pages/PluginsOverlay.tsx
 msgid "Import OpenAPI JSON"
 msgstr "OpenAPI-JSON importieren"
+
+#: src/lib/ticket-status.ts
+msgid "In progress"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "In review"
+msgstr ""
 
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Inactive"
@@ -2619,6 +2646,7 @@ msgstr ""
 msgid "Log out"
 msgstr "Abmelden"
 
+#: src/lib/ticket-priority.ts
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Low"
@@ -2921,6 +2949,10 @@ msgstr "Bot benennen"
 msgid "Name this routine"
 msgstr ""
 
+#: src/lib/roster-status.ts
+msgid "Needs an answer"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -2933,6 +2965,7 @@ msgstr "Eingabe erforderlich"
 msgid "Needs takeover"
 msgstr "Übernahme erforderlich"
 
+#: src/lib/roster-status.ts
 #: src/pages/Shell.tsx
 msgid "Needs you"
 msgstr ""
@@ -2961,6 +2994,10 @@ msgstr "Neuer Skill"
 
 #: src/pages/shell/dialogs.tsx
 msgid "New space"
+msgstr ""
+
+#: src/pages/Board.tsx
+msgid "New ticket"
 msgstr ""
 
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -3074,6 +3111,10 @@ msgstr "Noch keine Skills"
 msgid "No team conversations yet."
 msgstr ""
 
+#: src/pages/Board.tsx
+msgid "No tickets yet"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "No tools available."
 msgstr ""
@@ -3085,6 +3126,10 @@ msgstr ""
 #: src/pages/ScratchpadSection.tsx
 msgid "None yet"
 msgstr "Noch keine"
+
+#: src/lib/ticket-priority.ts
+msgid "Normal"
+msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Not connected"
@@ -3251,6 +3296,10 @@ msgstr "Originalnachricht nicht verfügbar"
 msgid "Other model…"
 msgstr "Anderes Modell…"
 
+#: src/pages/Board.tsx
+msgid "Owner"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "PagerDuty incident"
 msgstr ""
@@ -3341,6 +3390,10 @@ msgstr "Vorschau von {0}"
 
 #: src/pages/Artifacts.tsx
 msgid "Preview isn't available for this file type — download it to view it."
+msgstr ""
+
+#: src/pages/Board.tsx
+msgid "Priority"
 msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
@@ -3682,6 +3735,7 @@ msgid "Retry"
 msgstr "Erneut versuchen"
 
 #: src/App.tsx
+#: src/pages/Artifacts.tsx
 #: src/pages/PeerMessagesOverlay.tsx
 msgid "Retry now"
 msgstr "Jetzt erneut versuchen"
@@ -3762,6 +3816,7 @@ msgstr ""
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
+#: src/pages/Board.tsx
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -4157,6 +4212,7 @@ msgid "Starting…"
 msgstr "Wird gestartet…"
 
 #: src/pages/ActivityList.tsx
+#: src/pages/Board.tsx
 msgid "Status"
 msgstr ""
 
@@ -4399,6 +4455,7 @@ msgstr ""
 msgid "Time of day"
 msgstr "Uhrzeit"
 
+#: src/pages/Board.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Title"
 msgstr "Titel"
@@ -4410,6 +4467,10 @@ msgstr ""
 #. placeholder {0}: filters.dateRange.to
 #: src/pages/ActivityList.tsx
 msgid "To {0}"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "To do"
 msgstr ""
 
 #: src/pages/shell/bot-picker.tsx
@@ -4569,6 +4630,10 @@ msgstr ""
 msgid "Upload"
 msgstr "Hochladen"
 
+#: src/lib/ticket-priority.ts
+msgid "Urgent"
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
@@ -4724,6 +4789,10 @@ msgstr "Einsatzzeitpunkt"
 #: src/pages/HostComputerPrompt.tsx
 msgid "Where should bots run?"
 msgstr "Wo sollen Bots ausgeführt werden?"
+
+#: src/lib/ticket-status.ts
+msgid "Won't do"
+msgstr ""
 
 #: src/lib/roster-status.ts
 #: src/pages/Auth.tsx

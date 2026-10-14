@@ -212,6 +212,7 @@ export async function messageBot(
           blocks: [outboundBlock],
           botId: run.botId,
           runId: run.id,
+          markUnread: true,
           allowCancelledRun: options?.allowTerminalSource === true,
         });
         const inboundBlock: MessageBlock = {
@@ -223,7 +224,6 @@ export async function messageBot(
           intent,
           returnToMessageId: outbound.id,
         };
-        // This is the recipient's prompt, but it is still unread peer activity.
         const inbound = await createThreadMessageInTransaction(tx, {
           threadId: targetThreadId,
           role: "user",

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { OAuthMaterial } from "./mcp-oauth.js";
 import {
   McpOAuthBroker,
   McpReauthorizationRequiredError,
@@ -182,6 +183,162 @@ async function rejectedOAuthBegin(
 }
 
 describe("MCP OAuth", () => {
+  function expiringMaterial(obtainedAt: number) {
+    return {
+      oauth: {
+        tokens: {
+          access_token: "old-access",
+          refresh_token: "old-refresh",
+          token_type: "Bearer",
+          expires_in: 7200,
+        },
+        obtainedAt,
+        clientInformation: { client_id: "client-1" },
+        discoveryState: {
+          authorizationServerUrl: "https://auth.example.test",
+          authorizationServerMetadata: {
+            issuer: "https://auth.example.test",
+            authorization_endpoint: "https://auth.example.test/authorize",
+            token_endpoint: "https://auth.example.test/token",
+            response_types_supported: ["code"],
+          },
+          resourceMetadata: {
+            resource: "https://mcp.example.test",
+            authorization_servers: ["https://auth.example.test"],
+          },
+        },
+      },
+    };
+  }
+
+  it("renews an expired token once before handing it out", async () => {
+    const persisted: { oauth?: { tokens?: { access_token?: string } } }[] = [];
+    const tokenRequests: URLSearchParams[] = [];
+    const close = vi.fn(async () => undefined);
+    const provider = new StoredMcpOAuthProvider(
+      "server-1",
+      expiringMaterial(Date.now() - 3 * 60 * 60 * 1000),
+      async (material) => {
+        persisted.push(structuredClone(material));
+      },
+      {
+        refreshNetwork: async () => ({
+          fetch: async (_input: string | URL | Request, init?: RequestInit) => {
+            tokenRequests.push(new URLSearchParams(String(init?.body)));
+            return new Response(
+              JSON.stringify({
+                access_token: "new-access",
+                refresh_token: "new-refresh",
+                token_type: "Bearer",
+                expires_in: 7200,
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          },
+          close,
+        }),
+      },
+    );
+
+    const [first, second] = await Promise.all([provider.tokens(), provider.tokens()]);
+
+    expect(first).toMatchObject({ access_token: "new-access", refresh_token: "new-refresh" });
+    expect(second).toMatchObject({ access_token: "new-access" });
+    expect(tokenRequests).toHaveLength(1);
+    expect(tokenRequests[0]?.get("grant_type")).toBe("refresh_token");
+    expect(tokenRequests[0]?.get("refresh_token")).toBe("old-refresh");
+    expect(tokenRequests[0]?.get("client_id")).toBe("client-1");
+    expect(tokenRequests[0]?.get("resource")).toBe("https://mcp.example.test/");
+    expect(persisted.at(-1)?.oauth?.tokens?.access_token).toBe("new-access");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not renew a token that is still inside its lifetime", async () => {
+    const refreshNetwork = vi.fn(async () => ({
+      fetch: async () => new Response(),
+      close: async () => undefined,
+    }));
+    const provider = new StoredMcpOAuthProvider(
+      "server-1",
+      expiringMaterial(Date.now() - 10 * 60 * 1000),
+      async () => undefined,
+      { refreshNetwork },
+    );
+
+    expect(await provider.tokens()).toMatchObject({ access_token: "old-access" });
+    expect(refreshNetwork).not.toHaveBeenCalled();
+  });
+
+  it("keeps the current token when refresh-network setup fails", async () => {
+    const persist = vi.fn(async () => undefined);
+    const refreshNetwork = vi.fn(async () => {
+      throw new Error("permission lookup temporarily unavailable");
+    });
+    const provider = new StoredMcpOAuthProvider(
+      "server-1",
+      expiringMaterial(Date.now() - (7200 - 30) * 1000),
+      persist,
+      { refreshNetwork },
+    );
+
+    await expect(provider.tokens()).resolves.toMatchObject({ access_token: "old-access" });
+    expect(persist).not.toHaveBeenCalled();
+    expect(refreshNetwork).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the current token when renewal has a transient failure", async () => {
+    const persist = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const provider = new StoredMcpOAuthProvider(
+      "server-1",
+      expiringMaterial(Date.now() - 3 * 60 * 60 * 1000),
+      persist,
+      {
+        refreshNetwork: async () => ({
+          fetch: async () => {
+            throw new TypeError("network unavailable");
+          },
+          close,
+        }),
+      },
+    );
+
+    expect(await provider.tokens()).toMatchObject({ access_token: "old-access" });
+    expect(persist).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("invalidates only tokens after invalid_grant and does not retry a revoked grant", async () => {
+    const persist = vi.fn(async (_material: OAuthMaterial) => undefined);
+    const close = vi.fn(async () => undefined);
+    const fetchToken = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "invalid_grant" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const provider = new StoredMcpOAuthProvider(
+      "server-1",
+      expiringMaterial(Date.now() - 3 * 60 * 60 * 1000),
+      persist,
+      { refreshNetwork: async () => ({ fetch: fetchToken, close }) },
+    );
+
+    const [first, second] = await Promise.all([provider.tokens(), provider.tokens()]);
+    expect(first).toBeUndefined();
+    expect(second).toBeUndefined();
+    expect(await provider.tokens()).toBeUndefined();
+    expect(fetchToken).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledOnce();
+    const persisted = persist.mock.calls[0]?.[0] as OAuthMaterial | undefined;
+    expect(persisted?.oauth?.tokens).toBeUndefined();
+    expect(persisted?.oauth?.obtainedAt).toBeUndefined();
+    expect(provider.clientInformation()).toEqual({ client_id: "client-1" });
+    expect(provider.discoveryState()).toBeDefined();
+  });
+
   it("rejects unsafe browser authorization URLs", async () => {
     const onAuthorization = vi.fn();
     const provider = new StoredMcpOAuthProvider(
@@ -197,7 +354,7 @@ describe("MCP OAuth", () => {
 
     expect(provider.authorizationUrl).toBeUndefined();
     expect(onAuthorization).not.toHaveBeenCalled();
-    expect(provider.tokens()).toMatchObject({ access_token: "working" });
+    expect(await provider.tokens()).toMatchObject({ access_token: "working" });
   });
 
   it("allows localhost HTTP browser authorization URLs", async () => {
@@ -227,7 +384,7 @@ describe("MCP OAuth", () => {
       provider.redirectToAuthorization(new URL("http://auth.example.test/authorize")),
     ).rejects.toThrow(/HTTPS/i);
 
-    expect(provider.tokens()).toBeUndefined();
+    expect(await provider.tokens()).toBeUndefined();
     expect(persisted.at(-1)?.oauth?.tokens).toBeUndefined();
   });
 
@@ -255,7 +412,7 @@ describe("MCP OAuth", () => {
     });
     await provider.invalidateCredentials("tokens");
 
-    expect(provider.tokens()).toBeUndefined();
+    expect(await provider.tokens()).toBeUndefined();
     expect(provider.clientInformation()).toEqual({ client_id: "client-1" });
     expect(provider.discoveryState()).toMatchObject({
       authorizationServerUrl: "https://auth.example.test",
@@ -286,7 +443,7 @@ describe("MCP OAuth", () => {
       provider.redirectToAuthorization(new URL("https://auth.example.test/authorize")),
     ).rejects.toThrow(McpReauthorizationRequiredError);
 
-    expect(provider.tokens()).toBeUndefined();
+    expect(await provider.tokens()).toBeUndefined();
     expect(persisted.at(-1)?.oauth?.tokens).toBeUndefined();
   });
 

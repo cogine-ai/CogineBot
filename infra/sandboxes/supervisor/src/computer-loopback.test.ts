@@ -1155,6 +1155,358 @@ describe("screen release status", () => {
 });
 
 describe("screen registry across run boundaries", () => {
+  it("discards a first failed setup left releasing when the container restarts", async () => {
+    const logic = await import("./supervisor-logic.js");
+    const currentScreens = vi.spyOn(logic, "currentComputerScreens");
+    const { supervisorApp } = await import("./index.js");
+    let boot = "boot-1";
+    let running = true;
+    let failSetup = true;
+    const commands: string[] = [];
+    const container = {
+      inspect: vi.fn(async () => ({
+        Config: {
+          Labels: { "rakazo.managed": "true", "rakazo.botId": "bot", "rakazo.spaceId": "space" },
+        },
+        State: { Running: running, StartedAt: boot },
+        HostConfig: { NetworkMode: computerNetworkNameFor("bot") },
+        NetworkSettings: {
+          Ports: { "6080/tcp": [{ HostIp: "127.0.0.1", HostPort: screenPort }] },
+        },
+      })),
+      exec: vi.fn(async ({ Cmd }: { Cmd: string[] }) => {
+        const command = Cmd.join(" ");
+        commands.push(command);
+        if (!running) throw new Error("container stopped");
+        let code = 0;
+        if (failSetup && command.includes("computer browser CDP not ready")) {
+          failSetup = false;
+          running = false;
+          code = 1;
+        }
+        return { start: async () => Readable.from([]), inspect: async () => ({ ExitCode: code }) };
+      }),
+    };
+    mocks.docker.getContainer.mockReturnValue(container);
+    const view = () =>
+      supervisorApp.request("/computers/failed-first-setup/screen-mode", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+          "content-type": "application/json",
+          "x-rakazo-bot-id": "bot",
+          "x-rakazo-space-id": "space",
+          "x-rakazo-screen-id": "writer",
+        },
+        body: JSON.stringify({ interactive: false, revokeControl: false }),
+      });
+    const failed = await view();
+    expect(failed.status).toBe(400);
+    expect(await failed.json()).toEqual({ error: "container stopped" });
+    const [registry, boots] = currentScreens.mock.calls.at(-1)!;
+    const stale = registry.get("failed-first-setup");
+    expect(stale?.get("writer")?.releasing).toBe(true);
+
+    boot = "boot-2";
+    running = true;
+    expect((await view()).status).toBe(200);
+    expect(registry.get("failed-first-setup")).not.toBe(stale);
+    expect(registry.get("failed-first-setup")?.get("writer")).toMatchObject({ index: 0 });
+    expect(boots.get("failed-first-setup")).toBe("boot-2");
+    expect(
+      commands.filter((command) => command.includes("for marker in /tmp/rakazo/browser-profile-*")),
+    ).toHaveLength(2);
+    expect((await view()).status).toBe(200);
+    expect(
+      commands.filter((command) => command.includes("for marker in /tmp/rakazo/browser-profile-*")),
+    ).toHaveLength(2);
+  });
+
+  it.each([
+    { phase: "reset", continuous: false },
+    { phase: "reset", continuous: true },
+    { phase: "ensure", continuous: false },
+    { phase: "ensure", continuous: true },
+  ])(
+    "retries setup when the boot changes during $phase (continuous: $continuous)",
+    async ({ phase, continuous }) => {
+      const logic = await import("./supervisor-logic.js");
+      const currentScreens = vi.spyOn(logic, "currentComputerScreens");
+      const { supervisorApp } = await import("./index.js");
+      let boot = 1;
+      let restart = true;
+      let claiming = true;
+      const commands: string[] = [];
+      const container = {
+        inspect: vi.fn(async () => ({
+          Config: {
+            Labels: { "rakazo.managed": "true", "rakazo.botId": "bot", "rakazo.spaceId": "space" },
+          },
+          HostConfig: { NetworkMode: computerNetworkNameFor("bot") },
+          State: { Running: true, StartedAt: `boot-${boot}` },
+          NetworkSettings: {
+            Ports: { "6080/tcp": [{ HostIp: "127.0.0.1", HostPort: screenPort }] },
+          },
+        })),
+        exec: vi.fn(async ({ Cmd }: { Cmd: string[] }) => {
+          const command = Cmd.join(" ");
+          // Reset starts without a registry; ensure has a pending marker for its inspected boot.
+          if (claiming) {
+            const [, boots] = currentScreens.mock.calls.at(-1)!;
+            expect(boots.has("mid-claim")).toBe(
+              !command.includes("for marker in /tmp/rakazo/browser-profile-*"),
+            );
+          }
+          commands.push(command);
+          const restartsDuringCommand =
+            phase === "reset"
+              ? command.includes("for marker in /tmp/rakazo/browser-profile-*")
+              : command.includes("computer browser CDP not ready");
+          if (restartsDuringCommand && restart) {
+            boot += 1;
+            restart = continuous;
+          }
+          return { start: async () => Readable.from([]), inspect: async () => ({ ExitCode: 0 }) };
+        }),
+      };
+      mocks.docker.getContainer.mockReturnValue(container);
+      const view = () =>
+        supervisorApp.request("/computers/mid-claim/screen-mode", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+            "content-type": "application/json",
+            "x-rakazo-bot-id": "bot",
+            "x-rakazo-space-id": "space",
+            "x-rakazo-screen-id": "writer",
+          },
+          body: JSON.stringify({ interactive: false, revokeControl: false }),
+        });
+      const response = await view();
+      claiming = false;
+      expect(response.status).toBe(continuous ? 400 : 200);
+      expect(
+        commands.filter((command) =>
+          command.includes("for marker in /tmp/rakazo/browser-profile-*"),
+        ).length,
+      ).toBe(continuous ? 3 : 2);
+      if (continuous) {
+        expect(await response.json()).toEqual({ error: "computer restarted during screen setup" });
+        restart = false;
+      }
+      const next = await view();
+      expect(next.status).toBe(200);
+      if (!continuous) expect(await next.json()).toEqual(await response.json());
+      const resets = commands.filter((command) =>
+        command.includes("for marker in /tmp/rakazo/browser-profile-*"),
+      ).length;
+      expect((await view()).status).toBe(200);
+      expect(
+        commands.filter((command) =>
+          command.includes("for marker in /tmp/rakazo/browser-profile-*"),
+        ).length,
+      ).toBe(resets);
+    },
+  );
+
+  it("waits for screen setup before replacing a container and clears its metadata", async () => {
+    const logic = await import("./supervisor-logic.js");
+    const clearRegistry = vi.spyOn(logic, "clearComputerScreenRegistry");
+    const { supervisorApp } = await import("./index.js");
+    const commands: string[] = [];
+    let block = false;
+    let signalBlocked!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      signalBlocked = resolve;
+    });
+    let unblock!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const info = {
+      Image: "old-image",
+      Config: {
+        User: hostComputerUser(),
+        Labels: { "rakazo.managed": "true", "rakazo.botId": "bot", "rakazo.spaceId": "space" },
+      },
+      HostConfig: { NetworkMode: computerNetworkNameFor("bot") },
+      State: { Running: true, StartedAt: "boot-1" },
+      NetworkSettings: { Ports: { "6080/tcp": [{ HostIp: "127.0.0.1", HostPort: screenPort }] } },
+    };
+    const existing = {
+      id: "existing-screen",
+      inspect: vi.fn().mockResolvedValue(info),
+      remove: vi.fn().mockResolvedValue(undefined),
+      exec: vi.fn(async ({ Cmd }: { Cmd: string[] }) => {
+        commands.push(Cmd.join(" "));
+        if (block) {
+          block = false;
+          signalBlocked();
+          await gate;
+        }
+        return { start: async () => Readable.from([]), inspect: async () => ({ ExitCode: 0 }) };
+      }),
+    };
+    mocks.docker.getContainer.mockReturnValue(existing);
+    mocks.docker.listContainers.mockResolvedValue([{ Id: existing.id }]);
+    mocks.docker.getImage.mockReturnValue({
+      inspect: vi.fn().mockResolvedValue({ Id: "new-image" }),
+    });
+    mocks.docker.createContainer.mockResolvedValue({ id: "replacement", start: vi.fn() });
+    mocks.docker.createNetwork.mockResolvedValue({});
+    const headers = {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "bot",
+      "x-rakazo-space-id": "space",
+    };
+    const view = () =>
+      supervisorApp.request("/computers/existing-screen/screen-mode", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ interactive: false, revokeControl: false }),
+      });
+    expect((await view()).status).toBe(200);
+    block = true;
+    const claim = view();
+    await blocked;
+    const replacement = supervisorApp.request("/computers", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        botId: "bot",
+        spaceId: "space",
+        homePath: path.join(process.env.DATA_DIR!, "homes", "bot"),
+      }),
+    });
+    await vi.waitFor(() => expect(mocks.docker.createNetwork).toHaveBeenCalled());
+    expect(existing.remove).not.toHaveBeenCalled();
+    unblock();
+    expect((await claim).status).toBe(200);
+    expect((await replacement).status).toBe(200);
+    expect(existing.remove).toHaveBeenCalledWith({ force: true });
+    const cleanup = clearRegistry.mock.calls.find(([, , id]) => id === existing.id);
+    expect(cleanup).toBeDefined();
+    const [registry, boots] = cleanup!;
+    expect(registry.has(existing.id)).toBe(false);
+    expect(boots.has(existing.id)).toBe(false);
+    // Let the mock answer for the old ID to observe whether its registry was forgotten.
+    const resets = commands.filter((command) =>
+      command.includes("for marker in /tmp/rakazo/browser-profile-*"),
+    ).length;
+    expect((await view()).status).toBe(200);
+    expect(
+      commands.filter((command) => command.includes("for marker in /tmp/rakazo/browser-profile-*"))
+        .length,
+    ).toBe(resets + 1);
+  });
+
+  it.each(["POST", "DELETE"])(
+    "re-inspects the boot after a queued %s screen request acquires the lock",
+    async (method) => {
+      const { supervisorApp } = await import("./index.js");
+      const commands: string[] = [];
+      let startedAt = "boot-1";
+      let blockCommand = false;
+      let signalBlocked!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        signalBlocked = resolve;
+      });
+      let unblock!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      let signalQueued!: () => void;
+      const queuedInspection = new Promise<void>((resolve) => {
+        signalQueued = resolve;
+      });
+      let waitingForInspection = false;
+      const container = {
+        inspect: vi.fn(async () => {
+          if (waitingForInspection) signalQueued();
+          return {
+            Config: {
+              Labels: {
+                "rakazo.managed": "true",
+                "rakazo.botId": "bot",
+                "rakazo.spaceId": "space",
+              },
+            },
+            HostConfig: { NetworkMode: computerNetworkNameFor("bot") },
+            State: { Running: true, StartedAt: startedAt },
+            NetworkSettings: {
+              Ports: { "6080/tcp": [{ HostIp: "127.0.0.1", HostPort: screenPort }] },
+            },
+          };
+        }),
+        exec: vi.fn(async ({ Cmd }: { Cmd: string[] }) => {
+          commands.push(Cmd.join(" "));
+          if (blockCommand) {
+            blockCommand = false;
+            signalBlocked();
+            await gate;
+          }
+          return { start: async () => Readable.from([]), inspect: async () => ({ ExitCode: 0 }) };
+        }),
+      };
+      mocks.docker.getContainer.mockReturnValue(container);
+      const headers = {
+        authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+        "content-type": "application/json",
+        "x-rakazo-bot-id": "bot",
+        "x-rakazo-space-id": "space",
+        "x-rakazo-screen-id": "writer",
+      };
+      const view = (leaseId = "run-2:2") =>
+        supervisorApp.request("/computers/restarted/screen-mode", {
+          method: "POST",
+          headers: { ...headers, "x-rakazo-screen-lease-id": leaseId },
+          body: JSON.stringify({ interactive: false, revokeControl: false }),
+        });
+      const resets = () =>
+        commands.filter((command) =>
+          command.includes("for marker in /tmp/rakazo/browser-profile-*"),
+        ).length;
+      expect((await view()).status).toBe(200);
+      blockCommand = true;
+      const holder = view();
+      await blocked;
+      waitingForInspection = true;
+      const queued =
+        method === "POST"
+          ? view()
+          : supervisorApp.request("/computers/restarted/screen", {
+              method: "DELETE",
+              headers: { ...headers, "x-rakazo-screen-lease-id": "run-1:1" },
+            });
+      await queuedInspection;
+      startedAt = "boot-2";
+      unblock();
+      const held = await holder;
+      expect(held.status).toBe(200);
+      const response = await queued;
+      expect(response.status).toBe(200);
+      if (method === "DELETE") {
+        // A delayed release cannot invalidate the holder's new screen or token.
+        const next = await view();
+        expect(next.status).toBe(200);
+        expect(await next.json()).toEqual(await held.json());
+      } else {
+        expect(resets()).toBe(2);
+        const screen = await response.json();
+        const next = await view();
+        expect(next.status).toBe(200);
+        // Reusing the registry preserves the screen's view token as well as its desktop.
+        expect(await next.json()).toEqual(screen);
+      }
+      expect((await view()).status).toBe(200);
+      expect(resets()).toBe(2);
+      // A screen created in the new boot keeps its marker on later requests.
+      expect((await view()).status).toBe(200);
+      expect(resets()).toBe(2);
+    },
+  );
+
   it("does not reset the desktop when a screen is requested after the last one is released", async () => {
     const { supervisorApp } = await import("./index.js");
     const commands: string[] = [];

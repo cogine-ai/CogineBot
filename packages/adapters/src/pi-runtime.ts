@@ -66,7 +66,7 @@ import type { PiSessionHandle, PiSessionRecorder } from "./pi-session.js";
 import { PiJsonlSessionRecorder } from "./pi-session.js";
 import { observedPiStream } from "./pi-usage.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
-import { createRuntimeContextPolicy } from "./runtime-context.js";
+import { createRuntimeContextPolicy, VERBATIM_TOOL_RESULTS } from "./runtime-context.js";
 import type { FinishedShellCommand } from "./shell-command-stream.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
 import { textContentArg } from "./tool-text.js";
@@ -1289,6 +1289,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
             details: { error: "no executor" },
           };
         })();
+        if (VERBATIM_TOOL_RESULTS.has(tool.name)) return result as AgentToolResult<unknown>;
         return boundAgentToolResult(result as AgentToolResult<unknown>);
       } catch (error) {
         failure = error;
@@ -2015,7 +2016,7 @@ export function jsonField(spec: unknown): ReturnType<typeof Type.String> {
   return Type.String(options);
 }
 
-function serializeToolResult(
+export function serializeToolResult(
   result: unknown,
   strategy: AgentRunRequest["contextStrategy"],
   name: string,
@@ -2024,7 +2025,8 @@ function serializeToolResult(
   try {
     const text = JSON.stringify(result);
     if (!text) return "ok";
-    if (text.length <= 12_000) return text;
+    // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
+    if (text.length <= 12_000 || VERBATIM_TOOL_RESULTS.has(name)) return text;
     return (strategy ?? DEFAULT_CONTEXT_STRATEGY) === "current"
       ? clipToolResultText(text)
       : shortenToolResultText(text, 12_000, { name, arguments: args });

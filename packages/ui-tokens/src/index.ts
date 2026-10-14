@@ -43,6 +43,7 @@ export type ColorTokens = {
   faviconPlate: string;
   success: string;
   warning: string;
+  statusWorking: string;
   overlay: string;
   scrollbar: string;
   scrollbarHover: string;
@@ -79,6 +80,7 @@ export const darkTokens = {
   faviconPlate: "#FFFFFF",
   success: "#4ECB71",
   warning: "#E9C46A",
+  statusWorking: "#3B82F6",
   overlay: "rgba(4, 4, 5, 0.72)",
   scrollbar: "#1E2026",
   scrollbarHover: "#2E313A",
@@ -115,6 +117,7 @@ export const lightTokens = {
   faviconPlate: "#FFFFFF",
   success: "#228B3B",
   warning: "#B7791F",
+  statusWorking: "#2563EB",
   overlay: "rgba(20, 20, 22, 0.45)",
   scrollbar: "#C8C8C4",
   scrollbarHover: "#A8A8A4",

@@ -61,21 +61,28 @@ describe("companion avatars", () => {
       expect(preview).toContain(`data-shape="${key}"`);
     },
   );
-  it("keeps uploaded images static even for an active Run", () => {
+  it.each(["running", "idle"])("keeps uploaded images static for a %s Run", (status) => {
     const html = renderToString(
       <BotAvatar
         color="data:image/webp;base64,abc"
         identity="companion-a"
-        status="running"
+        status={status}
         size={32}
       />,
     );
     expect(html).toContain('src="data:image/webp;base64,abc"');
-    expect(html).toContain('data-working="true"');
+    expect(html).toContain(`data-working="${status === "running"}"`);
     expect(html).not.toContain("rakazo-avatar-activity");
     expect(html).not.toContain("rakazo-gaze-avatar");
+    expect(html).not.toContain('class="avatar-activity');
+    expect(html).not.toContain("rakazo-bot-avatar-ring");
+    expect(html).not.toContain("box-shadow");
+    expect(html).toContain('draggable="false"');
   });
   it("does not turn arbitrary persisted values into remote image requests", () => {
+    const parsed = parseBotAvatar("https://example.invalid/avatar.png");
+    expect(parsed.isImage).toBe(false);
+    expect(parsed.imageUrl).toBeUndefined();
     const html = renderToString(
       <BotAvatar color="https://example.invalid/avatar.png" identity="companion-a" />,
     );

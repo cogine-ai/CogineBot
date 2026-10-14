@@ -47,7 +47,9 @@ export const ECHO_GUARD_MS = 600;
 let state: CallState | null = null;
 /** Shared by every message this call sends, so the thread can group one call's exchange. */
 let callId = "";
-let transcribe = false;
+/** Requests for this call that must persist before its server-side hang-up. */
+const pendingCallSends = new Map<string, Set<Promise<unknown>>>();
+let transcribe: boolean | undefined;
 let thread: ThreadSnapshot | null = null;
 let feed: AbortController | null = null;
 /** Every bot message already spoken this call: a streaming message updates many times. */
@@ -99,7 +101,7 @@ export function startCall(call: {
   botId: string;
   botName: string;
   botColor?: string;
-  transcribe: boolean;
+  transcribe?: boolean;
 }): void {
   endCall();
   callId = randomId();
@@ -140,7 +142,10 @@ export function startCall(call: {
       set({ heard: pendingSecretAsk(thread) ? "" : heard.transcript });
       watchInterim(heard.transcript);
     } else clearInterim();
-    if (heard.error) set({ caption: heard.error });
+    if (heard.error) {
+      if (heard.status === "idle") micOpen = false;
+      set({ caption: heard.error });
+    }
   });
   watchThread(call.botId);
   emit();
@@ -152,8 +157,15 @@ export function endCall(): void {
   // run. The bot's own end_call already did that, so only tell the server when it did not.
   if (state && !botEndedCall) {
     const { botId } = state;
-    // Fire and forget: the card is going away either way, and the server is idempotent.
-    void rpc.threads.endCall({ botId, callId }).catch(() => undefined);
+    const closingCallId = callId;
+    const closeServerCall = () => rpc.threads.endCall({ botId, callId: closingCallId });
+    const pendingSends = [...(pendingCallSends.get(closingCallId) ?? [])];
+    // The server checks durable user messages, so its close must follow an in-flight write.
+    if (pendingSends.length === 0) void closeServerCall().catch(() => undefined);
+    else
+      void Promise.allSettled(pendingSends)
+        .then(closeServerCall)
+        .catch(() => undefined);
   }
   feed?.abort();
   feed = null;
@@ -351,20 +363,33 @@ async function handleTranscript(text: string) {
     if (hangUpTimer) clearTimeout(hangUpTimer);
     hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT);
   }
+  let releasePendingSend: () => void = () => undefined;
   try {
-    if (askMessage) {
-      await rpc.threads.answer({
-        botId,
-        runId: askMessage.runId ?? "",
-        messageId: askMessage.id,
-        answer: spokenDecision(text) ?? text,
-      });
-    } else if (runActive(thread)) {
-      await rpc.threads.followUp({ botId, text, clientNonce: callClientNonce(turnCallId) });
-    } else {
-      await rpc.threads.send({ botId, clientNonce: callClientNonce(turnCallId), text });
-    }
+    const clientNonce = callClientNonce(turnCallId);
+    const sendRequest = askMessage
+      ? rpc.threads.answer({
+          botId,
+          runId: askMessage.runId ?? "",
+          messageId: askMessage.id,
+          answer: spokenDecision(text) ?? text,
+          clientNonce,
+        })
+      : runActive(thread)
+        ? rpc.threads.followUp({ botId, text, clientNonce })
+        : rpc.threads.send({ botId, clientNonce, text });
+    releasePendingSend = trackPendingCallSend(turnCallId, sendRequest);
+    await sendRequest;
+  } catch (error) {
     if (!state || state.botId !== botId || callId !== turnCallId) return;
+    awaitingReply = false;
+    set({ caption: errorText(error, t`Could not send that`) });
+    void listen();
+    return;
+  } finally {
+    releasePendingSend();
+  }
+  if (!state || state.botId !== botId || callId !== turnCallId) return;
+  try {
     commit(await rpc.threads.get({ botId }, { signal: callFeed?.signal }));
   } catch (error) {
     if (!state || state.botId !== botId || callId !== turnCallId) return;
@@ -483,6 +508,16 @@ function latestAskId(snapshot: ThreadSnapshot | null): string | null {
     }
   }
   return null;
+}
+
+function trackPendingCallSend(callId: string, request: Promise<unknown>): () => void {
+  const pending = pendingCallSends.get(callId) ?? new Set<Promise<unknown>>();
+  pending.add(request);
+  pendingCallSends.set(callId, pending);
+  return () => {
+    pending.delete(request);
+    if (pending.size === 0) pendingCallSends.delete(callId);
+  };
 }
 
 function randomId(): string {

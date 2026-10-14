@@ -3,8 +3,10 @@ import type {
   OAuthClientProvider,
   OAuthDiscoveryState,
 } from "@modelcontextprotocol/sdk/client/auth.js";
+import { refreshAuthorization } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
@@ -181,13 +183,19 @@ type ProviderOptions = {
   state?: string;
   onAuthorization?: (url: URL) => void;
   onPersisted?: (record: { id: string; ref: string; material: OAuthMaterial }) => void;
+  /** Network for renewing an expired access token through its stored refresh token. */
+  refreshNetwork?: () => Promise<{ fetch: typeof fetch; close: () => Promise<void> }>;
 };
+
+/** Refresh before expiry to cover clock skew and request time. */
+const TOKEN_REFRESH_SKEW_MS = 60_000;
 
 /** One SDK OAuth provider backed by the same encrypted material used at runtime. */
 export class StoredMcpOAuthProvider implements OAuthClientProvider {
   authorizationUrl?: URL;
   private readonly runtimeState = randomUUID();
   private persistQueue = Promise.resolve();
+  private refreshing?: Promise<void>;
 
   constructor(
     readonly serverId: string,
@@ -229,9 +237,62 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     this.oauth().clientInformation = value;
     await this.persist();
   }
-  tokens(): OAuthTokens | undefined {
+  /**
+   * Some providers return a JSON-RPC error with HTTP 200 after access-token
+   * expiry, so the SDK's 401-driven refresh does not run. Renew from the stored
+   * expiry before returning a token that has lapsed.
+   */
+  async tokens(): Promise<OAuthTokens | undefined> {
+    if (this.options.refreshNetwork && this.accessTokenExpired()) {
+      this.refreshing ??= this.refreshExpiredToken().finally(() => {
+        this.refreshing = undefined;
+      });
+      await this.refreshing;
+    }
     return this.material.oauth?.tokens;
   }
+
+  private accessTokenExpired(): boolean {
+    const oauth = this.material.oauth;
+    const lifetimeSeconds = oauth?.tokens?.expires_in;
+    if (!oauth?.tokens?.refresh_token || !oauth.obtainedAt || !lifetimeSeconds) return false;
+    return Date.now() >= oauth.obtainedAt + lifetimeSeconds * 1000 - TOKEN_REFRESH_SKEW_MS;
+  }
+
+  private async refreshExpiredToken(): Promise<void> {
+    const oauth = this.material.oauth;
+    const refreshToken = oauth?.tokens?.refresh_token;
+    const discovery = oauth?.discoveryState;
+    const clientInformation = oauth?.clientInformation;
+    if (!refreshToken || !discovery?.authorizationServerUrl || !clientInformation) return;
+    let network: { fetch: typeof fetch; close: () => Promise<void> } | undefined;
+    try {
+      network = await this.options.refreshNetwork?.();
+      if (!network) return;
+      const resource = await this.validateResourceURL(
+        discovery.authorizationServerUrl,
+        discovery.resourceMetadata?.resource,
+      );
+      const next = await refreshAuthorization(discovery.authorizationServerUrl, {
+        metadata: discovery.authorizationServerMetadata,
+        clientInformation,
+        refreshToken,
+        resource,
+        fetchFn: network.fetch,
+      });
+      await this.saveTokens(next);
+    } catch (error) {
+      if (error instanceof InvalidGrantError) {
+        // A revoked refresh token cannot recover through a second SDK attempt.
+        // Clear only the grant so the existing authorization path requests reconnect.
+        await this.invalidateCredentials("tokens");
+      }
+      // Transient setup or transport failures must not discard a usable token.
+    } finally {
+      await network?.close().catch(() => undefined);
+    }
+  }
+
   async saveTokens(value: OAuthTokens): Promise<void> {
     const oauth = this.oauth();
     oauth.tokens = value;
@@ -572,7 +633,7 @@ export class McpOAuthBroker {
       await networkFetch.close().catch(() => undefined);
     }
     if (!authorizationUrl) {
-      if (provider.tokens()) {
+      if (await provider.tokens()) {
         return { status: "already_connected" };
       }
       return { status: "authorization_not_requested" };
@@ -706,7 +767,7 @@ export class McpOAuthBroker {
       await transport.close().catch(() => undefined);
       await networkFetch.close().catch(() => undefined);
     }
-    if (!pending.provider.tokens()) throw new Error("MCP OAuth authorization failed");
+    if (!(await pending.provider.tokens())) throw new Error("MCP OAuth authorization failed");
     // Bump the revision so cached runtime sessions rebuild with the fresh tokens.
     await this.prisma.mcpServer.update({
       where: { id: pending.serverId },
@@ -764,6 +825,7 @@ export class McpOAuthBroker {
     loaded: { material: OAuthMaterial; secretId?: string },
     options: ProviderOptions = {},
   ): StoredMcpOAuthProvider {
+    const endpoint = server.endpoint;
     return new StoredMcpOAuthProvider(
       server.id,
       loaded.material,
@@ -777,7 +839,24 @@ export class McpOAuthBroker {
           options.onPersisted,
         );
       },
-      options,
+      {
+        ...(endpoint
+          ? {
+              refreshNetwork: async () =>
+                oauthFetch(
+                  endpoint,
+                  this.network,
+                  {},
+                  await actorMayUsePrivateEndpoint(
+                    this.prisma,
+                    context.userId,
+                    this.allowPrivateEndpoint,
+                  ),
+                ),
+            }
+          : {}),
+        ...options,
+      },
     );
   }
 

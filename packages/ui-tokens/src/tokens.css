@@ -33,6 +33,7 @@
   --favicon-plate: #ffffff;
   --success: #4ecb71;
   --warning: #e9c46a;
+  --status-working: #3b82f6;
   --overlay: rgba(4, 4, 5, 0.72);
   --scrollbar: #1e2026;
   --scrollbar-hover: #2e313a;
@@ -71,6 +72,7 @@
   --favicon-plate: #ffffff;
   --success: #228b3b;
   --warning: #b7791f;
+  --status-working: #2563eb;
   --overlay: rgba(20, 20, 22, 0.45);
   --scrollbar: #c8c8c4;
   --scrollbar-hover: #a8a8a4;

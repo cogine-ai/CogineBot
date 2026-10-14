@@ -1,4 +1,5 @@
-import { expect, type Page, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { Bot, Routine } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
@@ -13,9 +14,10 @@ async function saveAndReturn(page: Page, procedure: "routines/create" | "routine
     (response) => response.url().includes(`/rpc/${procedure}`) && response.ok(),
   );
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await saved;
+  const response = await saved;
   await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Back" }).click();
+  return response.request().postDataJSON().json;
 }
 
 test("routine active switch keeps its thumb inside the track", async ({ page }, testInfo) => {
@@ -86,7 +88,9 @@ test("routine editing updates in place, preserves timezone, and deletion persist
   await page.locator("label:has-text('Name') input").fill("Weekday check-in");
   await page.locator("label:has-text('Instruction') textarea").fill("Send the revised update");
   await page.getByLabel("How often").selectOption("Weekdays");
-  await saveAndReturn(page, "routines/update");
+  const patch = await saveAndReturn(page, "routines/update");
+  for (const column of ["modelProvider", "modelId", "thinkingLevel"])
+    expect(patch).not.toHaveProperty(column);
 
   const updatedButton = page.getByRole("button", { name: /Weekday check-in/ });
   await expect(updatedButton).toHaveCount(1);
@@ -126,6 +130,43 @@ test("routine editing updates in place, preserves timezone, and deletion persist
   await page.reload();
   await page.getByTitle("Agent computer").click();
   await expect(updatedButton).toHaveCount(0);
+});
+
+test("routine editing keeps the bot model without exposing model override controls", async ({
+  page,
+}, testInfo) => {
+  await signup(
+    page,
+    `routine-default-model-${Date.now()}@rakazo.test`,
+    "password12",
+    "Routine Model",
+  );
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: "Create Routine" }).click();
+  await page.locator("label:has-text('Name') input").fill("Model check");
+  await page.locator("label:has-text('Instruction') textarea").fill("Check the inbox");
+  await addScheduleTrigger(page, "Every day");
+  await expect(page.getByRole("button", { name: "Advanced", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: "Model", exact: true })).toHaveCount(0);
+  const createdInput = await saveAndReturn(page, "routines/create");
+  for (const column of ["modelProvider", "modelId", "thinkingLevel"])
+    expect(createdInput).not.toHaveProperty(column);
+  const [routine] = await rpc<Routine[]>(page, "routines/list", { botId });
+  expect(routine).toMatchObject({
+    name: "Model check",
+    modelProvider: null,
+    modelId: null,
+    thinkingLevel: null,
+  });
+  await page.getByRole("button", { name: /Model check/ }).click();
+  await page.locator("label:has-text('Name') input").fill("Renamed model check");
+  const patch = await saveAndReturn(page, "routines/update");
+  for (const column of ["modelProvider", "modelId", "thinkingLevel"])
+    expect(patch).not.toHaveProperty(column);
+  await expect(page.getByRole("button", { name: /Renamed model check/ })).toBeVisible();
+  await captureScreenshot(page, testInfo, "routine-default-model");
 });
 
 test("invalid advanced cron is rejected without creating a routine", async ({ page }, testInfo) => {
@@ -317,3 +358,25 @@ function localSchedule(iso: string, timezone: string) {
     minute: Number(value("minute")),
   };
 }
+
+test("interval schedule only offers amounts the unit can run", async ({ page }, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `routine-interval-${stamp}@rakazo.test`, "password12", "Interval Routine");
+  await completeOnboarding(page);
+
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: "Create Routine" }).click();
+  await addScheduleTrigger(page, "Interval");
+
+  const amount = page.getByRole("combobox", { name: "Interval amount" });
+  const unit = page.getByRole("combobox", { name: "Interval unit" });
+  await amount.selectOption("45");
+  await unit.selectOption("hours");
+  await expect(amount).toHaveValue("15");
+  await expect(amount.locator("option[value='45']")).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "routine-interval-hours");
+
+  await unit.selectOption("days");
+  await expect(amount.locator("option[value='30']")).toHaveCount(1);
+  await expect(amount.locator("option[value='45']")).toHaveCount(0);
+});

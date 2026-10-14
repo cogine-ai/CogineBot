@@ -346,7 +346,7 @@ describe("MCP transport seam", () => {
     expect(resourceHeaders[0]).toBe("Bearer stale-access");
     expect(resourceHeaders.slice(1)).not.toHaveLength(0);
     expect(resourceHeaders.slice(1).every((value) => value === "Bearer fresh-access")).toBe(true);
-    expect(provider.tokens()).toMatchObject({
+    expect(await provider.tokens()).toMatchObject({
       access_token: "fresh-access",
       refresh_token: "rotated-refresh",
     });
@@ -415,7 +415,7 @@ describe("MCP transport seam", () => {
       }),
     ).rejects.toThrow("Reconnect this server");
 
-    expect(provider.tokens()).toBeUndefined();
+    expect(await provider.tokens()).toBeUndefined();
     expect(persisted.length).toBeGreaterThanOrEqual(1);
   });
 

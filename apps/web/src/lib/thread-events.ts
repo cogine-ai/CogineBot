@@ -3,12 +3,15 @@ import type {
   ProductEvent,
   Run,
   RunStatus,
+  RunTrigger,
   ThreadMessage,
   ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
+import { RUN_TRIGGERS } from "@rakazo/contracts";
 import {
   isActive,
+  isBackgroundRunTrigger,
   isRunTerminalEvent,
   mergeThreadHistory,
   prependThreadHistoryPage,
@@ -22,21 +25,7 @@ import {
   upsertMessageById,
 } from "@rakazo/core";
 
-const runTriggers = new Set<Run["trigger"]>([
-  "user",
-  "routine",
-  "resume",
-  "follow_up",
-  "reaction",
-  "call_end",
-  "spawn",
-  "skill",
-  "bot_message",
-  "webhook",
-  "messaging",
-  "cloud_agent",
-  "created",
-]);
+const runTriggers = new Set<string>(RUN_TRIGGERS);
 
 function runFromStartedEvent(event: ProductEvent, previous: Run | undefined): Run {
   const trigger = event.payload.trigger;
@@ -47,8 +36,8 @@ function runFromStartedEvent(event: ProductEvent, previous: Run | undefined): Ru
     taskId: previous?.taskId ?? event.runId ?? event.id,
     status: "running",
     trigger:
-      typeof trigger === "string" && runTriggers.has(trigger as Run["trigger"])
-        ? (trigger as Run["trigger"])
+      typeof trigger === "string" && runTriggers.has(trigger)
+        ? (trigger as RunTrigger)
         : (previous?.trigger ?? "user"),
     routineId:
       typeof event.payload.routineId === "string"
@@ -279,6 +268,11 @@ export function reduceThreadSnapshot(
     };
   }
   if (event.type === "run.started") {
+    // Background runs (ticket work) stay invisible in the transcript; the server
+    // already filters their events and snapshots, this guards a late arrival.
+    if (isBackgroundRunTrigger(event.payload.trigger as string | undefined)) {
+      return { ...prev, cursor: event.seq };
+    }
     if (!event.runId) {
       return {
         ...prev,

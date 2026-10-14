@@ -12,8 +12,8 @@ The workflow uses GitHub-hosted Ubuntu runners, Node.js 24.16.0, and pnpm 9.15.0
 | Lint and typecheck | `pnpm lint` and `pnpm check`. |
 | Web production build | `pnpm --filter @rakazo/web build`; no desktop or mobile package is built. |
 | Default offline unit tests | The complete default `pnpm run test` suite with two workers and a JSON result file. Live provider, computer, and database opt-ins are empty. No tests are excluded to hide known failures. |
-| Official PostgreSQL integration | `pnpm test:integration -- --sandbox=fake --runtime=scripted`, using the existing 29-suite harness. Testcontainers starts a disposable PostgreSQL 16 container and creates a separate database from the migrated template for each suite. Model-dependent fixtures use scripted responses or a loopback model emulator. |
-| Selected fake web E2E | The official `pnpm test:e2e` harness with `--sandbox=fake --runtime=scripted` and the `artifact-preview`, `markdown-table`, `peer-messages`, and `spaces` specs. It starts a disposable PostgreSQL container, local API, and headless Chromium. |
+| Official PostgreSQL integration | `pnpm test:integration -- --sandbox=fake --runtime=scripted`, using the isolated 33-suite harness. Testcontainers starts a disposable PostgreSQL 16 container and creates a separate database from the migrated template for each suite. Model-dependent fixtures use scripted responses or a loopback model emulator. |
+| Selected fake web E2E | The official `pnpm test:e2e` harness with `--sandbox=fake --runtime=scripted` and the spec selection recorded in the active workflow. It starts a disposable PostgreSQL container, local API, and headless Chromium. The optional ticket board stays disabled unless explicitly enabled for its dedicated checks. |
 
 Each dependency-based lane performs `pnpm install --frozen-lockfile --ignore-scripts` and then explicit Prisma generation. The integration and browser harnesses also generate and migrate their disposable databases. No dependency lifecycle scripts, Electron installer, desktop application, mobile emulator, or sandbox computer image is run by these lanes.
 
@@ -21,7 +21,7 @@ These are offline product checks: they do not call paid models, provision remote
 
 The clean checkout must not contain `.env` files or production credentials. `NODE_ENV=test` prevents the harness's root environment loader from loading a developer environment; Prisma and Vite have their own environment-file behavior, so do not add `.env` files to CI. `VERIFY_PROVIDERS`, `VERIFY_DATABASE`, `VERIFY_LOGGING`, `RUN_COMPUTER_E2E`, and `RUN_COMPUTER_REPLAY_DOCKER` are empty in the workflow. The PostgreSQL harness enables `VERIFY_DATABASE=1` only inside its isolated run. Runtime and sandbox selection are fixed, with no input allowing a manual run to switch to a real provider.
 
-The four browser specs cover selected registration, Space, peer messaging, artifact preview, and CSV download behavior. Passing them would not establish real-model task quality, correctness across changing requirements, or release readiness.
+The selected browser specs cover desktop layout, conversation and draft behavior, mentions, groups, approvals, avatars, peer messages, and file preview/download behavior. Passing them does not establish real-model task quality, correctness across changing requirements, or release readiness.
 
 ## Results and failures
 
@@ -33,7 +33,7 @@ Each dependency-based lane has a timeout and saves command logs. On failure, art
 
 ## Archived upstream automation
 
-All 11 inherited workflows are preserved verbatim in [.github/upstream-workflows](../.github/upstream-workflows/). This is a reference directory, outside GitHub's active `.github/workflows` location. Those files cannot be dispatched or triggered from that directory. Their original reusable-workflow paths are also retained as historical text, not rewritten into runnable company automation.
+All 12 inherited workflows are preserved in [.github/upstream-workflows](../.github/upstream-workflows/), including the upstream Android APK publisher. This is a reference directory, outside GitHub's active `.github/workflows` location. Those files cannot be dispatched or triggered from that directory. Their original reusable-workflow paths are also retained as historical text, not rewritten into runnable company automation.
 
 The archive includes image publishing, desktop release/signing, mobile OTA updates, scheduled dependency updates, production SSH deployment, screenshot/report publication, and optional real sandbox tests. Several can write through the built-in GitHub token without custom secrets. Other paths require external credentials, and desktop/Expo/install defaults still identify Rakazo resources. Archiving does not configure a CogineBot release channel.
 

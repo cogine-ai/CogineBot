@@ -211,6 +211,26 @@ export function computerNetworkCreateOptions(
   };
 }
 
+/**
+ * Docker Engine API 1.48 added GwPriority. Older supported daemons must receive
+ * the original connect payload, because their API cannot preserve this setting.
+ */
+export function screenPeerNetworkConnectOptions(
+  containerId: string,
+  apiVersion: string,
+): Docker.NetworkConnectOptions {
+  const version = /^(\d+)\.(\d+)$/.exec(apiVersion);
+  const supportsGatewayPriority = Boolean(
+    version && (Number(version[1]) > 1 || (Number(version[1]) === 1 && Number(version[2]) >= 48)),
+  );
+  if (!supportsGatewayPriority) return { Container: containerId };
+
+  // @types/dockerode 4.0.1 predates the API field; the server accepts the
+  // endpoint setting as part of the standard Engine API payload.
+  const endpointConfig: Docker.EndpointSettings & { GwPriority: number } = { GwPriority: -1 };
+  return { Container: containerId, EndpointConfig: endpointConfig };
+}
+
 export function hostComputerUser(uid = process.getuid?.(), gid = process.getgid?.()): string {
   if (uid === undefined || gid === undefined || uid === 0) return COMPUTER_USER;
   return `${uid}:${gid}`;

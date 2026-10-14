@@ -24,6 +24,7 @@ export type HomeCopy = {
     alternatives: string;
     alternativesMenu: string;
     viewOnGithub: string;
+    iosApp: string;
   };
   hero: {
     badge: string;
@@ -48,6 +49,12 @@ export type HomeCopy = {
     copy: string;
     bots: RosterBot[];
   };
+  testimonials: {
+    heading: string;
+    pause: string;
+    play: string;
+    items: ReadonlyArray<{ quote: string; attribution: string }>;
+  };
   faq: {
     heading: string;
     items: Array<{ question: string; answer: string }>;
@@ -61,6 +68,7 @@ export type HomeCopy = {
     selfHostItems: string[];
     starOnGithub: string;
     readTheDocs: string;
+    openClawAlternative: string;
     cloudTitle: string;
     cloudBadge: string;
     cloudMeta: string;
@@ -105,15 +113,18 @@ export type HomeCopy = {
     languagesLabel: string;
     links: {
       docs: string;
-      openClaw: string;
+      product: string;
       changelog: string;
       alternatives: string;
+      all: string;
       about: string;
       support: string;
       privacy: string;
       terms: string;
-      grokAlternative: string;
+      company: string;
       blog: string;
+      iosApp: string;
+      androidApp: string;
     };
   };
 };
@@ -273,6 +284,38 @@ const ZH_ROSTER: RosterBot[] = [
   },
 ];
 
+const TESTIMONIALS: HomeCopy["testimonials"]["items"] = [
+  {
+    quote:
+      "landed here after a first experience with Grok Bot … then found this alternative, and i can confirm that your work rocks. it replaced totally grok bot for me. mobile app is very smooth too",
+    attribution: "@dilog1114",
+  },
+  {
+    quote:
+      "Im a co-founder and cto, loving rakazo, we have it running against private on qwen 3.8 with strong hw/gpus - all private.",
+    attribution: "@bc101101",
+  },
+  {
+    quote:
+      "I use it to find cheap servers and computer parts on ebay and all other marketplaces and send me everything he decided is a good deal.",
+    attribution: "@michaelortnerit",
+  },
+  {
+    quote:
+      "Hermes is good but more complicated setup. Rakazo has better multi agent workflow and simpler to setup",
+    attribution: "@notabot_92732",
+  },
+  {
+    quote: "ive been using rakazo for 1 month in claude oauth no problems yet",
+    attribution: "@hey_cabron",
+  },
+  {
+    quote:
+      "I set up the mobile app today with expo, first time using expo but was easy with rakazo walking me through",
+    attribution: "@mithril0x",
+  },
+];
+
 const HOME_COPY: Record<Locale, HomeCopy> = {
   en: {
     title: "Rakazo | Open source Grok Bot alternative",
@@ -296,6 +339,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       alternatives: "Alternatives",
       alternativesMenu: "Alternative pages",
       viewOnGithub: "View on GitHub",
+      iosApp: "Download Rakazo for iPhone",
     },
     hero: {
       badge: "Apache-2.0",
@@ -333,6 +377,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "Start a new bot and it interviews you. A few questions about the work, how you write, and where it lives. Then it gets going.",
       bots: EN_ROSTER,
     },
+    testimonials: {
+      heading: "Testimonials",
+      pause: "Pause",
+      play: "Play",
+      items: TESTIMONIALS,
+    },
     faq: {
       heading: "FAQ",
       items: [
@@ -364,6 +414,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       ],
       starOnGithub: "Star on GitHub",
       readTheDocs: "Read the docs",
+      openClawAlternative: "OpenClaw alternative",
       cloudTitle: "Cloud",
       cloudBadge: "Coming soon",
       cloudMeta: "Bring your own keys, we run the computers",
@@ -418,15 +469,18 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       languagesLabel: "Language",
       links: {
         docs: "Docs",
-        openClaw: "OpenClaw alternative",
+        product: "Product",
         changelog: "Changelog",
         alternatives: "Alternatives",
+        all: "All",
         about: "About",
         support: "Support",
         privacy: "Privacy",
         terms: "Terms",
-        grokAlternative: "Grok Bot alternative",
+        company: "Company",
         blog: "Blog",
+        iosApp: "iPhone app",
+        androidApp: "Android app",
       },
     },
   },
@@ -453,6 +507,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       alternatives: "Alternativen",
       alternativesMenu: "Vergleichsseiten",
       viewOnGithub: "Auf GitHub ansehen",
+      iosApp: "Rakazo für iPhone laden",
     },
     hero: {
       badge: "Apache-2.0",
@@ -490,6 +545,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "Starte einen neuen Bot und er interviewt dich. Ein paar Fragen zur Arbeit, zu deinem Schreibstil und wo sie lebt. Dann legt er los.",
       bots: DE_ROSTER,
     },
+    testimonials: {
+      heading: "Kundenstimmen",
+      pause: "Pause",
+      play: "Weiter",
+      items: TESTIMONIALS,
+    },
     faq: {
       heading: "FAQ",
       items: [
@@ -525,6 +586,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       ],
       starOnGithub: "Auf GitHub mit Stern markieren",
       readTheDocs: "Docs lesen",
+      openClawAlternative: "OpenClaw-Alternative",
       cloudTitle: "Cloud",
       cloudBadge: "Demnächst",
       cloudMeta: "Deine Keys, wir betreiben die Computer",
@@ -579,15 +641,18 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       languagesLabel: "Sprache",
       links: {
         docs: "Dokumentation",
-        openClaw: "OpenClaw-Alternative",
+        product: "Produkt",
         changelog: "Änderungsprotokoll",
         alternatives: "Alternativen",
+        all: "Alle",
         about: "Über uns",
         support: "Support",
         privacy: "Datenschutz",
         terms: "AGB",
-        grokAlternative: "Grok-Bot-Alternative",
+        company: "Unternehmen",
         blog: "Blog",
+        iosApp: "iPhone-App",
+        androidApp: "Android-App",
       },
     },
   },
@@ -613,6 +678,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       alternatives: "대안",
       alternativesMenu: "대안 페이지",
       viewOnGithub: "GitHub에서 보기",
+      iosApp: "iPhone용 Rakazo 받기",
     },
     hero: {
       badge: "Apache-2.0",
@@ -650,6 +716,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "새 봇을 시작하면 인터뷰합니다. 업무, 글쓰기 방식, 작업이 어디에 있는지 몇 가지 질문. 그다음 바로 시작합니다.",
       bots: KO_ROSTER,
     },
+    testimonials: {
+      heading: "후기",
+      pause: "일시정지",
+      play: "재생",
+      items: TESTIMONIALS,
+    },
     faq: {
       heading: "질문",
       items: [
@@ -685,6 +757,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       ],
       starOnGithub: "GitHub에서 Star",
       readTheDocs: "문서 읽기",
+      openClawAlternative: "OpenClaw 대안",
       cloudTitle: "Cloud",
       cloudBadge: "곧 출시",
       cloudMeta: "키는 당신 것, 컴퓨터는 우리가 운영",
@@ -739,15 +812,18 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       languagesLabel: "언어",
       links: {
         docs: "문서",
-        openClaw: "OpenClaw 대안",
+        product: "제품",
         changelog: "변경 내역",
         alternatives: "대안",
+        all: "전체",
         about: "소개",
         support: "지원",
         privacy: "개인정보 처리방침",
         terms: "이용약관",
-        grokAlternative: "Grok Bot 대안",
+        company: "회사",
         blog: "블로그",
+        iosApp: "iPhone 앱",
+        androidApp: "Android 앱",
       },
     },
   },
@@ -773,6 +849,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       alternatives: "替代方案",
       alternativesMenu: "替代页面",
       viewOnGithub: "在 GitHub 上查看",
+      iosApp: "下载 iPhone 版 Rakazo",
     },
     hero: {
       badge: "Apache-2.0",
@@ -810,6 +887,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "新建一个 Bot，它会先面试你：几个关于工作内容、写作风格和运行位置的问题。然后它就开始干活。",
       bots: ZH_ROSTER,
     },
+    testimonials: {
+      heading: "用户评价",
+      pause: "暂停",
+      play: "播放",
+      items: TESTIMONIALS,
+    },
     faq: {
       heading: "常见问题",
       items: [
@@ -845,6 +928,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       ],
       starOnGithub: "在 GitHub 上点星",
       readTheDocs: "阅读文档",
+      openClawAlternative: "OpenClaw 替代方案",
       cloudTitle: "云端",
       cloudBadge: "即将推出",
       cloudMeta: "密钥归你，电脑由我们运行",
@@ -899,15 +983,18 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       languagesLabel: "语言",
       links: {
         docs: "文档",
-        openClaw: "OpenClaw 替代方案",
+        product: "产品",
         changelog: "更新日志",
         alternatives: "替代方案",
+        all: "全部",
         about: "关于",
         support: "支持",
         privacy: "隐私",
         terms: "条款",
-        grokAlternative: "Grok Bot 替代品",
+        company: "公司",
         blog: "博客",
+        iosApp: "iPhone 应用",
+        androidApp: "Android 应用",
       },
     },
   },

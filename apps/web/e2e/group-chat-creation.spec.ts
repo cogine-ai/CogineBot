@@ -617,6 +617,19 @@ for (const entry of ["sidebar", "settings", "archive"] as const) {
       const settings = page.getByTestId("side-panel");
       await expect(settings).toHaveAttribute("data-panel", "group-settings");
       await settings.getByRole("button", { name: "Delete group", exact: true }).click();
+      const confirmation = page.getByRole("alertdialog", { name: "Delete Chief, Researcher?" });
+      await expect(confirmation).toBeVisible();
+      await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(confirmation).toHaveCount(0);
+      await expect(settings).toHaveAttribute("data-panel", "group-settings");
+      await expect(groupRow).toHaveCount(1);
+      await expect
+        .poll(async () => (await groupRows(page)).map((group) => group.id))
+        .toEqual([deletedGroup.id]);
+      await settings.getByRole("button", { name: "Delete group", exact: true }).click();
+      await expect(confirmation).toBeVisible();
+      await confirmation.getByRole("button", { name: "Delete", exact: true }).click();
+      await expect(confirmation).toHaveCount(0);
       await expect(settings).toHaveAttribute("data-panel", "closed");
     }
     await expect(groupRow).toHaveCount(0);

@@ -193,6 +193,8 @@ export interface AnswerRunInput {
   messageId: string;
   answeredByUserId: string;
   answer: string;
+  /** Identifies a spoken answer as part of a live voice call. */
+  clientNonce?: string;
   /** Only for a login card; `answer` carries its password. */
   username?: string;
 }
@@ -211,6 +213,12 @@ export interface SendUserMessageInput {
   createRun?: boolean;
   /** When true, start a new run even if the bot is already busy (team-chat delivery). */
   allowParallelRun?: boolean;
+  /** Model every routine in an inbound delivery agreed on. */
+  modelPin?: {
+    modelProvider: string;
+    modelId: string;
+    thinkingLevel: string | null;
+  };
 }
 
 export interface SendUserMessageResult {
@@ -434,6 +442,14 @@ export async function sendUserMessage(
             trigger: input.trigger,
             clientNonce: input.clientNonce ? `send:${message.id}` : undefined,
             sourceMessageId: message.id,
+            ...(input.modelPin
+              ? {
+                  modelProvider: input.modelPin.modelProvider,
+                  modelId: input.modelPin.modelId,
+                  thinkingLevel: input.modelPin.thinkingLevel,
+                  modelPinned: true,
+                }
+              : {}),
           },
         });
         if (input.linkMessageToRun) {
@@ -449,6 +465,13 @@ export async function sendUserMessage(
             // Keep messaging on the hold so the later run is mirrored back to that app.
             runId: held ? null : busy.id,
             ...(held && input.trigger === "messaging" ? { originTrigger: "messaging" } : {}),
+            ...(input.modelPin
+              ? {
+                  modelProvider: input.modelPin.modelProvider,
+                  modelId: input.modelPin.modelId,
+                  thinkingLevel: input.modelPin.thinkingLevel,
+                }
+              : {}),
           },
         });
         await tx.message.update({ where: { id: message.id }, data: { runId: busy.id } });
@@ -658,6 +681,30 @@ async function commitAnswerRunInput(
   if (queued.count !== 1) return null;
 
   const recordedAnswer = secretAsk ? "" : (selectedChoice?.id ?? input.answer);
+  const callId = callIdFromClientNonce(input.clientNonce);
+  const recordsCallUtterance = Boolean(callId && !secretAsk);
+
+  // Give spoken answers the same durable, call-scoped user utterance as other voice turns.
+  // Secret asks stay out of message history; the call UI requires those answers on screen.
+  if (recordsCallUtterance) {
+    const blocks = [{ kind: "text" as const, text: input.answer }];
+    const utterance = await createThreadMessageInTransaction(tx, {
+      threadId: input.threadId,
+      role: "user",
+      blocks,
+      botId: run.botId,
+      runId: input.runId,
+      clientNonce: input.clientNonce,
+    });
+    await appendEventInTransaction(tx, {
+      spaceId: input.spaceId,
+      threadId: input.threadId,
+      botId: run.botId,
+      type: "thread.message.created",
+      runId: input.runId,
+      payload: { messageId: utterance.id, role: "user", blocks, callId },
+    });
+  }
 
   if (approvalAsk) {
     const allowed = input.answer === "allow" || input.answer === "always";
@@ -1232,6 +1279,7 @@ export async function createPendingSteeringRun(
   const origin = steeringOrigin(pending[0]!);
   const batch = pending.filter((item) => steeringOrigin(item) === origin);
   const source = batch.at(-1)!;
+  const modelPin = continuationModelPin(batch);
   const task = await tx.task.create({
     data: {
       spaceId: input.spaceId,
@@ -1252,6 +1300,7 @@ export async function createPendingSteeringRun(
       status: "queued",
       trigger: origin === "app" ? "follow_up" : "messaging",
       sourceMessageId: source.message.id,
+      ...(modelPin ?? {}),
     },
   });
   await tx.steeringMessage.updateMany({
@@ -1259,6 +1308,30 @@ export async function createPendingSteeringRun(
     data: { runId: run.id, claimedAt: null },
   });
   return run.id;
+}
+
+function continuationModelPin(
+  batch: ReadonlyArray<{
+    modelProvider?: string | null;
+    modelId?: string | null;
+    thinkingLevel?: string | null;
+  }>,
+) {
+  const first = batch[0];
+  if (!first?.modelProvider || !first.modelId) return null;
+  const agreed = batch.every(
+    (item) =>
+      item.modelProvider === first.modelProvider &&
+      item.modelId === first.modelId &&
+      (item.thinkingLevel ?? null) === (first.thinkingLevel ?? null),
+  );
+  if (!agreed) return null;
+  return {
+    modelProvider: first.modelProvider,
+    modelId: first.modelId,
+    thinkingLevel: first.thinkingLevel ?? null,
+    modelPinned: true,
+  };
 }
 
 function steeringOrigin(item: {

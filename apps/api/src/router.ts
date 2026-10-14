@@ -32,6 +32,7 @@ import type {
   MemoryProviderResolver,
   PiOAuthLogins,
   RemoteConnectorDependencies,
+  TicketChangeNotifier,
 } from "@rakazo/adapters";
 import {
   acquireComputerExecutionLease,
@@ -49,10 +50,12 @@ import {
   clearInactiveUserComputerControl,
   codexLiveCatalogsForSpace,
   codexLiveListsModel,
+  commentTicket,
   computerSupportsTerminal,
   computerSupportsUpdate,
   computerUpdateView,
   createFaviconResolver,
+  createTicket,
   createVoiceProvider,
   defaultCatalogModelId,
   deletePushToken,
@@ -60,6 +63,7 @@ import {
   destroyBot,
   displayBotWorkspacePath,
   enqueueTakeoverContinuation,
+  ensureComputerWorkspaceLayout,
   expireComputerControl,
   forgetBotSecret,
   hasActiveComputerControl,
@@ -98,6 +102,7 @@ import {
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
   revokeScreenControl,
+  routineRunModelPin,
   sanitizeComposioError,
   savePushToken,
   scheduleComputerControlExpiry,
@@ -111,6 +116,7 @@ import {
   toComputerRef,
   touchRunningComputer,
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
+  updateTicket,
   validateConnectedModelChoice,
   validateModelAuthAvailability,
   validateStoredModelAuth,
@@ -119,13 +125,16 @@ import {
 import type { Auth } from "@rakazo/auth";
 import type {
   Actor,
+  BoardEvent,
   Bot,
   BotSecretMetadata,
   ComputerReleaseReason,
   ComputerStatus,
+  ExportManifest,
   McpServer,
   Me,
   ProductEvent,
+  Routine,
   SpaceNavigation,
 } from "@rakazo/contracts";
 import {
@@ -136,6 +145,7 @@ import {
   foldComputerCommands,
   IntegrationProviderIdSchema,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  parseTicketRef,
   usableModelId,
 } from "@rakazo/contracts";
 import {
@@ -150,7 +160,7 @@ import {
   isOneShotRoutineCrons,
   nextCronDateAcrossStrict,
 } from "@rakazo/core";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   appendEventInTransaction,
   BotSectionNameConflictError,
@@ -168,17 +178,21 @@ import {
   defaultModelCredentialCandidates,
   deleteEmptySpaceForMember,
   deleteUnreferencedCredentialSecret,
+  ensureBoard,
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   findModelCredential,
   findSpaceMemoryConfig,
+  findTicket,
   formatMessagingLinkCode,
   GroupCreationConflictError,
   groupMemberOrderBy,
   InvalidSpaceNameError,
   IsolationError,
   issueMessagingLinkCode,
+  listBoards,
   listSpaceBackupModels,
+  listTicketComments,
   lockOwnedGroup,
   newestModelCredentialOrder,
   newestVoiceCredentialOrder,
@@ -197,6 +211,9 @@ import {
   SpaceNotFoundError,
   selectSpaceModelPreference,
   selectSpaceVoicePreference,
+  toBoardDto,
+  toTicketCommentDto,
+  toTicketDto,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -256,10 +273,12 @@ import {
 } from "./server-update.js";
 import { assertTeachingSendAllowed, createTaughtSkillsService } from "./taught-skills.js";
 import {
+  isBackgroundRun,
   isPeerRun,
   loadAllMessages,
   loadMessagePage,
   projectPeerThreadEvent,
+  shouldForwardBackgroundThreadEvent,
 } from "./thread-message-pages.js";
 import {
   reactToThreadMessage,
@@ -531,6 +550,8 @@ export interface RouterDeps {
   cloudAgent?: CloudAgentConnection | null;
   prisma: PrismaClient;
   events: ThreadEvents;
+  boardEvents: BoardEvents;
+  ticketChanges: TicketChangeNotifier;
   auth: Auth;
   jobs: JobPublisher;
   sandbox: SandboxProvider;
@@ -566,6 +587,7 @@ export interface RouterDeps {
   /** Present only when the deployment bills; self-hosted installs leave it unset. */
   billing?: BillingService;
   env: {
+    ticketBoardEnabled?: boolean;
     agentRuntime: string;
     teamChatJudgeProvider?: string;
     teamChatJudgeModel?: string;
@@ -720,6 +742,18 @@ export async function enqueueBotIntroRun(deps: RouterDeps, actor: Actor, bot: Bo
   await deps.jobs.enqueue(runContinueJob(run.id));
 }
 
+async function resolveSpaceBoard(
+  prisma: PrismaClient,
+  spaceId: string,
+  boardId?: string,
+): Promise<BoardRow> {
+  const board = await ensureBoard(prisma, spaceId);
+  if (boardId === undefined || boardId === board.id) return board;
+  const found = await prisma.board.findFirst({ where: { id: boardId, spaceId } });
+  if (!found) throw new ORPCError("BAD_REQUEST", { message: "Unknown board." });
+  return found;
+}
+
 export function createRouter(deps: RouterDeps) {
   const os = implement(appContract).$context<{
     actor: Actor | null;
@@ -753,6 +787,21 @@ export function createRouter(deps: RouterDeps) {
     if (!context.actor) throw new ORPCError("UNAUTHORIZED");
     return next({ context: { ...context, actor: context.actor } });
   });
+
+  const boardEnabled = os
+    .use(async ({ next }) => {
+      if (!deps.env?.ticketBoardEnabled) throw new ORPCError("NOT_FOUND");
+      return next();
+    })
+    .use(async ({ context, next }) => {
+      if (!context.actor) throw new ORPCError("UNAUTHORIZED");
+      return next({ context: { ...context, actor: context.actor } });
+    });
+  const ticketDeps = {
+    prisma: deps.prisma,
+    ticketBoardEnabled: deps.env?.ticketBoardEnabled,
+    onTicketChange: deps.ticketChanges,
+  };
 
   return os.router({
     aiConsent: {
@@ -2064,6 +2113,7 @@ export function createRouter(deps: RouterDeps) {
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const peerRunCache = new Map<string, Promise<boolean>>();
+        const backgroundRunCache = new Map<string, Promise<boolean>>();
         const follow = deps.events.follow(target.threadId, input.cursor, context.signal);
         // A half-open stream looks identical to an idle one, so punctuate silence:
         // the client treats any frame as liveness and reconnects once they stop.
@@ -2126,6 +2176,8 @@ export function createRouter(deps: RouterDeps) {
               if (!visible) continue;
               yield visible;
               continue;
+            } else if (await isBackgroundRun(deps.prisma, sourceRunId, backgroundRunCache)) {
+              if (!shouldForwardBackgroundThreadEvent(event)) continue;
             }
             yield event;
           }
@@ -2334,6 +2386,17 @@ export function createRouter(deps: RouterDeps) {
         ];
         const committed = await deps.prisma
           .$transaction(async (tx) => {
+            // A late provider hang-up is harmless when the call never produced a
+            // user utterance; do not create a phantom marker or follow-up run.
+            const userUtterance = await tx.message.findFirst({
+              where: {
+                threadId,
+                role: "user",
+                clientNonce: { startsWith: `${CALL_CLIENT_NONCE_PREFIX}${input.callId}:` },
+              },
+              select: { id: true },
+            });
+            if (!userUtterance) return null;
             // The marker's deterministic nonce is the idempotency key: the unique
             // (threadId, clientNonce) index rejects a second hang-up, concurrent or not.
             const message = await createThreadMessageInTransaction(tx, {
@@ -2413,6 +2476,7 @@ export function createRouter(deps: RouterDeps) {
           messageId: input.messageId,
           answeredByUserId: context.actor.userId,
           answer: input.answer,
+          clientNonce: input.clientNonce,
           username: input.username,
         });
         if (!answered) {
@@ -2445,8 +2509,19 @@ export function createRouter(deps: RouterDeps) {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
         if (bot.computer.state === "running" && bot.computer.providerRef) {
-          scheduleComputerSleep(deps.jobs, bot.computer.id);
-          return computerStatus(deps, context.actor, input.botId);
+          try {
+            await ensureComputerWorkspaceLayout(
+              deps.sandbox,
+              toComputerRef(bot.computer),
+              parseComputerMode(bot.computer.scope),
+              bot.id,
+              computerContext(context.actor, bot.id, "boot"),
+            );
+            scheduleComputerSleep(deps.jobs, bot.computer.id);
+            return computerStatus(deps, context.actor, input.botId);
+          } catch (error) {
+            await clearGoneSandbox(deps, bot.computer, error);
+          }
         }
         const ctx = computerContext(context.actor, bot.id, "boot");
         const manualRunId = `boot:${randomUUID()}`;
@@ -2884,7 +2959,9 @@ export function createRouter(deps: RouterDeps) {
             data: { updatedAt: new Date() },
           });
           scheduleComputerSleep(deps.jobs, computer.id);
-          entries = await deps.sandbox.listFiles(toComputerRef(computer), storedPath, ctx);
+          const ref = toComputerRef(computer);
+          await ensureComputerWorkspaceLayout(deps.sandbox, ref, computerMode, bot.id, ctx);
+          entries = await deps.sandbox.listFiles(ref, storedPath, ctx);
         } else {
           entries = await deps.home.list(computer.homeKey, storedPath, ctx);
         }
@@ -3434,6 +3511,11 @@ export function createRouter(deps: RouterDeps) {
                 status: "queued",
               },
             });
+            const currentModel = await tx.routine.findUnique({
+              where: { id: routine.id },
+              select: { modelProvider: true, modelId: true, thinkingLevel: true },
+            });
+            if (!currentModel) throw new IsolationError();
             return tx.run.create({
               data: {
                 spaceId: context.actor.spaceId,
@@ -3444,6 +3526,7 @@ export function createRouter(deps: RouterDeps) {
                 status: "queued",
                 trigger: "routine",
                 routineId: routine.id,
+                ...routineRunModelPin(currentModel),
                 clientNonce: nonce,
               },
               select: { id: true },
@@ -3527,6 +3610,156 @@ export function createRouter(deps: RouterDeps) {
         if (!existing) throw new IsolationError();
         await deps.prisma.scratchpadItem.delete({ where: { id: existing.id } });
         return { ok: true as const };
+      }),
+    },
+    boards: {
+      list: boardEnabled.boards.list.handler(async ({ context }) => {
+        await ensureBoard(deps.prisma, context.actor.spaceId);
+        const rows = await listBoards(deps.prisma, context.actor.spaceId);
+        return rows.map(toBoardDto);
+      }),
+      get: boardEnabled.boards.get.handler(async ({ context }) => {
+        const board = await ensureBoard(deps.prisma, context.actor.spaceId);
+        return toBoardDto(board);
+      }),
+      rename: boardEnabled.boards.rename.handler(async ({ context, input }) => {
+        const board = await ensureBoard(deps.prisma, context.actor.spaceId);
+        const nextPrefix = input.ticketPrefix?.toUpperCase();
+        if (nextPrefix !== undefined && nextPrefix !== board.ticketPrefix) {
+          const tickets = await deps.prisma.ticket.count({
+            where: { boardId: board.id, spaceId: context.actor.spaceId },
+          });
+          if (tickets > 0) {
+            throw new ORPCError("BAD_REQUEST", {
+              message: "Cannot change the ticket prefix once tickets exist.",
+            });
+          }
+        }
+        const row = await deps.prisma.board.update({
+          where: { id: board.id },
+          data: {
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(nextPrefix !== undefined ? { ticketPrefix: nextPrefix } : {}),
+          },
+        });
+        return toBoardDto(row);
+      }),
+      subscribe: boardEnabled.boards.subscribe.handler(async function* ({ context }) {
+        const spaceId = context.actor.spaceId;
+        const follow = deps.boardEvents.follow(spaceId, context.signal);
+        // Board signals are transient, so a heartbeat stands in for liveness and
+        // gives the client a periodic catch-up reload if a push was missed.
+        let pending: Promise<IteratorResult<BoardEvent>> | undefined;
+        let authorizedAt = Date.now();
+        const assertStillAuthorized = async () => {
+          if (!context.stillAuthorized || Date.now() - authorizedAt < SESSION_RECHECK_MS) return;
+          if (!(await context.stillAuthorized())) throw new ORPCError("UNAUTHORIZED");
+          authorizedAt = Date.now();
+        };
+        try {
+          while (!context.signal?.aborted) {
+            pending ??= follow.next();
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const next = await Promise.race([
+              pending,
+              new Promise<"silent">((resolve) => {
+                timer = setTimeout(() => resolve("silent"), HEARTBEAT_MS);
+              }),
+            ]).finally(() => clearTimeout(timer));
+            await assertStillAuthorized();
+            if (next === "silent") {
+              yield { spaceId, createdAt: new Date().toISOString() };
+              continue;
+            }
+            pending = undefined;
+            if (next.done) return;
+            yield next.value;
+          }
+        } finally {
+          void follow.return(undefined).catch(() => {});
+        }
+      }),
+    },
+    tickets: {
+      list: boardEnabled.tickets.list.handler(async ({ context, input }) => {
+        const board = await resolveSpaceBoard(deps.prisma, context.actor.spaceId, input.boardId);
+        const q = input.q?.trim();
+        const where: Prisma.TicketWhereInput = {
+          spaceId: context.actor.spaceId,
+          boardId: board.id,
+          ...(input.status ? { status: input.status } : {}),
+          ...(input.assigneeBotId ? { assigneeBotId: input.assigneeBotId } : {}),
+          ...(q
+            ? {
+                OR: [
+                  { title: { contains: q, mode: "insensitive" } },
+                  { description: { contains: q, mode: "insensitive" } },
+                ],
+              }
+            : {}),
+        };
+        const rows = await deps.prisma.ticket.findMany({
+          where,
+          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        });
+        return { tickets: rows.map((row) => toTicketDto(row, board.ticketPrefix)) };
+      }),
+      get: boardEnabled.tickets.get.handler(async ({ context, input }) => {
+        const board = await ensureBoard(deps.prisma, context.actor.spaceId);
+        const row = await findTicket(deps.prisma, context.actor.spaceId, board, input);
+        if (!row) {
+          if (input.ref && !parseTicketRef(input.ref, board.ticketPrefix)) {
+            throw new ORPCError("BAD_REQUEST", { message: "Invalid ticket reference." });
+          }
+          throw new IsolationError();
+        }
+        return toTicketDto(row, board.ticketPrefix);
+      }),
+      create: boardEnabled.tickets.create.handler(async ({ context, input }) => {
+        await resolveSpaceBoard(deps.prisma, context.actor.spaceId, input.boardId);
+        await repos.getBot(context.actor, input.assigneeBotId);
+        const result = await createTicket(ticketDeps, {
+          ...input,
+          spaceId: context.actor.spaceId,
+          userId: context.actor.userId,
+          ownerBotId: input.assigneeBotId,
+        });
+        if ("error" in result) throw new ORPCError("BAD_REQUEST", { message: result.error });
+        return result.ticket;
+      }),
+      update: boardEnabled.tickets.update.handler(async ({ context, input }) => {
+        if (input.assigneeBotId) await repos.getBot(context.actor, input.assigneeBotId);
+        const result = await updateTicket(ticketDeps, {
+          ...input,
+          spaceId: context.actor.spaceId,
+          ownerBotId: input.assigneeBotId,
+        });
+        if ("error" in result) throw new ORPCError("BAD_REQUEST", { message: result.error });
+        return result.ticket;
+      }),
+      move: boardEnabled.tickets.move.handler(async ({ context, input }) => {
+        const result = await updateTicket(ticketDeps, { ...input, spaceId: context.actor.spaceId });
+        if ("error" in result) throw new ORPCError("BAD_REQUEST", { message: result.error });
+        return result.ticket;
+      }),
+      comment: boardEnabled.tickets.comment.handler(async ({ context, input }) => {
+        const result = await commentTicket(ticketDeps, {
+          id: input.ticketId,
+          body: input.body,
+          spaceId: context.actor.spaceId,
+          userId: context.actor.userId,
+        });
+        if ("error" in result) throw new ORPCError("BAD_REQUEST", { message: result.error });
+        return result.comment;
+      }),
+      comments: boardEnabled.tickets.comments.handler(async ({ context, input }) => {
+        const board = await ensureBoard(deps.prisma, context.actor.spaceId);
+        const ticket = await deps.prisma.ticket.findFirst({
+          where: { id: input.ticketId, spaceId: context.actor.spaceId, boardId: board.id },
+        });
+        if (!ticket) throw new IsolationError();
+        const rows = await listTicketComments(deps.prisma, context.actor.spaceId, ticket.id);
+        return rows.map(toTicketCommentDto);
       }),
     },
     skills: {
@@ -5684,6 +5917,7 @@ export function createRouter(deps: RouterDeps) {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.thread || !bot.computer) throw new IsolationError();
         const homeKey = bot.computer.homeKey;
+        const computerMode = parseComputerMode(bot.computer.scope);
         const exportContext = {
           operationId: "export",
           traceId: "export",
@@ -5699,12 +5933,14 @@ export function createRouter(deps: RouterDeps) {
             where: { botId: input.botId, spaceId: context.actor.spaceId },
           }),
           (async () => {
-            const exported: Array<{ path: string; content: string }> = [];
-            for await (const file of deps.home.exportHome(homeKey, exportContext)) {
-              exported.push({
-                path: file.path,
-                content: new TextDecoder().decode(file.content),
-              });
+            const exported: ExportManifest["files"] = [];
+            const directory = resolveBotWorkspacePath(computerMode, bot.id, "");
+            // Root dotfiles contain computer state rather than portable bot files.
+            for await (const file of deps.home.exportHome(homeKey, exportContext, {
+              directory,
+              skipHidden: true,
+            })) {
+              exported.push(exportFile(file.path, file.content));
             }
             return exported;
           })(),
@@ -5990,6 +6226,7 @@ async function spaceNavigationDto(
           attentionMessageId: bot.attentionMessageId ?? null,
           preview: bot.preview,
           status: bot.status,
+          runErrorId: bot.runErrorId,
           updatedAt: bot.updatedAt,
         })),
         groups: spaceGroups.map((group) => ({
@@ -6061,6 +6298,7 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     modelSetup(deps, actor),
   ]);
   return {
+    ticketBoardEnabled: deps.env.ticketBoardEnabled === true,
     userId: actor.userId,
     email: user.email,
     name: user.name,
@@ -6565,10 +6803,13 @@ function mapRoutine(row: {
   webhookEnabled: boolean;
   githubEnabled: boolean;
   messageProvider: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  thinkingLevel: string | null;
   lastRunAt: Date | null;
   nextRunAt: Date | null;
   createdAt: Date;
-}) {
+}): Routine {
   return {
     id: row.id,
     botId: row.botId,
@@ -6581,6 +6822,9 @@ function mapRoutine(row: {
     webhookEnabled: row.webhookEnabled,
     githubEnabled: row.githubEnabled,
     messageProvider: row.messageProvider,
+    modelProvider: row.modelProvider ?? null,
+    modelId: row.modelId ?? null,
+    thinkingLevel: (row.thinkingLevel as Routine["thinkingLevel"]) ?? null,
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -6630,6 +6874,18 @@ function withViewOnly(url: string, viewOnly: boolean) {
   } catch {
     const join = url.includes("?") ? "&" : "?";
     return `${url}${join}view_only=${viewOnly ? "true" : "false"}`;
+  }
+}
+
+/** Valid UTF-8 stays readable text; anything else is base64 so the bytes survive the JSON. */
+function exportFile(path: string, content: Uint8Array): ExportManifest["files"][number] {
+  try {
+    return {
+      path,
+      content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content),
+    };
+  } catch {
+    return { path, content: Buffer.from(content).toString("base64"), encoding: "base64" };
   }
 }
 

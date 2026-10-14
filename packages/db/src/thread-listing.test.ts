@@ -1,7 +1,7 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
-import { loadThreadAttention, previewFromBlocks } from "./thread-listing.js";
+import { loadThreadAttention, loadThreadPreviews, previewFromBlocks } from "./thread-listing.js";
 
 const owner = { spaceId: "space-1", userId: "user-1" };
 const thread = { id: "thread-1", ...owner };
@@ -271,5 +271,37 @@ describe("previewFromBlocks", () => {
       "weekend-plan.pdf",
     );
     expect(previewFromBlocks([{ kind: "image", name: "lake.png" }])).toBe("lake.png");
+  });
+});
+
+describe("shared sidebar previews", () => {
+  it("keeps the latest peer dialogue while skipping background ticket narration", async () => {
+    const prisma = {
+      run: {
+        findMany: vi.fn(async () => [
+          { id: "ticket-run", trigger: "tickets" },
+          { id: "peer-run", trigger: "bot_message" },
+        ]),
+      },
+    } as unknown as PrismaClient;
+    const previews = await loadThreadPreviews(prisma, [
+      {
+        id: "thread-1",
+        messages: [
+          {
+            seq: 3,
+            runId: "ticket-run",
+            blocks: [{ kind: "text", text: "Internal ticket narration" }],
+          },
+          {
+            seq: 2,
+            runId: "peer-run",
+            blocks: [{ kind: "text", text: "I'll meet you by the lake." }],
+          },
+          { seq: 1, runId: "user-run", blocks: [{ kind: "text", text: "Earlier dialogue" }] },
+        ],
+      },
+    ]);
+    expect(previews.get("thread-1")).toBe("I'll meet you by the lake.");
   });
 });

@@ -113,6 +113,7 @@ import {
   Settings,
   Smile,
   Square,
+  SquareKanban,
   TextQuote,
   Trash2,
   X,
@@ -2382,7 +2383,7 @@ export function ShellPage() {
         }
         if (!isCurrentAttempt()) return false;
         if (plan.shouldRunRoutines) {
-          await Promise.all(
+          const routineResults = await Promise.allSettled(
             plan.routineIds.map(async (routineId) => {
               if (!isCurrentAttempt()) return;
               if (attempt.completedRoutineIds.has(routineId)) return;
@@ -2393,6 +2394,9 @@ export function ShellPage() {
               attempt.completedRoutineIds.add(routineId);
             }),
           );
+          for (const result of routineResults) {
+            if (result.status === "rejected") throw result.reason;
+          }
         }
         if (!isCurrentAttempt()) return false;
         if (plan.shouldSend) {
@@ -2406,7 +2410,13 @@ export function ShellPage() {
               const contentBase64 = await readFileAsBase64(pending.file);
               if (!isCurrentAttempt()) return false;
               const artifact = await rpc.artifacts.create(
-                { ...target, name: pending.file.name, mimeType, contentBase64 },
+                {
+                  ...target,
+                  name: pending.file.name,
+                  mimeType,
+                  contentBase64,
+                  clientNonce: `${attempt.clientNonce}:attachment:${pending.id}`,
+                },
                 context,
               );
               artifactId = artifact.id;
@@ -3746,6 +3756,19 @@ export function ShellPage() {
                   {userName}
                 </span>
                 <div className="mb-1 border-t border-border" />
+                {bootstrapMe?.ticketBoardEnabled ? (
+                  <Button
+                    variant="ghost"
+                    className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      navigate("/app/board");
+                    }}
+                  >
+                    <SquareKanban size={16} className="text-muted-foreground" />
+                    <Trans>Board</Trans>
+                  </Button>
+                ) : null}
                 <Button
                   variant="ghost"
                   className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
@@ -4094,7 +4117,7 @@ export function ShellPage() {
                         botId: active.id,
                         botName: active.name,
                         botColor: active.color,
-                        transcribe: Boolean(voiceStatus?.transcribe),
+                        transcribe: voiceStatus ? Boolean(voiceStatus.transcribe) : undefined,
                       });
                     }
                   : undefined
@@ -4314,6 +4337,7 @@ export function ShellPage() {
                 key={activeGroup.id}
                 group={activeGroup}
                 bots={bots}
+                covered={computerOpen}
                 onClose={() => setPanel(null)}
                 onSave={async (input) => {
                   const actor = groupSettingsActor.current;
@@ -5742,7 +5766,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
   );
 });
 
-const Composer = memo(function Composer({
+export const Composer = memo(function Composer({
   draftKey,
   active,
   draftState,
