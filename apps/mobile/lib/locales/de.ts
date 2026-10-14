@@ -1,5 +1,9 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Couldn't refresh — showing the last loaded messages.":
+    "Aktualisierung fehlgeschlagen – die zuletzt geladenen Nachrichten werden angezeigt.",
   "Try Again": "Erneut versuchen",
+  "Too many unsent messages": "Zu viele ungesendete Nachrichten",
+  "Not sent": "Nicht gesendet",
   "Not sent · Tap to retry": "Nicht gesendet · Zum Wiederholen tippen",
   Photo: "Foto",
   Today: "Heute",
@@ -734,6 +738,17 @@ export const DE_MESSAGES: Record<string, string> = {
   Transcript: "Transkript",
   Unmute: "Stummschaltung aufheben",
   "Voice chat": "Sprachchat",
+  "Call sounds": "Anruftöne",
+  "Hello {name}, {bot} here.": "Hallo {name}, hier ist {bot}.",
+  "Hello, {bot} here.": "Hallo, hier ist {bot}.",
+  "OK, switching to {name}.": "OK, ich verbinde dich mit {name}.",
+  "{bot} here. Hi {name}.": "Hier ist {bot}. Hallo {name}.",
+  "{bot} here.": "Hier ist {bot}.",
+  "Waiting sound": "Wartegeräusch",
+  "Device voice": "Gerätestimme",
+  "Could not load voices": "Stimmen konnten nicht geladen werden",
+  "Hi, I'm {name}.": "Hallo, ich bin {name}.",
+  "Hi, this is how I'll sound.": "Hallo, so klinge ich.",
   "Open external link?": "Externen Link öffnen?",
   Open: "Öffnen",
   // ai-data-sharing

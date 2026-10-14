@@ -1,10 +1,12 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
+  isBackgroundRun,
   isPeerRun,
   loadAllMessages,
   loadMessagePage,
   projectPeerThreadEvent,
+  shouldForwardBackgroundThreadEvent,
   shouldForwardPeerThreadEvent,
 } from "./thread-message-pages.js";
 
@@ -86,6 +88,97 @@ describe("thread message pages", () => {
         payload: {},
       }),
     ).toBe(false);
+  });
+
+  it("caches background-run classification for live events", async () => {
+    const findUnique = vi.fn(async () => ({ trigger: "tickets" }));
+    const prisma = { run: { findUnique } } as unknown as PrismaClient;
+    const cache = new Map<string, Promise<boolean>>();
+
+    await expect(isBackgroundRun(prisma, "run-ticket", cache)).resolves.toBe(true);
+    await expect(isBackgroundRun(prisma, "run-ticket", cache)).resolves.toBe(true);
+    expect(findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards only explicit user contact from a background run", () => {
+    expect(
+      shouldForwardBackgroundThreadEvent({
+        type: "thread.message.created",
+        payload: { blocks: [{ kind: "text", text: "Working" }] },
+      }),
+    ).toBe(false);
+    expect(
+      shouldForwardBackgroundThreadEvent({
+        type: "thread.message.created",
+        payload: { blocks: [{ kind: "ask", text: "Pick one" }] },
+      }),
+    ).toBe(true);
+    expect(
+      shouldForwardBackgroundThreadEvent({
+        type: "thread.message.created",
+        payload: { blocks: [{ kind: "computer", text: "Needs you" }] },
+      }),
+    ).toBe(true);
+    for (const type of ["thread.message.created", "thread.message.updated"]) {
+      expect(
+        shouldForwardBackgroundThreadEvent({
+          type,
+          payload: { blocks: [{ kind: "mcp_approval" }] },
+        }),
+      ).toBe(true);
+    }
+    expect(shouldForwardBackgroundThreadEvent({ type: "run.started", payload: {} })).toBe(false);
+    expect(shouldForwardBackgroundThreadEvent({ type: "run.waiting_input", payload: {} })).toBe(
+      true,
+    );
+    expect(
+      shouldForwardBackgroundThreadEvent({ type: "computer.takeover.requested", payload: {} }),
+    ).toBe(true);
+    expect(shouldForwardBackgroundThreadEvent({ type: "run.completed", payload: {} })).toBe(true);
+    expect(shouldForwardBackgroundThreadEvent({ type: "run.failed", payload: {} })).toBe(true);
+    expect(shouldForwardBackgroundThreadEvent({ type: "run.cancelled", payload: {} })).toBe(true);
+    expect(shouldForwardBackgroundThreadEvent({ type: "thread.progress", payload: {} })).toBe(
+      false,
+    );
+  });
+
+  it("hides ticket-run output from the transcript but keeps user-input cards", async () => {
+    const rows = [
+      {
+        id: "message-computer",
+        blocks: [{ kind: "computer", state: "Needs you", text: "Sign in" }],
+      },
+      { id: "message-approval", blocks: [{ kind: "mcp_approval" }] },
+      { id: "message-final", blocks: [{ kind: "text", text: "Closed the ticket." }] },
+      {
+        id: "message-steps",
+        blocks: [{ kind: "steps", steps: [{ label: "Ticket comment", count: 1 }] }],
+      },
+      { id: "message-user", blocks: [{ kind: "text", text: "Visible answer" }] },
+    ].map((row, index) => ({
+      ...row,
+      threadId: "thread-1",
+      seq: 4 - index,
+      role: "bot",
+      botId: "bot-1",
+      replyToMessageId: null,
+      runId: row.id === "message-user" ? "run-user" : "run-ticket",
+      clientNonce: null,
+      createdAt: new Date("2026-08-16T00:00:01.000Z"),
+    }));
+    const findMany = vi.fn(async () => rows);
+    const prisma = {
+      message: { findMany },
+      run: { findMany: vi.fn(async () => [{ id: "run-ticket", trigger: "tickets" }]) },
+    } as unknown as PrismaClient;
+
+    const page = await loadMessagePage(prisma, "thread-1", undefined, 6);
+
+    expect(page.messages.map((message) => message.id)).toEqual([
+      "message-user",
+      "message-approval",
+      "message-computer",
+    ]);
   });
 
   it("keeps peer receipt rows when filtering peer-run output from pages", async () => {

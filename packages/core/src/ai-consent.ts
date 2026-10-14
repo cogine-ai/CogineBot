@@ -3,8 +3,12 @@ import { AI_CONSENT_REQUIRED } from "@rakazo/contracts";
 
 /** A foreground check failed before the requested mutation was dispatched. */
 export class AiConsentBlocked extends Error {
-  constructor(message = AI_CONSENT_REQUIRED) {
+  constructor(message = AI_CONSENT_REQUIRED, cause?: unknown) {
     super(message);
+    // Keeps an unreachable server recognizable behind the consent check.
+    if (cause !== undefined) {
+      Object.defineProperty(this, "cause", { value: cause, writable: true, configurable: true });
+    }
   }
 }
 
@@ -72,13 +76,23 @@ export async function ensureAiDataConsent(options: {
       await pending;
     }
   } catch (error) {
-    throw new AiConsentBlocked(error instanceof Error ? error.message : AI_CONSENT_REQUIRED);
+    throw new AiConsentBlocked(error instanceof Error ? error.message : AI_CONSENT_REQUIRED, error);
   }
 }
 
-export function aiConsentTarget(input: unknown): { botId?: string; groupId?: string } {
+export function aiConsentTarget(input: unknown): {
+  botId?: string;
+  groupId?: string;
+  routineId?: string;
+} {
   if (!input || typeof input !== "object") return {};
-  const target = input as { botId?: unknown; groupId?: unknown };
-  if (typeof target.groupId === "string") return { groupId: target.groupId };
-  return typeof target.botId === "string" ? { botId: target.botId } : {};
+  const target = input as { botId?: unknown; groupId?: unknown; routineId?: unknown };
+  const routineId = typeof target.routineId === "string" ? target.routineId : undefined;
+  if (typeof target.groupId === "string") {
+    return routineId ? { groupId: target.groupId, routineId } : { groupId: target.groupId };
+  }
+  if (typeof target.botId === "string") {
+    return routineId ? { botId: target.botId, routineId } : { botId: target.botId };
+  }
+  return routineId ? { routineId } : {};
 }

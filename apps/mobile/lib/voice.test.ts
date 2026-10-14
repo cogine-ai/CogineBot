@@ -1,4 +1,4 @@
-import { createAudioPlayer } from "expo-audio";
+import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import * as SecureStore from "expo-secure-store";
 import * as Speech from "expo-speech";
 import { Platform } from "react-native";
@@ -18,6 +18,8 @@ import {
   subscribeVoicePlayback,
   VOICE_RESPONSE_TIMEOUT_MS,
 } from "./voice";
+
+vi.mock("expo-localization", () => ({ getLocales: () => [{ languageTag: "en-US" }] }));
 
 vi.mock("./ai-consent", () => ({ promptAiConsent: vi.fn() }));
 vi.mock("expo-file-system", () => ({
@@ -584,6 +586,11 @@ describe("hosted voice playback controls", () => {
       await waitFor(() => NativePlayer.instances.length === 1);
       const player = NativePlayer.instances[0]!;
       await waitFor(() => player.playing);
+      expect(setAudioModeAsync).toHaveBeenCalledWith({
+        playsInSilentMode: true,
+        interruptionMode: "mixWithOthers",
+        shouldPlayInBackground: false,
+      });
 
       pauseVoicePlayback();
       expect(getVoicePlaybackState()).toEqual({
@@ -725,6 +732,27 @@ describe("on-device speech", () => {
     spoken[0]?.options?.onStopped?.();
     await expect(call).resolves.toBe(true);
     expect(spoken.map((s) => s.text)).toEqual(["First sentence."]);
+  });
+
+  it("does not continue a reply after playback is stopped for a voice sample", async () => {
+    Platform.OS = "ios";
+    vi.mocked(SecureStore.getItemAsync).mockResolvedValue("1");
+    const spoken: Array<{ text: string; options: Parameters<typeof Speech.speak>[1] }> = [];
+    vi.mocked(Speech.speak).mockImplementation((text, options) => {
+      spoken.push({ text, options });
+    });
+    vi.mocked(Speech.stop).mockResolvedValue(undefined);
+
+    const call = speakWithDeviceVoice("First sentence. Second sentence.", "bot-1");
+    await flushDeviceSpeechImport();
+    expect(spoken.map((s) => s.text)).toEqual(["First sentence."]);
+
+    stopVoicePlayback();
+    await Speech.stop();
+    Speech.speak("Hi, this is how I'll sound.", { voice: "sample" });
+    spoken[0]?.options?.onStopped?.();
+    await expect(call).resolves.toBe(true);
+    expect(spoken.map((s) => s.text)).toEqual(["First sentence.", "Hi, this is how I'll sound."]);
   });
 
   it("speaks locally and never touches the network when the device voice is on", async () => {

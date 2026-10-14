@@ -37,7 +37,7 @@ const baseBot = {
   memoryScope: null as string | null,
   createdAt: new Date("2026-08-19T00:00:00.000Z"),
   updatedAt: new Date("2026-08-19T00:00:00.000Z"),
-  thread: { id: "thread-1", unread: false, messages: [] },
+  thread: { id: "thread-1", unread: false, messages: [], runs: [] },
   runs: [],
   computer: null,
 };
@@ -73,6 +73,45 @@ describe("createRepos.listBots", () => {
       (await repos.listSpaceBotsForSpaces(actor, [actor.spaceId]))[0]?.attentionMessageId,
     ).toBe("approval-current");
   });
+  it("surfaces a failed foreground run and clears the signal after recovery", async () => {
+    const findMany = vi.fn(async () => [
+      {
+        ...baseBot,
+        thread: { ...baseBot.thread, runs: [{ id: "run-failed", status: "failed" }] },
+      },
+    ]);
+    const repos = createRepos({ bot: { findMany } } as unknown as PrismaClient);
+
+    const failed = await repos.listBots(actor);
+    expect(failed[0]).toMatchObject({ status: "idle", runErrorId: "run-failed" });
+
+    findMany.mockResolvedValueOnce([
+      {
+        ...baseBot,
+        thread: { ...baseBot.thread, runs: [{ id: "run-recovered", status: "completed" }] },
+      },
+    ]);
+    const recovered = await repos.listBots(actor);
+    expect(recovered[0]).toMatchObject({ status: "idle", runErrorId: null });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          thread: expect.objectContaining({
+            include: expect.objectContaining({
+              runs: expect.objectContaining({
+                where: { trigger: { notIn: ["bot_message", "tickets"] } },
+                orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+                take: 1,
+                select: { id: true, status: true },
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("passes memoryScope through as null when unset", async () => {
     await expect(reposFor(null).listBots(actor)).resolves.toEqual([
       expect.objectContaining({ memoryScope: null }),
@@ -107,8 +146,8 @@ describe("createRepos.listBots", () => {
 
     expect(bots.map((bot) => bot.preview)).toEqual(["Answer one", "Answer two"]);
     expect(prisma.run.findMany).toHaveBeenCalledExactlyOnceWith({
-      where: { id: { in: ["run-one", "run-two"] }, trigger: "bot_message" },
-      select: { id: true },
+      where: { id: { in: ["run-one", "run-two"] }, trigger: { in: ["bot_message", "tickets"] } },
+      select: { id: true, trigger: true },
     });
   });
 
@@ -206,8 +245,11 @@ describe("createRepos.listBots", () => {
     expect(bots[0]?.preview).toBe("Visible answer");
     expect(prisma.run.findMany).toHaveBeenCalledTimes(2);
     expect(prisma.run.findMany).toHaveBeenNthCalledWith(2, {
-      where: { id: { in: ["peer-old", "user-old"] }, trigger: "bot_message" },
-      select: { id: true },
+      where: {
+        id: { in: ["peer-old", "user-old"] },
+        trigger: { in: ["bot_message", "tickets"] },
+      },
+      select: { id: true, trigger: true },
     });
     expect(prisma.message.findMany).toHaveBeenCalledTimes(2);
   });
@@ -255,9 +297,9 @@ describe("createRepos.listBots", () => {
       expect.objectContaining({
         include: expect.objectContaining({
           thread: {
-            include: {
+            include: expect.objectContaining({
               messages: { orderBy: { seq: "desc" }, take: 16 },
-            },
+            }),
           },
         }),
       }),
@@ -417,6 +459,7 @@ describe("createRepos.listSpaceBotsForSpaces", () => {
         thread: {
           unread: true,
           messages: [{ blocks: [{ kind: "text", text: "Waiting for a reply" }] }],
+          runs: [{ id: "run-failed", status: "failed" }],
         },
         runs: [{ status: "running" }],
       },
@@ -438,6 +481,7 @@ describe("createRepos.listSpaceBotsForSpaces", () => {
         parentBotId: null,
         preview: "Waiting for a reply",
         status: "running",
+        runErrorId: "run-failed",
         updatedAt: "2026-08-20T00:00:00.000Z",
       },
     ]);

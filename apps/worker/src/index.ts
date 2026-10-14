@@ -17,6 +17,7 @@ import {
   createRunExecutor,
   createRunSandbox,
   createRunSecretWriter,
+  createTicketChangeNotifier,
   createWebProvider,
   databaseCapacityBackoffMs,
   ExpoPushProvider,
@@ -49,6 +50,7 @@ import {
 } from "@rakazo/adapters";
 import { resolveEncryptionKey, resolveSupervisorToken } from "@rakazo/core";
 import {
+  createBoardEvents,
   createDb,
   createThreadEvents,
   isTooManyDatabaseConnections,
@@ -86,6 +88,8 @@ async function main() {
   const events = createThreadEvents(prisma, realtime, {
     runSecretWriter: createRunSecretWriter(secrets),
   });
+  const ticketBoardEnabled = process.env.TICKET_BOARD_ENABLED === "true";
+  const boardEvents = createBoardEvents(realtime);
   const dataDir = process.env.DATA_DIR ?? "./data";
   const runtime =
     process.env.AGENT_RUNTIME === "scripted"
@@ -163,6 +167,12 @@ async function main() {
   const artifacts = new LocalArtifactStore(dataDir);
   const inMemoryJobs = process.env.WAKEUP_DRIVER === "memory" ? new InMemoryJobQueue() : undefined;
   const jobs: JobPublisher = inMemoryJobs ?? new GraphileJobPublisher(pool);
+  const ticketChanges = createTicketChangeNotifier({
+    boardEvents,
+    jobs,
+    prisma,
+    ticketBoardEnabled,
+  });
   const jobHost: JobWorkerHost =
     inMemoryJobs ??
     new GraphileJobWorkerHost(pool, {
@@ -211,6 +221,8 @@ async function main() {
     notifications,
     jobs,
     events,
+    onTicketChange: ticketChanges,
+    ticketBoardEnabled,
     messaging: messaging ? createMessagingContextLoader(prisma) : undefined,
     web: createWebProvider(),
     cloudAgent,

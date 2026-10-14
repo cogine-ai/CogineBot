@@ -107,4 +107,38 @@ describe("user-visible messages", () => {
       userVisibleMessages(messages, { knownPeerRunIds: ["run-peer"] }).map((item) => item.id),
     ).toEqual(["ask", "reply", "answer"]);
   });
+
+  it("hides background ticket-run output except user-input cards", () => {
+    const background = [
+      message("wake", "run-ticket", [{ kind: "text", text: "Ticket check prompt" }]),
+      message("steps", "run-ticket", [
+        { kind: "steps", steps: [{ label: "Ticket comment", count: 2 }] },
+      ]),
+      {
+        ...message("progress", "run-ticket", [{ kind: "text", text: "Working on it" }]),
+        clientNonce: "user-progress:run-ticket:0",
+      },
+      message("ask", "run-ticket", [{ kind: "ask", text: "Choose" }]),
+      message("computer", "run-ticket", [
+        { kind: "computer", state: "Needs you", text: "Sign in" },
+      ]),
+      message("approval", "run-ticket", [
+        {
+          kind: "mcp_approval",
+          serverId: "server-1",
+          name: "Test",
+          transport: "streamable_http",
+          endpoint: "https://example.com/mcp",
+          needsOAuth: true,
+          status: "pending",
+        },
+      ]),
+      message("final", "run-ticket", [{ kind: "text", text: "Done, closed the ticket." }]),
+      message("user", "run-user", [{ kind: "text", text: "Visible answer" }]),
+    ];
+
+    expect(
+      userVisibleMessages(background, { backgroundRunIds: ["run-ticket"] }).map((m) => m.id),
+    ).toEqual(["ask", "computer", "approval", "user"]);
+  });
 });

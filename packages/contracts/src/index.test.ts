@@ -355,6 +355,20 @@ describe("contracts", () => {
     expect(ReorderBotsInput.safeParse({ botIds: ["bot-1", "bot-1"] }).success).toBe(false);
   });
 
+  it("does not expose routine model writes on the public create boundary", () => {
+    const parsed = CreateRoutineInput.parse({
+      botId: "bot-1",
+      name: "Daily report",
+      prompt: "Summarize the day",
+      crons: ["0 9 * * *"],
+      modelProvider: "openai-compatible",
+      modelId: "different-model",
+      thinkingLevel: "high",
+    });
+    for (const field of ["modelProvider", "modelId", "thinkingLevel"])
+      expect(parsed).not.toHaveProperty(field);
+  });
+
   it("accepts a GitHub-only routine trigger", () => {
     expect(
       CreateRoutineInput.parse({

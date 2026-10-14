@@ -104,6 +104,8 @@ export interface SandboxProvider {
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;
+  /** Read-only probe: true only when this exact reference is already running. */
+  isRunning?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
   /** Perform idempotent provider setup after the lifecycle has captured the reference. */
   prepare(computer: ComputerRef, context: AdapterContext): Promise<void>;
   execute(
@@ -272,7 +274,15 @@ export interface AgentHomeStore {
   checkout(botId: string, dest: string, context: AdapterContext): Promise<string>;
   commit(botId: string, src: string, context: AdapterContext): Promise<string>;
   restore(botId: string, revision: string, dest: string, context: AdapterContext): Promise<void>;
-  exportHome(botId: string, context: AdapterContext): AsyncIterable<PortableFile>;
+  /**
+   * Paths are relative to `directory`; a missing or linked directory exports nothing.
+   * `skipHidden` leaves out hidden entries at the top of the directory, also behind links.
+   */
+  exportHome(
+    botId: string,
+    context: AdapterContext,
+    options?: { directory?: string; skipHidden?: boolean },
+  ): AsyncIterable<PortableFile>;
   readFile(
     botId: string,
     path: string,

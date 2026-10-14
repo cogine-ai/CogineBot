@@ -96,18 +96,34 @@ describeAttachments("chat attachments", () => {
     });
     expect(fetched.contentBase64).toBe(tinyPng.toString("base64"));
 
+    for (const mimeType of [
+      "application/zip",
+      "application/x-zip-compressed",
+      "application/x-zip",
+      "multipart/x-zip",
+      "application/octet-stream",
+    ]) {
+      const rejected = await raw(app, cookie, "artifacts/create", {
+        botId: bot.id,
+        name: "bundle.ZIP",
+        mimeType,
+        contentBase64: Buffer.from("PK\x03\x04zip").toString("base64"),
+      });
+      expect(rejected.status).toBe(400);
+    }
+
     const badMime = await raw(app, cookie, "artifacts/create", {
       botId: bot.id,
-      name: "evil.zip",
-      mimeType: "application/zip",
-      contentBase64: Buffer.from("zip").toString("base64"),
+      name: "payload.exe",
+      mimeType: "application/octet-stream",
+      contentBase64: Buffer.from("nope").toString("base64"),
     });
     expect(badMime.status).toBeGreaterThanOrEqual(400);
 
     const oversize = await raw(app, cookie, "artifacts/create", {
       botId: bot.id,
-      name: "big.bin",
-      mimeType: "text/plain",
+      name: "big.pdf",
+      mimeType: "application/pdf",
       contentBase64: Buffer.alloc(10 * 1024 * 1024 + 1, 1).toString("base64"),
     });
     expect(oversize.status).toBeGreaterThanOrEqual(400);

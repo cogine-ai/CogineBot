@@ -15,6 +15,8 @@ test("computer rail resizes its preview and remembers width", async ({ page }, t
   const separator = page.getByRole("separator", { name: "Resize panel" });
   await expect(separator).toBeVisible();
   await expect(panel).toHaveCSS("width", "384px");
+  // The boot overlay can cover a visible rail; wait until the grip receives the pointer.
+  await separator.hover({ position: { x: 3, y: 100 } });
   const before = (await page.getByTestId("computer-preview").boundingBox())!;
   const handle = (await separator.boundingBox())!;
   await page.mouse.move(handle.x + 3, handle.y + 100);

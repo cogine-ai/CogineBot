@@ -5,6 +5,7 @@ import { BotAvatar, Button, Input } from "@rakazo/ui-web";
 import { Check, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { errorText } from "../lib/user-error";
+import { DeleteItemDialog } from "./shell/dialogs";
 
 function validSelection(name: string, selected: readonly string[]) {
   return (
@@ -77,12 +78,14 @@ export function GroupSettings({
   onSave,
   onRemove,
   onClose,
+  covered = false,
 }: {
   group: Group;
   bots: Bot[];
   onSave: (input: { name?: string; botIds?: string[] }) => Promise<void>;
   onRemove: () => Promise<void>;
   onClose: () => void;
+  covered?: boolean;
 }) {
   const { t } = useLingui();
   const nameId = useId();
@@ -91,6 +94,7 @@ export function GroupSettings({
   const [name, setName] = useState(group.name);
   const [selected, setSelected] = useState(group.members.map((member) => member.botId));
   const [pending, setPending] = useState<"save" | "remove" | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useLayoutEffect(() => {
@@ -101,6 +105,7 @@ export function GroupSettings({
   }, []);
 
   useEffect(() => {
+    if (covered || confirmingDelete) return;
     function closeOnEscape(event: KeyboardEvent) {
       if (
         event.key !== "Escape" ||
@@ -116,7 +121,7 @@ export function GroupSettings({
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [onClose, covered, confirmingDelete]);
 
   async function mutate(kind: "save" | "remove", action: () => Promise<void>) {
     if (pending) return;
@@ -196,10 +201,18 @@ export function GroupSettings({
         variant="destructive"
         className="mt-4 w-full"
         disabled={pending !== null}
-        onClick={() => void mutate("remove", onRemove)}
+        onClick={() => setConfirmingDelete(true)}
       >
         {pending === "remove" ? <Trans>Deleting…</Trans> : <Trans>Delete group</Trans>}
       </Button>
+      {confirmingDelete ? (
+        <DeleteItemDialog
+          item={group}
+          noun="group"
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={onRemove}
+        />
+      ) : null}
     </div>
   );
 }

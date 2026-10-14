@@ -7,6 +7,7 @@
 | Starting revision | `794a76da6eb0a73532a89cf57d2f202ef9b6b6c8` |
 | Reachable commits at the starting revision | 1,132, including the starting commit |
 | Initial adaptation date | 2026-10-09 |
+| Current integration target | `932534d7785f0c51b6a0aed54d0096ea8b36eb11` |
 | Root license | Apache-2.0, retained verbatim |
 
 The company `main` branch begins with all history reachable from the fixed starting revision. The initialization commit adds project documentation and identified third-party license notices. It does not modify runtime behavior or dependency versions. The upstream README is copied verbatim to `README.upstream.md`, keeping its repository-relative links usable.
@@ -21,6 +22,8 @@ git fetch --no-tags upstream
 ```
 
 Review proposed upstream updates on a separate branch, record the source revision and conflicts, and repeat the relevant verification before integrating them. Never replace company history with a force push or blindly mirror upstream branches and tags.
+
+The current integration target is a complete upstream snapshot. Maintenance changes are combined with the existing CogineBot adaptations rather than copied over whole files. The retained product contracts and deliberately deferred capability changes are recorded in [upstream adaptations](docs/upstream-adaptations.md). Source integration does not publish an upstream release or configure its hosted services.
 
 Existing package names, application branding, installer URLs, and update channels still refer to Rakazo. Their adaptation is separate work. GitHub Actions were disabled at initialization. The inherited workflows are now preserved outside the active workflow directory; the new read-only checks and remote workflow state are described in [automation.md](docs/automation.md). Image publishing, desktop releases, mobile updates, scheduled jobs, and report publishing require a separate reviewed change.
 

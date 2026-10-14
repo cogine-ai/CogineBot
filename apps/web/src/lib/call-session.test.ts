@@ -57,6 +57,7 @@ const listen = vi.mocked(dictation.listen);
 const speak = vi.mocked(speaker.speak);
 const isSpeaking = vi.mocked(speaker.isSpeaking);
 const send = vi.mocked(rpc.threads.send);
+const answer = vi.mocked(rpc.threads.answer);
 const followUp = vi.mocked(rpc.threads.followUp);
 const getThread = vi.mocked(rpc.threads.get);
 const endCallRpc = vi.mocked(rpc.threads.endCall);
@@ -68,6 +69,7 @@ describe("call session", () => {
     vi.useFakeTimers();
     isSpeaking.mockReturnValue(false);
     listen.mockResolvedValue(undefined);
+    answer.mockResolvedValue({ ok: true } as never);
     getThread.mockResolvedValue(snapshot([]) as never);
     send.mockResolvedValue({ runId: "run-1", taskId: "task-1" } as never);
     endCallRpc.mockResolvedValue({ ok: true } as never);
@@ -91,6 +93,25 @@ describe("call session", () => {
     expect(listen).toHaveBeenCalledWith(expect.objectContaining({ transcribe: true }));
   });
 
+  it("releases the microphone after an empty give-up without retrying automatically", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await Promise.resolve();
+    const watcher = vi.mocked(dictation.subscribe).mock.calls.at(-1)?.[0];
+    const error = "The browser keeps dropping the microphone. Start dictation again to retry.";
+    watcher?.({ status: "idle", transcript: "", error });
+
+    expect(getSnapshot()?.caption).toBe(error);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(listen).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+
+    // Playback requests the microphone again without resetting its guard first.
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "speaking", caption: "Are you there?" });
+    await Promise.resolve();
+    expect(listen).toHaveBeenCalledTimes(2);
+  });
+
   it("sends what it heard to the bot on the call, not the bot on screen", async () => {
     startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
     await heard("book the flight");
@@ -102,6 +123,30 @@ describe("call session", () => {
       phase: "thinking",
       exchanges: [{ role: "user", text: "book the flight" }],
     });
+  });
+
+  it("tags a spoken answer with this call's client nonce", async () => {
+    const ask = {
+      ...botMessage("ask-1", ""),
+      blocks: [{ kind: "ask" as const, text: "Which city?", status: "pending" as const }],
+    };
+    const waitingRun = { ...runningRun, status: "waiting_input" } as ThreadSnapshot["run"];
+    getThread.mockResolvedValue(snapshot([ask], waitingRun) as never);
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls.at(-1)?.[0];
+    await feed?.refresh();
+
+    await heard("Toronto");
+
+    expect(answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        botId: "call-bot",
+        messageId: "ask-1",
+        answer: "Toronto",
+        clientNonce: expect.stringMatching(/^call:/),
+      }),
+    );
+    expect(callIdFromClientNonce(String(answer.mock.calls[0]?.[0]?.clientNonce))).toBeDefined();
   });
 
   it("drops a send that finishes after the same bot is called again", async () => {
@@ -368,6 +413,23 @@ describe("call session", () => {
     endCall();
 
     expect(endCallRpc).toHaveBeenCalledWith({ botId: "call-bot", callId });
+  });
+
+  it("waits for an in-flight spoken turn before closing the call server-side", async () => {
+    const pendingSend = deferred<{ runId: string; taskId: string }>();
+    send.mockReturnValueOnce(pendingSend.promise as never);
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    listen.mock.calls.at(-1)?.[0]?.onFinal("book the flight");
+    expect(send).toHaveBeenCalledOnce();
+
+    endCall();
+    await flushMicrotasks();
+    expect(endCallRpc).not.toHaveBeenCalled();
+
+    pendingSend.resolve({ runId: "run-1", taskId: "task-1" });
+    await pendingSend.promise;
+    await flushMicrotasks();
+    expect(endCallRpc).toHaveBeenCalledOnce();
   });
 
   it("closes the call server-side once when the caller says goodbye", async () => {
@@ -715,6 +777,18 @@ async function speakingReply(text: string) {
 function interim(transcript: string) {
   const watcher = vi.mocked(dictation.subscribe).mock.calls.at(-1)?.[0];
   watcher?.({ status: "listening", transcript });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks() {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
 async function heard(text: string) {

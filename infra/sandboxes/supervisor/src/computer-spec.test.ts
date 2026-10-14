@@ -42,6 +42,7 @@ import {
   resolveScreenPublishTarget,
   resolveSpaceComputerLimit,
   resolveTeamScreenLimit,
+  screenPeerNetworkConnectOptions,
   screenPorts,
   screenUrlFor,
   screenUrlWithToken,
@@ -1754,6 +1755,18 @@ describe("computer home storage", () => {
       ),
     ).toBe(hostRun);
   });
+  it("uses lower gateway priority only when Docker API supports it", () => {
+    for (const apiVersion of ["1.45", "1.47", "invalid"]) {
+      expect(screenPeerNetworkConnectOptions("peer", apiVersion)).toEqual({ Container: "peer" });
+    }
+    for (const apiVersion of ["1.48", "1.55", "2.0"]) {
+      expect(screenPeerNetworkConnectOptions("peer", apiVersion)).toEqual({
+        Container: "peer",
+        EndpointConfig: { GwPriority: -1 },
+      });
+    }
+  });
+
   it("fails closed on daemons that could ignore volume subpaths", () => {
     for (const version of ["1.44", "", "invalid", "0.99"])
       expect(() => assertVolumeSubpathSupport(version)).toThrow(/Docker Engine 26/);

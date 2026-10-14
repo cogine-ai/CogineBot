@@ -112,6 +112,29 @@ describePostgres("retrying group creation through the real API", () => {
     );
   });
 
+  it("preserves chosen member order across reloads and member replacement", async () => {
+    const initialOrder = [bots[2]!.id, bots[0]!.id, bots[1]!.id];
+    const created = await rpc<Group>("groups/create", {
+      name: "Ordered companions",
+      botIds: initialOrder,
+      clientNonce: `ordered-${stamp}`,
+    });
+    expect(created.members.map((member) => member.botId)).toEqual(initialOrder);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const fresh = await rpc<Group>("groups/get", { groupId: created.id });
+      expect(fresh.members.map((member) => member.botId)).toEqual(initialOrder);
+    }
+    const replacementOrder = [bots[1]!.id, bots[2]!.id];
+    const updated = await rpc<Group>("groups/update", {
+      groupId: created.id,
+      botIds: replacementOrder,
+    });
+    expect(updated.members.map((member) => member.botId)).toEqual(replacementOrder);
+    await rpc("groups/update", { groupId: created.id, name: "Renamed companions" });
+    const reloaded = await rpc<Group>("groups/get", { groupId: created.id });
+    expect(reloaded.members.map((member) => member.botId)).toEqual(replacementOrder);
+  });
+
   it("keeps the creation signature after renaming or replacing members", async () => {
     const input = {
       name: "Original name",

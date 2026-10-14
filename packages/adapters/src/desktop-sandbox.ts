@@ -687,6 +687,20 @@ function resolveExecuteCwd(requestCwd: string | undefined, home: string) {
   return path.resolve(home, requestCwd);
 }
 
+/** Batch files require cmd.exe and cannot be executed directly. */
+const WINDOWS_SHELL_SCRIPT = /\.(?:bat|cmd)$/i;
+
+/**
+ * Argv for `spawn` with `shell: false`. Punctuation in paths and arguments is literal.
+ */
+function directCommandArgv(argv: readonly string[]): string[] | undefined {
+  if (!Array.isArray(argv) || argv.length === 0) return undefined;
+  if (argv.some((arg) => typeof arg !== "string" || arg.includes("\0"))) return undefined;
+  const command = argv[0];
+  if (!command || WINDOWS_SHELL_SCRIPT.test(command)) return undefined;
+  return [...argv];
+}
+
 async function* streamLocalCommand(
   argv: string[],
   cwd: string,
@@ -694,10 +708,17 @@ async function* streamLocalCommand(
   signal: AbortSignal,
   request: CommandRequest,
 ): AsyncIterable<ProcessEvent> {
-  const child = spawn(argv[0]!, argv.slice(1), {
+  const direct = directCommandArgv(argv);
+  if (!direct) {
+    yield { type: "stderr", data: "command rejected\n" };
+    yield { type: "exit", code: 1 };
+    return;
+  }
+  const child = spawn(direct[0]!, direct.slice(1), {
     cwd,
     env: sandboxCommandEnvironment(request, process.env),
     detached: process.platform !== "win32",
+    shell: false,
   });
   const queue: ProcessEvent[] = [];
   let ended = false;
@@ -744,19 +765,13 @@ async function* streamLocalCommand(
   });
   child.on("error", (error) => {
     if (settled) return;
-    settled = true;
-    clearTimeout(timeout);
-    signal.removeEventListener("abort", abort);
     if (argv[0] === "echo") {
       push({ type: "stdout", data: `${argv.slice(1).join(" ")}\n` });
+      finish(0);
     } else {
       push({ type: "stderr", data: error.message });
+      finish(1);
     }
-    push({ type: "exit", code: argv[0] === "echo" ? 0 : 1 });
-    ended = true;
-    const notify = wake;
-    wake = undefined;
-    notify?.();
   });
   child.on("close", (code) => {
     finish(code ?? 0);
@@ -787,7 +802,10 @@ async function* streamLocalCommand(
 function killProcessTree(pid: number | undefined) {
   if (!pid) return;
   if (process.platform === "win32") {
-    const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore" });
+    const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
+      stdio: "ignore",
+      shell: false,
+    });
     killer.unref();
     return;
   }

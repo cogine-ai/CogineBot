@@ -70,6 +70,13 @@ vi.mock("../components/native-symbol", () => ({ NativeSymbol: () => null }));
 vi.mock("expo-file-system", () => ({ File: class {} }));
 vi.mock("./voice", () => ({ speakText: vi.fn(), stopSpeaking: vi.fn() }));
 vi.mock("./dictation", () => ({ available: vi.fn(), listen: vi.fn() }));
+vi.mock("./call-sounds", () => ({
+  playCallCue: vi.fn(),
+  preloadWaitSound: vi.fn(),
+  releaseWaitSound: vi.fn(),
+  startWaitSound: vi.fn(),
+  stopWaitSound: vi.fn(),
+}));
 
 describe("CallCard keep-awake lifetime", () => {
   let root: Root;
@@ -111,6 +118,8 @@ describe("CallCard keep-awake lifetime", () => {
       speak: async () => undefined,
       watch: () => vi.fn(),
       stopSpeaking: vi.fn(),
+      cue: async () => undefined,
+      waitSound: vi.fn(),
     };
 
     act(() => root.render(<CallCard />));

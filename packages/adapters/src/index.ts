@@ -128,6 +128,8 @@ export * from "./task-catalog.js";
 export * from "./teaching-session.js";
 export * from "./team-chat-messaging.js";
 export * from "./third-party-connector-emulator.js";
+export * from "./ticket-changes.js";
+export * from "./ticket-tools.js";
 export * from "./voice-factory.js";
 export * from "./wakeup.js";
 export * from "./web-limits.js";

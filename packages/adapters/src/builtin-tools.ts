@@ -4,6 +4,8 @@ import {
   botSecretDestinationSchema,
   SecretAskPurpose,
   SecretHttpRequest,
+  TICKET_PRIORITIES,
+  TICKET_STATUSES,
 } from "@rakazo/contracts";
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
@@ -795,6 +797,83 @@ export const builtinAgentTools: ConnectorTool[] = [
         itemId: { type: "string" },
       },
       required: ["itemId"],
+    },
+  },
+  {
+    name: "board_tickets",
+    description: "List tickets. Continue with nextCursor when returned.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: TICKET_STATUSES, description: "Filter by status." },
+        ownerBotId: { type: "string", description: "Filter by owner bot id." },
+        cursor: {
+          type: "string",
+          description: "nextCursor from the previous page. Omit for the first page.",
+        },
+      },
+    },
+    readOnly: true,
+  },
+  {
+    name: "ticket_get",
+    description: "Read a ticket by reference or id, with comments.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "Ticket reference such as RAK-42, or the ticket id." },
+      },
+      required: ["ref"],
+    },
+    readOnly: true,
+  },
+  {
+    name: "ticket_create",
+    description: "Create a ticket. Owner defaults to you.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short ticket title." },
+        description: { type: "string", description: "Optional detail." },
+        priority: {
+          type: "string",
+          enum: TICKET_PRIORITIES,
+          description: "Priority. Defaults to normal.",
+        },
+        ownerBotId: {
+          type: "string",
+          description: "Bot in this space to own it. Defaults to you.",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    name: "ticket_update",
+    description: "Update a ticket, including status and owner.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Ticket id." },
+        title: { type: "string" },
+        description: { type: "string" },
+        priority: { type: "string", enum: TICKET_PRIORITIES },
+        status: { type: "string", enum: TICKET_STATUSES },
+        ownerBotId: { type: "string" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "ticket_comment",
+    description: "Add a ticket comment.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Ticket id." },
+        body: { type: "string", description: "Comment text." },
+      },
+      required: ["id", "body"],
     },
   },
   {

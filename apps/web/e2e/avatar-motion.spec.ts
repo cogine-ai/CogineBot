@@ -155,3 +155,39 @@ test("motion destroys RAF on idle, hidden, and reduced-motion transitions", asyn
   await expect(page.locator(".avatar-activity")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => Reflect.get(window, "avatarPendingFrames"))).toBe(0);
 });
+
+test("uploaded portraits remain still and ring-free while another companion is active", async ({
+  page,
+}, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/e2e/fixtures/avatar-motion.html");
+  await expect(page.getByTestId("sidebar-avatar").locator(".avatar-activity")).toHaveAttribute(
+    "data-motion",
+    "active",
+  );
+  const working = page.getByTestId("working-photo").locator(".rakazo-bot-avatar");
+  const idle = page.getByTestId("idle-photo").locator(".rakazo-bot-avatar");
+  await expect(working).toHaveAttribute("data-working", "true");
+  await expect(idle).toHaveAttribute("data-working", "false");
+  for (const photo of [working, idle]) {
+    const image = photo.locator("img");
+    await expect(image).toBeVisible();
+    await expect(photo.locator(".avatar-activity, .rakazo-bot-avatar-ring")).toHaveCount(0);
+    await expect(image).toHaveCSS("animation-name", "none");
+    await expect(image).toHaveCSS("transform", "none");
+    await expect(photo).toHaveCSS("box-shadow", "none");
+    await expect(image).toHaveCSS("width", "38px");
+    await expect(image).toHaveCSS("height", "38px");
+    expect(
+      await image.evaluate((element) => (element as HTMLImageElement).naturalWidth),
+    ).toBeGreaterThan(0);
+  }
+  await page.waitForTimeout(300);
+  await expect(working.locator("img")).toHaveCSS("transform", "none");
+  await page.getByRole("button", { name: "Toggle theme" }).click();
+  await expect(working.locator("img")).toHaveCSS("animation-name", "none");
+  await captureScreenshot(page, testInfo, "companion-activity-static-portraits");
+  await page.getByRole("button", { name: "Toggle activity" }).click();
+  await expect(working).toHaveAttribute("data-working", "false");
+  await expect(working.locator(".avatar-activity, .rakazo-bot-avatar-ring")).toHaveCount(0);
+});

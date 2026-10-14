@@ -21,6 +21,14 @@ import {
   rpc,
   subscribeThread,
 } from "./api";
+import type { CallCue } from "./call-sounds";
+import {
+  playCallCue,
+  preloadWaitSound,
+  releaseWaitSound,
+  startWaitSound,
+  stopWaitSound,
+} from "./call-sounds";
 import * as dictation from "./dictation";
 import { getActiveUiLocale, t } from "./i18n";
 import { errorText } from "./user-error";
@@ -63,12 +71,19 @@ export type CallDeps = {
   speak: (botId: string, text: string) => Promise<void>;
   /** Cuts the reply off when the caller talks over it. */
   stopSpeaking: () => void;
+  /** The opening cue as the call starts, the closing one once the caller's turn is heard. */
+  cue: (cue: CallCue) => Promise<void>;
+  /** The soft sound while the bot works on a turn: loaded at call start, freed at hang-up. */
+  waitSound: (action: "preload" | "start" | "stop" | "release") => void;
   watch: (
     botId: string,
     onReply: (messageId: string, text: string, runId?: string) => void,
     onCallEnded: (ended: CallEnded) => void,
   ) => () => void;
 };
+
+/** The bot a caller asked to be put through to, and how to ring it once this call hangs up. */
+export type CallSwitch = { name: string; ring: () => void };
 
 /** What the bot's own `end_call` carries: the call it ends and the goodbye to speak. */
 export type CallEnded = { callId?: string; farewell?: string };
@@ -92,6 +107,8 @@ const MAX_CLIP_MS = 30_000;
 let state: CallState | null = null;
 /** Shared by every message this call sends, so the thread can group one call's exchange. */
 let callId = "";
+/** Requests for this call that must persist before its server-side hang-up. */
+const pendingCallSends = new Map<string, Set<Promise<unknown>>>();
 /** The run this call's last turn started: replies to anything else are not spoken. */
 let callRunId: string | null = null;
 let deps: CallDeps = productionDeps();
@@ -107,16 +124,23 @@ let botEndedCall = false;
 let hangUpTimer: ReturnType<typeof setTimeout> | null = null;
 let spokenMessageId: string | null = null;
 let failures = 0;
+/** Counts the caller's turns, so a closing cue that ends late starts no waiting sound for a newer turn. */
+let turnSeq = 0;
 /** Whether the provider can transcribe, so the fallback path is worth trying at all. */
 let canTranscribe = true;
 /** Whether this device does its own speech recognition; unknown until the first turn. */
 let onDevice: boolean | null = null;
 /** A microphone session is running, so playback can leave it open instead of restarting it. */
 let micOpen = false;
+/** True from ringing until the start cue ends: nothing may open the microphone before the greeting. */
+let opening = false;
 /** The caller cut the reply off: the speaker going idle must not reopen the microphone. */
 let bargedIn = false;
 /** Counting down a phrase heard over the reply, before it counts as cutting in. */
 let interimTimer: ReturnType<typeof setTimeout> | null = null;
+/** Takes over a turn that asks for another bot: the bot to hand over to, or nothing. */
+let switchBot: ((text: string) => CallSwitch | undefined) | undefined;
+let switching = false;
 const watchers = new Set<() => void>();
 
 export function subscribe(watcher: () => void): () => void {
@@ -140,6 +164,10 @@ function emit() {
 
 function set(patch: Partial<CallState>) {
   if (!state) return;
+  // The waiting sound belongs to "thinking" only: a reply, a retry, or a cut-in ends it.
+  if (patch.phase && patch.phase !== "thinking" && state.phase === "thinking") {
+    deps.waitSound("stop");
+  }
   state = { ...state, ...patch };
   emit();
 }
@@ -147,11 +175,21 @@ function set(patch: Partial<CallState>) {
 export function startCall(
   // `transcribe` says whether the voice provider can turn audio into text; a speak-only
   // provider is fine as long as the device recognises speech itself.
-  call: { botId: string; botName: string; botColor?: string; transcribe?: boolean },
+  call: {
+    botId: string;
+    botName: string;
+    botColor?: string;
+    transcribe?: boolean;
+    /** Spoken as the call connects, before the caller's first turn. */
+    greeting?: string;
+    /** Called with each finished turn; a target means the caller asked for that bot instead. */
+    switchBot?: (text: string) => CallSwitch | undefined;
+  },
   overrides: Partial<CallDeps> = {},
 ): string {
   endCall();
   deps = { ...productionDeps(), ...overrides };
+  switchBot = call.switchBot;
   callId = randomId();
   callRunId = null;
   canTranscribe = call.transcribe ?? true;
@@ -172,8 +210,19 @@ export function startCall(
   };
   unwatch = deps.watch(call.botId, onReply, onCallEnded);
   emit();
-  void listen();
+  void openCall(callId, call.greeting);
   return callId;
+}
+
+/** The opening cue, then the greeting, then the caller's first turn. */
+async function openCall(openedCallId: string, greeting?: string): Promise<void> {
+  deps.waitSound("preload");
+  opening = true;
+  await deps.cue("start").catch(() => undefined);
+  if (!state || callId !== openedCallId) return;
+  opening = false;
+  if (greeting) speakAndListen(greeting);
+  else void listen();
 }
 
 /** A background voice/status result can enable provider fallback after the call has started. */
@@ -181,13 +230,26 @@ export function setCallProviderTranscribe(enabled: boolean, forCallId?: string):
   if (!state || (forCallId !== undefined && forCallId !== callId)) return;
   canTranscribe = enabled;
   // Dictation can fail before the probe returns, which leaves the mic closed.
-  if (enabled && state.phase === "listening" && !micOpen && !state.muted) void listen();
+  if (enabled && !opening && state.phase === "listening" && !micOpen && !state.muted) void listen();
 }
 
 export function endCall(): void {
   // The bot's own end_call already closed the call server-side; only a caller hang-up
   // has to say so. Fire and forget: the card is going away either way.
-  if (state && !botEndedCall) void deps.endCall(state.botId, callId).catch(() => undefined);
+  if (state && !botEndedCall) {
+    const { botId } = state;
+    const closingCallId = callId;
+    const closeServerCall = deps.endCall;
+    const pendingSends = [...(pendingCallSends.get(closingCallId) ?? [])];
+    // The server checks durable user messages, so its close must follow an in-flight write.
+    if (pendingSends.length === 0)
+      void closeServerCall(botId, closingCallId).catch(() => undefined);
+    else
+      void Promise.allSettled(pendingSends)
+        .then(() => closeServerCall(botId, closingCallId))
+        .catch(() => undefined);
+  }
+  if (state) deps.waitSound("release");
   turn?.abort();
   turn = null;
   unwatch?.();
@@ -202,7 +264,10 @@ export function endCall(): void {
   spokenMessageId = null;
   failures = 0;
   micOpen = false;
+  opening = false;
   bargedIn = false;
+  switchBot = undefined;
+  switching = false;
   clearInterim();
   spokenMemory.clear();
   if (!state) return;
@@ -222,7 +287,7 @@ export function toggleMute(): void {
     return;
   }
   consentBlocked = false;
-  if (state.phase === "listening") void listen();
+  if (state.phase === "listening" && !opening) void listen();
 }
 
 export function toggleTranscript(): void {
@@ -328,6 +393,11 @@ async function handleTranscript(raw: string): Promise<void> {
     void listen();
     return;
   }
+  const handOver = switchBot?.(text);
+  if (handOver) {
+    void switchCall(handOver, text);
+    return;
+  }
   const { botId } = state;
   // The call this turn belongs to: hanging up and calling the same bot again before
   // send resolves must not hand the new call the old run.
@@ -337,6 +407,15 @@ async function handleTranscript(raw: string): Promise<void> {
     heard: text,
     exchanges: [...state.exchanges, { role: "user", text }],
   });
+  // The waiting sound follows the closing cue, and only if the bot has not answered yet.
+  const cueTurn = ++turnSeq;
+  void deps
+    .cue("end")
+    .catch(() => undefined)
+    .then(() => {
+      if (state?.phase !== "thinking" || callId !== turnCallId || turnSeq !== cueTurn) return;
+      deps.waitSound("start");
+    });
   if (isFarewell(text)) {
     hangUpAfterReply = true;
     // A second goodbye replaces this timer. Clear the previous one or it can
@@ -344,8 +423,11 @@ async function handleTranscript(raw: string): Promise<void> {
     if (hangUpTimer) clearTimeout(hangUpTimer);
     hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT_MS);
   }
+  let releasePendingSend: (() => void) | undefined;
   try {
-    const runId = await deps.send(botId, text, callClientNonce(turnCallId));
+    const sendRequest = deps.send(botId, text, callClientNonce(turnCallId));
+    releasePendingSend = trackPendingCallSend(turnCallId, sendRequest);
+    const runId = await sendRequest;
     if (state?.botId === botId && callId === turnCallId) {
       callRunId = runId ?? null;
       if (hangUpAfterReply) farewellSent = true;
@@ -367,6 +449,8 @@ async function handleTranscript(raw: string): Promise<void> {
       return;
     }
     failTurn(error);
+  } finally {
+    releasePendingSend?.();
   }
 }
 
@@ -429,11 +513,46 @@ function clearInterim(): void {
 
 function onReply(messageId: string, text: string, runId?: string): void {
   // Work the bot files after hanging up belongs in the thread, not in the caller's ear.
-  if (!state || botEndedCall || messageId === spokenMessageId) return;
+  if (!state || switching || botEndedCall || messageId === spokenMessageId) return;
   // A reply to something typed into the thread mid-call belongs on screen only.
   if (callRunId && runId && runId !== callRunId) return;
   spokenMessageId = messageId;
   speakAndListen(text);
+}
+
+/** The bot on the line says it is handing over, then this call hangs up and the other bot rings. */
+async function switchCall(target: CallSwitch, heard: string): Promise<void> {
+  if (!state || switching) return;
+  switching = true;
+  const { botId } = state;
+  const switchingCallId = callId;
+  const notice = t("OK, switching to {name}.", { name: target.name });
+  turn?.abort();
+  turn = null;
+  micOpen = false;
+  set({
+    phase: "speaking",
+    heard: "",
+    exchanges: [...state.exchanges, { role: "user", text: heard }, { role: "bot", text: notice }],
+  });
+  // The caller can hang up during either await: then nothing more is said and nobody rings.
+  const stillOn = () => state !== null && callId === switchingCallId;
+  await deps.cue("end").catch(() => undefined);
+  if (!stillOn()) return;
+  try {
+    await deps.speak(botId, notice);
+  } catch (error) {
+    if (!stillOn()) return;
+    // A refused voice disclosure stays refused: mute here rather than ring a bot that would ask again.
+    if (error instanceof AiConsentBlocked) {
+      switching = false;
+      blockForConsent(error);
+      return;
+    }
+  }
+  if (!stillOn()) return;
+  endCall();
+  target.ring();
 }
 
 function speakAndListen(text: string): void {
@@ -486,7 +605,7 @@ function speakAndListen(text: string): void {
 
 /** The bot hung up: speak the goodbye it wrote, then end — the rest lands in the thread. */
 function onCallEnded(ended: CallEnded): void {
-  if (!state || ended.callId !== callId || botEndedCall) return;
+  if (!state || switching || ended.callId !== callId || botEndedCall) return;
   hangUpAfterReply = true;
   botEndedCall = true;
   if (hangUpTimer) clearTimeout(hangUpTimer);
@@ -509,6 +628,13 @@ function productionDeps(): CallDeps {
     endCall: closeCall,
     speak: speakReply,
     stopSpeaking,
+    cue: playCallCue,
+    waitSound: (action) => {
+      if (action === "start") void startWaitSound().catch(() => undefined);
+      else if (action === "stop") stopWaitSound();
+      else if (action === "preload") void preloadWaitSound().catch(() => undefined);
+      else releaseWaitSound();
+    },
     watch: watchReplies,
   };
 }
@@ -676,6 +802,16 @@ function watchReplies(
 
 function asText(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function trackPendingCallSend(callId: string, request: Promise<unknown>): () => void {
+  const pending = pendingCallSends.get(callId) ?? new Set<Promise<unknown>>();
+  pending.add(request);
+  pendingCallSends.set(callId, pending);
+  return () => {
+    pending.delete(request);
+    if (pending.size === 0) pendingCallSends.delete(callId);
+  };
 }
 
 function randomId(): string {

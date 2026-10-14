@@ -10,9 +10,11 @@
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests",
-    "generate": "tsx src/generate-css.ts"
+    "generate": "tsx src/generate-css.ts",
+    "export:brand": "node scripts/export-brand.ts"
   },
   "devDependencies": {
+    "sharp": "0.35.4",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   }

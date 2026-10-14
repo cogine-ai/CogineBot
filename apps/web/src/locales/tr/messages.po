@@ -563,10 +563,6 @@ msgstr "Arşivlendi. Sohbet, hafıza ve dosyalar korundu."
 msgid "Arguments"
 msgstr "Argümanlar"
 
-#: src/pages/Artifacts.tsx
-msgid "Artifacts"
-msgstr ""
-
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Ask before {0}"
@@ -666,6 +662,7 @@ msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 msgid "Back"
@@ -707,6 +704,15 @@ msgstr "Bearer token"
 
 #: src/pages/SettingsOverlay.tsx
 msgid "Billing"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "Blocked"
+msgstr ""
+
+#: src/pages/Board.tsx
+#: src/pages/Shell.tsx
+msgid "Board"
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -1046,6 +1052,10 @@ msgstr "Komut"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Command variable"
 msgstr "Komut değişkeni"
+
+#: src/pages/Board.tsx
+msgid "Comment"
+msgstr ""
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Complete"
@@ -1692,6 +1702,7 @@ msgstr ""
 msgid "Couldn't update messaging settings"
 msgstr ""
 
+#: src/pages/Board.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/shell/dialogs.tsx
@@ -1911,6 +1922,7 @@ msgstr "Dağıtım varsayılanı"
 msgid "Describe what this bot does"
 msgstr "Bu botun ne yaptığını açıkla"
 
+#: src/pages/Board.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Description"
 msgstr "Açıklama"
@@ -1987,6 +1999,7 @@ msgstr "Docker, ek güvenlik için bilgisayarına erişimi sınırlar. {hostLabe
 msgid "Don’t have an account?"
 msgstr "Hesabın yok mu?"
 
+#: src/lib/ticket-status.ts
 #: src/pages/ActivityList.tsx
 msgid "Done"
 msgstr "Bitti"
@@ -2098,6 +2111,10 @@ msgstr "Görüntü sınırı için 1 ile 1000 arasında bir tam sayı girin."
 msgid "Enter an API key before testing."
 msgstr "Test etmeden önce bir API anahtarı gir."
 
+#: src/lib/roster-status.ts
+msgid "Error"
+msgstr ""
+
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/RoutineSchedule.tsx
 msgid "Every"
@@ -2201,6 +2218,7 @@ msgid "File is too large to upload."
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
+#: src/pages/Artifacts.tsx
 #: src/pages/Shell.tsx
 msgid "Files"
 msgstr ""
@@ -2363,6 +2381,7 @@ msgstr ""
 msgid "Hide transcript"
 msgstr "Dökümü gizle"
 
+#: src/lib/ticket-priority.ts
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "High"
@@ -2409,6 +2428,14 @@ msgstr "Görüntü yükleme alanı"
 #: src/pages/PluginsOverlay.tsx
 msgid "Import OpenAPI JSON"
 msgstr "OpenAPI JSON içe aktar"
+
+#: src/lib/ticket-status.ts
+msgid "In progress"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "In review"
+msgstr ""
 
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Inactive"
@@ -2619,6 +2646,7 @@ msgstr ""
 msgid "Log out"
 msgstr "Çıkış yap"
 
+#: src/lib/ticket-priority.ts
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Low"
@@ -2921,6 +2949,10 @@ msgstr "Bota bir ad ver"
 msgid "Name this routine"
 msgstr ""
 
+#: src/lib/roster-status.ts
+msgid "Needs an answer"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -2933,6 +2965,7 @@ msgstr "Girdi bekliyor"
 msgid "Needs takeover"
 msgstr "Devralma bekliyor"
 
+#: src/lib/roster-status.ts
 #: src/pages/Shell.tsx
 msgid "Needs you"
 msgstr ""
@@ -2961,6 +2994,10 @@ msgstr "Yeni beceri"
 
 #: src/pages/shell/dialogs.tsx
 msgid "New space"
+msgstr ""
+
+#: src/pages/Board.tsx
+msgid "New ticket"
 msgstr ""
 
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -3074,6 +3111,10 @@ msgstr "Henüz beceri yok"
 msgid "No team conversations yet."
 msgstr ""
 
+#: src/pages/Board.tsx
+msgid "No tickets yet"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "No tools available."
 msgstr ""
@@ -3085,6 +3126,10 @@ msgstr ""
 #: src/pages/ScratchpadSection.tsx
 msgid "None yet"
 msgstr "Henüz yok"
+
+#: src/lib/ticket-priority.ts
+msgid "Normal"
+msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Not connected"
@@ -3251,6 +3296,10 @@ msgstr "Orijinal mesaj kullanılamıyor"
 msgid "Other model…"
 msgstr "Başka model…"
 
+#: src/pages/Board.tsx
+msgid "Owner"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "PagerDuty incident"
 msgstr ""
@@ -3341,6 +3390,10 @@ msgstr "{0} önizle"
 
 #: src/pages/Artifacts.tsx
 msgid "Preview isn't available for this file type — download it to view it."
+msgstr ""
+
+#: src/pages/Board.tsx
+msgid "Priority"
 msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
@@ -3682,6 +3735,7 @@ msgid "Retry"
 msgstr "Yeniden dene"
 
 #: src/App.tsx
+#: src/pages/Artifacts.tsx
 #: src/pages/PeerMessagesOverlay.tsx
 msgid "Retry now"
 msgstr "Şimdi tekrar dene"
@@ -3762,6 +3816,7 @@ msgstr ""
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
+#: src/pages/Board.tsx
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -4157,6 +4212,7 @@ msgid "Starting…"
 msgstr "Başlatılıyor…"
 
 #: src/pages/ActivityList.tsx
+#: src/pages/Board.tsx
 msgid "Status"
 msgstr ""
 
@@ -4399,6 +4455,7 @@ msgstr ""
 msgid "Time of day"
 msgstr "Günün saati"
 
+#: src/pages/Board.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Title"
 msgstr "Başlık"
@@ -4410,6 +4467,10 @@ msgstr ""
 #. placeholder {0}: filters.dateRange.to
 #: src/pages/ActivityList.tsx
 msgid "To {0}"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "To do"
 msgstr ""
 
 #: src/pages/shell/bot-picker.tsx
@@ -4569,6 +4630,10 @@ msgstr ""
 msgid "Upload"
 msgstr "Yükle"
 
+#: src/lib/ticket-priority.ts
+msgid "Urgent"
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
@@ -4724,6 +4789,10 @@ msgstr "Ne zaman kullanılır"
 #: src/pages/HostComputerPrompt.tsx
 msgid "Where should bots run?"
 msgstr "Botlar nerede çalışsın?"
+
+#: src/lib/ticket-status.ts
+msgid "Won't do"
+msgstr ""
 
 #: src/lib/roster-status.ts
 #: src/pages/Auth.tsx

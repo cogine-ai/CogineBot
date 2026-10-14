@@ -1,5 +1,8 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Couldn't refresh — showing the last loaded messages.": "无法刷新——显示最近加载的消息。",
   "Try Again": "重试",
+  "Too many unsent messages": "未发送消息过多",
+  "Not sent": "未发送",
   "Not sent · Tap to retry": "未发送 · 轻点重试",
   Photo: "照片",
   Today: "今天",
@@ -716,7 +719,17 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Your phone's built-in voice — free, no account needed": "手机自带的语音 — 免费，无需账户",
   "Speaks with your phone's own text-to-speech instead of a connected provider.":
     "使用手机自带的语音朗读，而不是已连接的语音服务。",
-
+  "Call sounds": "通话提示音",
+  "Hello {name}, {bot} here.": "你好 {name}，我是 {bot}。",
+  "Hello, {bot} here.": "你好，我是 {bot}。",
+  "OK, switching to {name}.": "好的，正在切换到 {name}。",
+  "{bot} here. Hi {name}.": "我是 {bot}。你好 {name}。",
+  "{bot} here.": "我是 {bot}。",
+  "Waiting sound": "等待提示音",
+  "Device voice": "设备语音",
+  "Could not load voices": "无法加载语音",
+  "Hi, I'm {name}.": "你好，我是 {name}。",
+  "Hi, this is how I'll sound.": "你好，这是我的声音。",
   "Open external link?": "打开外部链接？",
   Open: "打开",
   // ai-data-sharing

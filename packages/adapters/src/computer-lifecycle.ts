@@ -175,6 +175,37 @@ export async function provisionComputer(
   const homePath = resolveAgentHomePath(deps.home, existing.homeKey, deps.dataDir ?? "./data");
   await mkdir(homePath, { recursive: true });
 
+  // Re-provisioning a live computer enters booting and revokes its screen URLs.
+  // A provider-confirmed live reference needs setup, not a new lifecycle claim.
+  if (existing.state === "running" && existing.providerRef && deps.sandbox.isRunning) {
+    const ref = toComputerRef(existing);
+    if (await deps.sandbox.isRunning(ref, context)) {
+      context.signal.throwIfAborted();
+      const retained = await deps.prisma.computer.updateMany({
+        where: {
+          id: computerId,
+          state: "running",
+          providerRef: existing.providerRef,
+          kind: existing.kind,
+          screenGeneration: existing.screenGeneration,
+          maintenanceId: existing.maintenanceId ?? null,
+          ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
+        },
+        data: { updatedAt: new Date() },
+      });
+      if (retained.count !== 1) throw new ComputerBusyError();
+      await deps.sandbox.prepare(ref, context);
+      await ensureComputerWorkspaceLayout(
+        deps.sandbox,
+        ref,
+        parseComputerMode(existing.scope),
+        context.botId,
+        context,
+      );
+      return ref;
+    }
+  }
+
   // If we first observe abandoned "booting", remember that stamp before waiting. A concurrent
   // reclaim bumps updatedAt while state stays "booting"; fencing the claim on the pre-wait
   // stamp keeps those callers mutually exclusive. After the wait, a finished boot returns

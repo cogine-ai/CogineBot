@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const computerDir = path.resolve(import.meta.dirname, "../../computer");
 
@@ -17,7 +17,7 @@ describe("focus-or-launch desktop helper", () => {
 
   it.skipIf(process.platform === "win32")(
     "activates a matching window and only spawns when absent",
-    () => {
+    async () => {
       const temp = mkdtempSync(path.join(tmpdir(), "focus-or-launch-"));
       const bin = path.join(temp, "bin");
       const argvLog = path.join(temp, "argv");
@@ -41,9 +41,10 @@ describe("focus-or-launch desktop helper", () => {
         for (const name of ["wmctrl", "xterm", "rakazo-browser"]) {
           chmodSync(path.join(bin, name), 0o755);
         }
-        const run = (listing: string, argv: string[]) => {
+        const run = async (listing: string, argv: string[]) => {
           writeFileSync(windows, listing);
           writeFileSync(argvLog, "");
+          const started = Date.now();
           const result = spawnSync(
             "python3",
             [path.join(computerDir, "rakazo-focus-or-launch"), ...argv],
@@ -57,11 +58,21 @@ describe("focus-or-launch desktop helper", () => {
               encoding: "utf8",
             },
           );
+          const elapsedMs = Date.now() - started;
           expect(result.status, result.stderr).toBe(0);
-          return readFileSync(argvLog, "utf8")
-            .split("\n")
-            .map((line) => line.trim())
-            .filter(Boolean);
+          // A detached launcher can write after the nonblocking parent returns.
+          const lines = await vi.waitFor(
+            () => {
+              const lines = readFileSync(argvLog, "utf8")
+                .split("\n")
+                .map((line) => line.trim())
+                .filter(Boolean);
+              expect(lines).not.toHaveLength(0);
+              return lines;
+            },
+            { timeout: 2_000, interval: 20 },
+          );
+          return { lines, elapsedMs };
         };
         const listing = [
           "0x04000001  0 101 uxterm.UXTerm      box  uxterm",
@@ -69,14 +80,14 @@ describe("focus-or-launch desktop helper", () => {
           "0x04000003  0 102 xterm.XTerm        box  Terminal",
           "",
         ].join("\n");
-        expect(run(listing, ["xterm"])).toEqual(["wmctrl -ia 0x04000003"]);
-        expect(run("", ["xterm"])).toEqual(["xterm"]);
+        expect((await run(listing, ["xterm"])).lines).toEqual(["wmctrl -ia 0x04000003"]);
+        expect((await run("", ["xterm"])).lines).toEqual(["xterm"]);
         // A URI still reaches the live browser's launcher, then raises its window.
-        expect(run(listing, ["rakazo-browser", "https://example.test"])).toEqual([
+        expect((await run(listing, ["rakazo-browser", "https://example.test"])).lines).toEqual([
           "rakazo-browser https://example.test",
           "wmctrl -ia 0x01800003",
         ]);
-        expect(run("", ["rakazo-browser", "https://example.test"])).toEqual([
+        expect((await run("", ["rakazo-browser", "https://example.test"])).lines).toEqual([
           "rakazo-browser https://example.test",
         ]);
         // A launcher that stays up must not block the raise of the window already found.
@@ -93,18 +104,32 @@ describe("focus-or-launch desktop helper", () => {
         );
         chmodSync(path.join(bin, "rakazo-browser"), 0o755);
         writeFileSync(pids, "");
-        const started = Date.now();
-        expect(run(listing, ["rakazo-browser", "https://example.test"])).toEqual([
-          "rakazo-browser https://example.test",
-          "wmctrl -ia 0x01800003",
-        ]);
-        expect(Date.now() - started).toBeLessThan(5_000);
-        for (const pid of readFileSync(pids, "utf8").split("\n")) {
-          if (!pid.trim()) continue;
-          try {
-            process.kill(Number(pid), "SIGTERM");
-          } catch {
-            // The launcher may already have exited.
+        const launched = await run(listing, ["rakazo-browser", "https://example.test"]);
+        const launcherPids = await vi.waitFor(
+          () => {
+            const values = readFileSync(pids, "utf8")
+              .split("\n")
+              .filter((value) => value.trim())
+              .map(Number);
+            expect(values).not.toHaveLength(0);
+            for (const pid of values) expect(pid).toBeGreaterThan(0);
+            return values;
+          },
+          { timeout: 2_000, interval: 20 },
+        );
+        try {
+          expect(launched.lines).toEqual([
+            "rakazo-browser https://example.test",
+            "wmctrl -ia 0x01800003",
+          ]);
+          expect(launched.elapsedMs).toBeLessThan(5_000);
+        } finally {
+          for (const pid of launcherPids) {
+            try {
+              process.kill(pid, "SIGTERM");
+            } catch {
+              // The launcher may already have exited.
+            }
           }
         }
       } finally {

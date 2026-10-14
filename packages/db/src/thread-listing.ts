@@ -2,7 +2,9 @@ import type { MessageBlock } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import {
   ACTIVE_RUN_STATUSES,
+  BACKGROUND_RUN_TRIGGERS,
   isApprovalAskBlock,
+  isBackgroundRunTrigger,
   plainTextFromMarkdown,
   userVisibleMessages,
 } from "@rakazo/core";
@@ -163,12 +165,30 @@ export async function loadThreadAttention(
 export const SIDEBAR_PREVIEW_MESSAGE_WINDOW = 16;
 
 export const activeRunStatuses = [...ACTIVE_RUN_STATUSES];
+const backgroundRunTriggers = [...BACKGROUND_RUN_TRIGGERS];
+const userVisibleBotRunTriggers = ["bot_message", ...BACKGROUND_RUN_TRIGGERS];
+const latestBotRunOrderBy = [{ createdAt: "desc" as const }, { id: "desc" as const }];
 
+/**
+ * The newest conversational/foreground run for a bot's sidebar status. Background
+ * ticket runs keep working silently, so they must not make the avatar spin.
+ */
 export const activeRunSelection = {
-  where: { status: { in: activeRunStatuses } },
+  where: {
+    status: { in: activeRunStatuses },
+    trigger: { notIn: backgroundRunTriggers },
+  },
   orderBy: { createdAt: "desc" as const },
   take: 1,
   select: { status: true },
+} as const;
+
+/** Latest user-visible run for a bot roster error signal; later success clears an older failure. */
+export const latestBotRunSelection = {
+  where: { trigger: { notIn: userVisibleBotRunTriggers } },
+  orderBy: latestBotRunOrderBy,
+  take: 1,
+  select: { id: true, status: true },
 } as const;
 
 export function previewFromBlocks(blocks: unknown): string {
@@ -216,10 +236,13 @@ export async function loadThreadPreviews(
       ),
     ),
   ];
-  const peers = initialRunIds.length
+  const runs = initialRunIds.length
     ? await prisma.run.findMany({
-        where: { id: { in: initialRunIds }, trigger: "bot_message" },
-        select: { id: true },
+        where: {
+          id: { in: initialRunIds },
+          trigger: { in: ["bot_message", ...BACKGROUND_RUN_TRIGGERS] },
+        },
+        select: { id: true, trigger: true },
       })
     : [];
   const entries = await Promise.all(
@@ -227,7 +250,12 @@ export async function loadThreadPreviews(
       .filter((thread): thread is PreviewThread => thread !== null)
       .map(async (thread) => {
         const checkedRunIds = new Set(initialRunIds);
-        const peerRunIds = new Set(peers.map((run) => run.id));
+        const backgroundRunIds = new Set(
+          runs.filter((run) => isBackgroundRunTrigger(run.trigger)).map((run) => run.id),
+        );
+        const peerRunIds = new Set(
+          runs.filter((run) => !backgroundRunIds.has(run.id)).map((run) => run.id),
+        );
         let messages = thread.messages;
         for (let attempt = 0; attempt < 5; attempt++) {
           const runIds = [
@@ -235,10 +263,16 @@ export async function loadThreadPreviews(
           ].filter((id) => !checkedRunIds.has(id));
           if (runIds.length) {
             const morePeers = await prisma.run.findMany({
-              where: { id: { in: runIds }, trigger: "bot_message" },
-              select: { id: true },
+              where: {
+                id: { in: runIds },
+                trigger: { in: ["bot_message", ...BACKGROUND_RUN_TRIGGERS] },
+              },
+              select: { id: true, trigger: true },
             });
-            for (const run of morePeers) peerRunIds.add(run.id);
+            for (const run of morePeers) {
+              if (isBackgroundRunTrigger(run.trigger)) backgroundRunIds.add(run.id);
+              else peerRunIds.add(run.id);
+            }
             for (const id of runIds) checkedRunIds.add(id);
           }
           const visible = userVisibleMessages(
@@ -247,7 +281,7 @@ export async function loadThreadPreviews(
               blocks: (Array.isArray(message.blocks) ? message.blocks : []) as MessageBlock[],
               runId: message.runId ?? undefined,
             })),
-            { knownPeerRunIds: peerRunIds },
+            { knownPeerRunIds: peerRunIds, backgroundRunIds },
           );
           // A progress/choice-only row must not hide a real sentence in the same page.
           const preview = visible.map((message) => previewFromBlocks(message.blocks)).find(Boolean);

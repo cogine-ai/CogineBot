@@ -3,6 +3,10 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../../src/styles.css";
 
+const portrait = `data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" fill="#a9d6e8"/><path d="M4 48c2-10 9-15 20-15s18 5 20 15" fill="#31465d"/><ellipse cx="24" cy="22" rx="11" ry="13" fill="#d7a17d"/><path d="M13 21c0-12 5-17 12-17s12 5 12 17c-4-4-7-7-12-7s-8 3-12 7" fill="#3c2d2a"/></svg>',
+)}`;
+
 function MotionFixture() {
   const [working, setWorking] = useState(true);
   const [late, setLate] = useState(false);
@@ -73,6 +77,14 @@ function MotionFixture() {
       <div data-testid="history-avatar" className="mt-8 flex items-center gap-3">
         <BotAvatar color={color} identity="motion-a" size={24} />
         <span>A historical message keeps the companion still.</span>
+      </div>
+      <div className="mt-8 flex items-center gap-5">
+        <div data-testid="working-photo">
+          <BotAvatar color={portrait} identity="working-photo" size={38} status={status} />
+        </div>
+        <div data-testid="idle-photo">
+          <BotAvatar color={portrait} identity="idle-photo" size={38} status="idle" />
+        </div>
       </div>
     </main>
   );
