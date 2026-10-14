@@ -3,7 +3,7 @@ import { initialBootstrapTarget } from "./bootstrap-target";
 import { markOnce } from "./performance";
 import { rpc } from "./rpc";
 
-let ticketBoardEnabled = false;
+let ticketBoardEnabled: boolean | undefined;
 const capabilityListeners = new Set<() => void>();
 export function getTicketBoardEnabled() {
   return ticketBoardEnabled;

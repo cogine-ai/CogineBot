@@ -17,7 +17,12 @@ import { LoadingState } from "./components/ai/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SubscriptionGate } from "./components/SubscriptionGate";
 import { authClient } from "./lib/auth";
-import { getTicketBoardEnabled, subscribeTicketBoardEnabled } from "./lib/bootstrap";
+import {
+  getTicketBoardEnabled,
+  peekInitialBootstrap,
+  subscribeTicketBoardEnabled,
+  takeInitialBootstrap,
+} from "./lib/bootstrap";
 import { synchronizeComposerSession } from "./lib/composer-session";
 import { markAfterPaint, markOnce } from "./lib/performance";
 import { getRemoteImagesEnabled, subscribeRemoteImages } from "./lib/remote-images-preference";
@@ -52,6 +57,30 @@ const ArtifactsPage = lazy(() =>
 const BoardPage = lazy(() =>
   import("./pages/Board").then((module) => ({ default: module.BoardPage })),
 );
+
+function BoardRoute() {
+  const enabled = useSyncExternalStore(
+    subscribeTicketBoardEnabled,
+    getTicketBoardEnabled,
+    () => undefined,
+  );
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (enabled !== undefined) return;
+    let cancelled = false;
+    void (peekInitialBootstrap() ?? takeInitialBootstrap()).catch(() => {
+      if (!cancelled) setFailed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  if (enabled === true) return <BoardPage />;
+  if (enabled === false) return <Navigate to="/app" replace />;
+  return failed ? <AppFailed /> : <ShellSkeleton />;
+}
 
 function SsoCallbackPage() {
   useEffect(() => {
@@ -92,11 +121,6 @@ function SessionApp() {
   const [searchParams] = useSearchParams();
   const signInDestination =
     searchParams.get("next") === "/integrations/setup" ? "/integrations/setup" : "/app";
-  const ticketBoardEnabled = useSyncExternalStore(
-    subscribeTicketBoardEnabled,
-    getTicketBoardEnabled,
-    () => false,
-  );
   const session = authClient.useSession();
   const gate = sessionGate(session);
   const [holdingUnreachable, setHoldingUnreachable] = useState(false);
@@ -182,7 +206,7 @@ function SessionApp() {
             <Route path="/app/g/:groupId" element={<ShellPage key={user?.id} />} />
             <Route path="/app/artifacts" element={<ArtifactsPage />} />
             <Route path="/app/artifacts/:artifactId" element={<ArtifactsPage />} />
-            {ticketBoardEnabled ? <Route path="/app/board" element={<BoardPage />} /> : null}
+            <Route path="/app/board" element={<BoardRoute />} />
             <Route path="/app/:botId" element={<ShellPage key={user?.id} />} />
           </Route>
         </Routes>
