@@ -81,7 +81,7 @@ function hangHistory() {
   return resolve;
 }
 
-async function renderTerminal() {
+async function renderTerminal(onTakeControl?: () => Promise<boolean>) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -95,9 +95,15 @@ async function renderTerminal() {
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<TerminalApp botId="bot-1" canUseShell={false} />);
+    root.render(<TerminalApp botId="bot-1" canUseShell={false} onTakeControl={onTakeControl} />);
   });
   return {
+    container,
+    async receiveControl() {
+      await act(async () => {
+        root.render(<TerminalApp botId="bot-1" canUseShell onTakeControl={onTakeControl} />);
+      });
+    },
     async cleanup() {
       await act(async () => root.unmount());
       container.remove();
@@ -146,6 +152,55 @@ it("shows a live command that arrives before history and keeps it when that page
       "\x1bc\x1b[1m$ echo hi\x1b[0m\r\nhi\r\n",
       "\x1bc\x1b[1m$ echo hi\x1b[0m\r\nhi\r\n",
     ]);
+  } finally {
+    await view.cleanup();
+  }
+});
+
+it("only requests control after the explicit action and prevents duplicate requests", async () => {
+  hangHistory();
+  let finish!: (granted: boolean) => void;
+  const request = new Promise<boolean>((resolve) => {
+    finish = resolve;
+  });
+  const onTakeControl = vi.fn(() => request);
+  const view = await renderTerminal(onTakeControl);
+  try {
+    const button = view.container.querySelector<HTMLButtonElement>("button");
+    expect(button?.textContent).toBe("Take control");
+    expect(onTakeControl).not.toHaveBeenCalled();
+    await act(async () => {
+      button?.click();
+      button?.click();
+    });
+    expect(onTakeControl).toHaveBeenCalledTimes(1);
+    expect(button?.disabled).toBe(true);
+    expect(view.container.querySelector('[data-testid="computer-shell"]')).toBeNull();
+    await act(async () => finish(true));
+    // The request receipt alone cannot enable input; server control status must arrive too.
+    expect(view.container.querySelector('[data-testid="computer-shell"]')).toBeNull();
+    expect(button?.disabled).toBe(false);
+  } finally {
+    await view.cleanup();
+  }
+});
+
+it("allows retry after a failed control request without later opening an unsolicited shell", async () => {
+  hangHistory();
+  const onTakeControl = vi.fn().mockResolvedValue(false);
+  const view = await renderTerminal(onTakeControl);
+  try {
+    const button = view.container.querySelector<HTMLButtonElement>("button");
+    await act(async () => button?.click());
+    expect(onTakeControl).toHaveBeenCalledTimes(1);
+    expect(button?.disabled).toBe(false);
+    await act(async () => button?.click());
+    expect(onTakeControl).toHaveBeenCalledTimes(2);
+    await view.receiveControl();
+    expect(view.container.querySelector('[data-testid="computer-shell"]')).toBeNull();
+    expect(
+      view.container.querySelector('[data-testid="computer-terminal"]')?.getAttribute("hidden"),
+    ).toBeNull();
   } finally {
     await view.cleanup();
   }

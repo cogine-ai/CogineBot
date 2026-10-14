@@ -101,6 +101,14 @@ test("user control leaves another Team bot's screen available", async ({ page },
   await page.getByTestId("computer-preview").hover();
   await page.getByTestId("computer-preview-open").click();
   await expect(page.getByRole("button", { name: "Close computer" })).toBeVisible();
+  await expect(
+    page.getByTestId("computer-chrome").getByText("Watching", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByTestId("computer-chrome")
+    .getByRole("button", { name: "Take control", exact: true })
+    .click();
+  await expect(page.getByText("You have control", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close computer" }).click();
 
   await openBot(page, "Worker");
@@ -138,7 +146,9 @@ test("a failed control release keeps the computer open for retry", async ({ page
   await page.getByTestId("computer-preview").hover();
   await page.getByTestId("computer-preview-open").click();
   const chrome = page.getByTestId("computer-chrome");
-  const release = chrome.getByRole("button", { name: "Release", exact: true });
+  await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+  await chrome.getByRole("button", { name: "Take control", exact: true }).click();
+  const release = chrome.getByRole("button", { name: "I’m done", exact: true });
   await expect(release).toBeVisible();
   await page.route("**/rpc/computer/release", (route) =>
     route.fulfill({ status: 500, body: "release unavailable" }),
@@ -149,7 +159,9 @@ test("a failed control release keeps the computer open for retry", async ({ page
   await captureScreenshot(page, testInfo, "48-team-computer-release-retry");
   await page.unroute("**/rpc/computer/release");
   await release.click();
-  await expect(page.getByRole("button", { name: "Close computer" })).toBeHidden();
+  await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close computer" })).toBeVisible();
+  await expect(chrome.getByRole("button", { name: "Take control", exact: true })).toBeVisible();
 });
 
 test("an active Team bot must be stopped before user takeover", async ({ page }, testInfo) => {
@@ -223,18 +235,85 @@ test("an active Team bot must be stopped before user takeover", async ({ page },
     )
     .toBeNull();
 
-  // After stop, Open via hover is the takeover path (no Take control button).
+  // Stopping does not grant control: opening still watches until the explicit action.
   await page.getByTestId("computer-preview").hover();
   await page.getByTestId("computer-preview-open").click();
   await expect(page.getByRole("button", { name: "Close computer" })).toBeVisible();
+  await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+  await chrome.getByRole("button", { name: "Take control", exact: true }).click();
   await expect(chrome.getByText("You have control", { exact: true })).toBeVisible();
   await expect(chrome.getByRole("button", { name: /Take control/i })).toHaveCount(0);
-  await expect(chrome.getByRole("button", { name: "Release", exact: true })).toBeVisible();
+  await expect(chrome.getByRole("button", { name: "I’m done", exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "49-team-computer-open-after-stop");
-  await chrome.getByRole("button", { name: "Release", exact: true }).click();
-  // Release closes the overlay and clears control without a DB edit.
-  await expect(page.getByRole("button", { name: "Close computer" })).toHaveCount(0);
+  await chrome.getByRole("button", { name: "I’m done", exact: true }).click();
+  // Done clears control and leaves the same screen open for watching.
+  await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close computer" })).toBeVisible();
 });
+
+for (const mode of ["team", "dedicated"] as const) {
+  test(`${mode} computer only requests control explicitly and returns to Watching`, async ({
+    page,
+  }, testInfo) => {
+    await signup(page, `watch-${mode}-${Date.now()}@rakazo.test`, "password12", "Watch First");
+    await completeOnboarding(page);
+    const botId =
+      mode === "team" ? activeBotId(page) : await createBot(page, "Private Watch", mode);
+    await waitForIdle(page, botId);
+    let takeovers = 0;
+    const releases: unknown[] = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/rpc/computer/takeover")) takeovers += 1;
+      if (request.url().endsWith("/rpc/computer/release")) releases.push(request.postDataJSON());
+    });
+    await openComputerPanel(page);
+    const preview = page.getByTestId("computer-preview-open");
+    const beforeWatching = await rpc<ComputerStatus>(page, "computer/status", { botId });
+    expect(beforeWatching.controlHolder).not.toBe("user");
+    await preview.click();
+    const chrome = page.getByTestId("computer-chrome");
+    await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+    await expect(chrome.getByRole("button", { name: "I’m done", exact: true })).toHaveCount(0);
+    await expect(rpc<ComputerStatus>(page, "computer/status", { botId })).resolves.toMatchObject({
+      controlHolder: beforeWatching.controlHolder,
+      controlBotId: beforeWatching.controlBotId,
+    });
+    expect(takeovers).toBe(0);
+    await captureScreenshot(page, testInfo, `${mode}-computer-watching`);
+
+    // Closing and reopening a view does not acquire or release control.
+    await page.keyboard.press("Escape");
+    await expect(chrome).toBeHidden();
+    await preview.click();
+    await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+    expect(takeovers).toBe(0);
+    expect(releases).toEqual([]);
+
+    await chrome.getByRole("button", { name: "Take control", exact: true }).click();
+    await expect(chrome.getByText("You have control", { exact: true })).toBeVisible();
+    expect(takeovers).toBe(1);
+    await expect(rpc<ComputerStatus>(page, "computer/status", { botId })).resolves.toMatchObject({
+      controlHolder: "user",
+      controlBotId: botId,
+    });
+    await captureScreenshot(page, testInfo, `${mode}-computer-controlling`);
+
+    await page.getByRole("button", { name: "Close computer", exact: true }).click();
+    await preview.click();
+    await expect(chrome.getByText("You have control", { exact: true })).toBeVisible();
+    expect(takeovers).toBe(1);
+    expect(releases).toEqual([]);
+    await chrome.getByRole("button", { name: "I’m done", exact: true }).click();
+    await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+    await expect(chrome.getByRole("button", { name: "Take control", exact: true })).toBeVisible();
+    expect(releases).toEqual([{ json: { botId, reason: "done" } }]);
+    await expect(rpc<ComputerStatus>(page, "computer/status", { botId })).resolves.toMatchObject({
+      controlHolder: "bot",
+      controlBotId: null,
+    });
+    await captureScreenshot(page, testInfo, `${mode}-computer-returned-to-watching`);
+  });
+}
 
 async function createBot(page: Page, name: string, mode: "team" | "dedicated") {
   return createNamedBot(page, name, { computerMode: mode });

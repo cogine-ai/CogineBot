@@ -55,7 +55,10 @@ test("the computer workspace browses, uploads, and downloads files over the scre
   });
   await openComputer(page);
 
-  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page
+    .getByTestId("computer-viewport")
+    .getByRole("button", { name: "Files", exact: true })
+    .click();
   const files = page.getByRole("region", { name: "Files" });
   await files.getByRole("button", { name: /^reports/ }).click();
   await expect(files.getByText("~/reports", { exact: true })).toBeVisible();
@@ -131,18 +134,21 @@ test("the computer workspace browses, uploads, and downloads files over the scre
   await expect(browser).toHaveAttribute("aria-pressed", "true");
   await expect(files).toBeHidden();
   await expect(page.getByRole("region", { name: "Terminal" })).toBeHidden();
-  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page
+    .getByTestId("computer-viewport")
+    .getByRole("button", { name: "Files", exact: true })
+    .click();
   await expect(files.getByText("Quarterly numbers checked.")).toBeVisible();
 
   await page.getByRole("button", { name: "Close Files" }).click();
   await expect(files).toBeHidden();
 
   // Control can end while the computer stays open (released, expired, or handed back for
-  // maintenance). "Open shell" then takes control again and goes straight to the shell.
+  // maintenance). The terminal’s explicit Take control action goes straight to the shell.
   await rpc(page, "computer/release", { botId });
   await expect(page.getByText("You have control")).toBeHidden();
   await expect(terminalWindow.getByRole("tab", { name: "Shell" })).toHaveCount(0);
-  await terminalWindow.getByRole("button", { name: "Open shell" }).click();
+  await terminalWindow.getByRole("button", { name: "Take control" }).click();
   await expect(page.getByText("You have control")).toBeVisible();
   await expect(terminalWindow.getByRole("tab", { name: "Shell" })).toHaveAttribute(
     "aria-selected",
