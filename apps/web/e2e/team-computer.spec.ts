@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import type { ComputerStatus } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -22,7 +23,12 @@ test("Team Computer gives bots a home folder plus shared space while Private sta
   const chiefId = activeBotId(page);
 
   await openComputerPanel(page);
-  await expect(page.getByText("Team Computer", { exact: true }).last()).toBeVisible();
+  await expect
+    .poll(() => rpc<ComputerStatus>(page, "computer/status", { botId: chiefId }))
+    .toMatchObject({ mode: "team", state: "running" });
+  await expect(
+    page.getByTestId("computer-preview").getByTitle("Bot screen preview", { exact: true }),
+  ).toBeVisible();
   await captureScreenshot(page, testInfo, "41-team-computer");
 
   const writerId = await createBot(page, "Writer", "team");
