@@ -688,6 +688,8 @@ export function ShellPage() {
   const [routineError, setRoutineError] = useState<string | null>(null);
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
   const [computerOpen, setComputerOpen] = useState(false);
+  const [takingComputerControl, setTakingComputerControl] = useState(false);
+  const computerControlPending = useRef(false);
   const [computerBotId, setComputerBotId] = useState<string | undefined>();
   const computerOpenRef = useRef(false);
   const computerBotIdRef = useRef<string | undefined>(undefined);
@@ -2881,8 +2883,8 @@ export function ShellPage() {
     return () => window.clearInterval(timer);
   }, [panel, computerOpen, computerBot?.id, active?.id, computer?.state]);
 
-  /** Open the computer view, taking control when possible. Resolves false if booting failed. */
-  async function openComputer(botId?: string) {
+  /** Opening only watches; an explicit Take control requests the control lease. */
+  async function openComputer(botId?: string, takeControl = false) {
     const id = botId ?? active?.id;
     if (!id) return false;
     const bot = botsRef.current.find((candidate) => candidate.id === id);
@@ -2898,7 +2900,7 @@ export function ShellPage() {
     }
     setComputerOpen(true);
     computerVisible.current = true;
-    const needsTakeover = !userHoldsComputerControl(targetComputer, id);
+    const needsTakeover = takeControl && !userHoldsComputerControl(targetComputer, id);
     const blocked = computerTakeoverBlocked(targetComputer, snapshot?.run?.status);
     try {
       await bootComputer({
@@ -2913,6 +2915,17 @@ export function ShellPage() {
       return false;
     }
   }
+  async function takeComputerControl(botId: string) {
+    if (computerControlPending.current) return false;
+    computerControlPending.current = true;
+    setTakingComputerControl(true);
+    try {
+      return await openComputer(botId, true);
+    } finally {
+      computerControlPending.current = false;
+      setTakingComputerControl(false);
+    }
+  }
   openComputerRef.current = openComputer;
   const onOpenComputer = useCallback((botId?: string) => {
     void openComputerRef.current(botId);
@@ -2922,15 +2935,16 @@ export function ShellPage() {
     async (reason?: ComputerReleaseReason) => {
       const botId = computerBotIdRef.current ?? activeBotId.current;
       if (!botId) return;
+      setComputerError(null);
+      setComputerErrorFromScreen(false);
       try {
         await rpc.computer.release({ botId, reason });
         if (computerBotIdRef.current !== botId && activeBotId.current !== botId) return;
-        setComputerOpen(false);
+        await refreshComputerFor(botId);
+        await refreshComputerScreen(botId);
         const groupId = activeGroupId.current;
         if (groupId) {
           await refreshGroupThreadRef.current(groupId).catch(() => undefined);
-        } else {
-          await refreshThreadRef.current(botId).catch(() => undefined);
         }
       } catch {
         if (computerBotIdRef.current !== botId && activeBotId.current !== botId) return;
@@ -5042,6 +5056,10 @@ export function ShellPage() {
                       <Trans>You have control</Trans>
                     </span>
                   )
+                ) : !recordingSkill ? (
+                  <span className="text-[13px] text-muted-foreground">
+                    <Trans>Watching</Trans>
+                  </span>
                 ) : null}
               </div>
               <div className="flex items-center gap-3">
@@ -5065,6 +5083,17 @@ export function ShellPage() {
                     takeoverRequested={Boolean(computer?.takeoverRequested)}
                     onRelease={releaseComputer}
                   />
+                ) : computer?.state === "running" &&
+                  !computerTakeoverBlocked(computer, snapshot?.run?.status) ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={takingComputerControl}
+                    onClick={() => void takeComputerControl(computerBot.id)}
+                  >
+                    <Trans>Take control</Trans>
+                  </Button>
                 ) : null}
                 {computerBot && !recordingSkill ? (
                   <TeachComputerOverlayControl
@@ -5113,7 +5142,7 @@ export function ShellPage() {
                   computer?.state === "running" &&
                   !hasControl &&
                   !computerTakeoverBlocked(computer, snapshot?.run?.status)
-                    ? () => openComputer(computerBot.id)
+                    ? () => takeComputerControl(computerBot.id)
                     : undefined
                 }
               >
@@ -6800,19 +6829,33 @@ function ComputerReleaseActions({
   takeoverRequested: boolean;
   onRelease: (reason?: ComputerReleaseReason) => Promise<void>;
 }) {
-  if (!takeoverRequested) {
-    return (
-      <Button type="button" variant="outline" size="sm" onClick={() => void onRelease()}>
-        <Trans>Release</Trans>
-      </Button>
-    );
+  const [releasing, setReleasing] = useState(false);
+  const pending = useRef(false);
+  async function release(reason: ComputerReleaseReason) {
+    if (pending.current) return;
+    pending.current = true;
+    setReleasing(true);
+    try {
+      await onRelease(reason);
+    } finally {
+      pending.current = false;
+      setReleasing(false);
+    }
   }
   return (
     <div className="flex items-center gap-2">
-      <Button type="button" variant="outline" size="sm" onClick={() => void onRelease("skipped")}>
-        <Trans>Skip</Trans>
-      </Button>
-      <Button type="button" size="sm" onClick={() => void onRelease("done")}>
+      {takeoverRequested ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={releasing}
+          onClick={() => void release("skipped")}
+        >
+          <Trans>Skip</Trans>
+        </Button>
+      ) : null}
+      <Button type="button" size="sm" disabled={releasing} onClick={() => void release("done")}>
         <Trans>I’m done</Trans>
       </Button>
     </div>

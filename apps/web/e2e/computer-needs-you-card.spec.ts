@@ -48,8 +48,19 @@ test("needs-you computer card opens the computer", async ({ page }, testInfo) =>
   await expect(open).toHaveText("Open");
   await captureScreenshot(page, testInfo, "computer-needs-you-card");
 
+  let takeovers = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/computer/takeover")) takeovers += 1;
+  });
   await open.click();
   await expect(page.getByRole("button", { name: "Close computer" })).toBeVisible();
+  await expect(
+    page.getByTestId("computer-chrome").getByText("Watching", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("computer-chrome").getByRole("button", { name: "Take control", exact: true }),
+  ).toBeVisible();
+  expect(takeovers).toBe(0);
   await expect(page.getByTestId("computer-viewport")).toBeVisible();
   await expectSidebarEdgeClickReachesComputer(page);
   await captureScreenshot(page, testInfo, "computer-needs-you-card-open");

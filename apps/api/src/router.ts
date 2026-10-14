@@ -2793,10 +2793,25 @@ export function createRouter(deps: RouterDeps) {
               select: { botId: true, status: true },
             })
           : null;
+        // Dedicated computers do not hold Team execution leases. Preserve the pending
+        // request recorded by pauseRunForTakeover instead of clearing its run binding.
+        const dedicatedTakeoverRun =
+          bot.computer.scope !== "team" && bot.computer.controlRunId
+            ? await deps.prisma.run.findFirst({
+                where: {
+                  id: bot.computer.controlRunId,
+                  spaceId: context.actor.spaceId,
+                  botId: bot.id,
+                  status: "waiting_takeover",
+                },
+                select: { id: true },
+              })
+            : null;
         const waitingForTakeover =
-          executionRun?.botId === bot.id &&
-          (executionRun.status === "waiting_takeover" ||
-            bot.computer.controlRunId === executionLease?.runId);
+          Boolean(dedicatedTakeoverRun) ||
+          (executionRun?.botId === bot.id &&
+            (executionRun.status === "waiting_takeover" ||
+              bot.computer.controlRunId === executionLease?.runId));
         if (
           executionBlocksUserTakeover({
             hasLease: Boolean(executionLease),
@@ -2819,13 +2834,17 @@ export function createRouter(deps: RouterDeps) {
             maintenanceId: null,
             controlHolder: { not: "user" },
             controlLeaseId: null,
+            // A Dedicated run may request takeover after the snapshot above.
+            // Retry rather than overwrite that newly recorded pending binding.
+            ...(bot.computer.scope !== "team" ? { controlRunId: bot.computer.controlRunId } : {}),
           },
           data: {
             controlHolder: "user",
             controlLeaseId: leaseId,
             controlLeaseExpiresAt: expiresAt,
             controlBotId: bot.id,
-            controlRunId: waitingForTakeover ? executionLease?.runId : null,
+            controlRunId:
+              dedicatedTakeoverRun?.id ?? (waitingForTakeover ? executionLease?.runId : null),
             state: "running",
           },
         });
