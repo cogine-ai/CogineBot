@@ -717,7 +717,8 @@ stable `vX.Y.Z` has been published, GHCR may only have `edge` and `sha-*` tags; 
 `latest` unless that tag exists in the registry.
 
 Tag publications run serially. Only the newest canonical stable repository tag can publish stable
-images, and it cannot be older than an already published stable GitHub release. This prevents old
+images. Its build commit must already be on `main`, and its version cannot be older than an already
+published stable GitHub release. This prevents old
 workflow reruns from moving `latest` or `vX.Y` backward, including while a newer tag's desktop
 release is still being built. A newer stable tag blocks older stable publications even if its build
 has not succeeded; correct or remove an erroneous newer tag before retrying. Valid prereleases

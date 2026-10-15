@@ -34,6 +34,8 @@ function runPublicationPolicy(options: {
   releases?: string[];
   tagsExit?: number;
   releasesExit?: number;
+  ancestry?: string;
+  ancestryExit?: number;
 }) {
   const directory = mkdtempSync(path.join(tmpdir(), "coginebot-image-policy-"));
   try {
@@ -49,6 +51,10 @@ function runPublicationPolicy(options: {
 set -euo pipefail
 printf '%s\\n' "$*" >> "$POLICY_FIXTURES/calls"
 case "$*" in
+  *'/compare/'*)
+    printf '%s\\n' "$POLICY_ANCESTRY"
+    exit "$POLICY_ANCESTRY_EXIT"
+    ;;
   *'/tags?per_page=100'*)
     cat "$POLICY_FIXTURES/tags"
     exit "$POLICY_TAGS_EXIT"
@@ -72,12 +78,15 @@ esac
         ...process.env,
         PATH: `${directory}${path.delimiter}${process.env.PATH ?? ""}`,
         GITHUB_REPOSITORY: "example/project",
+        GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
         GITHUB_OUTPUT: output,
         RELEASE_REF_TYPE: options.refType ?? "tag",
         RELEASE_TAG: options.tag,
         POLICY_FIXTURES: directory,
         POLICY_TAGS_EXIT: String(options.tagsExit ?? 0),
         POLICY_RELEASES_EXIT: String(options.releasesExit ?? 0),
+        POLICY_ANCESTRY: options.ancestry ?? "identical",
+        POLICY_ANCESTRY_EXIT: String(options.ancestryExit ?? 0),
       },
     });
     return {
@@ -140,6 +149,33 @@ describe("server image publish workflow", () => {
       expect(result.calls).toContain("--paginate repos/example/project/tags?per_page=100");
       expect(result.calls).toContain("--paginate repos/example/project/releases?per_page=100");
     }
+  });
+
+  it.each(["ahead", "identical"])("allows a stable build already on main: %s", (ancestry) => {
+    const result = runPublicationPolicy({ tag: "v0.2.1", ancestry });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toBe("stable=true\n");
+    expect(result.calls).toContain(
+      "repos/example/project/compare/0123456789abcdef0123456789abcdef01234567...main --jq .status",
+    );
+  });
+
+  it.each(["behind", "diverged", "", "null"])(
+    "rejects a stable build that is not verifiably on main: %s",
+    (ancestry) => {
+      const result = runPublicationPolicy({ tag: "v0.2.1", ancestry });
+      expect(result.status).toBe(1);
+      expect(result.output).not.toContain("stable=true");
+      expect(result.stderr).toContain("commit already on main");
+      expect(result.calls).not.toContain("/tags?");
+    },
+  );
+
+  it("fails closed when GitHub cannot compare the immutable build commit with main", () => {
+    const result = runPublicationPolicy({ tag: "v0.2.1", ancestryExit: 1 });
+    expect(result.status).toBe(1);
+    expect(result.output).not.toContain("stable=true");
+    expect(result.calls).not.toContain("/tags?");
   });
 
   it("orders versions numerically and excludes nonstable tags", () => {

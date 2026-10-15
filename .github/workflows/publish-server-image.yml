@@ -218,6 +218,14 @@ jobs:
             exit 1
           fi
 
+          ancestry="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...main" --jq .status)"
+          case "$ancestry" in
+            ahead|identical) ;;
+            *)
+              echo "Stable images must be built from a commit already on main." >&2
+              exit 1
+              ;;
+          esac
           tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/tags?per_page=100" --jq '.[].name')"
           newest_tag="$(sed -nE "/${stable_pattern}/p" <<< "$tags" | sort -V | tail -n 1)"
           if [[ "$newest_tag" != "$RELEASE_TAG" ]]; then
