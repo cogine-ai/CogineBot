@@ -78,8 +78,8 @@ jobs:
       # One rolling release keeps a stable download URL:
       # https://github.com/<owner>/<repo>/releases/download/android/coginebot.apk
       # It never becomes GitHub's "latest" release, which the desktop updater reads. An existing
-      # release is updated in place: the new APK is uploaded under a temporary name before the old
-      # one is removed, so a failed run leaves the previous download working.
+      # release is updated in place. Keep the previous asset until its replacement is promoted;
+      # GitHub has no atomic asset swap, so restore the canonical name if promotion fails.
       - name: Publish rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -101,9 +101,10 @@ jobs:
             exit 0
           fi
 
-          staged="coginebot-$VERSION_CODE.apk"
+          staged="coginebot-$VERSION_CODE-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.apk"
+          backup="coginebot-previous-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.apk"
           cp "$RUNNER_TEMP/coginebot.apk" "$RUNNER_TEMP/$staged"
-          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/$staged" --clobber
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/$staged"
           assets="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets')"
           staged_id="$(jq -r --arg name "$staged" '.[] | select(.name == $name) | .id' <<< "$assets")"
           old_id="$(jq -r '.[] | select(.name == "coginebot.apk") | .id' <<< "$assets")"
@@ -111,18 +112,34 @@ jobs:
             echo "The uploaded $staged is missing from the release; leaving the previous APK in place." >&2
             exit 1
           fi
+          restore_previous() {
+            status=$?
+            if [[ "$status" != 0 && -n "$old_id" ]]; then
+              if ! gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$old_id" -f name=coginebot.apk > /dev/null; then
+                echo "Could not restore coginebot.apk; the previous APK is retained as asset $old_id ($backup). Restore its name on the release page." >&2
+              fi
+            fi
+            return "$status"
+          }
+          trap restore_previous EXIT
           if [[ -n "$old_id" ]]; then
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old_id"
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$old_id" -f "name=$backup" > /dev/null
           fi
           for attempt in 1 2 3; do
             if gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$staged_id" -f name=coginebot.apk > /dev/null; then
               break
             fi
             if [[ "$attempt" == 3 ]]; then
-              echo "Could not rename $staged to coginebot.apk; rename it on the release page." >&2
+              echo "Could not promote $staged to coginebot.apk; restoring the previous APK." >&2
               exit 1
             fi
             sleep 5
           done
+          trap - EXIT
+          if [[ -n "$old_id" ]]; then
+            if ! gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old_id"; then
+              echo "The new coginebot.apk is published; the previous APK remains as $backup." >&2
+            fi
+          fi
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
           gh release edit "$RELEASE_TAG" --title "$title" --latest=false

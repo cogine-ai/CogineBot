@@ -716,6 +716,13 @@ architecture builds natively on its own runner and one manifest is assembled per
 stable `vX.Y.Z` has been published, GHCR may only have `edge` and `sha-*` tags; do not pin
 `latest` unless that tag exists in the registry.
 
+Tag publications run serially. Only the newest canonical stable repository tag can publish stable
+images, and it cannot be older than an already published stable GitHub release. This prevents old
+workflow reruns from moving `latest` or `vX.Y` backward, including while a newer tag's desktop
+release is still being built. A newer stable tag blocks older stable publications even if its build
+has not succeeded; correct or remove an erroneous newer tag before retrying. Valid prereleases
+remain source-addressed and never move stable aliases.
+
 Building the images yourself does not need QEMU. `docker compose up --build` builds for the host's
 own architecture, and a fork publishing multi-arch images should do what `publish-server-image.yml`
 does: build each architecture on a native runner (GitHub Actions provides `ubuntu-24.04-arm` for
@@ -736,8 +743,8 @@ until the next update has been accepted. If it is missing, rollback fails closed
 new content under an old tag.
 
 To populate the registry the first time, run the workflow manually (`workflow_dispatch`) or push a
-`v*` tag. A manual run produces `sha-<full-commit>`; only a stable `vX.Y.Z` tag (no prerelease
-suffix) produces `latest`, and any `v*` tag produces semver tags. The updater ignores prereleases
+`v*` tag. A manual run from a branch produces `sha-<full-commit>`; only the newest stable `vX.Y.Z`
+tag produces `latest`, and valid release tags produce semver tags. The updater ignores prereleases
 and refuses the official path until a stable `vX.Y.Z` exists.
 
 ### Updater sidecar

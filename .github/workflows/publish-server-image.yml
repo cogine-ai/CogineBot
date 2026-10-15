@@ -29,7 +29,8 @@ env:
   DOCKER_METADATA_SHORT_SHA_LENGTH: 40
 
 concurrency:
-  group: publish-server-image-${{ github.ref }}
+  # Tag runs share the moving stable aliases, so an older run must not publish after a newer one.
+  group: publish-server-image-${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -175,10 +176,68 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  publication-policy:
+    name: Validate image publication order
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stable: ${{ steps.policy.outputs.stable }}
+    steps:
+      - name: Validate stable aliases before publishing
+        id: policy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REF_TYPE" != "tag" ]]; then
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          stable_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          prerelease_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ "$RELEASE_TAG" =~ $prerelease_pattern ]]; then
+            IFS='.' read -ra identifiers <<< "${BASH_REMATCH[4]}"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "$identifier" =~ ^0[0-9]+$ ]]; then
+                echo "Numeric prerelease identifiers cannot have leading zeros." >&2
+                exit 1
+              fi
+            done
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$RELEASE_TAG" =~ $stable_pattern ]]; then
+            echo "Image release tags must use vMAJOR.MINOR.PATCH or a valid prerelease." >&2
+            exit 1
+          fi
+
+          tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/tags?per_page=100" --jq '.[].name')"
+          newest_tag="$(sed -nE "/${stable_pattern}/p" <<< "$tags" | sort -V | tail -n 1)"
+          if [[ "$newest_tag" != "$RELEASE_TAG" ]]; then
+            echo "Only the newest stable repository tag may publish stable image aliases." >&2
+            exit 1
+          fi
+          releases="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
+          latest_release="$(sed -nE "/${stable_pattern}/p" <<< "$releases" | sort -V | tail -n 1)"
+          if [[ -n "$latest_release" ]]; then
+            highest="$(printf '%s\n%s\n' "$latest_release" "$RELEASE_TAG" | sort -V | tail -n 1)"
+            if [[ "$highest" != "$RELEASE_TAG" ]]; then
+              echo "Stable images cannot be older than a published stable release." >&2
+              exit 1
+            fi
+          fi
+          echo "stable=true" >> "$GITHUB_OUTPUT"
+
   publish:
     name: Publish ${{ matrix.name }} image
     if: github.event_name != 'pull_request'
-    needs: build
+    needs: [build, publication-policy]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -215,13 +274,13 @@ jobs:
         with:
           # A fork can publish only to its own namespace; no credential can redirect this value.
           images: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
+          flavor: latest=false
           tags: |
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ needs.publication-policy.outputs.stable == 'true' }}
             type=sha,prefix=sha-
             type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            # Stable releases only: a hyphen marks a prerelease (v1.0.0-rc.1) that must not move latest.
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=raw,value=latest,enable=${{ needs.publication-policy.outputs.stable == 'true' }}
       - name: Assemble and verify the multi-arch manifest
         id: manifest
         working-directory: /tmp/digests

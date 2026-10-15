@@ -1,4 +1,5 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import type { TransactionalEmail } from "@rakazo/adapter-kit";
 import type * as Db from "@rakazo/db";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +24,7 @@ let activeIssuer = issuer;
 let sequence: number;
 let cookies: string;
 let sentCodes: string[];
+let sentEmails: TransactionalEmail[];
 let corruptSignature = false;
 let omitIdToken = false;
 const codes = new Map<
@@ -79,6 +81,7 @@ function setup(options: Partial<AuthEnv> = {}) {
       }),
       send: vi.fn(async (message) => {
         sentCodes.push(message.text);
+        sentEmails.push(message);
       }),
     },
     oidc: {
@@ -177,6 +180,7 @@ beforeEach(() => {
   sequence = 0;
   cookies = "";
   sentCodes = [];
+  sentEmails = [];
   corruptSignature = false;
   omitIdToken = false;
   codes.clear();
@@ -543,6 +547,12 @@ describe("SSO-only account deletion", () => {
     );
     expect((await request("/request-account-deletion", {}, sessionToken)).status).toBe(200);
     const code = sentCodes.at(-1)!.match(/\b[a-f0-9]{32}\b/)![0];
+    expect(sentEmails.at(-1)).toEqual({
+      to: "sso@example.test",
+      subject: "Confirm CogineBot account deletion",
+      text: `Enter this code in CogineBot to delete your account:\n\n${code}\n\nThis code expires in ten minutes. If you did not request deletion, ignore this email.`,
+      html: `<p>Enter this code in CogineBot to delete your account:</p><p>${code}</p><p>This code expires in ten minutes. If you did not request deletion, ignore this email.</p>`,
+    });
     const deleted = await request("/delete-user", { token: code }, sessionToken);
     expect(deleted.status, await deleted.clone().text()).toBe(200);
     expect(rows("user")).toHaveLength(0);
