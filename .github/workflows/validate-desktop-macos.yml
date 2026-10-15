@@ -76,7 +76,7 @@ jobs:
           codesign -d --verbose=4 "$app" 2>&1 | grep -q '^Authority=Developer ID Application:'
           xcrun stapler validate "$app"
           spctl --assess --type execute "$app"
-          lipo -verify_arch x86_64 arm64 "$app/Contents/MacOS/CogineBot"
+          lipo "$app/Contents/MacOS/CogineBot" -verify_arch x86_64 arm64
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = ai.cogine.coginebot.desktop
           version="$(node -p "require('./apps/desktop/package.json').version")"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"

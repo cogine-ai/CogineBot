@@ -135,7 +135,7 @@ describe("macOS distribution validation", () => {
       "codesign --verify --deep --strict",
       'xcrun stapler validate "$app"',
       'spctl --assess --type execute "$app"',
-      "lipo -verify_arch x86_64 arm64",
+      'lipo "$app/Contents/MacOS/CogineBot" -verify_arch x86_64 arm64',
       'hdiutil verify "$dmg"',
       'unzip -tq "$zip"',
       'xcrun stapler validate "$mountpoint/CogineBot.app"',
