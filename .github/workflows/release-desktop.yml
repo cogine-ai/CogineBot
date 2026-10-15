@@ -81,9 +81,11 @@ jobs:
             fi
           fi
 
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$tag_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "version=$version"
+            echo "sha=$tag_sha"
+          } >> "$GITHUB_OUTPUT"
       - name: Include every supported desktop platform
         id: platforms
         shell: bash
@@ -303,9 +305,11 @@ jobs:
 
           (
             cd release-artifacts
+            checksums="$(mktemp)"
             find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
               sort -z |
-              xargs -0 sha256sum > SHA256SUMS
+              xargs -0 sha256sum > "$checksums"
+            mv "$checksums" SHA256SUMS
           )
       - name: Attest release provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3

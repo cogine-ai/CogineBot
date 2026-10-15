@@ -142,7 +142,7 @@ jobs:
           NODE
           (
             cd "$out"
-            shasum -a 256 "CogineBot-$version-universal.dmg" "CogineBot-$version-universal-mac.zip" *.blockmap latest-mac.yml > SHA256SUMS
+            shasum -a 256 "CogineBot-$version-universal.dmg" "CogineBot-$version-universal-mac.zip" ./*.blockmap latest-mac.yml > SHA256SUMS
           )
           {
             echo "## macOS distribution validation"
