@@ -123,8 +123,11 @@ describe("consent grants", () => {
     expect(status.recipients[0]?.name).toBe("OpenAI");
     expect(deps.prisma.spaceVoicePreference.findMany).not.toHaveBeenCalled();
   });
-  it("returns an operator policy without requiring a hosted provider", async () => {
+  it("defaults to the repository policy and preserves an operator override", async () => {
     const { deps, actor } = setup();
+    expect((await aiConsentStatus(deps, actor)).privacyUrl).toBe(
+      "https://github.com/cogine-ai/CogineBot/blob/main/PRIVACY.md",
+    );
     deps.env.privacyPolicyUrl = "https://example.com/privacy";
     expect((await aiConsentStatus(deps, actor)).privacyUrl).toBe("https://example.com/privacy");
   });

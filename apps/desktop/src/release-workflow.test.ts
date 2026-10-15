@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -12,6 +14,40 @@ const macosValidation = readFileSync(
 );
 
 const expression = (inner: string) => `\${{ ${inner} }}`;
+
+function workflowStep(name: string) {
+  const start = workflow.indexOf(`      - name: ${name}\n`);
+  if (start === -1) throw new Error(`Workflow step not found: ${name}`);
+  const end = workflow.indexOf("\n      - ", start + 1);
+  return workflow.slice(start, end === -1 ? undefined : end);
+}
+
+function runWorkflowScript(name: string, env: Record<string, string>) {
+  const script = workflowStep(name).match(/ {8}run: \|\n([\s\S]*)$/)?.[1];
+  if (!script) throw new Error(`Workflow script not found: ${name}`);
+  const directory = mkdtempSync(path.join(tmpdir(), "coginebot-release-contract-"));
+  const output = path.join(directory, "output");
+  const notes = path.join(directory, "notes.md");
+  try {
+    const result = spawnSync("bash", ["-euo", "pipefail", "-c", script.replace(/^ {10}/gm, "")], {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_OUTPUT: output,
+        RELEASE_NOTES_FILE: notes,
+        ...env,
+      },
+    });
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      output: existsSync(output) ? readFileSync(output, "utf8") : "",
+      notes: existsSync(notes) ? readFileSync(notes, "utf8") : "",
+    };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 describe("desktop release workflow", () => {
   it("cannot execute contributor pull-request code with release credentials", () => {
@@ -28,7 +64,7 @@ describe("desktop release workflow", () => {
     }
   });
 
-  it("requires signed platform builds before a single publication job", () => {
+  it("verifies platform signing modes before a single publication job", () => {
     expect(workflow).toContain("-c.forceCodeSigning=true");
     expect(workflow).toContain("codesign --verify --deep --strict");
     expect(workflow).toContain("Get-AuthenticodeSignature");
@@ -59,20 +95,91 @@ describe("desktop release workflow", () => {
     );
   });
 
-  it("keeps all desktop platforms and blocks incomplete signed releases", () => {
+  it("keeps all desktop platforms regardless of Windows signing mode", () => {
     expect(workflow).toContain(
       `include: ${expression("fromJSON(needs.validate.outputs.platforms)")}`,
     );
     expect(workflow).toContain(
       `include='[{"os":"macos-26","artifact":"macos"},{"os":"ubuntu-24.04","artifact":"linux"},{"os":"windows-2022","artifact":"windows"}]'`,
     );
-    expect(workflow).not.toContain("WINDOWS_SIGNING:");
     expect(workflow).not.toContain("WINDOWS_BUILT:");
-    expect(workflow).toContain("Require Windows signing credentials");
-    expect(workflow).toContain('test -n "$WIN_CSC_LINK"');
-    expect(workflow).toContain('test -n "$WIN_CSC_KEY_PASSWORD"');
+    expect(workflow).toContain(
+      `windows_signing: ${expression("steps.windows_signing.outputs.enabled")}`,
+    );
     expect(workflow).toContain("test -f release-artifacts/latest.yml");
     expect(workflow).toContain("compgen -G 'release-artifacts/*.exe' >/dev/null");
+  });
+
+  it.each([
+    { certificate: "true", password: "true", enabled: "true" },
+    { certificate: "false", password: "false", enabled: "false" },
+    { certificate: "true", password: "false", enabled: null },
+    { certificate: "false", password: "true", enabled: null },
+  ])("fails closed for partial Windows credentials: $certificate/$password", (credentials) => {
+    const result = runWorkflowScript("Resolve Windows signing mode", {
+      HAS_WINDOWS_CERTIFICATE: credentials.certificate,
+      HAS_WINDOWS_CERTIFICATE_PASSWORD: credentials.password,
+    });
+    if (credentials.enabled === null) {
+      expect(result.status).toBe(1);
+      expect(result.output).toBe("");
+      expect(result.stderr).toContain("Configure both Windows signing secrets");
+    } else {
+      expect(result.status).toBe(0);
+      expect(result.output).toBe(`enabled=${credentials.enabled}\n`);
+    }
+  });
+
+  it("exposes only credential-presence booleans to preflight and enforces the resulting signature state", () => {
+    const preflight = workflowStep("Resolve Windows signing mode");
+    expect(preflight).toContain(expression("secrets.DESKTOP_WIN_CSC_LINK != ''"));
+    expect(preflight).toContain(expression("secrets.DESKTOP_WIN_CSC_KEY_PASSWORD != ''"));
+    for (const secret of ["DESKTOP_WIN_CSC_LINK", "DESKTOP_WIN_CSC_KEY_PASSWORD"]) {
+      expect(workflow.split(expression(`secrets.${secret}`))).toHaveLength(2);
+      expect(workflowStep("Package x64 Windows app with the configured signing mode")).toContain(
+        expression(`secrets.${secret}`),
+      );
+    }
+    expect(workflow).toContain('"-c.forceCodeSigning=$WINDOWS_SIGNING"');
+    const verification = workflowStep("Verify Windows signing mode and official update feed");
+    expect(verification).toContain(
+      '$expectedStatus = if ($signingEnabled) { "Valid" } else { "NotSigned" }',
+    );
+    expect(verification).toContain("$signature.Status.ToString() -ne $expectedStatus");
+    expect(verification).toContain("if ($signingEnabled -and -not (Select-String");
+    expect(verification).toContain("$installers.Count -lt 1 -or $applications.Count -lt 1");
+    expect(workflow).not.toContain("verifyUpdateCodeSignature=false");
+  });
+
+  it.each(["true", "false"])(
+    "discloses the actual Windows signing mode in release notes: %s",
+    (mode) => {
+      const result = runWorkflowScript("Write public platform signing disclosure", {
+        WINDOWS_SIGNING: mode,
+      });
+      expect(result.status).toBe(0);
+      expect(result.notes).toContain(
+        "macOS Universal: DMG and update ZIP contain a Developer ID signed, Apple notarized application",
+      );
+      expect(result.notes).toContain("Linux x64: AppImage");
+      expect(result.notes).toContain("All three desktop platforms are included");
+      if (mode === "true") {
+        expect(result.notes).toContain("Windows x64: Authenticode signed");
+        expect(result.notes).not.toContain("**Unsigned**");
+      } else {
+        expect(result.notes).toContain("Windows x64: **Unsigned**");
+        expect(result.notes).toContain("publisher verification is unavailable");
+      }
+      expect(workflowStep("Create draft and upload every platform")).toContain(
+        '--notes-file "$RELEASE_NOTES_FILE"',
+      );
+    },
+  );
+
+  it("does not publish when the signing disclosure mode is missing", () => {
+    expect(
+      runWorkflowScript("Write public platform signing disclosure", { WINDOWS_SIGNING: "" }).status,
+    ).toBe(1);
   });
 
   it("pins every platform update feed to the official GitHub owner and repo", () => {

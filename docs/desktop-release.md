@@ -3,9 +3,10 @@
 The [release-desktop workflow](../.github/workflows/release-desktop.yml) builds,
 signs, notarizes, attests, and publishes CogineBot from a `vMAJOR.MINOR.PATCH` tag
 on `main`. Docker image publishing triggers from the same tag. The workflow is
-configured for this repository; no signed download is available merely because
-this configuration exists. Provision and verify the project's own signing
-credentials before running a release.
+configured for this repository; no download is available merely because this
+configuration exists. Provision and verify the project's macOS signing credentials
+before running a release. Windows can be released explicitly unsigned until its
+own signing certificate is configured; the public release notes disclose the mode.
 
 ## Formats and update channel
 
@@ -43,17 +44,36 @@ in the runner's temp directory for the packaging step and deletes it afterwards.
 without it `CSC_LINK` signing fails while creating the temporary keychain. Drop
 the patch once an electron-builder release includes that fix.
 
-Windows (required):
+Windows (configure both to enable signing):
 
 | Secret | Value |
 | --- | --- |
 | `DESKTOP_WIN_CSC_LINK` | Base64 of the Authenticode certificate as `.p12`/`.pfx` |
 | `DESKTOP_WIN_CSC_KEY_PASSWORD` | Its password |
 
-All three desktop platforms are required. Missing macOS or Windows signing
-credentials fail that platform instead of silently omitting it. The release is
-only published after macOS, Linux, and Windows produce their installers and
-matching update feeds.
+All three desktop platforms are required. macOS always requires signing and Apple
+notarization. For Windows, the release preflight receives only whether each secret
+is present:
+
+- Both present: signing is mandatory. The installer and application must have
+  valid Authenticode signatures, and the update configuration must identify their
+  signing publisher. A signing or verification failure cannot fall back to unsigned.
+- Both absent: the complete NSIS installer and application are built unsigned.
+  Their Authenticode status must be `NotSigned`; the public release notes clearly
+  identify the unsigned Windows download and its publisher-verification limitation.
+- Only one present: preflight fails before platform builds. Configure both secrets
+  or leave both unset; partial configuration never silently disables signing.
+
+The actual Windows certificate and password are passed only to the Windows
+packaging step. The release is published only after all three platforms produce
+their installers and matching update feeds and pass the selected checks.
+
+Unsigned Windows installs retain the HTTPS update channel and download checksum
+checks, but cannot verify the installer's Authenticode publisher. The existing
+`win.verifyUpdateCodeSignature` setting remains enabled: signed builds embed
+`publisherName`, which `electron-updater` uses to verify later updates. An unsigned
+installation has no such publisher binding. Moving to signed Windows releases
+therefore does not require turning off verification for signed installations.
 
 Set a secret from a file without echoing it:
 

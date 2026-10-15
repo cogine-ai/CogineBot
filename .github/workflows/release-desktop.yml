@@ -23,6 +23,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       sha: ${{ steps.release.outputs.sha }}
       platforms: ${{ steps.platforms.outputs.include }}
+      windows_signing: ${{ steps.windows_signing.outputs.enabled }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -86,6 +87,22 @@ jobs:
             echo "version=$version"
             echo "sha=$tag_sha"
           } >> "$GITHUB_OUTPUT"
+      - name: Resolve Windows signing mode
+        id: windows_signing
+        env:
+          HAS_WINDOWS_CERTIFICATE: ${{ secrets.DESKTOP_WIN_CSC_LINK != '' }}
+          HAS_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.DESKTOP_WIN_CSC_KEY_PASSWORD != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$HAS_WINDOWS_CERTIFICATE:$HAS_WINDOWS_CERTIFICATE_PASSWORD" in
+            true:true) echo "enabled=true" >> "$GITHUB_OUTPUT" ;;
+            false:false) echo "enabled=false" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Configure both Windows signing secrets, or leave both unset for an explicitly unsigned release." >&2
+              exit 1
+              ;;
+          esac
       - name: Include every supported desktop platform
         id: platforms
         shell: bash
@@ -95,7 +112,7 @@ jobs:
           echo "include=$include" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build signed ${{ matrix.artifact }} artifacts
+    name: Build ${{ matrix.artifact }} artifacts
     needs: validate
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -168,42 +185,38 @@ jobs:
           grep -Fqx "owner: cogine-ai" "$app/Contents/Resources/app-update.yml"
           grep -Fqx "repo: CogineBot" "$app/Contents/Resources/app-update.yml"
 
-      - name: Require Windows signing credentials
+      - name: Package x64 Windows app with the configured signing mode
         if: runner.os == 'Windows'
         shell: bash
         env:
-          WIN_CSC_LINK: ${{ secrets.DESKTOP_WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_WIN_CSC_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          test -n "$WIN_CSC_LINK"
-          test -n "$WIN_CSC_KEY_PASSWORD"
-      - name: Package signed x64 Windows app
-        if: runner.os == 'Windows'
-        env:
+          WINDOWS_SIGNING: ${{ needs.validate.outputs.windows_signing }}
           WIN_CSC_LINK: ${{ secrets.DESKTOP_WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_WIN_CSC_KEY_PASSWORD }}
         run: >-
           pnpm --filter @rakazo/desktop exec electron-builder
-          --win --x64 --publish never -c.forceCodeSigning=true
-      - name: Verify Windows Authenticode signature and publisher-bound update feed
+          --win --x64 --publish never "-c.forceCodeSigning=$WINDOWS_SIGNING"
+      - name: Verify Windows signing mode and official update feed
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          WINDOWS_SIGNING: ${{ needs.validate.outputs.windows_signing }}
         run: |
           $ErrorActionPreference = "Stop"
-          $executables = @(
-            Get-ChildItem "apps/desktop/out/*.exe"
-            Get-ChildItem "apps/desktop/out/win-unpacked/*.exe"
-          )
-          if ($executables.Count -lt 2) { throw "Windows installer or application was not created." }
+          if ($env:WINDOWS_SIGNING -notin @("true", "false")) { throw "Windows signing mode is missing or invalid." }
+          $signingEnabled = $env:WINDOWS_SIGNING -eq "true"
+          $expectedStatus = if ($signingEnabled) { "Valid" } else { "NotSigned" }
+          $installers = @(Get-ChildItem "apps/desktop/out/*.exe")
+          $applications = @(Get-ChildItem "apps/desktop/out/win-unpacked/*.exe")
+          if ($installers.Count -lt 1 -or $applications.Count -lt 1) { throw "Windows installer or application was not created." }
+          $executables = $installers + $applications
           foreach ($executable in $executables) {
             $signature = Get-AuthenticodeSignature $executable.FullName
-            if ($signature.Status -ne "Valid") {
-              throw "$($executable.Name) signature is $($signature.Status)."
+            if ($signature.Status.ToString() -ne $expectedStatus) {
+              throw "$($executable.Name) signature is $($signature.Status); expected $expectedStatus."
             }
           }
           $config = "apps/desktop/out/win-unpacked/resources/app-update.yml"
-          if (-not (Select-String -Path $config -Pattern '^publisherName:' -Quiet)) {
+          if ($signingEnabled -and -not (Select-String -Path $config -Pattern '^publisherName:' -Quiet)) {
             throw "Windows update config is not bound to the signing publisher."
           }
           $feed = Get-Content -Raw $config
@@ -315,14 +328,33 @@ jobs:
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: release-artifacts/*
+      - name: Write public platform signing disclosure
+        env:
+          WINDOWS_SIGNING: ${{ needs.validate.outputs.windows_signing }}
+          RELEASE_NOTES_FILE: ${{ runner.temp }}/desktop-release-notes.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' '## Downloads and signing' ''
+            printf '%s\n' '- macOS Universal: DMG and update ZIP contain a Developer ID signed, Apple notarized application.'
+            case "$WINDOWS_SIGNING" in
+              true) printf '%s\n' '- Windows x64: Authenticode signed NSIS installer; signature and signing publisher verified.' ;;
+              false) printf '%s\n' '- Windows x64: **Unsigned** NSIS installer and application. Windows may identify the publisher as unknown; Authenticode publisher verification is unavailable for this installation.' ;;
+              *) echo "Windows signing mode is missing or invalid." >&2; exit 1 ;;
+            esac
+            printf '%s\n' '- Linux x64: AppImage.' '' 'All three desktop platforms are included. SHA256SUMS and build provenance accompany the downloads.'
+          } > "$RELEASE_NOTES_FILE"
       - name: Create draft and upload every platform
         id: create_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_NOTES_FILE: ${{ runner.temp }}/desktop-release-notes.md
         run: >-
           gh release create "$RELEASE_TAG" release-artifacts/*
-          --draft --generate-notes --title "CogineBot $RELEASE_TAG" --verify-tag
+          --draft --generate-notes --notes-file "$RELEASE_NOTES_FILE"
+          --title "CogineBot $RELEASE_TAG" --verify-tag
       - name: Publish the completed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

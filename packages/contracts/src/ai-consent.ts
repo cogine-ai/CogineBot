@@ -1,7 +1,7 @@
 import * as z from "zod";
 
 export const AI_DISCLOSURE_VERSION = "2026-09-14";
-export const AI_PRIVACY_URL = "https://rakazo.com/privacy/";
+export const AI_PRIVACY_URL = "https://github.com/cogine-ai/CogineBot/blob/main/PRIVACY.md";
 export const AiDataUseSchema = z.enum(["model", "voice", "memory"]);
 export type AiDataUse = z.infer<typeof AiDataUseSchema>;
 export const AI_DATA_DISCLOSURES: Record<AiDataUse, string> = {
