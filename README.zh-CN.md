@@ -8,7 +8,7 @@
 
 CogineBot 是由 [cogine-ai](https://github.com/cogine-ai) 独立维护、基于 [Rakazo](https://github.com/elie222/rakazo) 的开源仓库，包含继承的 Bot 运行时、后端及网页、桌面和移动客户端。
 
-**当前处于仓库准备与源码验证阶段。** 本仓库的真实模型任务质量、真实电脑恢复能力和公网托管就绪程度仍未验证。目前没有 CogineBot 托管服务、发布镜像或安装器。
+**发行状态：** 已发布的安装器、支持平台和签名说明以 [Releases](https://github.com/cogine-ai/CogineBot/releases) 为准；服务端镜像见[自部署指南](docs/self-host.md#published-images-no-checkout)。是否可下载取决于实际发行结果，工作流配置不代表发布完成。本项目不提供 CogineBot 托管服务。Scripted 与离线验证不能证明真实模型任务质量或公网托管就绪程度。
 
 ## 仓库里有什么
 

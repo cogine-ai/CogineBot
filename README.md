@@ -8,7 +8,7 @@
 
 CogineBot is an independently maintained open-source repository based on [Rakazo](https://github.com/elie222/rakazo), maintained by [cogine-ai](https://github.com/cogine-ai). It contains the inherited bot runtime, backend, and web, desktop, and mobile clients.
 
-**Current stage: repository preparation and source validation.** Real-model task quality, real-computer recovery, and public-hosting readiness remain unverified in this repository. No CogineBot hosted service, release image, or installer is available.
+**Distribution status:** Check [Releases](https://github.com/cogine-ai/CogineBot/releases) for published installers, supported platforms, and signing notes, and the [self-host guide](docs/self-host.md#published-images-no-checkout) for server images. Availability depends on the completed release, not workflow configuration. No hosted CogineBot service is provided. Scripted and offline validation do not establish real-model task quality or public-hosting readiness.
 
 ## What is here
 
