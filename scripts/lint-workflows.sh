@@ -35,4 +35,10 @@ if [[ "${actual}" != "${expected}" ]]; then
 fi
 tar -xzf "${archive}" -C "${run_dir}" actionlint
 cd "${repo_root}"
-"${run_dir}/actionlint" -color .github/workflows/*.yml
+# GitHub supports concurrency.queue, but actionlint 1.7.12 does not parse it yet.
+# Workflow tests validate the queue values and cancellation combinations; keep every other
+# actionlint/ShellCheck diagnostic enabled. Remove this exception once an official release supports it.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+"${run_dir}/actionlint" -color \
+  -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$' \
+  .github/workflows/*.yml

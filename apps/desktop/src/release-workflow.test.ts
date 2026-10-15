@@ -196,6 +196,7 @@ describe("desktop release workflow", () => {
     expect(workflow).toContain("^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$");
     expect(workflow).toContain("must be newer than published release");
     expect(workflow).toContain("group: release-desktop-stable");
+    expect(workflow).toContain("queue: max\n  cancel-in-progress: false");
     expect(workflow).toContain("latest.yml");
     expect(workflow).toContain("latest-mac.yml");
     expect(workflow).toContain("latest-linux.yml");

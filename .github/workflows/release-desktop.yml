@@ -12,6 +12,7 @@ concurrency:
   # Stable releases must validate and publish serially. Per-tag concurrency would let an older
   # release validate before a newer one publishes, then overwrite GitHub's "latest" pointer.
   group: release-desktop-stable
+  queue: max
   cancel-in-progress: false
 
 jobs:

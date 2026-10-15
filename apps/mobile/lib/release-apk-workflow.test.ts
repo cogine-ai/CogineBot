@@ -30,6 +30,9 @@ describe("Android APK release workflow", () => {
     expect(workflow).toMatch(/^on:\n {2}workflow_dispatch:\n\n/m);
     expect(workflow).toContain("permissions:\n  contents: read");
     expect(workflow).toContain("if: github.ref == 'refs/heads/main'");
+    expect(workflow).toContain(
+      "group: release-android-apk\n  queue: max\n  cancel-in-progress: false",
+    );
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).not.toContain("cache: pnpm");
     expect(workflow).toMatch(/EXPO_OWNER: \$\{\{ vars\.EXPO_OWNER \}\}/);

@@ -18,7 +18,7 @@ interface WorkflowJob {
 }
 
 const workflow = parse(workflowText) as {
-  concurrency: { group: string; "cancel-in-progress": boolean };
+  concurrency: { group: string; queue: string; "cancel-in-progress": boolean };
   jobs: {
     validate: WorkflowJob;
     build: WorkflowJob;
@@ -118,6 +118,9 @@ describe("server image publish workflow", () => {
   it("serializes tag publications and gives every image one stable-alias decision", () => {
     expect(workflow.concurrency.group).toContain("startsWith(github.ref, 'refs/tags/v')");
     expect(workflow.concurrency.group).toContain("&& 'stable' || github.ref");
+    expect(workflow.concurrency.queue).toBe(
+      `\${{ github.event_name == 'pull_request' && 'single' || 'max' }}`,
+    );
     expect(workflow.concurrency["cancel-in-progress"]).toBe(false);
     const metadata = workflow.jobs.publish.steps?.find((step) => step.with?.tags !== undefined);
     expect(metadata?.with?.flavor).toBe("latest=false");

@@ -12,6 +12,7 @@ permissions:
 concurrency:
   group: repository-ci-${{ github.event.pull_request.number || github.ref }}
   # A main run may publish an OTA update; let it finish before the next main run.
+  queue: ${{ github.ref == 'refs/heads/main' && 'max' || 'single' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 defaults:
@@ -170,6 +171,7 @@ jobs:
       EAS_BUILD_PROFILE: production
     concurrency:
       group: mobile-production-update
+      queue: max
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

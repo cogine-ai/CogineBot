@@ -119,8 +119,13 @@ describe("production mobile OTA workflow", () => {
   });
 
   it("finishes running main workflows and serializes production publications", () => {
+    expect(workflow).toMatch(
+      /queue: \$\{\{ github\.ref == 'refs\/heads\/main' && 'max' \|\| 'single' \}\}\n {2}cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}/,
+    );
     expect(workflow).toMatch(/cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}/);
-    expect(mobileJob).toContain("group: mobile-production-update\n      cancel-in-progress: false");
+    expect(mobileJob).toContain(
+      "group: mobile-production-update\n      queue: max\n      cancel-in-progress: false",
+    );
   });
 
   it.each(["", " \t\n"])("reports an unconfigured mobile publisher without publishing", (value) => {
