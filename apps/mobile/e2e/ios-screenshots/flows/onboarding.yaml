@@ -1,4 +1,4 @@
-appId: com.rakazo.app
+appId: ai.cogine.coginebot
 name: Onboarding
 ---
 - runFlow:
@@ -9,12 +9,12 @@ name: Onboarding
     visible: "Personal|Tap \\+ to create a bot"
     timeout: 20000
 - takeScreenshot: 01-empty-inbox
-- openLink: "rakazo:///artifacts"
+- openLink: "coginebot:///artifacts"
 - extendedWaitUntil:
     visible: "No artifacts yet|Artifacts"
     timeout: 15000
 - takeScreenshot: 02-empty-artifacts
-- openLink: "rakazo:///new"
+- openLink: "coginebot:///new"
 - extendedWaitUntil:
     visible: "Name this bot"
     timeout: 15000

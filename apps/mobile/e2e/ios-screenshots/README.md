@@ -1,6 +1,6 @@
 # iOS screenshot catalog
 
-Local, agent-run capture of the Rakazo iOS app. It is not part of CI.
+Local, agent-run capture of the CogineBot iOS app. It is not part of CI.
 
 One command signs into disposable fixture accounts, runs the Maestro flows in
 `catalog.json`, and writes PNGs plus a static `index.html` gallery. Add a screen

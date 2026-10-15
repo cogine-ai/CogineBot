@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type ElectronApplication, _electron as electron, expect, test } from "@playwright/test";
 
-const APP_MARKER = "Local Rakazo stack ready";
+const APP_MARKER = "Local CogineBot stack ready";
 const IMAGE_TAG = "v9.9.9";
 const STACK_PROBE_PATH = "/.well-known/rakazo-desktop-stack";
 const STACK_TOKEN_HEADER = "x-rakazo-desktop-stack-token";
@@ -60,7 +60,7 @@ test.beforeAll(async () => {
     }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Rakazo</title></head><body><main>${APP_MARKER}</main></body></html>`,
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>CogineBot</title></head><body><main>${APP_MARKER}</main></body></html>`,
     );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -77,7 +77,7 @@ test.afterAll(async () => {
 
 test.beforeEach(async () => {
   // The fake docker logs $PWD, which is the resolved path (macOS /var is a symlink).
-  userData = await realpath(await mkdtemp(path.join(tmpdir(), "rakazo-desktop-stack-")));
+  userData = await realpath(await mkdtemp(path.join(tmpdir(), "coginebot-desktop-stack-")));
 });
 
 test.afterEach(async () => {
@@ -115,7 +115,7 @@ async function writeFakeDocker(mode: FakeDockerMode) {
       ? '    echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;'
       : '    echo "27.1.1"; exit 0 ;;',
     "esac",
-    "# compose --env-file .env -f docker-compose.images.yml --project-name rakazo-desktop <command> ...",
+    "# compose --env-file .env -f docker-compose.images.yml --project-name coginebot-desktop <command> ...",
     'case "$8" in',
     "  pull)",
     mode === "pull-fails"
@@ -177,7 +177,7 @@ test("This computer installs and starts the stack, then opens the app", async ()
 
   const appWindowPromise = app.waitForEvent("window");
   await setup.getByRole("button", { name: "Continue" }).click();
-  await expect(setup.locator("#stack-phase")).toHaveText("Downloading Rakazo…");
+  await expect(setup.locator("#stack-phase")).toHaveText("Downloading CogineBot…");
   await expect(setup.getByRole("button", { name: "Continue" })).toBeDisabled();
   // Docker output stays behind the details toggle; the phase, the bar, and the size show by default.
   await expect(setup.locator("#stack-detail")).toHaveText("412 MB downloaded");
@@ -211,7 +211,7 @@ test("This computer installs and starts the stack, then opens the app", async ()
   );
 
   const compose =
-    "compose --env-file .env -f docker-compose.images.yml --project-name rakazo-desktop";
+    "compose --env-file .env -f docker-compose.images.yml --project-name coginebot-desktop";
   expect(await readLog()).toEqual([
     `${stackDir} | ${IMAGE_TAG} | compose version --short`,
     `${stackDir} | ${IMAGE_TAG} | info --format {{.ServerVersion}}`,
@@ -249,7 +249,7 @@ test("switching to Existing instance while the stack starts keeps that choice", 
   const setup = await app.firstWindow();
 
   await setup.getByRole("button", { name: "Continue" }).click();
-  await expect(setup.locator("#stack-phase")).toHaveText("Downloading Rakazo…");
+  await expect(setup.locator("#stack-phase")).toHaveText("Downloading CogineBot…");
 
   // Fake docker sleeps during pull; leave This computer before ready so followStack must not save.
   await setup.getByRole("radio", { name: /Existing instance/ }).check();

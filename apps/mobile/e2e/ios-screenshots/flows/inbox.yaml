@@ -1,4 +1,4 @@
-appId: com.rakazo.app
+appId: ai.cogine.coginebot
 name: Inbox
 ---
 - runFlow:
@@ -15,7 +15,7 @@ name: Inbox
     timeout: 15000
 - takeScreenshot: 02-activity
 - tapOn: "Activity"
-- openLink: "rakazo:///artifacts"
+- openLink: "coginebot:///artifacts"
 - extendedWaitUntil:
     visible: ".*launch-notes.txt.*|.*No artifacts yet.*|.*Artifacts.*"
     timeout: 15000

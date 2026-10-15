@@ -1,37 +1,23 @@
 # App icon source
 
-`Rakazo.icon` is the shared editable source for macOS and iOS. Open it in Apple's
-Icon Composer with Xcode 26 or newer. The orange foreground keeps its original
-lighting, sits 90 points below center, and uses the system dark background.
+The CogineBot app icon sources and export scope are documented in
+[`CogineBot-brand.md`](CogineBot-brand.md).
 
-macOS packaging compiles the source into a Tahoe asset catalog and generates the
-legacy ICNS fallback. Expo copies the same source into the iOS project.
+- `CogineBot.svg` is the approved centered app-tile source for browser assets.
+- `CogineBot.icon` is the shared Apple Icon Composer source for macOS and iOS.
+  Xcode 26 or newer compiles it into a Tahoe asset catalog and a legacy macOS ICNS
+  fallback.
+- `Rakazo.icon` is retained as the original upstream editable source. It is not
+  used by CogineBot packaging or the brand export command.
 
-The platform exports are:
+Run `pnpm --filter @rakazo/ui-tokens export:brand` to refresh product web
+favicons, web install icons, and the mobile web favicon.
+The command retains the existing file names and formats. It does not overwrite
+native desktop or mobile icons: Apple Icon Composer and Android launcher exports
+remain separate because their masks, appearance, and safe areas differ.
 
-- `apps/desktop/assets/icon-macos.png`: Icon Composer's default appearance,
-  1024-pixel macOS pre-Tahoe export, including Dock margins for development launches.
-- `apps/mobile/assets/icon.png`: opaque 1024-pixel square for the generic/legacy icon,
-  with no rounded mask or Dock margins.
-- `apps/mobile/assets/adaptive-icon.png`: transparent 1024-pixel Android foreground;
-  the bot is 820 pixels wide, centered horizontally and offset 179 pixels from the top.
-  Its face stays inside the launcher's safe area and the body extends below the mask.
-- `apps/mobile/assets/icon-background.png`: opaque Android background using the
-  shared dark background token.
-- `apps/mobile/assets/monochrome-icon.png`: matching Android alpha silhouette with
-  transparent eyes for themed launchers.
+Android adaptive foreground/background and monochrome assets are separate layers;
+never bake Mac corners, a rim, or an outer shadow into them. Notification icons
+remain white alpha silhouettes. The mobile splash keeps its transparent padding.
 
-Refresh platform exports after changing the source. Android supplies its own mask;
-never bake Mac corners, a rim, or an outer shadow into adaptive layers.
-
-Run `pnpm --filter @rakazo/ui-tokens export:brand` to refresh the web and marketing
-favicons, install icons, marketing mark, Windows/Linux icons, mobile splash, and
-mobile web favicon. These use the same orange foreground with the shared dark
-background, a rounded mask for small browser marks, and transparent splash padding.
-The notification export uses the Android monochrome silhouette so its eyes remain
-transparent. Apple Icon Composer and Android launcher exports remain separate
-because their system masks and safe areas differ.
-
-After exporting, run `pnpm exec tsx apps/www/scripts/render-og.mjs` to refresh the
-marketing page social cards; set `CHROME_PATH` to a headless Chrome executable when
-it is not available at the script's default location.
+The existing `apps/www` marketing site is outside this product brand export.

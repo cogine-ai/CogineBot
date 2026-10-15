@@ -542,7 +542,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     const signIn = (password: string) =>
       app.request("/api/auth/sign-in/email", {
         method: "POST",
-        headers: { "content-type": "application/json", origin: "rakazo://" },
+        headers: { "content-type": "application/json", origin: "coginebot://" },
         body: JSON.stringify({ email, password }),
       });
     const responses = {
@@ -555,7 +555,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
         body: "{}",
       }),
       me: await rpc("me", phone.headers),
-      signedOutMe: await rpc("me", { origin: "rakazo://" }),
+      signedOutMe: await rpc("me", { origin: "coginebot://" }),
       unknownProcedure: await rpc("not-a-procedure", phone.headers),
     };
 
@@ -1795,12 +1795,12 @@ async function signup(app: App, email: string, name: string) {
 async function phoneSession(app: App, email: string) {
   const response = await app.request("/api/auth/sign-up/email", {
     method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://" },
+    headers: { "content-type": "application/json", origin: "coginebot://" },
     body: JSON.stringify({ email, password: "password12", name: "Phone" }),
   });
   const { token, user } = (await response.json()) as { token: string; user: { id: string } };
   const cookie = sessionCookieHeader(response);
-  const headers = { origin: "rakazo://", authorization: `Bearer ${token}` };
+  const headers = { origin: "coginebot://", authorization: `Bearer ${token}` };
   const me = async () =>
     (
       await app.request("/rpc/me", {

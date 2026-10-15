@@ -1,6 +1,6 @@
 {
-  "name": "Rakazo",
-  "short_name": "Rakazo",
+  "name": "CogineBot",
+  "short_name": "CogineBot",
   "description": "Your team of always-on agents.",
   "start_url": "/",
   "display": "standalone",

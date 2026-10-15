@@ -58,7 +58,7 @@ export function notificationOpenTargetFromLink(url: string): NotificationRoute |
   } catch {
     return null;
   }
-  if (parsed.protocol !== "rakazo:") return null;
+  if (parsed.protocol !== "coginebot:") return null;
   const screen = (parsed.hostname || parsed.pathname.replace(/^\//, "")).replace(/\/$/, "");
   const data: Record<string, string> = {};
   for (const [key, value] of parsed.searchParams) data[key] = value;

@@ -86,30 +86,32 @@ describe("settings links", () => {
   });
 
   it("reads the page from any link form", () => {
-    expect(isSettingsLink("rakazo:///models")).toBe(true);
-    expect(isSettingsLink("rakazo://voice")).toBe(true);
-    expect(isSettingsLink("rakazo:///account?focus=usage")).toBe(true);
-    expect(isSettingsLink("rakazo://integrations/")).toBe(true);
+    expect(isSettingsLink("coginebot:///models")).toBe(true);
+    expect(isSettingsLink("coginebot://voice")).toBe(true);
+    expect(isSettingsLink("coginebot:///account?focus=usage")).toBe(true);
+    expect(isSettingsLink("coginebot://integrations/")).toBe(true);
     expect(isSettingsLink("/change-password")).toBe(true);
-    expect(isSettingsLink("rakazo:///thread?botId=bot-1")).toBe(false);
-    expect(isSettingsLink("rakazo://group-thread?groupId=group-1")).toBe(false);
+    expect(isSettingsLink("coginebot:///thread?botId=bot-1")).toBe(false);
+    expect(isSettingsLink("coginebot://group-thread?groupId=group-1")).toBe(false);
     expect(isSettingsLink("/new")).toBe(false);
-    expect(isSettingsLink("rakazo://")).toBe(false);
-    expect(isSettingsLink("rakazo:///accounts")).toBe(false);
+    expect(isSettingsLink("coginebot://")).toBe(false);
+    expect(isSettingsLink("coginebot:///accounts")).toBe(false);
   });
 
   it("closes the sheet before a link to another screen, and keeps settings links in it", () => {
     const close = vi.fn();
     const unregister = registerSettingsSheet(close);
 
-    expect(redirectSystemPath({ path: "rakazo:///voice", initial: false })).toBe("rakazo:///voice");
-    expect(redirectSystemPath({ path: "rakazo:///account?focus=usage", initial: false })).toBe(
-      "rakazo:///account?focus=usage",
+    expect(redirectSystemPath({ path: "coginebot:///voice", initial: false })).toBe(
+      "coginebot:///voice",
+    );
+    expect(redirectSystemPath({ path: "coginebot:///account?focus=usage", initial: false })).toBe(
+      "coginebot:///account?focus=usage",
     );
     expect(close).not.toHaveBeenCalled();
 
-    expect(redirectSystemPath({ path: "rakazo:///thread?botId=bot-1", initial: false })).toBe(
-      "rakazo:///thread?botId=bot-1",
+    expect(redirectSystemPath({ path: "coginebot:///thread?botId=bot-1", initial: false })).toBe(
+      "coginebot:///thread?botId=bot-1",
     );
     expect(close).toHaveBeenCalledTimes(1);
     unregister();

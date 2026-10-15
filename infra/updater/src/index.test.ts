@@ -108,7 +108,10 @@ describe("updater HTTP surface", () => {
     const response = await app.request("/apply", {
       method: "POST",
       headers: authorized,
-      body: JSON.stringify({ repoUrl: "https://github.com/elie222/rakazo", branch: "--exec=id" }),
+      body: JSON.stringify({
+        repoUrl: "https://github.com/cogine-ai/CogineBot",
+        branch: "--exec=id",
+      }),
     });
     expect(response.status).toBe(400);
   });
@@ -176,7 +179,7 @@ describe("updater orchestration", () => {
       return ok();
     };
     const subject = createUpdaterApp(fixture.config, { run });
-    const input = { repoUrl: "https://github.com/elie222/rakazo", branch: "main" };
+    const input = { repoUrl: "https://github.com/cogine-ai/CogineBot", branch: "main" };
     const first = request(subject, "/apply", input);
     await atRemote;
     const second = await request(subject, "/apply", input);
@@ -229,7 +232,7 @@ describe("updater orchestration", () => {
     };
     const subject = createUpdaterApp(fixture.config, { run });
     const response = await request(subject, "/apply", {
-      repoUrl: "https://github.com/elie222/rakazo",
+      repoUrl: "https://github.com/cogine-ai/CogineBot",
       branch: "main",
     });
     const record = (await response.json()) as ServerUpdateRun;
@@ -352,7 +355,7 @@ describe("updater orchestration", () => {
     const run: UpdaterCommandRunner = async (command) =>
       command === "git" ? ok(`${targetCommit}\trefs/tags/v1.1.0\n`) : ok();
     const response = await request(createUpdaterApp(fixture.config, { run }), "/apply", {
-      repoUrl: "https://github.com/elie222/rakazo",
+      repoUrl: "https://github.com/cogine-ai/CogineBot",
       branch: "main",
     });
     expect(response.status).toBe(200);
@@ -376,7 +379,7 @@ describe("updater orchestration", () => {
     const run: UpdaterCommandRunner = async (command) =>
       command === "git" ? ok(`${targetCommit}\trefs/tags/v1.1.0\n`) : ok();
     const response = await request(createUpdaterApp(fixture.config, { run }), "/apply", {
-      repoUrl: "https://github.com/elie222/rakazo",
+      repoUrl: "https://github.com/cogine-ai/CogineBot",
       branch: "main",
     });
     expect(response.status).toBe(200);

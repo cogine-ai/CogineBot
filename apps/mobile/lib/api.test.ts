@@ -102,7 +102,7 @@ describe("mobile API authentication", () => {
       "http://127.0.0.1:3100/api/auth/sign-in/email",
       expect.objectContaining({
         method: "POST",
-        headers: { "content-type": "application/json", origin: "rakazo://" },
+        headers: { "content-type": "application/json", origin: "coginebot://" },
         body: JSON.stringify({ email: "ada@example.com", password: "correct horse" }),
       }),
     );
@@ -138,7 +138,7 @@ describe("mobile API authentication", () => {
       "http://127.0.0.1:3100/api/auth/sign-up/email",
       expect.objectContaining({
         method: "POST",
-        headers: { "content-type": "application/json", origin: "rakazo://" },
+        headers: { "content-type": "application/json", origin: "coginebot://" },
         body: JSON.stringify({
           email: "new@example.com",
           password: "correct horse",

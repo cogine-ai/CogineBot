@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: repository-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A main run may publish an OTA update; let it finish before the next main run.
+  queue: ${{ github.ref == 'refs/heads/main' && 'max' || 'single' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 defaults:
   run:
@@ -154,3 +156,94 @@ jobs:
             apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  publish-mobile-update:
+    name: Publish compatible mobile update
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: production
+      EXPO_OWNER: ${{ vars.EXPO_OWNER }}
+      EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+      EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
+      EAS_BUILD_PROFILE: production
+    concurrency:
+      group: mobile-production-update
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check mobile publishing configuration
+        id: mobile
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          configured=0
+          for name in EXPO_OWNER EAS_PROJECT_ID EXPO_PUBLIC_API_URL EXPO_TOKEN; do
+            value="${!name}"
+            if [[ -n "${value//[[:space:]]/}" ]]; then
+              configured=$((configured + 1))
+            fi
+          done
+          if [[ "$configured" -eq 0 ]]; then
+            {
+              echo "### Mobile publishing is not configured"
+              echo
+              echo "No EAS update was published. Configure EXPO_OWNER, EAS_PROJECT_ID, EXPO_PUBLIC_API_URL, and EXPO_TOKEN together when mobile publishing is ready."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$configured" -ne 4 ]]; then
+            echo "Mobile publishing is partially configured. Set EXPO_OWNER, EAS_PROJECT_ID, EXPO_PUBLIC_API_URL, and EXPO_TOKEN together." >&2
+            exit 1
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        if: steps.mobile.outputs.configured == 'true'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: steps.mobile.outputs.configured == 'true'
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Set up Expo
+        if: steps.mobile.outputs.configured == 'true'
+        uses: expo/expo-github-action@eab7a230208c952974db8c3245cfd78402c7b385 # v9
+        with:
+          eas-version: latest
+          packager: pnpm
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Install dependencies
+        if: steps.mobile.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Verify mobile project
+        if: steps.mobile.outputs.configured == 'true'
+        run: pnpm --filter @rakazo/mobile check
+      - name: Publish production update
+        if: steps.mobile.outputs.configured == 'true'
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          head="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          if [[ -z "$head" ]]; then
+            echo "Could not resolve the current main head before publishing." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$head" ]]; then
+            {
+              echo "### Mobile OTA skipped"
+              echo
+              echo "This run is for \`$GITHUB_SHA\`, but \`main\` is now \`$head\`. Skipping so an older revision cannot overwrite a newer production update."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          eas update --platform all --channel production --environment production --message "$GITHUB_SHA" --non-interactive

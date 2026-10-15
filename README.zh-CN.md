@@ -8,7 +8,7 @@
 
 CogineBot 是由 [cogine-ai](https://github.com/cogine-ai) 独立维护、基于 [Rakazo](https://github.com/elie222/rakazo) 的开源仓库，包含继承的 Bot 运行时、后端及网页、桌面和移动客户端。
 
-**当前处于仓库准备与源码验证阶段。** 本仓库的真实模型任务质量、真实电脑恢复能力和公网托管就绪程度仍未验证。目前没有 CogineBot 托管服务、发布镜像或安装器。
+**发行状态：** 已发布的安装器、支持平台和签名说明以 [Releases](https://github.com/cogine-ai/CogineBot/releases) 为准；服务端镜像见[自部署指南](docs/self-host.md#published-images-no-checkout)。是否可下载取决于实际发行结果，工作流配置不代表发布完成。本项目不提供 CogineBot 托管服务。Scripted 与离线验证不能证明真实模型任务质量或公网托管就绪程度。
 
 ## 仓库里有什么
 
@@ -48,7 +48,7 @@ NODE_ENV=test corepack pnpm run test --maxWorkers=2
 
 安装依赖需要访问包源；这些检查不需要付费推理。生成 Prisma client 不需要正在运行的数据库。已记录的 macOS 基线包含上述两个启动器失败，请回报实际结果，不预设整套测试通过。
 
-前置条件、本地 UI/API、验证层次和排错方式见[开发指南](docs/development.md)。本项目从源码开发；保留的上游指南中的链接和镜像渠道对应 Rakazo 资源。
+前置条件、本地 UI/API、验证层次和排错方式见[开发指南](docs/development.md)。源码开发不依赖二进制发行。[自部署指南](docs/self-host.md)和[发布工作流](docs/automation.md#release-automation)已配置为 CogineBot 自有目标；使用二进制安装前，仍须确认对应版本或镜像标签确已发布。工作流配置不代表发行完成。
 
 ## 导航与项目结构
 
@@ -65,7 +65,7 @@ docs/       开发、验证、运行及来源记录
 | 配置开发环境并选择检查 | [开发指南](docs/development.md) |
 | 哪些能力实际测过 | [改造前验证基线](docs/preparation-baseline.md) |
 | 模拟执行与模型质量的区别 | [Agent 验证](docs/agent-verification.md) |
-| 仓库 CI 与归档工作流 | [自动化说明](docs/automation.md) |
+| 仓库检查、发布任务与归档工作流 | [自动化说明](docs/automation.md) |
 | 上游起点及同步策略 | [上游来源记录](UPSTREAM.md) |
 | 提交修改或报告安全问题 | [贡献指南](CONTRIBUTING.md) · [安全说明](SECURITY.md) |
 

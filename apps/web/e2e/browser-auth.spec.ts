@@ -26,7 +26,7 @@ test("browser sign-in returns a callback and shows the return-to-app message", a
       },
       onCallback: (value) => received.push(value),
     });
-    await expect(page.getByText("You can close this tab and return to Rakazo.")).toBeVisible();
+    await expect(page.getByText("You can close this tab and return to CogineBot.")).toBeVisible();
     expect(received).toEqual([{ code: "example-code", state: "example-state" }]);
     await captureScreenshot(page, testInfo, "browser-auth-complete");
   } finally {

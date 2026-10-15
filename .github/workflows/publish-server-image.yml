@@ -29,7 +29,9 @@ env:
   DOCKER_METADATA_SHORT_SHA_LENGTH: 40
 
 concurrency:
-  group: publish-server-image-${{ github.ref }}
+  # Tag runs share the moving stable aliases, so an older run must not publish after a newer one.
+  group: publish-server-image-${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || github.ref }}
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
   cancel-in-progress: false
 
 jobs:
@@ -71,10 +73,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Resolve lowercase image namespace
+        id: namespace
+        shell: bash
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          images: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
           tags: type=sha,prefix=sha-
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -132,11 +138,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve lowercase image namespace
+        id: namespace
+        shell: bash
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           # Labels only; the tagged manifest is assembled in the publish job.
-          images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          images: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
           tags: type=sha,prefix=sha-
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -146,7 +156,7 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
           # A fork can publish only to its own namespace; no credential can redirect this value.
-          outputs: type=image,name=ghcr.io/${{ github.repository }}/${{ matrix.name }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.namespace.outputs.image }}/${{ matrix.name }},push-by-digest=true,name-canonical=true,push=true
           # GET /health can report the exact source commit without a deployment-supplied override.
           build-args: ${{ matrix.name == 'app' && format('GIT_SHA={0}', github.sha) || '' }}
           cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch }}
@@ -167,10 +177,76 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  publication-policy:
+    name: Validate image publication order
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stable: ${{ steps.policy.outputs.stable }}
+    steps:
+      - name: Validate stable aliases before publishing
+        id: policy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REF_TYPE" != "tag" ]]; then
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          stable_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          prerelease_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ "$RELEASE_TAG" =~ $prerelease_pattern ]]; then
+            IFS='.' read -ra identifiers <<< "${BASH_REMATCH[4]}"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "$identifier" =~ ^0[0-9]+$ ]]; then
+                echo "Numeric prerelease identifiers cannot have leading zeros." >&2
+                exit 1
+              fi
+            done
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$RELEASE_TAG" =~ $stable_pattern ]]; then
+            echo "Image release tags must use vMAJOR.MINOR.PATCH or a valid prerelease." >&2
+            exit 1
+          fi
+
+          ancestry="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...main" --jq .status)"
+          case "$ancestry" in
+            ahead|identical) ;;
+            *)
+              echo "Stable images must be built from a commit already on main." >&2
+              exit 1
+              ;;
+          esac
+          tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/tags?per_page=100" --jq '.[].name')"
+          newest_tag="$(sed -nE "/${stable_pattern}/p" <<< "$tags" | sort -V | tail -n 1)"
+          if [[ "$newest_tag" != "$RELEASE_TAG" ]]; then
+            echo "Only the newest stable repository tag may publish stable image aliases." >&2
+            exit 1
+          fi
+          releases="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
+          latest_release="$(sed -nE "/${stable_pattern}/p" <<< "$releases" | sort -V | tail -n 1)"
+          if [[ -n "$latest_release" ]]; then
+            highest="$(printf '%s\n%s\n' "$latest_release" "$RELEASE_TAG" | sort -V | tail -n 1)"
+            if [[ "$highest" != "$RELEASE_TAG" ]]; then
+              echo "Stable images cannot be older than a published stable release." >&2
+              exit 1
+            fi
+          fi
+          echo "stable=true" >> "$GITHUB_OUTPUT"
+
   publish:
     name: Publish ${{ matrix.name }} image
     if: github.event_name != 'pull_request'
-    needs: build
+    needs: [build, publication-policy]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -198,23 +274,28 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve lowercase image namespace
+        id: namespace
+        shell: bash
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           # A fork can publish only to its own namespace; no credential can redirect this value.
-          images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          images: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
+          flavor: latest=false
           tags: |
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ needs.publication-policy.outputs.stable == 'true' }}
             type=sha,prefix=sha-
             type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            # Stable releases only: a hyphen marks a prerelease (v1.0.0-rc.1) that must not move latest.
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=raw,value=latest,enable=${{ needs.publication-policy.outputs.stable == 'true' }}
       - name: Assemble and verify the multi-arch manifest
         id: manifest
         working-directory: /tmp/digests
         env:
-          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
@@ -230,6 +311,13 @@ jobs:
             echo "Expected one digest per architecture, found ${#sources[@]}." >&2
             exit 1
           fi
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+            if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+              echo "Only the current main commit may publish edge images." >&2
+              exit 1
+            fi
+          fi
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
           first_tag="$(head -n 1 <<< "$TAGS")"
@@ -242,6 +330,6 @@ jobs:
       - name: Attest the published image
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          subject-name: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
           subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true

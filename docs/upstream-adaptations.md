@@ -37,4 +37,15 @@ Do not create additional compatibility layers for pre-launch historical records.
 
 ## Automation boundary
 
-All inherited workflows, including the newly imported Android publisher, remain in `.github/upstream-workflows`. Only the controlled company Repository CI is active. Source integration does not authorize publishing, deploying, replacing updater channels, or running tests against a developer's data or credentials.
+The reviewed container, desktop, and Android APK publishing workflows are active
+in `.github/workflows`, with CogineBot destinations and product identities.
+Repository CI retains its offline source-check lanes and carries the upstream
+compatible-mobile-OTA job after those checks on `main` pushes. The remaining
+workflows, including upstream production SSH deployment, stay archived in
+`.github/upstream-workflows`. See [automation boundaries](automation.md).
+
+These are configured release paths, not a release announcement. A successful
+build, the required self-owned signing or Expo credentials, and destination
+verification remain necessary before advertising an artifact. Source integration
+does not authorize deploying to production or using a developer's data or
+credentials for tests.

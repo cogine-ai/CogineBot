@@ -1,13 +1,13 @@
-appId: com.rakazo.app
+appId: ai.cogine.coginebot
 ---
 - runFlow: launch-app.yaml
 - runFlow:
     when:
-      visible: "Sign up for Rakazo"
+      visible: "Sign up for CogineBot"
     commands:
       - tapOn: "Sign in"
 - extendedWaitUntil:
-    visible: "Sign in to Rakazo"
+    visible: "Sign in to CogineBot"
     timeout: 15000
 - tapOn: "Email"
 - inputText: ${RAKAZO_ACTIVE_EMAIL}

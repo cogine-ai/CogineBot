@@ -1,21 +1,21 @@
-appId: com.rakazo.app
-name: Rakazo mobile smoke
+appId: ai.cogine.coginebot
+name: CogineBot mobile smoke
 ---
 - launchApp:
     clearState: true
 
-- assertVisible: "Sign in to Rakazo"
+- assertVisible: "Sign in to CogineBot"
 - assertVisible: "Sign up"
 - tapOn: "Sign up"
-- assertVisible: "Sign up for Rakazo"
+- assertVisible: "Sign up for CogineBot"
 - assertVisible: "Name"
 - tapOn: "Sign in"
-- assertVisible: "Sign in to Rakazo"
+- assertVisible: "Sign in to CogineBot"
 - tapOn: "Email"
 - inputText: ${RAKAZO_E2E_EMAIL}
 - tapOn: "Password"
 - inputText: ${RAKAZO_E2E_PASSWORD}
-- tapOn: "Sign in to Rakazo"
+- tapOn: "Sign in to CogineBot"
 - tapOn: "Sign in"
 
 - extendedWaitUntil:

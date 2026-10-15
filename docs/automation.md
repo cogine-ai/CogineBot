@@ -1,8 +1,8 @@
 # Repository automation
 
-The active [Repository CI workflow](../.github/workflows/repository-ci.yml) checks the source checkout. It runs on pushes to `main`, pull requests, and manual dispatch. It has no scheduled trigger or release-tag trigger. Newer runs cancel older checks for the same branch or pull request.
+The active [Repository CI workflow](../.github/workflows/repository-ci.yml) checks the source checkout and contains a separate, credentialed mobile OTA publishing job. It runs on pushes to `main`, pull requests, and manual dispatch. It has no scheduled trigger or release-tag trigger. Newer runs cancel older checks for the same pull request or non-main branch. Running `main` workflows finish so a newer push cannot interrupt an OTA publication.
 
-The workflow uses GitHub-hosted Ubuntu runners, Node.js 24.16.0, and pnpm 9.15.0. Action revisions are pinned to full commit hashes. Checkout does not persist Git credentials, the repository token has only `contents: read`, and no repository or environment secrets are passed to commands. It cannot deploy the application, publish packages or releases, push branches, or post issue and pull-request comments. It stores dependency caches and can upload failed-check diagnostic artifacts to this repository, retained for seven days. Those are its intended CI outputs.
+The source-check jobs use GitHub-hosted Ubuntu runners, Node.js 24.16.0, and pnpm 9.15.0. Action revisions are pinned to full commit hashes. Checkout does not persist Git credentials, the repository token has only `contents: read`, and no repository or environment secrets are passed to the source checks. Those jobs cannot deploy the application, publish packages or releases, push branches, or post issue and pull-request comments. They store dependency caches and can upload synthetic UI screenshots and failed-check diagnostics, retained for seven days. The mobile publishing job described below is separate from these offline checks.
 
 ## Checks and boundaries
 
@@ -31,14 +31,63 @@ The new workflow has not been declared passing merely because its configuration 
 
 Each dependency-based lane has a timeout and saves command logs. On failure, artifacts include those logs, the unit result file when produced, available harness summaries, and browser reports or screenshots. The workflow deliberately excludes the harness data directories and environment files. A harness that fails before its success summary is written may have no summary file; use the command log and browser diagnostics. Canceled runs may finish without artifacts.
 
+## Release automation
+
+Three inherited release workflows have been adapted to CogineBot and moved into
+GitHub's active directory. Their platform formats and channels retain the upstream
+mechanisms; adding configuration does not mean a release has been built or published.
+
+| Workflow | Trigger and destination | Required boundary |
+| --- | --- | --- |
+| [Container images](../.github/workflows/publish-server-image.yml) | `main` pushes, `v*` tags, or manual dispatch publish app, computer, and updater images to `ghcr.io/cogine-ai/coginebot/…`; matching pull requests only validate builds. | Read-only pull-request jobs; GHCR writes only in publishing jobs, with source attestations. |
+| [Desktop releases](../.github/workflows/release-desktop.yml) | Stable `vMAJOR.MINOR.PATCH` tags on `main`; manual dispatch must also select such a tag. Downloads and updater feeds go to this repository's GitHub Releases. | Matching desktop version, signed and notarized macOS build, and verified Windows signing mode; all three platforms must succeed. Windows is explicitly unsigned when both signing secrets are absent, requires valid signing when both are present, and rejects partial configuration. See [desktop release configuration](desktop-release.md). |
+| [Android APK](../.github/workflows/release-android-apk.yml) | Manual dispatch from `main`, publishing `coginebot.apk` to the rolling `android` GitHub Release without replacing desktop `latest`. | A self-owned Expo project, public `EXPO_OWNER` / `EAS_PROJECT_ID` variables, and `EXPO_TOKEN`; signing stays with that project's managed keystore. |
+
+The separate [macOS validation workflow](../.github/workflows/validate-desktop-macos.yml)
+packages, signs, notarizes, and verifies installers with read-only repository
+permissions. It runs on pushes to the integration branch `work/release-ownership`
+and supports manual dispatch after reaching the default branch. Its only hosted
+outputs are short-lived Actions artifacts containing installers, update metadata,
+and checksums. It does not call any of the publishing paths above.
+
+Repository CI also reuses the upstream `publish-mobile-update` job after every
+source-check matrix lane succeeds on a `main` push. It publishes the complete
+latest bundle to the production channel for both platforms. Expo's built-in
+`fingerprint` runtime policy matches updates to compatible native builds; a
+changed native fingerprint requires a new native build. There is no per-push
+path filter, so shared styles and changes from canceled pending runs are
+included in the latest bundle. Publications are serialized, and immediately
+before publication the job verifies that its commit is still the current
+`main`, preventing an older revision from overwriting a newer update.
+
+Only the separate mobile publishing job receives `EXPO_TOKEN`. It uses this
+project's `EXPO_OWNER`, `EAS_PROJECT_ID`, and HTTPS `EXPO_PUBLIC_API_URL`
+repository variables. If all four settings are absent, the job explicitly
+reports that mobile publishing is not configured and publishes nothing. Partial
+configuration fails. With all four present, `EAS_BUILD_PROFILE=production`
+applies the same ownership and HTTPS API checks as release builds. Builds and
+updates must use the same Expo project identity. The job never falls back to
+Rakazo's Expo account or changes the offline source-check jobs. See
+[mobile releases](mobile-release.md).
+
+The workflows are prepared publishing paths, not proof that GHCR packages,
+signed desktop downloads, store listings, or Expo channels are available. Check
+the exact workflow result and its published destinations before directing users
+to install a release. Signing and store credentials must belong to this project
+and must not be committed.
+
 ## Archived upstream automation
 
-All 12 inherited workflows are preserved in [.github/upstream-workflows](../.github/upstream-workflows/), including the upstream Android APK publisher. This is a reference directory, outside GitHub's active `.github/workflows` location. Those files cannot be dispatched or triggered from that directory. Their original reusable-workflow paths are also retained as historical text, not rewritten into runnable company automation.
+The remaining inherited workflows stay in
+[.github/upstream-workflows](../.github/upstream-workflows/). This reference
+directory is outside GitHub's active `.github/workflows` location; files there
+cannot be dispatched or triggered from that directory. The archived upstream CI
+retains its historical OTA and SSH-deployment text, but only its reviewed OTA job
+has been carried into Repository CI. Its production deployment job is not active.
 
-The archive includes image publishing, desktop release/signing, mobile OTA updates, scheduled dependency updates, production SSH deployment, screenshot/report publication, and optional real sandbox tests. Several can write through the built-in GitHub token without custom secrets. Other paths require external credentials, and desktop/Expo/install defaults still identify Rakazo resources. Archiving does not configure a CogineBot release channel.
-
-Repository administrators must disable the previously registered upstream workflow IDs before enabling the new workflow, while the repository-wide Actions switch is still off. After enabling, confirm that only Repository CI runs for the intended commit. Old remote workflow registrations and the repository-wide switch are GitHub settings; moving files does not prove those settings changed.
-
-If the organization allows Actions only for selected repositories, add this repository to that existing allowlist before enabling its switch. Keep the organization policy and other repository selections unchanged. Events received while Actions was disabled are not replayed; a new pull-request update can start the first CI run after enabling.
-
-Release, deployment, scheduled update, real-provider, and report-publication automation are outside this workflow's scope. Any such automation requires a separate authorized change with reviewed destinations, credentials, permissions, budgets, and company-specific channels. Do not restore the archived files to the active directory or reuse upstream production configuration as part of routine CI maintenance.
+Scheduled dependency updates, production SSH deployment, screenshot/report
+publication, and optional real-provider or sandbox tests remain archived. They
+must not be re-enabled as part of routine CI maintenance. Any later activation
+requires a separate reviewed change covering destinations, credentials,
+permissions, and expected resource use. Moving workflow files alone does not
+prove that repository or organization Actions settings permit their execution.

@@ -79,7 +79,8 @@ describe("renderStackEnv", () => {
     expect(lines.some((line) => line.startsWith("RAKAZO_IMAGE_TAG="))).toBe(false);
     expect(lines.some((line) => line.startsWith("RAKAZO_COMPUTER_IMAGE_TAG="))).toBe(false);
     // Everything else, including the image names and empty optional keys, stays verbatim.
-    expect(lines).toContain("RAKAZO_IMAGE=ghcr.io/elie222/rakazo/app");
+    expect(lines).toContain("RAKAZO_IMAGE=ghcr.io/cogine-ai/coginebot/app");
+    expect(lines).toContain("RAKAZO_COMPUTER_IMAGE=ghcr.io/cogine-ai/coginebot/computer");
     expect(lines).toContain("SANDBOX_PROVIDER=docker");
     expect(lines).toContain("OPENROUTER_API_KEY=");
     expect(rendered.endsWith("\n")).toBe(template.endsWith("\n"));
@@ -445,7 +446,7 @@ describe("LocalStackController", () => {
       "stop",
     ]);
     for (const call of commands) {
-      expect(call.args.slice(5, 7)).toEqual(["--project-name", "rakazo-desktop"]);
+      expect(call.args.slice(5, 7)).toEqual(["--project-name", "coginebot-desktop"]);
       expect(call.env).not.toHaveProperty("COMPOSE_PROJECT_NAME");
     }
   });
@@ -646,7 +647,7 @@ describe("LocalStackController", () => {
           return {
             code: 1,
             [stream]:
-              "failed to create network rakazo-desktop_data: Error response from daemon: all predefined address pools have been fully subnetted",
+              "failed to create network coginebot-desktop_data: Error response from daemon: all predefined address pools have been fully subnetted",
           };
         }
         return ok(args);

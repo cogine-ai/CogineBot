@@ -96,8 +96,8 @@ describe("the updater compose service", () => {
   });
 
   it("uses the official registry namespace and digest-pins third-party runtime images", () => {
-    expect(updater.image).toContain("ghcr.io/elie222/rakazo/updater");
-    expect(compose.services.api?.image).toContain("ghcr.io/elie222/rakazo/app");
+    expect(updater.image).toContain("ghcr.io/cogine-ai/coginebot/updater");
+    expect(compose.services.api?.image).toContain("ghcr.io/cogine-ai/coginebot/app");
     expect(compose.services.postgres?.image).toMatch(
       /^\$\{POSTGRES_IMAGE:-postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5\}$/,
     );
@@ -124,7 +124,9 @@ describe("the updater compose service", () => {
 
   it("injects the actual Compose project name into the updater container", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: this is the literal Compose expression
-    expect(updater.environment?.COMPOSE_PROJECT_NAME).toBe("${COMPOSE_PROJECT_NAME:-rakazo-prod}");
+    expect(updater.environment?.COMPOSE_PROJECT_NAME).toBe(
+      "${COMPOSE_PROJECT_NAME:-coginebot-prod}",
+    );
   });
 
   it("does not load the application env_file into the root-equivalent process", () => {
