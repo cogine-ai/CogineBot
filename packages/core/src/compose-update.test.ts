@@ -308,8 +308,8 @@ describe("compose argv construction", () => {
   });
 
   it("defaults -p to the name pinned in the compose file", () => {
-    expect(DEFAULT_COMPOSE_PROJECT_NAME).toBe("rakazo-prod");
-    expect(composePsArgv(target).args.slice(0, 3)).toEqual(["compose", "-p", "rakazo-prod"]);
+    expect(DEFAULT_COMPOSE_PROJECT_NAME).toBe("coginebot-prod");
+    expect(composePsArgv(target).args.slice(0, 3)).toEqual(["compose", "-p", "coginebot-prod"]);
   });
 
   it("refuses a project name that could be parsed as another flag or a second argument", () => {
@@ -601,10 +601,13 @@ describe("managed env assignments", () => {
 describe("sidecar boundary validation", () => {
   it("normalizes a request the API already validated", () => {
     expect(
-      validateUpdateRequest({ repoUrl: "https://github.com/elie222/rakazo.git", branch: " main " }),
+      validateUpdateRequest({
+        repoUrl: "https://github.com/cogine-ai/CogineBot.git",
+        branch: " main ",
+      }),
     ).toEqual({
       request: {
-        repoUrl: "https://github.com/elie222/rakazo.git",
+        repoUrl: "https://github.com/cogine-ai/CogineBot.git",
         branch: "main",
         official: true,
       },

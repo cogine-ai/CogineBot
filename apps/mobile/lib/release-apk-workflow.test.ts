@@ -3,18 +3,23 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(
-  path.resolve(import.meta.dirname, "../../../.github/upstream-workflows/release-android-apk.yml"),
+  path.resolve(import.meta.dirname, "../../../.github/workflows/release-android-apk.yml"),
   "utf8",
 );
 const easConfig = JSON.parse(
   readFileSync(path.resolve(import.meta.dirname, "../eas.json"), "utf8"),
-) as { build: Record<string, { extends?: string; android?: { buildType?: string } }> };
+) as {
+  build: Record<string, { extends?: string; android?: { buildType?: string } }>;
+};
 
 describe("Android APK release workflow", () => {
-  it("remains archived outside the active company workflows", () => {
+  it("has one active company release workflow", () => {
     expect(
       existsSync(
-        path.resolve(import.meta.dirname, "../../../.github/workflows/release-android-apk.yml"),
+        path.resolve(
+          import.meta.dirname,
+          "../../../.github/upstream-workflows/release-android-apk.yml",
+        ),
       ),
     ).toBe(false);
   });
@@ -25,6 +30,8 @@ describe("Android APK release workflow", () => {
     expect(workflow).toContain("if: github.ref == 'refs/heads/main'");
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).not.toContain("cache: pnpm");
+    expect(workflow).toMatch(/EXPO_OWNER: \$\{\{ vars\.EXPO_OWNER \}\}/);
+    expect(workflow).toMatch(/EAS_PROJECT_ID: \$\{\{ vars\.EAS_PROJECT_ID \}\}/);
   });
 
   it("pins every third-party action to an immutable commit", () => {
@@ -41,7 +48,10 @@ describe("Android APK release workflow", () => {
       android: { buildType: "apk" },
     });
     expect(workflow).toContain("--profile android-apk");
+    expect(workflow).toMatch(/EXPO_PUBLIC_API_URL: \$\{\{ vars\.EXPO_PUBLIC_API_URL \}\}/);
     expect(workflow).toContain("--latest=false");
+    expect(workflow).toContain("$RUNNER_TEMP/coginebot.apk");
+    expect(workflow).not.toContain("rakazo.apk");
     expect(workflow).not.toContain("gh release delete");
     expect(readFileSync(path.resolve(import.meta.dirname, "../app.config.ts"), "utf8")).toContain(
       '"android-apk"',

@@ -39,7 +39,7 @@ services:
   # container with the project, which is how it finds the `web` screen proxy to
   # join each bot network.
   supervisor:
-    image: ${RAKAZO_IMAGE:-ghcr.io/elie222/rakazo/app}:${RAKAZO_IMAGE_TAG:-local}
+    image: ${RAKAZO_IMAGE:-ghcr.io/cogine-ai/coginebot/app}:${RAKAZO_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: infra/compose/Dockerfile

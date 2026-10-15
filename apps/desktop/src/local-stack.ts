@@ -14,7 +14,7 @@ import {
 import { readPrivateFile, writePrivateFile } from "./setup-store.js";
 
 export const STACK_DIR_NAME = "stack";
-export const STACK_PROJECT_NAME = "rakazo-desktop";
+export const STACK_PROJECT_NAME = "coginebot-desktop";
 export const STACK_COMPOSE_FILE = "docker-compose.images.yml";
 export const STACK_ENV_TEMPLATE = ".env.images.example";
 export const STACK_ENV_FILE = ".env";
@@ -259,8 +259,8 @@ export function stackFailureMessage(
       return "Docker Compose is missing. Install Docker Desktop or the docker-compose-plugin, then retry.";
     case "other":
       return phase === "pulling"
-        ? "Downloading Rakazo images failed. Check the output below, then retry."
-        : "Rakazo services did not start. Check the output below, then retry.";
+        ? "Downloading CogineBot images failed. Check the output below, then retry."
+        : "CogineBot services did not start. Check the output below, then retry.";
   }
 }
 

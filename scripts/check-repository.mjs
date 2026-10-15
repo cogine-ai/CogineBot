@@ -73,7 +73,14 @@ for (const document of documents) {
 const active = readdirSync(path.join(root, ".github/workflows"))
   .filter((file) => /\.ya?ml$/.test(file))
   .sort();
-if (active.length !== 1 || active[0] !== "repository-ci.yml") {
+const reviewedWorkflows = [
+  "publish-server-image.yml",
+  "release-android-apk.yml",
+  "release-desktop.yml",
+  "repository-ci.yml",
+  "validate-desktop-macos.yml",
+];
+if (JSON.stringify(active) !== JSON.stringify(reviewedWorkflows)) {
   failures.push(`Unexpected active workflows: ${active.join(", ")}`);
 }
 for (const file of ["config.yml", "bug.yml", "self-host.yml", "feature-request.yml"]) {
@@ -97,6 +104,6 @@ if (failures.length) {
   process.exitCode = 1;
 } else {
   console.log(
-    `Repository check passed: ${documents.length} documents, ${links} local links, one active CI workflow.`,
+    `Repository check passed: ${documents.length} documents, ${links} local links, ${active.length} reviewed workflows.`,
   );
 }

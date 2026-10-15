@@ -23,7 +23,6 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       sha: ${{ steps.release.outputs.sha }}
       platforms: ${{ steps.platforms.outputs.include }}
-      windows: ${{ steps.platforms.outputs.windows }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -85,20 +84,13 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$tag_sha" >> "$GITHUB_OUTPUT"
-      - name: Choose release platforms
+      - name: Include every supported desktop platform
         id: platforms
-        env:
-          # Windows builds only when an Authenticode certificate is configured; macOS and Linux always build.
-          WINDOWS_SIGNING: ${{ secrets.DESKTOP_WIN_CSC_LINK != '' }}
         shell: bash
         run: |
           set -euo pipefail
-          include='[{"os":"macos-26","artifact":"macos"},{"os":"ubuntu-24.04","artifact":"linux"}]'
-          if [[ "$WINDOWS_SIGNING" == "true" ]]; then
-            include="$(jq -c '. + [{"os":"windows-2022","artifact":"windows"}]' <<<"$include")"
-          fi
+          include='[{"os":"macos-26","artifact":"macos"},{"os":"ubuntu-24.04","artifact":"linux"},{"os":"windows-2022","artifact":"windows"}]'
           echo "include=$include" >> "$GITHUB_OUTPUT"
-          echo "windows=$WINDOWS_SIGNING" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build signed ${{ matrix.artifact }} artifacts
@@ -166,13 +158,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app="apps/desktop/out/mac-universal/Rakazo.app"
+          app="apps/desktop/out/mac-universal/CogineBot.app"
           codesign --verify --deep --strict --verbose=2 "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
           grep -Fqx "provider: github" "$app/Contents/Resources/app-update.yml"
-          grep -Fqx "owner: elie222" "$app/Contents/Resources/app-update.yml"
-          grep -Fqx "repo: rakazo" "$app/Contents/Resources/app-update.yml"
+          grep -Fqx "owner: cogine-ai" "$app/Contents/Resources/app-update.yml"
+          grep -Fqx "repo: CogineBot" "$app/Contents/Resources/app-update.yml"
 
       - name: Require Windows signing credentials
         if: runner.os == 'Windows'
@@ -213,7 +205,7 @@ jobs:
             throw "Windows update config is not bound to the signing publisher."
           }
           $feed = Get-Content -Raw $config
-          foreach ($expected in @("provider: github", "owner: elie222", "repo: rakazo")) {
+          foreach ($expected in @("provider: github", "owner: cogine-ai", "repo: CogineBot")) {
             if ($feed -notmatch "(?m)^$([regex]::Escape($expected))\r?$") {
               throw "Windows update config missing '$expected'."
             }
@@ -238,8 +230,8 @@ jobs:
           test -n "$config"
           test -f "$config"
           grep -Fqx "provider: github" "$config"
-          grep -Fqx "owner: elie222" "$config"
-          grep -Fqx "repo: rakazo" "$config"
+          grep -Fqx "owner: cogine-ai" "$config"
+          grep -Fqx "repo: CogineBot" "$config"
           test -f apps/desktop/out/latest-linux.yml
           grep -Fqx "version: $RELEASE_VERSION" apps/desktop/out/latest-linux.yml
 
@@ -284,7 +276,6 @@ jobs:
           RELEASE_SHA: ${{ needs.validate.outputs.sha }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-          WINDOWS_BUILT: ${{ needs.validate.outputs.windows }}
         shell: bash
         run: |
           set -euo pipefail
@@ -296,18 +287,16 @@ jobs:
 
           test -f release-artifacts/latest-mac.yml
           test -f release-artifacts/latest-linux.yml
+          test -f release-artifacts/latest.yml
           compgen -G 'release-artifacts/*.dmg' >/dev/null
           compgen -G 'release-artifacts/*.zip' >/dev/null
           compgen -G 'release-artifacts/*.AppImage' >/dev/null
+          compgen -G 'release-artifacts/*.exe' >/dev/null
           feeds=(
             release-artifacts/latest-mac.yml
             release-artifacts/latest-linux.yml
+            release-artifacts/latest.yml
           )
-          if [[ "$WINDOWS_BUILT" == "true" ]]; then
-            test -f release-artifacts/latest.yml
-            compgen -G 'release-artifacts/*.exe' >/dev/null
-            feeds+=(release-artifacts/latest.yml)
-          fi
           for feed in "${feeds[@]}"; do
             grep -Fqx "version: $RELEASE_VERSION" "$feed"
           done
@@ -329,7 +318,7 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: >-
           gh release create "$RELEASE_TAG" release-artifacts/*
-          --draft --generate-notes --title "Rakazo $RELEASE_TAG" --verify-tag
+          --draft --generate-notes --title "CogineBot $RELEASE_TAG" --verify-tag
       - name: Publish the completed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

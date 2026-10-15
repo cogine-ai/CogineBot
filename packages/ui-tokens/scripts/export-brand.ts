@@ -1,21 +1,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
-import { darkTokens } from "../src/index.ts";
 
 const root = new URL("../../../", import.meta.url);
 const path = (name: string) => fileURLToPath(new URL(name, root));
-const source = path("packages/ui-tokens/assets/Rakazo.icon/Assets/orange-bot.png");
+const source = path("packages/ui-tokens/assets/CogineBot.svg");
 
-// Match the Icon Composer portrait: the character sits 90 points below center.
-const portrait = await sharp(source).resize(1024, 1024).png().toBuffer();
-const square = await sharp({
-  create: { width: 1024, height: 1114, channels: 4, background: darkTokens.background },
-})
-  .composite([{ input: portrait, top: 90, left: 0 }])
-  .extract({ left: 0, top: 0, width: 1024, height: 1024 })
-  .png()
-  .toBuffer();
+// The approved C artwork includes its centered layout and background.
+const square = await sharp(source).resize(1024, 1024).png().toBuffer();
 const mask = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"><rect width="1024" height="1024" rx="200" fill="white"/></svg>',
 );
@@ -59,23 +51,13 @@ for (const app of ["web", "www"]) {
 }
 await mkdir(path("apps/www/public/brand"), { recursive: true });
 await png(rounded, "apps/www/public/brand/rakazo-mark.png", 256);
-await png(rounded, "apps/mobile/assets/favicon.png", 128);
-await png(square, "apps/desktop/assets/icon.png", 1024);
-await ico(rounded, "apps/desktop/assets/icon.ico", [16, 32, 48, 64, 128, 256]);
-
-// Keep the splash's existing transparent padding so its visual size stays stable.
-await sharp(rounded)
-  .resize(620, 620)
-  .extend({ top: 202, bottom: 202, left: 202, right: 202, background: "transparent" })
+// Mobile's web favicon uses the approved transparent symbol, not a launcher tile.
+const symbol = await sharp(path("packages/ui-tokens/assets/CogineBot-symbol.svg"))
+  .resize(128, 128)
   .png()
-  .toFile(path("apps/mobile/assets/splash-icon.png"));
-
-// Android notification icons must be white alpha silhouettes, with transparent eyes.
-const silhouette = await sharp(path("apps/mobile/assets/monochrome-icon.png"))
-  .resize(72, 72)
-  .extractChannel("alpha")
   .toBuffer();
-await sharp({ create: { width: 72, height: 72, channels: 3, background: "white" } })
-  .joinChannel(silhouette)
-  .png()
-  .toFile(path("apps/mobile/assets/notification-icon.png"));
+await png(symbol, "apps/mobile/assets/favicon.png", 128);
+
+// Apple Icon Composer, desktop legacy icons, and Android adaptive/notification
+// exports have distinct native masks and safe areas. Keep their checked-in
+// platform exports; this browser-asset command must not overwrite them.

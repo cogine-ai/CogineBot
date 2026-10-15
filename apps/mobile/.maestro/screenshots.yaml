@@ -1,5 +1,5 @@
-appId: com.rakazo.app
-name: Rakazo mobile screenshots
+appId: ai.cogine.coginebot
+name: CogineBot mobile screenshots
 tags:
   - screenshots
 ---
@@ -10,7 +10,7 @@ tags:
 
 # A cold API 34 emulator can show a launcher ANR over the healthy app.
 - extendedWaitUntil:
-    visible: "Sign up for Rakazo|Pixel Launcher isn't responding"
+    visible: "Sign up for CogineBot|Pixel Launcher isn't responding"
     timeout: 30000
 - runFlow:
     when:
@@ -18,11 +18,11 @@ tags:
     commands:
       - tapOn: "Close app"
 - extendedWaitUntil:
-    visible: "Sign up for Rakazo"
+    visible: "Sign up for CogineBot"
     timeout: 30000
 - takeScreenshot: "02-sign-up"
 - tapOn: "Sign in"
-- assertVisible: "Sign in to Rakazo"
+- assertVisible: "Sign in to CogineBot"
 - takeScreenshot: "01-sign-in"
 
 - tapOn: "Use a custom server"
@@ -59,19 +59,19 @@ tags:
     timeout: 10000
 - takeScreenshot: "06-search-results"
 
-- openLink: "rakazo:///new"
+- openLink: "coginebot:///new"
 - assertVisible: "Name this bot"
 - takeScreenshot: "07-new-bot"
 
-- openLink: "rakazo:///new-group"
+- openLink: "coginebot:///new-group"
 - assertVisible: "Name this group"
 - takeScreenshot: "08-new-group"
 
-- openLink: "rakazo:///new-space"
+- openLink: "coginebot:///new-space"
 - assertVisible: "Customer support"
 - takeScreenshot: "09-new-space"
 
-- openLink: "rakazo:///account"
+- openLink: "coginebot:///account"
 - extendedWaitUntil:
     visible: "Change password"
     timeout: 10000
@@ -81,7 +81,7 @@ tags:
 - takeScreenshot: "10b-change-password"
 - back
 
-- openLink: "rakazo:///models"
+- openLink: "coginebot:///models"
 - extendedWaitUntil:
     visible: "Active model"
     timeout: 10000
@@ -95,13 +95,13 @@ tags:
     direction: DOWN
 - takeScreenshot: "11b-all-providers"
 
-- openLink: "rakazo:///voice"
+- openLink: "coginebot:///voice"
 - extendedWaitUntil:
     visible: "Scripted"
     timeout: 10000
 - takeScreenshot: "12-voice"
 
-- openLink: "rakazo:///integrations"
+- openLink: "coginebot:///integrations"
 - extendedWaitUntil:
     visible: "Search apps"
     timeout: 10000
@@ -111,7 +111,7 @@ tags:
 - assertVisible: "Add MCP server"
 - takeScreenshot: "14-integrations-advanced"
 
-- openLink: "rakazo:///thread?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
+- openLink: "coginebot:///thread?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
 - extendedWaitUntil:
     visible: "The fixture workspace is ready."
     timeout: 10000
@@ -149,7 +149,7 @@ tags:
 - takeScreenshot: "16-bot-actions"
 - back
 
-- openLink: "rakazo:///bot-settings?botId=${RAKAZO_SCREENSHOT_BOT_ID}"
+- openLink: "coginebot:///bot-settings?botId=${RAKAZO_SCREENSHOT_BOT_ID}"
 - extendedWaitUntil:
     visible: "Researcher"
     timeout: 10000
@@ -160,13 +160,13 @@ tags:
 - assertVisible: "Space default.*"
 - takeScreenshot: "17-bot-settings"
 
-- openLink: "rakazo:///computer?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
+- openLink: "coginebot:///computer?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
 - extendedWaitUntil:
     visible: "Take control"
     timeout: 10000
 - takeScreenshot: "18-computer"
 
-- openLink: "rakazo:///group-thread?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}&name=Launch%20team"
+- openLink: "coginebot:///group-thread?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}&name=Launch%20team"
 - extendedWaitUntil:
     visible: "The fixture launch plan is ready."
     timeout: 10000
@@ -187,57 +187,57 @@ tags:
 - assertVisible: "More"
 - back
 
-- openLink: "rakazo:///group-settings?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}"
+- openLink: "coginebot:///group-settings?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}"
 - extendedWaitUntil:
     visible: "Delete group"
     timeout: 10000
 - takeScreenshot: "20-group-settings"
 
-- openLink: "rakazo:///routine?botId=${RAKAZO_SCREENSHOT_BOT_ID}&botName=Researcher&routineId=${RAKAZO_SCREENSHOT_ROUTINE_ID}"
+- openLink: "coginebot:///routine?botId=${RAKAZO_SCREENSHOT_BOT_ID}&botName=Researcher&routineId=${RAKAZO_SCREENSHOT_ROUTINE_ID}"
 - extendedWaitUntil:
     visible: "Weekly fixture review"
     timeout: 10000
 - takeScreenshot: "21-routine"
 
 # Verify saved appearance changes on already-mounted screens and modal routes.
-- openLink: "rakazo:///account"
+- openLink: "coginebot:///account"
 - extendedWaitUntil:
     visible: "Dark"
     timeout: 10000
 - tapOn: "Dark"
 - takeScreenshot: "22-account-dark"
 
-- openLink: "rakazo:///new"
+- openLink: "coginebot:///new"
 - assertVisible: "Name this bot"
 - takeScreenshot: "23-new-bot-dark"
 
-- openLink: "rakazo:///new-group"
+- openLink: "coginebot:///new-group"
 - assertVisible: "Name this group"
 - takeScreenshot: "24-new-group-dark"
 
-- openLink: "rakazo:///new-space"
+- openLink: "coginebot:///new-space"
 - assertVisible: "Customer support"
 - takeScreenshot: "25-new-space-dark"
 
-- openLink: "rakazo:///thread?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
+- openLink: "coginebot:///thread?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
 - extendedWaitUntil:
     visible: "The fixture workspace is ready."
     timeout: 10000
 - takeScreenshot: "26-thread-dark"
 
-- openLink: "rakazo:///group-thread?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}&name=Launch%20team"
+- openLink: "coginebot:///group-thread?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}&name=Launch%20team"
 - extendedWaitUntil:
     visible: "The fixture launch plan is ready."
     timeout: 10000
 - takeScreenshot: "27-group-thread-dark"
 
-- openLink: "rakazo:///group-settings?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}"
+- openLink: "coginebot:///group-settings?groupId=${RAKAZO_SCREENSHOT_GROUP_ID}"
 - assertVisible: "Delete group"
 - takeScreenshot: "28-group-settings-dark"
 
-- openLink: "rakazo:///account"
+- openLink: "coginebot:///account"
 - tapOn: "Light"
-- openLink: "rakazo:///thread?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
+- openLink: "coginebot:///thread?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
 - assertVisible: "The fixture workspace is ready."
 - takeScreenshot: "29-thread-light-restored"
 

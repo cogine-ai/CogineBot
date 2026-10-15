@@ -31,7 +31,7 @@ describe("CORS origins", () => {
       "http://localhost:8081",
       "http://127.0.0.1:19006",
       "http://[::1]:8081",
-      "rakazo://sign-in",
+      "coginebot://sign-in",
       "",
     ]) {
       expect(isTrustedOrigin(origin, env), origin).toBe(true);
@@ -74,7 +74,7 @@ describe("mobile auth origins", () => {
 
   it("keeps the app scheme, Expo web dev server and web origin", async () => {
     for (const url of [
-      "rakazo://sign-in",
+      "coginebot://sign-in",
       "http://localhost:8081/sign-in",
       "https://app.example.test/sign-in",
     ]) {

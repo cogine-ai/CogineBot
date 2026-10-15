@@ -1,9 +1,8 @@
 {
   "expo": {
-    "name": "Rakazo",
-    "slug": "rakazo",
-    "owner": "inbox-zero",
-    "scheme": "rakazo",
+    "name": "CogineBot",
+    "slug": "coginebot",
+    "scheme": "coginebot",
     "version": "1.0.5",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
@@ -23,14 +22,14 @@
         "expo-audio",
         {
           "enableBackgroundPlayback": false,
-          "microphonePermission": "Rakazo uses the microphone for voice calls with your bots."
+          "microphonePermission": "CogineBot uses the microphone for voice calls with your bots."
         }
       ],
       [
         "expo-speech-recognition",
         {
-          "speechRecognitionPermission": "Rakazo turns your speech into messages during voice calls.",
-          "microphonePermission": "Rakazo uses the microphone for voice calls with your bots."
+          "speechRecognitionPermission": "CogineBot turns your speech into messages during voice calls.",
+          "microphonePermission": "CogineBot uses the microphone for voice calls with your bots."
         }
       ],
       "expo-localization",
@@ -45,9 +44,9 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Rakazo uses your photo library so you can attach images to a bot message.",
-          "cameraPermission": "Rakazo uses the camera so you can attach photos to a bot message.",
-          "microphonePermission": "Rakazo uses the microphone for voice calls with your bots."
+          "photosPermission": "CogineBot uses your photo library so you can attach images to a bot message.",
+          "cameraPermission": "CogineBot uses the camera so you can attach photos to a bot message.",
+          "microphonePermission": "CogineBot uses the microphone for voice calls with your bots."
         }
       ],
       "expo-sharing",
@@ -55,24 +54,24 @@
       "./plugins/with-scene-lifecycle"
     ],
     "ios": {
-      "bundleIdentifier": "com.rakazo.app",
+      "bundleIdentifier": "ai.cogine.coginebot",
       "buildNumber": "1",
       "supportsTablet": false,
-      "icon": "../../packages/ui-tokens/assets/Rakazo.icon",
+      "icon": "../../packages/ui-tokens/assets/CogineBot.icon",
       "config": {
         "usesNonExemptEncryption": false
       },
       "infoPlist": {
-        "NSCameraUsageDescription": "Rakazo uses the camera so you can attach photos to a bot message.",
-        "NSPhotoLibraryUsageDescription": "Rakazo uses your photo library so you can attach images to a bot message.",
-        "NSLocalNetworkUsageDescription": "Rakazo connects to a self-hosted Rakazo server on your local network.",
+        "NSCameraUsageDescription": "CogineBot uses the camera so you can attach photos to a bot message.",
+        "NSPhotoLibraryUsageDescription": "CogineBot uses your photo library so you can attach images to a bot message.",
+        "NSLocalNetworkUsageDescription": "CogineBot connects to a self-hosted CogineBot server on your local network.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         }
       }
     },
     "android": {
-      "package": "com.rakazo.app",
+      "package": "ai.cogine.coginebot",
       "versionCode": 10,
       "softwareKeyboardLayoutMode": "resize",
       "icon": "./assets/icon.png",
@@ -87,16 +86,10 @@
     },
     "extra": {
       "router": {},
-      "supportsRTL": true,
-      "eas": {
-        "projectId": "07f7eb04-45e3-47fe-9374-99a2f991131e"
-      }
+      "supportsRTL": true
     },
     "runtimeVersion": {
       "policy": "appVersion"
-    },
-    "updates": {
-      "url": "https://u.expo.dev/07f7eb04-45e3-47fe-9374-99a2f991131e"
     }
   }
 }

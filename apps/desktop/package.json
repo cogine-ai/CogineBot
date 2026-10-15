@@ -1,6 +1,6 @@
 {
   "name": "@rakazo/desktop",
-  "productName": "Rakazo",
+  "productName": "CogineBot",
   "version": "0.2.0",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,7 @@
     "vitest": "4.1.11"
   },
   "build": {
-    "appId": "dev.rakazo.desktop",
+    "appId": "ai.cogine.coginebot.desktop",
     "directories": {
       "output": "out",
       "buildResources": "assets"
@@ -52,10 +52,11 @@
       }
     ],
     "extraMetadata": {
-      "main": "dist/main.js"
+      "main": "dist/main.js",
+      "name": "coginebot-desktop"
     },
     "mac": {
-      "icon": "../../packages/ui-tokens/assets/Rakazo.icon",
+      "icon": "../../packages/ui-tokens/assets/CogineBot.icon",
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
@@ -71,7 +72,7 @@
       "verifyUpdateCodeSignature": true
     },
     "linux": {
-      "executableName": "rakazo",
+      "executableName": "coginebot",
       "icon": "assets/icon.png",
       "target": [
         "AppImage"
@@ -80,8 +81,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "elie222",
-        "repo": "rakazo"
+        "owner": "cogine-ai",
+        "repo": "CogineBot"
       }
     ]
   }

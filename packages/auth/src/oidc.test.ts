@@ -382,7 +382,7 @@ describe("OIDC callbacks", () => {
   });
   it("hands the native browser callback to Expo with a valid bearer session", async () => {
     setup();
-    const callback = await start(undefined, false, "rakazo://sign-in");
+    const callback = await start(undefined, false, "coginebot://sign-in");
     const authorize = `${issuer}/authorize?state=${new URL(`${origin}${callback}`).searchParams.get("state")}`;
     const proxy = await request(
       `/expo-authorization-proxy?${new URLSearchParams({ authorizationURL: authorize })}`,
@@ -390,7 +390,7 @@ describe("OIDC callbacks", () => {
     expect(proxy.headers.get("location")).toBe(authorize);
     const returned = await request(callback);
     const destination = new URL(returned.headers.get("location")!);
-    expect(destination.protocol).toBe("rakazo:");
+    expect(destination.protocol).toBe("coginebot:");
     const signed = destination.searchParams
       .get("cookie")!
       .match(/(?:__Secure-)?better-auth\.session_token=([^;]+)/)![1]!;

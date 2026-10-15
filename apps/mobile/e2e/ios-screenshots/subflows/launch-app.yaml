@@ -1,10 +1,10 @@
-appId: com.rakazo.app
+appId: ai.cogine.coginebot
 ---
 # Restart without clearing app data, so a dev client's bundler URL stays put.
 - launchApp:
     stopApp: true
 - extendedWaitUntil:
-    visible: "Account|Sign up for Rakazo|Sign in to Rakazo"
+    visible: "Account|Sign up for CogineBot|Sign in to CogineBot"
     timeout: 40000
 - runFlow:
     when:
@@ -17,5 +17,5 @@ appId: com.rakazo.app
           timeout: 15000
       - tapOn: "Sign out"
 - extendedWaitUntil:
-    visible: "Sign up for Rakazo|Sign in to Rakazo"
+    visible: "Sign up for CogineBot|Sign in to CogineBot"
     timeout: 20000

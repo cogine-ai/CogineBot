@@ -502,7 +502,7 @@ test("a key connected in another space can replace server credentials for the sa
   const useModel = page.getByRole("button", { name: "Use this model", exact: true });
   await expect(useModel).toBeVisible();
   const personalBillingNote = page.getByText(
-    "Uses your Amazon Bedrock API key. Rakazo does not pay for model usage.",
+    "Uses your Amazon Bedrock API key. CogineBot does not pay for model usage.",
   );
   await expect(personalBillingNote).toBeHidden();
   await captureScreenshot(page, testInfo, "model-settings-server-credentials-connected-key");

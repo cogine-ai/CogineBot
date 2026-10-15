@@ -35,4 +35,4 @@ if [[ "${actual}" != "${expected}" ]]; then
 fi
 tar -xzf "${archive}" -C "${run_dir}" actionlint
 cd "${repo_root}"
-"${run_dir}/actionlint" -color .github/workflows/repository-ci.yml
+"${run_dir}/actionlint" -color .github/workflows/*.yml

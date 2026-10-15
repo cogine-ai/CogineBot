@@ -43,7 +43,7 @@ export function closeSettingsSheet() {
   closeSheet?.();
 }
 
-/** Whether a link (`rakazo:///models`, `rakazo://models` or `/models`) opens a settings page. */
+/** Whether a link (`coginebot:///models`, `coginebot://models` or `/models`) opens a settings page. */
 export function isSettingsLink(link: string): boolean {
   const screen = link
     .replace(/^[a-z][a-z\d+.-]*:\/\//i, "")

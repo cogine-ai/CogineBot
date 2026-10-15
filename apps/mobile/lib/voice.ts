@@ -372,7 +372,7 @@ async function renderUtterance(
         method: "POST",
         headers: {
           "content-type": "application/json",
-          origin: "rakazo://",
+          origin: "coginebot://",
           ...requestContext.headers,
         },
         body: JSON.stringify({ text, voiceId: opts.voiceId, botId: opts.botId }),

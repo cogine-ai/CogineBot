@@ -22,7 +22,7 @@ export async function continueWithSso(
       if (apiBase !== currentApiBase() || generation !== currentSessionGeneration())
         throw new Error(t("Could not continue"));
     };
-    const callbackURL = action === "sign-in" ? "rakazo://sign-in" : "rakazo://account";
+    const callbackURL = action === "sign-in" ? "coginebot://sign-in" : "coginebot://account";
     const headers = action === "sign-in" ? {} : await authHeaders();
     requireCurrentSession();
     const previous = action === "reauthenticate" ? await sessionUser(apiBase, headers) : undefined;
@@ -33,7 +33,7 @@ export async function continueWithSso(
         method: "POST",
         headers: {
           "content-type": "application/json",
-          origin: "rakazo://",
+          origin: "coginebot://",
           "x-skip-oauth-proxy": "true",
           ...headers,
         },
@@ -66,7 +66,7 @@ export async function continueWithSso(
     if (result.type !== "success") return false;
     const callback = new URL(result.url);
     if (
-      callback.protocol !== "rakazo:" ||
+      callback.protocol !== "coginebot:" ||
       callback.host !== new URL(callbackURL).host ||
       (callback.pathname && callback.pathname !== "/")
     )
@@ -97,7 +97,7 @@ export async function continueWithSso(
 async function sessionUser(apiBase: string, headers: Record<string, string>): Promise<string> {
   const { response, body } = await fetchMobileJson<{ user?: { id?: string } }>(
     `${apiBase}/api/auth/get-session`,
-    { headers: { origin: "rakazo://", ...headers } },
+    { headers: { origin: "coginebot://", ...headers } },
   );
   if (!response.ok || typeof body?.user?.id !== "string") throw new Error(t("Could not continue"));
   return body.user.id;

@@ -48,7 +48,7 @@ NODE_ENV=test corepack pnpm run test --maxWorkers=2
 
 Dependency installation needs package-registry access; these checks require no paid inference. Prisma client generation does not require a running database. The recorded macOS baseline contains the two launcher failures noted above; report your actual results rather than assuming a green suite.
 
-See the [development guide](docs/development.md) for prerequisites, the local UI/API, verification layers, and troubleshooting. This repository is developed from source; links and image channels in retained upstream guides identify Rakazo resources.
+See the [development guide](docs/development.md) for prerequisites, the local UI/API, verification layers, and troubleshooting. Source development is available independently of binary distribution. The [self-host guide](docs/self-host.md) and [release workflows](docs/automation.md#release-automation) now target CogineBot's own destinations; verify that the selected release or image tag has actually been published before using a binary installation path. Configured workflows are not a release announcement.
 
 ## Find your way around
 
@@ -65,7 +65,7 @@ docs/       development, verification, operations, and provenance notes
 | Set up and choose the right check | [Development](docs/development.md) |
 | Understand what was actually tested | [Preparation baseline](docs/preparation-baseline.md) |
 | Distinguish emulated execution from model quality | [Agent verification](docs/agent-verification.md) |
-| Understand repository CI and archived workflows | [Automation](docs/automation.md) |
+| Understand repository checks, release jobs, and archived workflows | [Automation](docs/automation.md) |
 | Trace the upstream starting point and sync policy | [Upstream provenance](UPSTREAM.md) |
 | Submit a change or report a vulnerability | [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) |
 

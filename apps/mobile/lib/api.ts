@@ -495,7 +495,7 @@ async function authenticateWithEmail(
     `${currentApiBase()}/api/auth/${action}/email`,
     {
       method: "POST",
-      headers: { "content-type": "application/json", origin: "rakazo://" },
+      headers: { "content-type": "application/json", origin: "coginebot://" },
       body: JSON.stringify(input),
     },
     {},
@@ -532,7 +532,7 @@ export type PasswordResetCapabilities = AuthCapabilities;
 export async function passwordResetCapabilities(): Promise<PasswordResetCapabilities> {
   const { response, body } = await fetchMobileJson<unknown>(
     `${currentApiBase()}/api/auth/capabilities`,
-    { headers: { origin: "rakazo://" } },
+    { headers: { origin: "coginebot://" } },
   );
   if (!response.ok) throw new Error(t("Could not load sign-in options"));
   return authCapabilitiesSchema.or(legacyAuthCapabilitiesSchema).parse(body);
@@ -543,7 +543,7 @@ export async function requestPasswordReset(email: string, redirectTo: string): P
     `${currentApiBase()}/api/auth/request-password-reset`,
     {
       method: "POST",
-      headers: { "content-type": "application/json", origin: "rakazo://" },
+      headers: { "content-type": "application/json", origin: "coginebot://" },
       body: JSON.stringify({ email, redirectTo }),
     },
     {},
@@ -573,7 +573,7 @@ async function replaceSessionAfterPasswordChange(currentPassword: string, newPas
       method: "POST",
       headers: {
         "content-type": "application/json",
-        origin: "rakazo://",
+        origin: "coginebot://",
         ...headers,
       },
       body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions: true }),
@@ -644,7 +644,7 @@ export async function signOut() {
     await withAbort(
       fetch(`${currentApiBase()}/api/auth/sign-out`, {
         method: "POST",
-        headers: { "content-type": "application/json", origin: "rakazo://", ...headers },
+        headers: { "content-type": "application/json", origin: "coginebot://", ...headers },
         body: "{}",
         signal: controller.signal,
       }),
@@ -684,7 +684,7 @@ export async function deleteAccount(password?: string, token?: string) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        origin: "rakazo://",
+        origin: "coginebot://",
         ...(await authHeaders()),
       },
       body: JSON.stringify({ password, token }),
@@ -776,7 +776,7 @@ export async function rpc<T>(
         method: "POST",
         headers: {
           "content-type": "application/json",
-          origin: "rakazo://",
+          origin: "coginebot://",
           ...requestHeaders,
         },
         body: JSON.stringify({ json: body }),
@@ -1169,7 +1169,7 @@ export async function subscribeThread(
     headers: {
       "content-type": "application/json",
       accept: "text/event-stream",
-      origin: "rakazo://",
+      origin: "coginebot://",
       ...context.headers,
     },
     body: JSON.stringify({ json: { ...target, cursor } }),
@@ -1438,7 +1438,7 @@ export { loadSessionToken };
 export async function fetchAccountSecurity(): Promise<AccountSecurity> {
   const { response, body } = await fetchMobileJson<unknown>(
     `${currentApiBase()}/api/auth/account-security`,
-    { headers: { origin: "rakazo://", ...(await authHeaders()) } },
+    { headers: { origin: "coginebot://", ...(await authHeaders()) } },
     null,
   );
   // Older servers support password accounts and the original change/delete endpoints.
@@ -1458,7 +1458,7 @@ export async function requestAccountDeletionCode(): Promise<void> {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        origin: "rakazo://",
+        origin: "coginebot://",
         ...(await authHeaders()),
       },
       body: "{}",
