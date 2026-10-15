@@ -10,8 +10,8 @@ The CogineBot app icon sources and export scope are documented in
 - `Rakazo.icon` is retained as the original upstream editable source. It is not
   used by CogineBot packaging or the brand export command.
 
-Run `pnpm --filter @rakazo/ui-tokens export:brand` to refresh web and marketing
-favicons, install icons, the existing marketing mark, and the mobile web favicon.
+Run `pnpm --filter @rakazo/ui-tokens export:brand` to refresh product web
+favicons, web install icons, and the mobile web favicon.
 The command retains the existing file names and formats. It does not overwrite
 native desktop or mobile icons: Apple Icon Composer and Android launcher exports
 remain separate because their masks, appearance, and safe areas differ.
@@ -20,6 +20,4 @@ Android adaptive foreground/background and monochrome assets are separate layers
 never bake Mac corners, a rim, or an outer shadow into them. Notification icons
 remain white alpha silhouettes. The mobile splash keeps its transparent padding.
 
-After exporting, run `pnpm exec tsx apps/www/scripts/render-og.mjs` to refresh the
-marketing page social cards; set `CHROME_PATH` to a headless Chrome executable when
-it is not available at the script's default location.
+The existing `apps/www` marketing site is outside this product brand export.

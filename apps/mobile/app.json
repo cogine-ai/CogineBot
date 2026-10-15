@@ -89,7 +89,7 @@
       "supportsRTL": true
     },
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "fingerprint"
     }
   }
 }

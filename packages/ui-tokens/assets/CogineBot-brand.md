@@ -2,8 +2,8 @@
 
 `CogineBot.svg` is the approved CogineBot app-tile artwork, including its centered
 C and light background. `pnpm --filter @rakazo/ui-tokens export:brand` uses it to
-refresh the existing web/marketing PNG and ICO assets, marketing mark, and mobile
-web favicon. It applies no upstream portrait offset.
+refresh the product web PNG and ICO assets and mobile web favicon. It applies no
+upstream portrait offset and leaves the existing marketing site unchanged.
 
 `CogineBot.icon` retains the upstream Apple Icon Composer document structure and
 uses the approved CogineBot C glyph as its centered foreground. The light glyph

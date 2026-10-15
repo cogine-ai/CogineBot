@@ -57,10 +57,12 @@ Before submission, verify the production API, account deletion, sign-in,
 notifications, store privacy answers, age rating, screenshots, support page,
 and review account on a physical device.
 
-Configure the backend's existing `PRIVACY_POLICY_URL` with your deployment's own
-published privacy policy before public distribution. The inherited fallback is
-Rakazo's policy and must not be presented as CogineBot's policy. Do not invent a
-policy URL merely to complete the release configuration.
+The default privacy link points to CogineBot's repository-hosted
+[`PRIVACY.md`](../PRIVACY.md), which describes the product's data handling.
+Before public distribution, verify that the disclosure matches your deployment;
+use the backend's existing `PRIVACY_POLICY_URL` to link to your own published
+policy when needed. Do not invent a policy URL merely to complete the release
+configuration.
 
 ## Android APK
 
@@ -83,16 +85,23 @@ the APK first.
 ## Over-the-air updates
 
 Production and preview builds include `expo-updates` and use the corresponding
-EAS Update channel. The runtime version follows the public app version, so bump
-`expo.version` whenever native code, config plugins, permissions, or native
-dependencies change, then create and submit new store builds.
+EAS Update channel. Expo's built-in `fingerprint` runtime policy derives native
+compatibility from the project rather than relying on a manual app-version
+bump. JavaScript and shared styles can update compatible builds; changes to
+native code, configuration, plugins, or dependencies that change the fingerprint
+require new iOS and Android builds. Switching from the former `appVersion`
+policy also requires new native builds once. Use the same Expo project identity
+for builds and updates.
 
-After the full GitHub Actions test suite passes on `main`, CI publishes a
-production OTA update when the revision only changes the mobile JavaScript,
-TypeScript, or bundled CSS. CI deliberately skips OTA publishing when native
-configuration, modules, dependencies, assets, or the update workflow changed.
-The repository needs an `EXPO_TOKEN` Actions secret with access to the linked
-Expo project.
+After all Repository CI source-check lanes pass on a `main` push, CI publishes
+the latest complete bundle to the production channel for both platforms. It
+serializes publication and skips stale revisions rather than filtering only
+the latest push's paths. The repository needs `EXPO_OWNER`, `EAS_PROJECT_ID`,
+and HTTPS `EXPO_PUBLIC_API_URL` variables plus an `EXPO_TOKEN` Actions secret
+with access to that project. If all four are absent, CI explicitly reports
+that mobile publishing is not configured and publishes nothing. Partial
+configuration fails; configured publishing and native release builds retain
+the production configuration checks.
 
 To publish a compatible update manually from `apps/mobile`:
 

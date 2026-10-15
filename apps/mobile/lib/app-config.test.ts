@@ -30,7 +30,7 @@ describe("mobile release configuration", () => {
     expect(result.owner).toBeUndefined();
     expect(result.extra?.eas?.projectId).toBeUndefined();
     expect(result.updates?.url).toBeUndefined();
-    expect(result.runtimeVersion).toEqual({ policy: "appVersion" });
+    expect(result.runtimeVersion).toEqual({ policy: "fingerprint" });
   });
 
   it.each(["production", "android-apk", "preview"])(
@@ -61,7 +61,7 @@ describe("mobile release configuration", () => {
     expect(result.owner).toBe("example-owner");
     expect(result.extra?.eas?.projectId).toBe(projectId);
     expect(result.updates?.url).toBe(`https://u.expo.dev/${projectId}`);
-    expect(result.runtimeVersion).toEqual({ policy: "appVersion" });
+    expect(result.runtimeVersion).toEqual({ policy: "fingerprint" });
   });
 
   it.each(["", "not-a-url", "http://app.example.test"])(

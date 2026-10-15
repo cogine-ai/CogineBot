@@ -52,6 +52,11 @@ Auto Review uses that LLM checker by default. To use TypeSafe Jev instead, set
 The example defaults to `edge` (main builds). The publishing workflow builds multi-arch images (`amd64` + `arm64`), so
 arm64 hosts need no special tag. Do not assume `latest` is present until a stable release exists.
 
+The Compose defaults create a separate CogineBot deployment. Before adopting these
+files for an existing installation, preserve its explicit project identity
+(`-p` or `COMPOSE_PROJECT_NAME`) and verify its volume mappings. Changing the
+project name does not migrate existing database or application volumes.
+
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The first registered user becomes the
 deployment owner. Put TLS in front of `:5173` for a public host and set the three public origins to
 that HTTPS URL.
@@ -784,7 +789,7 @@ able to resolve the same strings, or it silently creates empty directories where
 Caddyfile should be. Compose makes the effective `-p` value available for interpolation but does
 not automatically put it in a container's environment, so the production file explicitly assigns
 `COMPOSE_PROJECT_NAME` to the updater. A standalone sidecar can instead set
-`RAKAZO_COMPOSE_PROJECT_NAME`; the final fallback is `rakazo-prod`. Without that propagation, a
+`RAKAZO_COMPOSE_PROJECT_NAME`; the final fallback is `coginebot-prod`. Without that propagation, a
 stack started with `-p something-else` would be left alone while a second project with a new empty
 Postgres volume came up beside it.
 

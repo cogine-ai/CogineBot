@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 
@@ -39,18 +39,14 @@ async function ico(input: Buffer, name: string, sizes: number[]) {
   await writeFile(path(name), Buffer.concat([header, ...frames]));
 }
 
-for (const app of ["web", "www"]) {
-  const publicDir = `apps/${app}/public`;
-  await png(rounded, `${publicDir}/favicon-16x16.png`, 16);
-  await png(rounded, `${publicDir}/favicon-32x32.png`, 32);
-  await png(rounded, `${publicDir}/favicon.png`, 128);
-  await png(square, `${publicDir}/apple-touch-icon.png`, 180);
-  await png(square, `${publicDir}/icon-192.png`, 192);
-  await png(square, `${publicDir}/icon-512.png`, 512);
-  await ico(rounded, `${publicDir}/favicon.ico`, [16, 32, 48]);
-}
-await mkdir(path("apps/www/public/brand"), { recursive: true });
-await png(rounded, "apps/www/public/brand/rakazo-mark.png", 256);
+const publicDir = "apps/web/public";
+await png(rounded, `${publicDir}/favicon-16x16.png`, 16);
+await png(rounded, `${publicDir}/favicon-32x32.png`, 32);
+await png(rounded, `${publicDir}/favicon.png`, 128);
+await png(square, `${publicDir}/apple-touch-icon.png`, 180);
+await png(square, `${publicDir}/icon-192.png`, 192);
+await png(square, `${publicDir}/icon-512.png`, 512);
+await ico(rounded, `${publicDir}/favicon.ico`, [16, 32, 48]);
 // Mobile's web favicon uses the approved transparent symbol, not a launcher tile.
 const symbol = await sharp(path("packages/ui-tokens/assets/CogineBot-symbol.svg"))
   .resize(128, 128)

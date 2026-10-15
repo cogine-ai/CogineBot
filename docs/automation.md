@@ -1,6 +1,6 @@
 # Repository automation
 
-The active [Repository CI workflow](../.github/workflows/repository-ci.yml) checks the source checkout and contains a separate, credentialed mobile OTA publishing job. It runs on pushes to `main`, pull requests, and manual dispatch. It has no scheduled trigger or release-tag trigger. Newer runs cancel older checks for the same branch or pull request.
+The active [Repository CI workflow](../.github/workflows/repository-ci.yml) checks the source checkout and contains a separate, credentialed mobile OTA publishing job. It runs on pushes to `main`, pull requests, and manual dispatch. It has no scheduled trigger or release-tag trigger. Newer runs cancel older checks for the same pull request or non-main branch. Running `main` workflows finish so a newer push cannot interrupt an OTA publication.
 
 The source-check jobs use GitHub-hosted Ubuntu runners, Node.js 24.16.0, and pnpm 9.15.0. Action revisions are pinned to full commit hashes. Checkout does not persist Git credentials, the repository token has only `contents: read`, and no repository or environment secrets are passed to the source checks. Those jobs cannot deploy the application, publish packages or releases, push branches, or post issue and pull-request comments. They store dependency caches and can upload synthetic UI screenshots and failed-check diagnostics, retained for seven days. The mobile publishing job described below is separate from these offline checks.
 
@@ -51,19 +51,24 @@ outputs are short-lived Actions artifacts containing installers, update metadata
 and checksums. It does not call any of the publishing paths above.
 
 Repository CI also reuses the upstream `publish-mobile-update` job after every
-source-check matrix lane succeeds on a `main` push. It inspects the full push
-range: compatible mobile JavaScript, TypeScript, and bundled CSS can publish a
-production EAS Update; native configuration, assets, dependencies, modules, or
-workflow changes block OTA. An unresolved push base is skipped rather than
-checking an incomplete range. Immediately before publication, the job checks
-that its commit is still the current `main`, preventing an older update from
-overwriting a newer one.
+source-check matrix lane succeeds on a `main` push. It publishes the complete
+latest bundle to the production channel for both platforms. Expo's built-in
+`fingerprint` runtime policy matches updates to compatible native builds; a
+changed native fingerprint requires a new native build. There is no per-push
+path filter, so shared styles and changes from canceled pending runs are
+included in the latest bundle. Publications are serialized, and immediately
+before publication the job verifies that its commit is still the current
+`main`, preventing an older revision from overwriting a newer update.
 
-Only an eligible OTA publication receives `EXPO_TOKEN`. It uses this project's
-`EXPO_OWNER`, `EAS_PROJECT_ID`, and HTTPS `EXPO_PUBLIC_API_URL` repository
-variables. `EAS_BUILD_PROFILE=production` applies the same ownership and HTTPS API checks as release builds. Missing release
-configuration fails explicitly; it does not use Rakazo's Expo account, disable
-OTA, or change the offline source-check jobs. See [mobile releases](mobile-release.md).
+Only the separate mobile publishing job receives `EXPO_TOKEN`. It uses this
+project's `EXPO_OWNER`, `EAS_PROJECT_ID`, and HTTPS `EXPO_PUBLIC_API_URL`
+repository variables. If all four settings are absent, the job explicitly
+reports that mobile publishing is not configured and publishes nothing. Partial
+configuration fails. With all four present, `EAS_BUILD_PROFILE=production`
+applies the same ownership and HTTPS API checks as release builds. Builds and
+updates must use the same Expo project identity. The job never falls back to
+Rakazo's Expo account or changes the offline source-check jobs. See
+[mobile releases](mobile-release.md).
 
 The workflows are prepared publishing paths, not proof that GHCR packages,
 signed desktop downloads, store listings, or Expo channels are available. Check

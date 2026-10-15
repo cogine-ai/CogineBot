@@ -9,6 +9,13 @@ const workflow = readFileSync(
   "utf8",
 );
 const mobileJob = workflow.split("\n  publish-mobile-update:\n")[1]!;
+const publishingConfiguration = {
+  EXPO_OWNER: "example-owner",
+  EAS_PROJECT_ID: "12345678-1234-4123-8123-123456789abc",
+  EXPO_PUBLIC_API_URL: "https://app.example.test",
+  EXPO_TOKEN: "synthetic-token",
+};
+const configurationNames = Object.keys(publishingConfiguration);
 
 function runScript(step: string): string {
   const block = mobileJob.split(`      - name: ${step}\n`)[1]!.split("\n      - ")[0]!;
@@ -18,6 +25,8 @@ function runScript(step: string): string {
 describe("production mobile OTA workflow", () => {
   let directory: string;
   let repository: string;
+  let easCalls: string;
+  let bin: string;
 
   function git(...args: string[]): string {
     return execFileSync(
@@ -44,7 +53,7 @@ describe("production mobile OTA workflow", () => {
     return git("rev-parse", "HEAD");
   }
 
-  function execute(script: string, before: string, head: string) {
+  function execute(script: string, environment: Record<string, string> = {}) {
     const output = path.join(directory, "output");
     const summary = path.join(directory, "summary");
     writeFileSync(output, "");
@@ -54,22 +63,43 @@ describe("production mobile OTA workflow", () => {
       encoding: "utf8",
       env: {
         ...process.env,
-        BEFORE_SHA: before,
-        GITHUB_SHA: head,
+        EXPO_OWNER: "",
+        EAS_PROJECT_ID: "",
+        EXPO_PUBLIC_API_URL: "",
+        EXPO_TOKEN: "",
+        GITHUB_SHA: git("rev-parse", "HEAD"),
         GITHUB_OUTPUT: output,
         GITHUB_STEP_SUMMARY: summary,
+        EAS_TEST_CALLS: easCalls,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        ...environment,
       },
     });
-    expect(result.status, result.stderr).toBe(0);
-    return { output: readFileSync(output, "utf8"), summary: readFileSync(summary, "utf8") };
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      output: readFileSync(output, "utf8"),
+      summary: readFileSync(summary, "utf8"),
+      calls: readFileSync(easCalls, "utf8"),
+    };
   }
 
   beforeEach(() => {
     directory = mkdtempSync(path.join(tmpdir(), "coginebot-ota-test-"));
     repository = path.join(directory, "repository");
     mkdirSync(repository);
+    bin = path.join(directory, "bin");
+    mkdirSync(bin);
+    easCalls = path.join(directory, "eas-calls");
+    writeFileSync(easCalls, "");
+    writeFileSync(
+      path.join(bin, "eas"),
+      '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$EAS_TEST_CALLS"\n',
+      { mode: 0o755 },
+    );
     git("init", "-b", "main");
     commit("README.md");
+    git("remote", "add", "origin", path.join(repository, ".git"));
   });
 
   afterEach(() => rmSync(directory, { recursive: true, force: true }));
@@ -84,50 +114,88 @@ describe("production mobile OTA workflow", () => {
     expect(mobileJob).toMatch(/EAS_PROJECT_ID: \$\{\{ vars\.EAS_PROJECT_ID \}\}/);
     expect(mobileJob).toContain("EAS_BUILD_PROFILE: production");
     expect(mobileJob).toMatch(/EXPO_PUBLIC_API_URL: \$\{\{ vars\.EXPO_PUBLIC_API_URL \}\}/);
-    expect(mobileJob).toContain("if: steps.ota.outputs.publish == 'true'");
+    expect(mobileJob).toContain("if: steps.mobile.outputs.configured == 'true'");
     expect(mobileJob).not.toMatch(/contents:\s*write|packages:\s*write/);
+  });
+
+  it("finishes running main workflows and serializes production publications", () => {
+    expect(workflow).toMatch(/cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}/);
+    expect(mobileJob).toContain("group: mobile-production-update\n      cancel-in-progress: false");
+  });
+
+  it.each(["", " \t\n"])("reports an unconfigured mobile publisher without publishing", (value) => {
+    const result = execute(
+      runScript("Check mobile publishing configuration"),
+      Object.fromEntries(configurationNames.map((name) => [name, value])),
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toBe("configured=false\n");
+    expect(result.summary).toContain("Mobile publishing is not configured");
+    expect(result.calls).toBe("");
+  });
+
+  it.each(Array.from({ length: 14 }, (_, index) => index + 1))(
+    "fails instead of silently skipping partial mobile configuration: %i",
+    (mask) => {
+      const environment = Object.fromEntries(
+        Object.entries(publishingConfiguration).filter((_, index) => mask & (1 << index)),
+      );
+      const result = execute(runScript("Check mobile publishing configuration"), environment);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Mobile publishing is partially configured");
+      expect(result.output).not.toContain("configured=true");
+      expect(result.calls).toBe("");
+    },
+  );
+
+  it("enables publishing only when all four project settings are present", () => {
+    const result = execute(
+      runScript("Check mobile publishing configuration"),
+      publishingConfiguration,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toBe("configured=true\n");
+    expect(result.summary).toBe("");
+    expect(result.calls).toBe("");
+  });
+
+  it("gates all EAS setup and publishing steps without classifying a per-push diff", () => {
+    const configuredSteps = mobileJob.split("      - uses: pnpm/action-setup@")[1]!;
+    const steps = configuredSteps.split(/\n {6}- (?:name:|uses:)/);
+    expect(steps).toHaveLength(6);
+    for (const step of steps) {
+      expect(step).toContain("if: steps.mobile.outputs.configured == 'true'");
+    }
+    expect(mobileJob).not.toMatch(/BEFORE_SHA|github\.event\.before|git diff|native-sensitive/);
   });
 
   it.each([
     "apps/mobile/app/thread.tsx",
-    "apps/mobile/lib/endpoint.ts",
-    "packages/chat-ui/src/thread.css",
-  ])("allows compatible bundle changes: %s", (file) => {
-    const before = git("rev-parse", "HEAD");
-    const head = commit(file);
-    expect(
-      execute(runScript("Check whether the change is safe for OTA"), before, head).output,
-    ).toBe("publish=true\n");
-  });
-
-  it.each(["apps/mobile/app.json", "apps/mobile/assets/icon.png", "pnpm-lock.yaml"])(
-    "blocks native-sensitive changes: %s",
-    (file) => {
-      const before = git("rev-parse", "HEAD");
-      commit(file);
-      const head = commit("apps/mobile/app/thread.tsx");
-      expect(
-        execute(runScript("Check whether the change is safe for OTA"), before, head).output,
-      ).toBe("publish=false\n");
-    },
-  );
-
-  it("does not publish a partial range when the push base cannot be resolved", () => {
-    const head = commit("apps/mobile/app/thread.tsx");
-    const result = execute(
-      runScript("Check whether the change is safe for OTA"),
-      "0000000000000000000000000000000000000000",
-      head,
+    "packages/ui-tokens/src/tokens.ts",
+    "apps/mobile/app.json",
+  ])("publishes the latest whole main bundle after an intermediate change to %s", (file) => {
+    commit(file);
+    const head = commit("docs/guide.md");
+    const result = execute(runScript("Publish production update"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls).toBe(
+      `update --platform all --channel production --environment production --message ${head} --non-interactive\n`,
     );
-    expect(result.output).toBe("publish=false\n");
-    expect(result.summary).toContain("will not publish a partial-range update");
   });
 
   it("does not let an older revision overwrite the current main update", () => {
     const before = git("rev-parse", "HEAD");
     commit("apps/mobile/app/thread.tsx");
-    git("remote", "add", "origin", path.join(repository, ".git"));
-    const result = execute(runScript("Publish production update"), before, before);
+    const result = execute(runScript("Publish production update"), { GITHUB_SHA: before });
+    expect(result.status, result.stderr).toBe(0);
     expect(result.summary).toContain("older revision cannot overwrite a newer production update");
+    expect(result.calls).toBe("");
+  });
+
+  it("fails without publishing when the current main cannot be verified", () => {
+    git("remote", "remove", "origin");
+    const result = execute(runScript("Publish production update"));
+    expect(result.status).not.toBe(0);
+    expect(result.calls).toBe("");
   });
 });
