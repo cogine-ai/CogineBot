@@ -216,6 +216,16 @@ jobs:
               throw "$($executable.Name) signature is $($signature.Status); expected $expectedStatus."
             }
           }
+          if ($installers.Count -ne 1) { throw "Expected one x64 NSIS installer." }
+          $installerName = $installers[0].Name
+          if ($installerName -notmatch '^[A-Za-z0-9._-]+$') { throw "Installer name must be GitHub-safe." }
+          $updateFeed = Get-Content -Raw "apps/desktop/out/latest.yml"
+          foreach ($pattern in @("(?m)^path: $([regex]::Escape($installerName))\r?$", "(?m)^  - url: $([regex]::Escape($installerName))\r?$")) {
+            if ($updateFeed -notmatch $pattern) { throw "Windows update feed does not name the actual installer." }
+          }
+          if (-not (Test-Path -LiteralPath "apps/desktop/out/$installerName.blockmap")) {
+            throw "Windows installer blockmap is missing."
+          }
           $config = "apps/desktop/out/win-unpacked/resources/app-update.yml"
           if ($signingEnabled -and -not (Select-String -Path $config -Pattern '^publisherName:' -Quiet)) {
             throw "Windows update config is not bound to the signing publisher."

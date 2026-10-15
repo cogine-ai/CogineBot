@@ -71,6 +71,9 @@
       ],
       "verifyUpdateCodeSignature": true
     },
+    "nsis": {
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
     "linux": {
       "executableName": "coginebot",
       "icon": "assets/icon.png",
