@@ -77,6 +77,9 @@ download link stays the same:
 https://github.com/cogine-ai/CogineBot/releases/download/android/coginebot.apk
 ```
 
+Only the current `main` commit may publish this rolling release. If `main` advances
+during the build, dispatch a new run from `main` instead of rerunning the old build.
+
 The APK uses the production update channel, so JavaScript changes reach it
 through the over-the-air updates below without a new APK. A Google Play install
 is signed with Play's key, so switching from the APK to Play means uninstalling

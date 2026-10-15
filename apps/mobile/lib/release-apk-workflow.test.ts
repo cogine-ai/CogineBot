@@ -89,14 +89,26 @@ const save = () => fs.writeFileSync(filename, JSON.stringify(state));
 const fail = () => { save(); process.exit(1); };
 state.calls.push(args);
 if (args[0] === "release") {
-  if (args[1] === "upload") {
+  if (args[1] === "view" && ["missing-release", "advanced-before-create", "create-main-api"].includes(state.failure)) {
+    if (state.failure === "advanced-before-create") state.mainSha = "newer-main";
+    process.stderr.write("release not found");
+    fail();
+  }
+  if (args[1] === "create") {
+    state.assets.push({ id: 2, name: "coginebot.apk", bytes: "new" });
+  } else if (args[1] === "upload") {
     if (state.failure === "upload") fail();
     state.assets.push({ id: 2, name: path.basename(args[3]), bytes: "new" });
+    if (state.failure === "advanced-main") state.mainSha = "newer-main";
   }
 } else if (args[0] === "api") {
   const endpoint = args.find((arg) => arg.startsWith("repos/"));
   const method = args[args.indexOf("-X") + 1];
-  if (endpoint.endsWith("/releases/tags/android")) {
+  if (endpoint.endsWith("/git/ref/heads/main")) {
+    state.mainReads = (state.mainReads || 0) + 1;
+    if (state.failure === "main-api" || (state.failure === "create-main-api" && state.mainReads > 1)) fail();
+    process.stdout.write(state.mainSha);
+  } else if (endpoint.endsWith("/releases/tags/android")) {
     process.stdout.write(JSON.stringify(state.assets));
   } else if (endpoint.includes("/releases/assets/")) {
     const id = Number(endpoint.split("/").at(-1));
@@ -131,6 +143,8 @@ save();
       stateFile,
       JSON.stringify({
         failure,
+        mainSha:
+          failure === "stale-main" ? "newer-main" : "0123456789abcdef0123456789abcdef01234567",
         promotions: 0,
         calls: [],
         assets: previous ? [{ id: 1, name: "coginebot.apk", bytes: "previous" }] : [],
@@ -175,6 +189,25 @@ save();
     },
   );
 
+  it.each(["stale-main", "main-api", "advanced-main"])(
+    "leaves the canonical APK and rolling tag untouched when %s blocks publication",
+    (failure) => {
+      const result = execute(failure);
+      expect(result.status).not.toBe(0);
+      expect(result.assets).toContainEqual({ id: 1, name: "coginebot.apk", bytes: "previous" });
+      expect(result.promotions).toBe(0);
+      expect(result.calls.some((call) => call.includes("PATCH") || call.includes("DELETE"))).toBe(
+        false,
+      );
+      expect(result.calls.some((call) => call.includes("edit") || call.includes("create"))).toBe(
+        false,
+      );
+      if (failure !== "advanced-main") {
+        expect(result.calls.some((call) => call.includes("upload"))).toBe(false);
+      }
+    },
+  );
+
   it("retains the previous bytes and reports manual recovery if rollback also fails", () => {
     const result = execute("rollback");
     expect(result.status).not.toBe(0);
@@ -211,4 +244,27 @@ save();
     expect(result.assets).toEqual([{ id: 2, name: "coginebot.apk", bytes: "new" }]);
     expect(result.calls.some((call) => call.includes("DELETE"))).toBe(false);
   });
+
+  it("creates the first rolling release from current main without claiming desktop latest", () => {
+    const result = execute("missing-release", false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.assets).toEqual([{ id: 2, name: "coginebot.apk", bytes: "new" }]);
+    expect(result.calls.find((call) => call.includes("create"))).toEqual(
+      expect.arrayContaining([
+        "--target",
+        "0123456789abcdef0123456789abcdef01234567",
+        "--latest=false",
+      ]),
+    );
+  });
+
+  it.each(["advanced-before-create", "create-main-api"])(
+    "does not create the first release when %s invalidates the second main check",
+    (failure) => {
+      const result = execute(failure, false);
+      expect(result.status).not.toBe(0);
+      expect(result.assets).toEqual([]);
+      expect(result.calls.some((call) => call.includes("create"))).toBe(false);
+    },
+  );
 });

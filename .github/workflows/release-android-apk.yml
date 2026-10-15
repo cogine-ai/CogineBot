@@ -88,12 +88,21 @@ jobs:
           VERSION_CODE: ${{ steps.build.outputs.version_code }}
         run: |
           set -euo pipefail
+          require_current_main() {
+            current_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+            if [[ "$GITHUB_SHA" != "$current_main" ]]; then
+              echo "Only the current main commit can publish the rolling APK." >&2
+              exit 1
+            fi
+          }
+          require_current_main
           title="CogineBot for Android $VERSION ($VERSION_CODE)"
           if ! gh release view "$RELEASE_TAG" --json tagName > /dev/null 2> "$RUNNER_TEMP/view.err"; then
             if ! grep -q "release not found" "$RUNNER_TEMP/view.err"; then
               cat "$RUNNER_TEMP/view.err" >&2
               exit 1
             fi
+            require_current_main
             gh release create "$RELEASE_TAG" "$RUNNER_TEMP/coginebot.apk" \
               --target "$GITHUB_SHA" \
               --title "$title" \
@@ -113,6 +122,7 @@ jobs:
             echo "The uploaded $staged is missing from the release; leaving the previous APK in place." >&2
             exit 1
           fi
+          require_current_main
           restore_previous() {
             status=$?
             if [[ "$status" != 0 && -n "$old_id" ]]; then

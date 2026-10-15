@@ -294,6 +294,7 @@ jobs:
         id: manifest
         working-directory: /tmp/digests
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
@@ -309,6 +310,13 @@ jobs:
           if [[ "${#sources[@]}" -ne 2 ]]; then
             echo "Expected one digest per architecture, found ${#sources[@]}." >&2
             exit 1
+          fi
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+            if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+              echo "Only the current main commit may publish edge images." >&2
+              exit 1
+            fi
           fi
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
