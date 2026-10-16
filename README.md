@@ -8,13 +8,13 @@ CogineBot is a self-hosted application for persistent AI Bots, forked from [Raka
 
 ## Why this fork
 
-We forked Rakazo to develop the project according to our own taste and product direction. That includes the interface, how conversations work, and what we choose to build next.
+We were among Rakazo's first users, and we're grateful to its author for making the project open source.
+
+Personal agents are still at an early stage, and there are many ideas about what they should be and how they should work. We have our own ideas about design and product direction, and we'd like to explore them through this fork.
 
 CogineBot is maintained independently by [cogine-ai](https://github.com/cogine-ai). So far, we have reworked the chat timeline, sidebar, group interactions, avatars, files, and computer takeover flow. The [adaptation notes](docs/upstream-adaptations.md) describe these changes. We follow upstream and bring over changes that fit.
 
 ![CogineBot chat interface](docs/images/conversation.png)
-
-*Screenshots use synthetic data and mocked services.*
 
 ## Features
 

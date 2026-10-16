@@ -8,13 +8,13 @@ CogineBot 是从 [Rakazo](https://github.com/elie222/rakazo) fork 的开源 AI B
 
 ## 为什么 fork
 
-我们 fork Rakazo，是想按自己的审美和产品路线继续开发。界面怎么设计、聊天怎么交互、接下来做什么，都由这个分支独立决定。
+我们是 Rakazo 的第一批用户。感谢作者将这个项目开源，让我们能在此基础上继续开发。
+
+Personal Agent 还处在早期，大家对它应该是什么样、怎么做，都有很多不同的想法。我们也有自己的审美和产品方向，想通过 CogineBot 这个 fork 继续探索。
 
 项目由 [cogine-ai](https://github.com/cogine-ai) 独立维护。目前已调整聊天时间线、侧边栏、群聊、头像、文件和电脑接管交互，具体改动见[适配记录](docs/upstream-adaptations.md)。我们也会继续关注上游，评估并合入适合的改动。
 
 ![CogineBot 聊天界面](docs/images/conversation.png)
-
-*截图使用合成数据和模拟服务。*
 
 ## 功能
 
