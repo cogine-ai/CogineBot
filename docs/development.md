@@ -34,11 +34,11 @@ The shell examples use POSIX syntax. In PowerShell, set `$env:NODE_ENV = "test"`
 
 The default Vitest setup pins scripted/fake providers unless verification is explicitly enabled. Ordinary test processes do not load the checkout's `.env`; opt-in verification CLIs have different configuration behavior. Do not enable live-provider flags to make an offline test pass.
 
-Some offline desktop-helper tests execute `python3` and shell fixtures. The recorded macOS environment has two launcher failures: an empty argument record and a missing process record. A 0.2-second launch probe does not guarantee that a child's first record is already written. A different PATH/Python rerun passed, while the original host-PATH rerun reproduced both failures. See [known test failures](preparation-baseline.md#known-test-failures); record Python/shell versions and do not claim a platform fix from one green run.
+Some offline desktop-helper tests execute `python3` and shell fixtures. The initial 2026-10-09 preparation baseline recorded two macOS launcher failures: an empty argument record and a missing process record. A 0.2-second launch probe does not guarantee that a child's first record is already written. A different PATH/Python rerun passed, while the original host-PATH rerun reproduced both failures. See [known test failures](preparation-baseline.md#known-test-failures); record Python/shell versions and do not claim a platform fix from one green run.
 
 ## 3. Run the local UI and API
 
-Application startup adds requirements: an isolated PostgreSQL database, migrations, local runtime configuration, and development secrets. This is separate from the Node-only repository check. The commands below are a source setup guide, not a new runtime acceptance result for the quality-pass PR.
+Application startup adds requirements: an isolated PostgreSQL database, migrations, local runtime configuration, and development secrets. This is separate from the Node-only repository check. The commands below describe a development setup; they do not establish runtime acceptance for an arbitrary commit or machine.
 
 Copy the existing configuration template:
 
@@ -79,9 +79,9 @@ corepack pnpm --filter @rakazo/api dev
 corepack pnpm --filter @rakazo/web dev --host 127.0.0.1
 ```
 
-Open <http://127.0.0.1:5173>. The API defaults to port 3100. Register a development account and inspect the UI; use the verification harness below for repeatable scripted task scenarios. Existing package names and UI branding remain inherited from Rakazo.
+Open <http://127.0.0.1:5173>. The API defaults to port 3100. Register a development account and inspect the UI; use the verification harness below for repeatable scripted task scenarios. The application is branded CogineBot; internal `@rakazo/*` package names remain for compatibility.
 
-For a full source runtime, `corepack pnpm dev` starts API, worker, web, and supervisor. Configure its database, queue, computer provider, and secrets first; the root command is not the minimal fake-provider UI setup above. The retained [source checkout instructions](../README.upstream.md#local-development-source-checkout) and [computer runtime guide](computer-runtime.md) explain that inherited stack. Their published image names, installers, and update channels belong to upstream Rakazo, not a CogineBot release.
+For a full source runtime, `corepack pnpm dev` starts API, worker, web, and supervisor. Configure its database, queue, computer provider, and secrets first; the root command is not the minimal fake-provider UI setup above. Use the current [self-hosting guide](self-host.md) and [computer runtime guide](computer-runtime.md) for stack configuration. [CogineBot releases](https://github.com/cogine-ai/CogineBot/releases), including version 0.2.1, use the project's own distribution destinations. `README.upstream.md` retains the original baseline instructions and upstream distribution references for provenance.
 
 ### Model connections
 
@@ -103,7 +103,7 @@ Real agent execution uses `AGENT_RUNTIME=pi`. Choose the test model, allowed too
 
 Follow [agent verification](agent-verification.md) for the exact scope of each harness. The preparation baseline's selected native-PostgreSQL and browser runs do not establish that the complete Docker/Testcontainers lane passed. Skipped database, Linux-only, or provider checks remain unverified.
 
-Live canaries, real-model evals, and hosted-computer tests can incur costs and affect external systems. They require an explicit opt-in and a defined scope and budget; they are not a prerequisite for the quick check or the read-only [repository CI](automation.md).
+Live canaries, real-model evals, and hosted-computer tests can incur costs and affect external systems. They require an explicit opt-in and a defined scope and budget; they are not a prerequisite for the quick check or the read-only source-check lanes in [Repository CI](automation.md). Its separate trusted-`main` mobile OTA job and the release workflows are publishing operations, not offline source checks.
 
 The Electron desktop E2E suite opens real windows and may steal focus on macOS. Leave that acceptance to an appropriate virtual-display/CI environment rather than routine checks on a maintainer's desktop.
 
@@ -112,8 +112,8 @@ The Electron desktop E2E suite opens real windows and may steal focus on macOS. 
 - Run the checks relevant to your changes and report their scope, including failures and skips.
 - Validate English/Chinese README parity, local links, and any documented commands you changed.
 - Record environment classes and versions using public-safe placeholders; do not attach personal paths, credentials, raw private logs, or customer data.
-- Review the current PR's [repository CI](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml) results. Upstream release workflows are archived; this CI does not publish releases, images, or updates.
+- Review the current PR's [Repository CI](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml) results. Its pull-request source checks do not publish. The separate trusted-`main` OTA job and active image, desktop, and Android publishing workflows have different triggers, credentials, and permissions; see [automation](automation.md).
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md) for contribution and private-reporting paths.
 
-Added on 2026-10-09 for CogineBot source development. Commands were mapped to the inherited package scripts and startup code; current-PR execution results are reported by its checks rather than inferred from the preparation baseline.
+Added on 2026-10-09 and updated on 2026-10-16 for CogineBot source development and release ownership. Commands map to the retained package scripts and startup code; current-commit results come from that commit's checks, not the preparation baseline.

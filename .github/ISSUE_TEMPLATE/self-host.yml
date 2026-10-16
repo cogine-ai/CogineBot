@@ -1,17 +1,21 @@
-# Modified on 2026-10-09 for CogineBot's reporting routes and source support.
-name: Development setup help
-description: Get help with a source checkout, database, or local build
+# Modified on 2026-10-16 for CogineBot's released installers and source support.
+name: Installation and setup help
+description: Get help with desktop installation, a server, or a source checkout
 title: "[Setup]: "
 body:
   - type: markdown
     attributes:
       value: |
-        Start with the [development guide](https://github.com/cogine-ai/CogineBot/blob/main/docs/development.md). CogineBot has no company release installer yet. Report security issues [privately](https://github.com/cogine-ai/CogineBot/security/advisories/new).
+        For a source checkout, start with the [development guide](https://github.com/cogine-ai/CogineBot/blob/main/docs/development.md). For published installers and their platform/signing notes, use [CogineBot Releases](https://github.com/cogine-ai/CogineBot/releases). Report security issues [privately](https://github.com/cogine-ai/CogineBot/security/advisories/new).
   - type: dropdown
     id: step
     attributes:
       label: Which step fails?
       options:
+        - Desktop installation or update
+        - This computer local instance
+        - Existing instance connection
+        - Published-image server setup
         - Repository check
         - Dependency installation
         - Prisma generation or migration
@@ -23,21 +27,21 @@ body:
   - type: input
     id: revision
     attributes:
-      label: Commit or branch
-      placeholder: main at abc1234
+      label: Release version or commit
+      placeholder: v0.2.1, or main at abc1234
     validations:
       required: true
   - type: textarea
     id: command
     attributes:
-      label: Command and error
-      description: Include the exact command and a short redacted error. Remove credentials, personal paths, and private data. Do not paste .env files.
+      label: Steps and error
+      description: Describe the actions or steps that failed and any error shown. Include the command if you used one. Remove credentials, personal paths, and private data. Do not paste .env files.
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
       label: Environment
-      description: Include OS, Node.js/pnpm versions, and PostgreSQL/Docker versions where relevant.
+      description: Include your OS and, where relevant, Docker/Compose, PostgreSQL, or Node.js/pnpm versions.
     validations:
       required: true

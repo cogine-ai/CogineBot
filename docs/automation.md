@@ -27,7 +27,7 @@ The selected browser specs cover desktop layout, conversation and draft behavior
 
 The [preparation baseline](preparation-baseline.md) records the preceding local checks. Its default unit run had 7,456 passes, two failures, and 231 skips. The two launcher failures reproduced on the original macOS environment; Linux results are a separate check. This workflow keeps the complete default suite blocking, without `continue-on-error` or selective exclusions.
 
-The new workflow has not been declared passing merely because its configuration was added. Use the run for the exact current commit as evidence. A successful check establishes only the scope of that lane; skipped tests and unexecuted lanes remain unverified. The official full PostgreSQL lane was not run during the native PostgreSQL preparation checks, so its first GitHub run is new evidence.
+The preparation baseline predates the current checks and releases. Use the run for the exact current commit as evidence. A successful check establishes only the scope of that lane; skipped tests and unexecuted lanes remain unverified. The native PostgreSQL preparation checks did not run the official full PostgreSQL lane; consult current workflow results for that lane rather than extrapolating from the initial record.
 
 Each dependency-based lane has a timeout and saves command logs. On failure, artifacts include those logs, the unit result file when produced, available harness summaries, and browser reports or screenshots. The workflow deliberately excludes the harness data directories and environment files. A harness that fails before its success summary is written may have no summary file; use the command log and browser diagnostics. Canceled runs may finish without artifacts.
 
@@ -35,7 +35,9 @@ Each dependency-based lane has a timeout and saves command logs. On failure, art
 
 Three inherited release workflows have been adapted to CogineBot and moved into
 GitHub's active directory. Their platform formats and channels retain the upstream
-mechanisms; adding configuration does not mean a release has been built or published.
+mechanisms. [Desktop version 0.2.1](https://github.com/cogine-ai/CogineBot/releases/tag/v0.2.1)
+and its versioned app, computer, and updater images are published; each optional
+distribution path still needs its own destination and artifact verification.
 
 | Workflow | Trigger and destination | Required boundary |
 | --- | --- | --- |
@@ -70,11 +72,12 @@ updates must use the same Expo project identity. The job never falls back to
 Rakazo's Expo account or changes the offline source-check jobs. See
 [mobile releases](mobile-release.md).
 
-The workflows are prepared publishing paths, not proof that GHCR packages,
-signed desktop downloads, store listings, or Expo channels are available. Check
-the exact workflow result and its published destinations before directing users
-to install a release. Signing and store credentials must belong to this project
-and must not be committed.
+Do not infer mobile store or Expo-channel availability from the desktop release
+or image publication. Check each workflow result and its published destination
+before directing users to an artifact. Desktop and image workflows are independent;
+follow the [manual release order](desktop-release.md#publish-the-complete-desktop-release)
+to verify anonymous access to same-version images before desktop publication.
+Signing and store credentials must belong to this project and must not be committed.
 
 ## Archived upstream automation
 
