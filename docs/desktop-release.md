@@ -118,20 +118,25 @@ starting.
 3. Tag that exact commit and push the tag; the image workflow runs first:
 
 ```sh
-release_tag="v$(node -p "require('./apps/desktop/package.json').version")"
-git tag "$release_tag"
-git push origin "$release_tag"
+release_tag="v$(node -p "require('./apps/desktop/package.json').version")" &&
+git tag "$release_tag" HEAD &&
+git push origin "refs/tags/$release_tag"
 ```
+
+An existing local tag stops the chain without pushing. Inspect its target and
+remote state before retrying; do not move the tag.
 
 4. Wait for the image workflow to complete. Confirm that **app**, **computer**,
    and **updater** under `ghcr.io/cogine-ai/coginebot/` have the same version tag
    from the tagged source, and that all three packages are public. Using an
    anonymous client, verify both `linux/amd64` and `linux/arm64` manifests and
    their image layers. A logged-in pull or workflow success alone is insufficient.
-5. Restore the desktop workflow and dispatch it from that same tag:
+5. From the same tagged checkout, restore the desktop workflow and dispatch it.
+   This block defines its own tag value so it also works in a new shell:
 
 ```sh
-gh workflow enable release-desktop.yml --repo cogine-ai/CogineBot
+release_tag="v$(node -p "require('./apps/desktop/package.json').version")" &&
+gh workflow enable release-desktop.yml --repo cogine-ai/CogineBot &&
 gh workflow run release-desktop.yml --repo cogine-ai/CogineBot --ref "$release_tag"
 ```
 
