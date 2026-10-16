@@ -23,13 +23,15 @@ Distinguish inherited Rakazo source capabilities from changes actually made in C
 
 Install with `corepack pnpm install --frozen-lockfile --ignore-scripts`. See [development.md](docs/development.md) for setup and the larger test matrix. A static repository check is not a substitute for behavior tests.
 
-The recorded default unit baseline has **two known launcher failures** and skipped suites. Report the command, commit, environment class, pass/fail/skip totals, and whether the failure matches [preparation-baseline.md](docs/preparation-baseline.md). A different PATH passing locally does not prove those failures were fixed. Preserve failed results; do not disable assertions or relabel skipped checks as passing.
+The initial [2026-10-09 preparation baseline](docs/preparation-baseline.md) recorded **two launcher failures** and skipped suites; it does not describe the current commit's results. Report the command, commit, environment class, pass/fail/skip totals, and whether the failure matches [preparation-baseline.md](docs/preparation-baseline.md). A different PATH passing locally does not prove those failures were fixed. Preserve failed results; do not disable assertions or relabel skipped checks as passing.
 
-Use targeted tests for behavior changes and run the relevant broader checks. Documentation-only changes should verify commands, links, and rendering. Report tests you did not run and why. Consult [automation.md](docs/automation.md) for the company's read-only CI; the preserved upstream CI descriptions do not define this repository's active checks.
+Use targeted tests for behavior changes and run the relevant broader checks. Documentation-only changes should verify commands, links, and rendering. Report tests you did not run and why. Consult [automation.md](docs/automation.md) for the active workflows. Repository source-check lanes use read-only permissions and no product credentials; the separate trusted-`main` mobile OTA job and release workflows can publish with their explicitly configured credentials. Preserved upstream CI descriptions do not define this repository's active checks.
 
-Live model, hosted computer, connector, and release checks require an explicit opt-in and a bounded budget. Keep default tests deterministic and offline. Do not run the Electron desktop E2E suite as routine verification on a maintainer's machine; it opens real windows and can steal focus.
+Live model, hosted computer, and connector checks require an explicit opt-in and a bounded budget. Release and OTA operations follow their reviewed publishing scope and credentials; they are not ordinary source validation. Keep default tests deterministic and offline. Do not run the Electron desktop E2E suite as routine verification on a maintainer's machine; it opens real windows and can steal focus.
 
 ## Keep public contributions safe
+
+README screenshots are generated from the full web UI with synthetic data and mocked services. After installing dependencies and Playwright Chromium, run `node scripts/readme-screenshots.mjs`; its [source](scripts/readme-screenshots.mjs) documents the setup. It does not use a running deployment or real accounts. Keep private reference images and acceptance reports out of these public assets.
 
 - Use synthetic data and placeholders. Never commit `.env`, credential files, tokens, production data, customer details, private URLs, or generated evidence containing them.
 - Sanitize issue and PR output: remove authentication headers, secret values, personal paths, account identifiers, and private screenshots. Retain only the evidence needed to reproduce the issue.
@@ -47,6 +49,6 @@ If your checkout also has a Rakazo upstream remote, run `gh repo set-default cog
 
 For UI changes, include a shareable screenshot or CI screenshot link. Quote new user-facing copy and explain why it is needed. Keep English and Chinese README content aligned when changing the project's scope, setup, or status.
 
-Check the PR's current-head results rather than relying on the historical baseline or an earlier successful run. Wait for required checks and maintainer review, address actionable feedback, and update the description when the scope changes. Publishing images, releases, or updates is outside the read-only repository CI.
+Check the PR's current-head results rather than relying on the historical baseline or an earlier successful run. Wait for required checks and maintainer review, address actionable feedback, and update the description when the scope changes. Publishing images and desktop/Android releases uses separate workflows; mobile OTA uses the separate publishing job in Repository CI. These publishing paths are not authorized merely by passing read-only source checks. Follow the [desktop release guide](docs/desktop-release.md) for its release sequence.
 
-Modified on 2026-10-09 for CogineBot's contribution scope, public-safe evidence, and verification guidance; inherited attribution and repository instructions are retained.
+Modified on 2026-10-16 to separate current source checks and publishing paths from the initial preparation baseline; inherited attribution and repository instructions are retained.

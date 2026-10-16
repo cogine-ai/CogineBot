@@ -2,11 +2,16 @@
 
 The [release-desktop workflow](../.github/workflows/release-desktop.yml) builds,
 signs, notarizes, attests, and publishes CogineBot from a `vMAJOR.MINOR.PATCH` tag
-on `main`. Docker image publishing triggers from the same tag. The workflow is
-configured for this repository; no download is available merely because this
-configuration exists. Provision and verify the project's macOS signing credentials
-before running a release. Windows can be released explicitly unsigned until its
-own signing certificate is configured; the public release notes disclose the mode.
+on `main`. [Version 0.2.1](https://github.com/cogine-ai/CogineBot/releases/tag/v0.2.1)
+is published with macOS Universal, Windows x64, and Linux x64 downloads and their
+update feeds. Its macOS application is signed and notarized; its Windows installer
+is explicitly unsigned, as disclosed in the release notes.
+
+Docker image publishing uses the same tag but runs independently of the desktop
+workflow. A green desktop build does not establish that a fresh installation can
+fetch its server and computer images. Follow the manual ordering below for each
+release; there is no automatic cross-workflow image gate. Provision and verify
+the required signing credentials before publishing.
 
 ## Formats and update channel
 
@@ -101,13 +106,51 @@ reduce the three-platform requirements for a formal desktop release.
 
 ### Publish the complete desktop release
 
-1. Bump `version` in `apps/desktop/package.json` on `main`.
-2. Tag that commit `v<version>` and push the tag:
+Enabling, disabling, and dispatching workflows requires repository Actions write
+permission. Record the desktop workflow's current enabled/disabled state before
+starting.
+
+1. Bump `version` in `apps/desktop/package.json` on `main` and complete the
+   relevant checks. Use a new stable version; do not replace an existing release.
+2. Before pushing its tag, temporarily disable `release-desktop.yml` in GitHub
+   Actions. Confirm it is disabled so the tag cannot publish desktop downloads
+   before the images are ready. This is a maintainer operation, not a YAML change.
+3. Tag that exact commit and push the tag; the image workflow runs first:
 
 ```sh
-git tag v0.1.1
-git push origin v0.1.1
+release_tag="v$(node -p "require('./apps/desktop/package.json').version")" &&
+git tag "$release_tag" HEAD &&
+git push origin "refs/tags/$release_tag"
 ```
 
-The workflow refuses tags that do not match the desktop version, are not on
-`main`, or are not newer than the latest published release.
+An existing local tag stops the chain without pushing. Inspect its target and
+remote state before retrying; do not move the tag.
+
+4. Wait for the image workflow to complete. Confirm that **app**, **computer**,
+   and **updater** under `ghcr.io/cogine-ai/coginebot/` have the same version tag
+   from the tagged source, and that all three packages are public. Using an
+   anonymous client, verify both `linux/amd64` and `linux/arm64` manifests and
+   their image layers. A logged-in pull or workflow success alone is insufficient.
+5. From the same tagged checkout, restore the desktop workflow and dispatch it.
+   This block defines its own tag value so it also works in a new shell:
+
+```sh
+release_tag="v$(node -p "require('./apps/desktop/package.json').version")" &&
+gh workflow enable release-desktop.yml --repo cogine-ai/CogineBot &&
+gh workflow run release-desktop.yml --repo cogine-ai/CogineBot --ref "$release_tag"
+```
+
+6. After all desktop platforms pass, verify the published downloads, signatures,
+   signing disclosures, checksums, and matching `latest*.yml` references before
+   announcing the release. Keep the workflow enabled for normal repository state;
+   repeat the temporary hold before the next release tag.
+
+If the tag push, image build, or anonymous-access checks fail, or the release is
+abandoned, restore the desktop workflow's previous enabled/disabled state without
+dispatching a desktop release. Keep the fixed tag for diagnosis; do not move it
+or bypass the image checks to resume publication.
+
+The desktop workflow refuses tags that do not match the desktop version, are not
+on `main`, or are not newer than the latest published release. The two workflows
+have independent triggers; do not rely on canceling a desktop run quickly enough
+to establish release order.

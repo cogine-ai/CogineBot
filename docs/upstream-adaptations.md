@@ -1,6 +1,6 @@
 # Upstream adaptations
 
-The current integration target is Rakazo revision [`932534d7785f0c51b6a0aed54d0096ea8b36eb11`](https://github.com/elie222/rakazo/commit/932534d7785f0c51b6a0aed54d0096ea8b36eb11), compared with the retained common baseline [`794a76da6eb0a73532a89cf57d2f202ef9b6b6c8`](https://github.com/elie222/rakazo/commit/794a76da6eb0a73532a89cf57d2f202ef9b6b6c8). Keep both histories when completing the integration. This document records source and behavior decisions; it is not a test report or release announcement.
+The latest integrated upstream snapshot is Rakazo revision [`932534d7785f0c51b6a0aed54d0096ea8b36eb11`](https://github.com/elie222/rakazo/commit/932534d7785f0c51b6a0aed54d0096ea8b36eb11), compared with the retained common baseline [`794a76da6eb0a73532a89cf57d2f202ef9b6b6c8`](https://github.com/elie222/rakazo/commit/794a76da6eb0a73532a89cf57d2f202ef9b6b6c8). The snapshot has been integrated; retain both histories when reviewing later upstream changes. This document records source and behavior decisions; it is not a test report or release announcement.
 
 ## Retained product contracts
 
@@ -14,6 +14,7 @@ The current integration target is Rakazo revision [`932534d7785f0c51b6a0aed54d00
 | Avatars | Static Gaze identity with synchronized activity motion; historical and uploaded portraits remain static. See [avatar system](avatar-system.md). |
 | Files | Latest items at the bottom, older pages prepended while preserving the current reading anchor, selected-version preview and exact download behavior. |
 | Approvals | All actionable approvals remain reachable; MCP settings and cards synchronize atomically; peer approval projection exposes the card without unrelated internal activity. |
+| Computer control | Opening watches first; explicit **Take control** acquires control. **I’m done** returns control and stays in watching mode, with Team and Private run associations using the existing continuation behavior. No new pause or task mechanism is added. |
 
 Implementation details can change to absorb equivalent upstream fixes. These contracts, rather than entire files or exact CSS structures, define the adaptations.
 
@@ -30,7 +31,6 @@ Implementation details can change to absorb equivalent upstream fixes. These con
 - The upstream sidebar density setting, work-status replacement text and uploaded-photo activity ring are not applied to the retained conversation presentation.
 - ZIP remains outside the shared accepted attachment types. Public routine creation and update do not expose independent model overrides; underlying model-pin schema and correctness code remain available for a separately reviewed activation.
 - Peer unread and reply classification retain the current conversation behavior. The upstream quieter internal-peer notification policy is a separate product decision.
-- Opening and releasing the computer retains the current interaction. The upstream observation-first control flow is separate from the adopted container and screen recovery fixes.
 - The optional ticket board retains its upstream contracts, wiring and existing `TICKET_BOARD_ENABLED` switch, defaulting off. Disabled mode must not expose Board routes, tools, context or navigation. Enabling it changes capabilities and requires a separate product decision.
 
 Do not create additional compatibility layers for pre-launch historical records. Verify migrations using fresh and current-baseline synthetic databases instead. Preserve the group nonce migration alongside upstream schema additions.
@@ -44,8 +44,11 @@ compatible-mobile-OTA job after those checks on `main` pushes. The remaining
 workflows, including upstream production SSH deployment, stay archived in
 `.github/upstream-workflows`. See [automation boundaries](automation.md).
 
-These are configured release paths, not a release announcement. A successful
-build, the required self-owned signing or Expo credentials, and destination
-verification remain necessary before advertising an artifact. Source integration
+[Desktop version 0.2.1](https://github.com/cogine-ai/CogineBot/releases/tag/v0.2.1)
+is published with the project's own installers and update feeds, alongside its
+versioned app, computer, and updater images. This does not establish that every
+optional path, including mobile store distribution, has been released. Each
+future artifact still needs successful checks, the required signing or Expo
+credentials, and destination verification before it is advertised. Source integration
 does not authorize deploying to production or using a developer's data or
 credentials for tests.

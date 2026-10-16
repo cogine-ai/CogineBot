@@ -1,32 +1,75 @@
 # CogineBot
 
-**持久 Bot、共享 API 与多端客户端的源码仓库。**
-
 [English](README.md) · **简体中文**
 
-[开始使用](#开始使用) · [开发指南](docs/development.md) · [参与贡献](CONTRIBUTING.md) · [验证基线](docs/preparation-baseline.md) · [仓库自动化](docs/automation.md) · [Apache-2.0](LICENSE)
+[下载](https://github.com/cogine-ai/CogineBot/releases/latest) · [自部署](docs/self-host.md#published-images-no-checkout) · [开发文档](docs/development.md) · [参与贡献](CONTRIBUTING.md)
 
-CogineBot 是由 [cogine-ai](https://github.com/cogine-ai) 独立维护、基于 [Rakazo](https://github.com/elie222/rakazo) 的开源仓库，包含继承的 Bot 运行时、后端及网页、桌面和移动客户端。
+CogineBot 是从 [Rakazo](https://github.com/elie222/rakazo) fork 的开源 AI Bot 应用，支持自部署、持续对话、群聊、Bot 间通信、文件和电脑操作。可以自行选择模型，通过网页或桌面客户端使用。
 
-**发行状态：** 已发布的安装器、支持平台和签名说明以 [Releases](https://github.com/cogine-ai/CogineBot/releases) 为准；服务端镜像见[自部署指南](docs/self-host.md#published-images-no-checkout)。是否可下载取决于实际发行结果，工作流配置不代表发布完成。本项目不提供 CogineBot 托管服务。Scripted 与离线验证不能证明真实模型任务质量或公网托管就绪程度。
+## 为什么 fork
 
-## 仓库里有什么
+我们是 Rakazo 的第一批用户。感谢作者将这个项目开源，让我们能在此基础上继续开发。
 
-- 持久 Bot、Space、对话、记忆与例行任务
-- Bot 间委派和异步结果消息
-- 文件工具、产物预览和下载路径
-- 网页、Electron、Expo 客户端共用 API
-- 模型连接，以及可选的电脑和集成适配器
+Personal Agent 还处在早期，大家对它应该是什么样、怎么做，都有很多不同的想法。我们也有自己的审美和产品方向，想通过 CogineBot 这个 fork 继续探索。
 
-这些能力存在于保留的 Rakazo 源码中，验证范围随配置不同。现有 `@rakazo/*` 包名和应用界面仍沿用上游。
+项目由 [cogine-ai](https://github.com/cogine-ai) 独立维护。目前已调整聊天时间线、侧边栏、群聊、头像、文件和电脑接管交互，具体改动见[适配记录](docs/upstream-adaptations.md)。我们也会继续关注上游，评估并合入适合的改动。
 
-[改造前验证基线](docs/preparation-baseline.md) 记录了类型检查、网页构建、选定 PostgreSQL 与浏览器检查，以及默认离线单元测试。该单元测试结果为 **7,456 通过、2 失败、231 跳过**。两个启动器失败仍有记录；scripted/fake 提供方检查不能证明真实模型任务质量或真实电脑恢复能力。
+![CogineBot 聊天界面](docs/images/conversation.png)
 
-当前修改的检查结果以[仓库 CI](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml) 中对应提交的结果为准。本轮质量分支的检查与已记录的改造前基线分别报告。
+## 功能
 
-## 开始使用
+- Bot 的对话历史、记忆和例行任务。
+- 多 Bot 群聊、@ 提及和 Bot 间通信。
+- 文件附件、预览、版本历史和下载。
+- 通过 Bot 的电脑使用浏览器、终端和文件。默认先观看，点击 **Take control** 接管，点击 **I'm done** 归还。
+- 可配置模型、应用连接和电脑提供方。
 
-使用 Node.js 24 和 pnpm 9.15.0；准确的 Node 支持范围见 [package.json](package.json)。
+可选服务需要在自己的实例中配置，详见[自部署文档](docs/self-host.md)。
+
+<details>
+<summary>更多截图</summary>
+
+### 压缩侧边栏
+
+![侧边栏压缩后的 CogineBot](docs/images/conversation-compact.png)
+
+### 群聊
+
+![多 Bot 群聊与提及](docs/images/group-chat.png)
+
+### 文件
+
+![文件列表与文档预览](docs/images/files.png)
+
+### 电脑
+
+![观看模式下的 Bot 电脑](docs/images/computer.png)
+
+</details>
+
+## 安装
+
+### 桌面端
+
+在 [GitHub Releases](https://github.com/cogine-ai/CogineBot/releases/latest) 下载安装包并查看校验值。
+
+| 平台 | 安装包 | 签名情况 |
+| --- | --- | --- |
+| macOS，Apple 芯片与 Intel | Universal `.dmg` / `.zip` | 已签名并公证 |
+| Windows x64 | `.exe` 安装器 | 当前未签名；Windows 可能提示未知发行者 |
+| Linux x64 | `.AppImage` | 随包提供校验值和构建来源证明 |
+
+选择 **This computer**，使用 Docker Engine 26+ 和 Compose 在本机运行实例；或选择 **Existing instance**，连接已经部署的服务器。详见[桌面发行说明](docs/desktop-release.md)。
+
+仓库也包含 Expo 移动客户端源码。目前尚无 CogineBot 自有移动发行版，也不提供托管服务。
+
+### 自部署
+
+按照 [Docker Compose 安装指南](docs/self-host.md#published-images-no-checkout)部署。指南包含配置、可选提供方、备份和更新说明。网页和桌面客户端可以连接同一个实例。
+
+### 源码开发
+
+使用 Node.js 24 和 pnpm 9.15.0。Node 支持范围见 [package.json](package.json)。
 
 ```sh
 git clone https://github.com/cogine-ai/CogineBot.git
@@ -34,45 +77,29 @@ cd CogineBot
 node scripts/check-repository.mjs
 ```
 
-第一步只检查仓库文档与自动化元数据，不需要安装依赖、数据库、模型 Key 或应用秘密。
+这条命令检查仓库文档和工作流元数据。安装依赖、运行测试及启动应用的方法见[开发文档](docs/development.md)。
 
-验证源码时，从干净 checkout 开始，shell 中不保留提供方凭据或 `VERIFY_*` 显式启用项：
+当前检查结果见 [GitHub Actions](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml)。[改造前验证基线](docs/preparation-baseline.md)保留初期检查记录；[Agent 验证文档](docs/agent-verification.md)说明测试工具及覆盖范围。
 
-```sh
-corepack pnpm install --frozen-lockfile --ignore-scripts
-corepack pnpm db:generate
-corepack pnpm check
-corepack pnpm lint
-NODE_ENV=test corepack pnpm run test --maxWorkers=2
-```
+## 近期计划
 
-安装依赖需要访问包源；这些检查不需要付费推理。生成 Prisma client 不需要正在运行的数据库。已记录的 macOS 基线包含上述两个启动器失败，请回报实际结果，不预设整套测试通过。
+- **连接器：** 完善应用连接和已连接账号的管理。
+- **iOS 客户端：** 先通过 TestFlight 测试自部署连接与日常使用，再准备 App Store 上架。
 
-前置条件、本地 UI/API、验证层次和排错方式见[开发指南](docs/development.md)。源码开发不依赖二进制发行。[自部署指南](docs/self-host.md)和[发布工作流](docs/automation.md#release-automation)已配置为 CogineBot 自有目标；使用二进制安装前，仍须确认对应版本或镜像标签确已发布。工作流配置不代表发行完成。
+## 参与贡献
 
-## 导航与项目结构
+欢迎提交 Issue 和 Pull Request。较大的改动请先开 Issue 讨论，确定范围后再动手。
 
-```text
-apps/       网页、API、worker、Electron、Expo 和官网
-packages/   合同、领域逻辑、持久化、适配器、UI、测试工具
-infra/      本地服务、电脑镜像和 supervisor
-scripts/    开发与仓库检查
-docs/       开发、验证、运行及来源记录
-```
+- [报告 Bug](https://github.com/cogine-ai/CogineBot/issues/new?template=bug.yml)：附上版本和复现步骤。
+- [功能建议](https://github.com/cogine-ai/CogineBot/issues/new?template=feature-request.yml)：说明使用场景，也可以在这里提出想连接的应用。
+- [安装求助](https://github.com/cogine-ai/CogineBot/issues/new?template=self-host.yml)：桌面端、服务器或源码安装相关问题。
 
-| 想了解 | 阅读 |
-| --- | --- |
-| 配置开发环境并选择检查 | [开发指南](docs/development.md) |
-| 哪些能力实际测过 | [改造前验证基线](docs/preparation-baseline.md) |
-| 模拟执行与模型质量的区别 | [Agent 验证](docs/agent-verification.md) |
-| 仓库检查、发布任务与归档工作流 | [自动化说明](docs/automation.md) |
-| 上游起点及同步策略 | [上游来源记录](UPSTREAM.md) |
-| 提交修改或报告安全问题 | [贡献指南](CONTRIBUTING.md) · [安全说明](SECURITY.md) |
+开发与审查约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。安全漏洞请通过[私密渠道](SECURITY.md)报告。
 
-## 许可证与致谢
+## 上游与许可证
 
-CogineBot 保留 Rakazo 从 [`794a76da6eb0a73532a89cf57d2f202ef9b6b6c8`](https://github.com/elie222/rakazo/commit/794a76da6eb0a73532a89cf57d2f202ef9b6b6c8) 开始的历史、[Apache-2.0 许可全文](LICENSE) 及原有版权和归属声明。已识别拷入组件的附加条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；该文件不是完整依赖或素材清单。
+[UPSTREAM.md](UPSTREAM.md) 记录源码版本和集成策略。内部 `@rakazo/*` 包名、协议和存储标识保留，以维持兼容。原始 [README.upstream.md](README.upstream.md) 原样保留。仓库检查及发布工作流见[自动化文档](docs/automation.md)。
 
-这是独立维护的派生项目。项目关系与更新政策见 [UPSTREAM.md](UPSTREAM.md)。原始 [README.upstream.md](README.upstream.md) 原样保留供参考。
+CogineBot 保留 Rakazo 从 [`794a76da6eb0a73532a89cf57d2f202ef9b6b6c8`](https://github.com/elie222/rakazo/commit/794a76da6eb0a73532a89cf57d2f202ef9b6b6c8) 开始的历史、[Apache-2.0 许可全文](LICENSE)及原有版权和归属声明。已识别拷入组件的附加条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；该文件不是完整依赖或素材清单。
 
-本中文入口于 2026-10-09 新增，对应英文项目介绍与源码开发说明；上游原文另行保留。
+本中文入口于 2026-10-16 更新，说明项目定位、fork 原因、发行及参与方式；上游原文另行保留。

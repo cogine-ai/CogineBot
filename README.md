@@ -1,32 +1,75 @@
 # CogineBot
 
-**Source code for persistent bots, shared APIs, and multiple clients.**
-
 **English** · [简体中文](README.zh-CN.md)
 
-[Get started](#get-started) · [Development](docs/development.md) · [Contribute](CONTRIBUTING.md) · [Baseline](docs/preparation-baseline.md) · [Automation](docs/automation.md) · [Apache-2.0](LICENSE)
+[Download](https://github.com/cogine-ai/CogineBot/releases/latest) · [Self-host](docs/self-host.md#published-images-no-checkout) · [Development](docs/development.md) · [Contributing](CONTRIBUTING.md)
 
-CogineBot is an independently maintained open-source repository based on [Rakazo](https://github.com/elie222/rakazo), maintained by [cogine-ai](https://github.com/cogine-ai). It contains the inherited bot runtime, backend, and web, desktop, and mobile clients.
+CogineBot is a self-hosted application for persistent AI Bots, forked from [Rakazo](https://github.com/elie222/rakazo). It supports ongoing conversations, group chats, Bot-to-Bot messaging, files, and a computer workspace. You can choose your models and use the web or desktop client.
 
-**Distribution status:** Check [Releases](https://github.com/cogine-ai/CogineBot/releases) for published installers, supported platforms, and signing notes, and the [self-host guide](docs/self-host.md#published-images-no-checkout) for server images. Availability depends on the completed release, not workflow configuration. No hosted CogineBot service is provided. Scripted and offline validation do not establish real-model task quality or public-hosting readiness.
+## Why this fork
 
-## What is here
+We were among Rakazo's first users, and we're grateful to its author for making the project open source.
 
-- Persistent bots, Spaces, conversations, memory, and routines
-- Peer-bot delegation and asynchronous result messages
-- File tools, artifact previews, and download paths
-- Shared API with web, Electron, and Expo clients
-- Model connections and optional computer/integration adapters
+Personal agents are still at an early stage, and there are many ideas about what they should be and how they should work. We have our own ideas about design and product direction, and we'd like to explore them through this fork.
 
-These capabilities are present in the retained Rakazo source; validation varies by configuration. Existing `@rakazo/*` package names and application UI remain upstream-derived.
+CogineBot is maintained independently by [cogine-ai](https://github.com/cogine-ai). So far, we have reworked the chat timeline, sidebar, group interactions, avatars, files, and computer takeover flow. The [adaptation notes](docs/upstream-adaptations.md) describe these changes. We follow upstream and bring over changes that fit.
 
-The [recorded preparation baseline](docs/preparation-baseline.md) includes type checking, a web build, selected PostgreSQL and browser checks, and the default offline unit suite. That unit run had **7,456 passes, 2 failures, and 231 skips**. The two launcher failures remain documented; scripted/fake-provider checks do not establish real-model task quality or real-computer recovery.
+![CogineBot chat interface](docs/images/conversation.png)
 
-For current changes, inspect the results for the commit under review in [repository CI](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml). The quality-pass branch's checks are separate from the recorded preparation baseline.
+## Features
 
-## Get started
+- Persistent Bots with conversation history, memory, and routines.
+- Group chats with multiple Bots, @ mentions, and Bot-to-Bot messages.
+- File attachments, previews, version history, and downloads.
+- Browser, terminal, and file access through a Bot's computer. Watch first, select **Take control** to interact, and **I'm done** to return control.
+- Configurable models, application connections, and computer providers.
 
-Use Node.js 24 and pnpm 9.15.0; the exact supported Node ranges are in [package.json](package.json).
+Optional services need to be configured on your instance. See the [self-hosting guide](docs/self-host.md).
+
+<details>
+<summary>More screenshots</summary>
+
+### Compact sidebar
+
+![CogineBot with the sidebar collapsed](docs/images/conversation-compact.png)
+
+### Group chat
+
+![Group chat with multiple Bots and mentions](docs/images/group-chat.png)
+
+### Files
+
+![File list and document preview](docs/images/files.png)
+
+### Computer
+
+![Bot computer in viewing mode](docs/images/computer.png)
+
+</details>
+
+## Installation
+
+### Desktop
+
+Download installers and checksums from [GitHub Releases](https://github.com/cogine-ai/CogineBot/releases/latest).
+
+| Platform | Package | Signing |
+| --- | --- | --- |
+| macOS, Apple silicon and Intel | Universal `.dmg` / `.zip` | Signed and notarized |
+| Windows x64 | `.exe` installer | Currently unsigned; Windows may show an unknown-publisher warning |
+| Linux x64 | `.AppImage` | Checksums and build provenance included |
+
+Choose **This computer** to run a local instance with Docker Engine 26+ and Compose, or **Existing instance** to connect to a server you already run. See [desktop release details](docs/desktop-release.md).
+
+The repository also includes the Expo mobile client. CogineBot does not yet have its own public mobile release or hosted service.
+
+### Self-hosting
+
+Follow the [Docker Compose installation guide](docs/self-host.md#published-images-no-checkout). It covers configuration, optional providers, backups, and updates. The web and desktop clients connect to the same instance.
+
+### Source development
+
+Use Node.js 24 and pnpm 9.15.0. The supported Node range is in [package.json](package.json).
 
 ```sh
 git clone https://github.com/cogine-ai/CogineBot.git
@@ -34,45 +77,29 @@ cd CogineBot
 node scripts/check-repository.mjs
 ```
 
-This first check inspects repository documentation and automation metadata. It needs no installed dependencies, database, model key, or application secrets.
+This checks repository documentation and workflow metadata. For dependencies, tests, and running the application, see [Development](docs/development.md).
 
-For source validation, start from a clean checkout with no provider credentials or `VERIFY_*` opt-ins in the shell:
+Current checks are in [GitHub Actions](https://github.com/cogine-ai/CogineBot/actions/workflows/repository-ci.yml). The [preparation baseline](docs/preparation-baseline.md) records the initial checks; [agent verification](docs/agent-verification.md) describes the test harnesses and what they cover.
 
-```sh
-corepack pnpm install --frozen-lockfile --ignore-scripts
-corepack pnpm db:generate
-corepack pnpm check
-corepack pnpm lint
-NODE_ENV=test corepack pnpm run test --maxWorkers=2
-```
+## Near-term plans
 
-Dependency installation needs package-registry access; these checks require no paid inference. Prisma client generation does not require a running database. The recorded macOS baseline contains the two launcher failures noted above; report your actual results rather than assuming a green suite.
+- **Connectors:** improve application connections and connected-account management.
+- **iOS client:** test connections to self-hosted servers and everyday use through TestFlight, then prepare an App Store release.
 
-See the [development guide](docs/development.md) for prerequisites, the local UI/API, verification layers, and troubleshooting. Source development is available independently of binary distribution. The [self-host guide](docs/self-host.md) and [release workflows](docs/automation.md#release-automation) now target CogineBot's own destinations; verify that the selected release or image tag has actually been published before using a binary installation path. Configured workflows are not a release announcement.
+## Contributing
 
-## Find your way around
+Issues and pull requests are welcome. For substantial changes, please open an issue first to discuss the scope.
 
-```text
-apps/       web, API, worker, Electron, Expo, and website
-packages/   contracts, domain logic, persistence, adapters, UI, test tooling
-infra/      local services, computer images, and supervisor
-scripts/    development and repository checks
-docs/       development, verification, operations, and provenance notes
-```
+- [Bug reports](https://github.com/cogine-ai/CogineBot/issues/new?template=bug.yml): include the version and steps to reproduce.
+- [Feature requests](https://github.com/cogine-ai/CogineBot/issues/new?template=feature-request.yml): describe the use case. Requests for specific application connections are welcome here too.
+- [Setup help](https://github.com/cogine-ai/CogineBot/issues/new?template=self-host.yml): desktop, server, or source installation questions.
 
-| Need | Read |
-| --- | --- |
-| Set up and choose the right check | [Development](docs/development.md) |
-| Understand what was actually tested | [Preparation baseline](docs/preparation-baseline.md) |
-| Distinguish emulated execution from model quality | [Agent verification](docs/agent-verification.md) |
-| Understand repository checks, release jobs, and archived workflows | [Automation](docs/automation.md) |
-| Trace the upstream starting point and sync policy | [Upstream provenance](UPSTREAM.md) |
-| Submit a change or report a vulnerability | [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) |
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and review guidelines. Report security vulnerabilities through the [private reporting channel](SECURITY.md).
 
-## License and acknowledgments
+## Upstream and license
 
-CogineBot preserves Rakazo's history from [`794a76da6eb0a73532a89cf57d2f202ef9b6b6c8`](https://github.com/elie222/rakazo/commit/794a76da6eb0a73532a89cf57d2f202ef9b6b6c8), its [Apache-2.0 license](LICENSE), and existing copyright and attribution notices. Identified copied components retain their additional terms in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); that file is not a complete dependency or asset inventory.
+[UPSTREAM.md](UPSTREAM.md) records the source revisions and integration policy. Internal `@rakazo/*` package names and protocol/storage identifiers are retained for compatibility. The original [README.upstream.md](README.upstream.md) is preserved verbatim. See [Automation](docs/automation.md) for this repository's checks and release workflows.
 
-This is an independently maintained derivative project. See [UPSTREAM.md](UPSTREAM.md) for the relationship and update policy. The original [README.upstream.md](README.upstream.md) is retained verbatim for reference.
+CogineBot preserves Rakazo's history from [`794a76da6eb0a73532a89cf57d2f202ef9b6b6c8`](https://github.com/elie222/rakazo/commit/794a76da6eb0a73532a89cf57d2f202ef9b6b6c8), its [Apache-2.0 license](LICENSE), and existing copyright and attribution notices. Additional terms for identified copied components are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); this is not a complete dependency or asset inventory.
 
-Modified on 2026-10-09 for CogineBot's project introduction and source development guidance; original upstream documentation is preserved separately.
+Modified on 2026-10-16 for CogineBot's project introduction, fork rationale, distribution, and contribution information. Original upstream documentation is preserved separately.
