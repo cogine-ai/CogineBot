@@ -25,6 +25,20 @@ const json = (body: unknown, status = 200, headers = {}) =>
   new Response(JSON.stringify(body), { status, headers });
 
 describe("native HTTP execution", () => {
+  it.each([410, 403, 404])(
+    "distinguishes expired cursors from access failure %s",
+    async (status) => {
+      const { client, fetch } = transport([json({ private_body: "not retained" }, status)], true);
+      const error = await client
+        .request({ method: "GET", path: "/calendar/v3/calendars/primary/events" })
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({ kind: "resource_unavailable" });
+      expect(JSON.stringify(error)).not.toContain("not retained");
+      expect(error).toMatchObject({ options: status === 410 ? { recovery: { status: 410 } } : {} });
+      if (status !== 410) expect(error).not.toHaveProperty("options.recovery.status");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
   it("does not replay a write after an ambiguous network failure", async () => {
     const { client, fetch } = transport([new Error("fixture-access was lost")]);
     await expect(

@@ -5,7 +5,10 @@ import type {
   ConnectionCatalogItem,
   IntegrationCatalogResult,
   IntegrationCatalogSurface,
+  NativeAppId,
+  NativeBeginInput,
 } from "@rakazo/contracts";
+import { NativeAppIdSchema } from "@rakazo/contracts";
 import type { ConnectionApp } from "@rakazo/core";
 import {
   abortableDelay,
@@ -52,13 +55,19 @@ import {
 import { ChevronDown, ChevronLeft, ChevronUp, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IntegrationSetup } from "../components/integrations/IntegrationSetup";
+import { NativeAccountConnect } from "../components/integrations/NativeAccountConnect";
 import { optionalCatalogFeedProbe } from "../lib/optional-catalog-feed";
-import { rpc } from "../lib/rpc";
+import { rpc, selectedSpaceId } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 
 type SourceKind = "treg" | "executor" | "mcp" | "api" | "graphql";
 
 type ConnectionTool = { name: string; description: string };
+type NativeAttempt = {
+  controller: AbortController;
+  connectionId: string | null;
+  spaceId: string | null;
+};
 
 function itemKey(item: Pick<ConnectionCatalogItem, "connectorId" | "slug">) {
   return connectionCatalogKey(item);
@@ -87,7 +96,11 @@ function activeAccounts(
 }
 
 function sourceLabel(item: Pick<ConnectionCatalogItem, "connectorId">) {
-  const labels: Record<string, string> = { composio: "Composio", pipedream: "Pipedream" };
+  const labels: Record<string, string> = {
+    native: "Cogine",
+    composio: "Composio",
+    pipedream: "Pipedream",
+  };
   return labels[item.connectorId] ?? item.connectorId;
 }
 
@@ -98,10 +111,16 @@ export function PluginsOverlay({
   onClose,
   onOpenMcp,
   activeBotId,
+  initialNativeApp,
+  onConnected,
+  onConnectionsChanged,
 }: {
   onClose: () => void;
   onOpenMcp?: () => void;
   activeBotId?: string;
+  initialNativeApp?: NativeAppId;
+  onConnected?: (item: ConnectionCatalogItem) => void;
+  onConnectionsChanged?: () => void;
 }) {
   const { t } = useLingui();
   const [setupOpen, setSetupOpen] = useState(false);
@@ -137,20 +156,35 @@ export function PluginsOverlay({
     account: boolean;
   } | null>(null);
   const [detailKey, setDetailKey] = useState<{ connectorId: string; slug: string } | null>(null);
+  const [nativeAccount, setNativeAccount] = useState<{
+    appId: NativeAppId;
+    previous?: Connection;
+  } | null>(null);
+  const [nativeAuthorizationUrl, setNativeAuthorizationUrl] = useState<string>();
   const [tools, setTools] = useState<ConnectionTool[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(true);
   const [toolsTick, setToolsTick] = useState(0);
   const connectionAttempt = useRef<AbortController | null>(null);
+  const nativeAttempt = useRef<NativeAttempt | null>(null);
+  const initialSelection = useRef(initialNativeApp);
 
   async function refresh() {
+    const spaceId = selectedSpaceId();
     const [items, installs, rows, catalogFeed] = await Promise.all([
       rpc.connections.catalog({}),
       rpc.capabilities.list(),
       rpc.connections.list(),
       optionalCatalogFeedProbe(rpc.capabilities.catalogSearch({ query: "" })),
     ]);
+    if (initialSelection.current) {
+      const item = items.find(
+        (entry) => entry.connectorId === "native" && entry.slug === initialSelection.current,
+      );
+      initialSelection.current = undefined;
+      if (item) setDetailKey({ connectorId: item.connectorId, slug: item.slug });
+    }
     setCatalog(items);
     setConnections(rows);
     setLabelDrafts((current) => {
@@ -166,6 +200,7 @@ export function PluginsOverlay({
       ),
     );
     setCatalogFeedEnabled(catalogFeed.enabled);
+    if (selectedSpaceId() === spaceId) onConnectionsChanged?.();
     return { items, rows };
   }
 
@@ -173,7 +208,10 @@ export function PluginsOverlay({
     void refresh()
       .catch((err: unknown) => setCatalogError(errorText(err, t`Could not load integrations`)))
       .finally(() => setLoading(false));
-    return () => connectionAttempt.current?.abort();
+    return () => {
+      connectionAttempt.current?.abort();
+      cancelNativeAttempt(false);
+    };
   }, []);
 
   const detailItem = useMemo(() => {
@@ -226,6 +264,8 @@ export function PluginsOverlay({
   const rendered = visible.slice(0, visibleCount);
 
   function openDetail(item: ConnectionCatalogItem) {
+    initialSelection.current = undefined;
+    setNativeAccount(null);
     setCatalogError(null);
     setNotice(null);
     setToolsOpen(true);
@@ -233,6 +273,11 @@ export function PluginsOverlay({
   }
 
   function closeDetail() {
+    if (nativeAccount) {
+      cancelNativeAttempt();
+      setNativeAccount(null);
+      return;
+    }
     setDetailKey(null);
     setTools([]);
   }
@@ -251,10 +296,19 @@ export function PluginsOverlay({
     if (preferred) openDetail(preferred);
   }
 
-  async function notifyAppConnected(item: ConnectionCatalogItem) {
+  async function notifyAppConnected(
+    item: ConnectionCatalogItem,
+    spaceId: string | null = selectedSpaceId(),
+  ) {
+    if (selectedSpaceId() !== spaceId) return;
+    onConnectionsChanged?.();
+    onConnected?.(item);
     if (!activeBotId) return;
     await rpc.onboarding
-      .appConnected({ botId: activeBotId, provider: item.slug, connectorId: item.connectorId })
+      .appConnected(
+        { botId: activeBotId, provider: item.slug, connectorId: item.connectorId },
+        { context: { spaceId } },
+      )
       .catch(() => undefined);
   }
 
@@ -262,10 +316,71 @@ export function PluginsOverlay({
     setCatalog((prev) => markConnected(prev, item.connectorId, item.slug, connected));
   }
 
-  async function connect(item: ConnectionCatalogItem, previous?: Connection) {
+  function revokeNativeAttempt(attempt: NativeAttempt, report: boolean) {
+    const connectionId = attempt.connectionId;
+    attempt.connectionId = null;
+    if (!connectionId) return;
+    // Only the new connection returned by this attempt may be cancelled.
+    void rpc.connections
+      .revoke({ connectionId }, { context: { spaceId: attempt.spaceId } })
+      .then(async () => {
+        if (report) await refresh();
+        else if (selectedSpaceId() === attempt.spaceId) onConnectionsChanged?.();
+      })
+      .catch((err: unknown) => {
+        if (report)
+          setCatalogError(
+            errorText(err, t`Could not confirm cancellation. Check the pending account.`),
+          );
+      });
+  }
+
+  function cancelNativeAttempt(report = true) {
+    if (report) setNativeAuthorizationUrl(undefined);
+    const attempt = nativeAttempt.current;
+    if (!attempt) return;
+    nativeAttempt.current = null;
+    attempt.controller.abort();
+    if (connectionAttempt.current === attempt.controller) {
+      connectionAttempt.current = null;
+      if (report) setPending(null);
+    }
+    revokeNativeAttempt(attempt, report);
+  }
+
+  function abandonedNativeAttempt(attempt: NativeAttempt): boolean {
+    if (!attempt.controller.signal.aborted && selectedSpaceId() === attempt.spaceId) return false;
+    attempt.controller.abort();
+    revokeNativeAttempt(attempt, false);
+    return true;
+  }
+
+  async function connect(
+    item: ConnectionCatalogItem,
+    previous?: Connection,
+    nativeInput?: NativeBeginInput,
+  ) {
+    if (item.connectorId === "native" && !nativeInput) {
+      const parsed = NativeAppIdSchema.safeParse(item.slug);
+      if (!parsed.success) {
+        setCatalogError(t`This application is not available for direct connection.`);
+        return;
+      }
+      openDetail(item);
+      setNativeAccount({ appId: parsed.data, previous });
+      return;
+    }
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;
+    const attempt: NativeAttempt | null = nativeInput
+      ? { controller, connectionId: null, spaceId: selectedSpaceId() }
+      : null;
+    if (attempt) {
+      nativeAttempt.current = attempt;
+      setNativeAuthorizationUrl(undefined);
+    }
+    let nativeStarted = false;
     setCatalogError(null);
     setNotice(null);
     const key = itemKey(item);
@@ -274,18 +389,27 @@ export function PluginsOverlay({
       const existing = activeAccounts(connections, item).filter(
         (row) => row.status === "connected",
       );
-      const started = await rpc.connections.begin({
-        connectorId: item.connectorId,
-        provider: item.slug,
-        displayName: previous?.displayName ?? nextAccountLabel(item.name, existing.length),
-        ...(previous ? { connectionId: previous.id } : {}),
-      });
+      const started = nativeInput
+        ? await rpc.nativeConnectors.begin(nativeInput, { context: { spaceId: attempt!.spaceId } })
+        : await rpc.connections.begin({
+            connectorId: item.connectorId,
+            provider: item.slug,
+            displayName: previous?.displayName ?? nextAccountLabel(item.name, existing.length),
+            ...(previous ? { connectionId: previous.id } : {}),
+          });
+      if (attempt) {
+        nativeStarted = true;
+        attempt.connectionId = started.connectionId;
+        // Begin is allowed to return its ID after Back; that late attempt is stopped too.
+        if (abandonedNativeAttempt(attempt)) return;
+        setNativeAuthorizationUrl(started.authorizationUrl ?? undefined);
+      }
       if (started.authorizationUrl)
         window.open(started.authorizationUrl, "rakazo-plugin-connect", "noopener,noreferrer");
       if (item.noAuth && !started.authorizationUrl) {
         if (controller.signal.aborted) return;
         setItemConnected(item, true);
-        void notifyAppConnected(item);
+        void notifyAppConnected(item, attempt?.spaceId);
         await refresh().catch(() => undefined);
         setToolsTick((tick) => tick + 1);
         return;
@@ -293,17 +417,30 @@ export function PluginsOverlay({
       for (let i = 0; i < 45; i += 1) {
         if (controller.signal.aborted) return;
         const row = await rpc.connections
-          .complete({ connectionId: started.connectionId })
+          .complete(
+            { connectionId: started.connectionId },
+            attempt ? { context: { spaceId: attempt.spaceId } } : undefined,
+          )
           .catch(() => undefined);
+        if (attempt && abandonedNativeAttempt(attempt)) return;
         if (row?.status === "connected") {
           if (controller.signal.aborted) return;
+          setConnections((rows) => [...rows.filter((entry) => entry.id !== row.id), row]);
+          if (attempt) {
+            attempt.connectionId = null;
+            setNativeAccount(null);
+          }
           setItemConnected(item, true);
-          void notifyAppConnected(item);
+          void notifyAppConnected(item, attempt?.spaceId);
           await refresh().catch(() => undefined);
           setToolsTick((tick) => tick + 1);
           return;
         }
         if (row?.status === "error" || row?.status === "revoked") {
+          if (attempt) {
+            attempt.connectionId = null;
+            setNativeAccount(null);
+          }
           await refresh();
           setCatalogError(t`Authorization did not complete. You can authorize again.`);
           return;
@@ -311,14 +448,24 @@ export function PluginsOverlay({
         await abortableDelay(2_000, controller.signal);
       }
       if (controller.signal.aborted) return;
+      if (attempt) {
+        attempt.connectionId = null;
+        setNativeAccount(null);
+      }
       setCatalogError(
         t`Connection to ${item.name} is still pending. You can close this and check again.`,
       );
       await refresh().catch(() => undefined);
     } catch (err) {
       if (controller.signal.aborted) return;
+      if (attempt && !nativeStarted) throw err;
+      if (attempt) {
+        setNativeAccount(null);
+        await refresh().catch(() => undefined);
+      }
       setCatalogError(errorText(err, t`Could not connect`));
     } finally {
+      if (nativeAttempt.current === attempt) nativeAttempt.current = null;
       if (connectionAttempt.current === controller) {
         connectionAttempt.current = null;
         setPending(null);
@@ -327,15 +474,19 @@ export function PluginsOverlay({
   }
 
   async function checkAccount(row: Connection, item: ConnectionCatalogItem) {
+    const spaceId = selectedSpaceId();
     setPending(`check:${row.id}`);
     setCatalogError(null);
     setNotice(null);
     try {
-      const updated = await rpc.connections.complete({ connectionId: row.id });
+      const updated = await rpc.connections.complete(
+        { connectionId: row.id },
+        { context: { spaceId } },
+      );
       setConnections((rows) => rows.map((entry) => (entry.id === updated.id ? updated : entry)));
       if (updated.status === "connected") {
         setItemConnected(item, true);
-        void notifyAppConnected(item);
+        void notifyAppConnected(item, spaceId);
       }
       await refresh();
       if (updated.status === "pending") setNotice(t`Authorization is still pending.`);
@@ -374,6 +525,7 @@ export function PluginsOverlay({
   async function runRemoval() {
     if (!removal) return;
     const operation = removal;
+    const spaceId = selectedSpaceId();
     setPending("remove");
     setCatalogError(null);
     let failedId: string | null = null;
@@ -459,6 +611,7 @@ export function PluginsOverlay({
     } catch (err) {
       setCatalogError(errorText(err, t`Could not check connection`));
     } finally {
+      if (selectedSpaceId() === spaceId) onConnectionsChanged?.();
       setRemoval(null);
       setPending(null);
     }
@@ -480,6 +633,7 @@ export function PluginsOverlay({
   async function renameAccount(row: Connection) {
     const displayName = (labelDrafts[row.id] ?? row.displayName).trim();
     if (!displayName || displayName === row.displayName) return;
+    const spaceId = selectedSpaceId();
     setPending(`rename:${row.id}`);
     setCatalogError(null);
     try {
@@ -490,6 +644,7 @@ export function PluginsOverlay({
         ),
       );
       setLabelDrafts((current) => ({ ...current, [row.id]: updated.displayName }));
+      if (selectedSpaceId() === spaceId) onConnectionsChanged?.();
     } catch (err) {
       setCatalogError(errorText(err, t`Could not rename connection`));
     } finally {
@@ -893,7 +1048,10 @@ export function PluginsOverlay({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open) {
+          cancelNativeAttempt(false);
+          onClose();
+        }
       }}
     >
       <DialogContent
@@ -981,7 +1139,18 @@ export function PluginsOverlay({
           ) : null}
 
           {detailItem ? (
-            renderDetail(detailItem)
+            nativeAccount ? (
+              <NativeAccountConnect
+                key={`${itemKey(detailItem)}:${nativeAccount.previous?.id ?? "new"}`}
+                appId={nativeAccount.appId}
+                previousConnectionId={nativeAccount.previous?.id}
+                onSubmit={(input) => connect(detailItem, nativeAccount.previous, input)}
+                onCancel={closeDetail}
+                authorizationUrl={nativeAuthorizationUrl}
+              />
+            ) : (
+              renderDetail(detailItem)
+            )
           ) : (
             <>
               <Tabs

@@ -470,33 +470,31 @@ describePostgres("native OAuth DB fences and competing stores (PostgreSQL)", () 
     ).toEqual(connected.connection.metadata);
   }, 15_000);
 
-  it("a stale refresh failure after lease takeover cannot retire the winning newer pair", async () => {
+  it("an expired refresh lease retires the unknown old pair instead of replaying its token", async () => {
     const f = await fixture();
     const connected = await f.connected();
     await first.prisma.nativeOAuthGrant.update({
       where: { id: connected.grant.id },
       data: { accessExpiresAt: new Date(0) },
     });
-    const staleStarted = deferred();
-    const finishStale = deferred();
-    f.control.refresh = async (previous) => {
-      if (f.control.refreshes === 1) {
-        staleStarted.resolve();
-        await finishStale.promise;
-        throw new NativeActionError("authorization_expired", "Synthetic stale token rejected");
-      }
-      return authorization(2, previous.identity.subject);
+    const staleStarted = deferred(),
+      finishStale = deferred();
+    f.control.refresh = async () => {
+      staleStarted.resolve();
+      await finishStale.promise;
+      throw new NativeActionError("authorization_expired", "Synthetic stale token rejected");
     };
     const stale = f.a.authorization(connected.connectionId, context(), true);
     const staleResult = expect(stale).rejects.toBeInstanceOf(NativeActionError);
     await staleStarted.promise;
-    // Model an expired worker lease without waiting 60 seconds; DB CAS remains real.
     await second.prisma.nativeOAuthGrant.update({
       where: { id: connected.grant.id },
       data: { refreshLeaseUntil: new Date(Date.now() - 1_000) },
     });
     try {
-      await f.b.authorization(connected.connectionId, context(), true);
+      await expect(
+        f.b.authorization(connected.connectionId, context(), true),
+      ).rejects.toBeInstanceOf(NativeActionError);
     } finally {
       finishStale.resolve();
     }
@@ -504,10 +502,89 @@ describePostgres("native OAuth DB fences and competing stores (PostgreSQL)", () 
     const grant = await first.prisma.nativeOAuthGrant.findUniqueOrThrow({
       where: { id: connected.grant.id },
     });
-    expect(f.control.refreshes).toBe(2);
+    expect(f.control.refreshes).toBe(1);
+    expect(grant.tokenVersion).toBe(connected.grant.tokenVersion);
+    expect(grant.revokedAt).not.toBeNull();
+    expect(grant.secretId).toBeNull();
+    expect(
+      (await first.prisma.connection.findUniqueOrThrow({ where: { id: connected.connectionId } }))
+        .status,
+    ).toBe("error");
+    expect(
+      await first.prisma.secret.findUnique({ where: { id: connected.grant.secretId! } }),
+    ).toBeNull();
+    await expect(f.b.authorization(connected.connectionId, context())).rejects.toBeInstanceOf(
+      NativeActionError,
+    );
+    expect(f.control.refreshes).toBe(1);
+  }, 15_000);
+
+  it("a delayed old-version failure cannot retire an already committed newer pair or its lease", async () => {
+    const f = await fixture(),
+      connected = await f.connected();
+    await first.prisma.nativeOAuthGrant.update({
+      where: { id: connected.grant.id },
+      data: { accessExpiresAt: new Date(0) },
+    });
+    const staleStarted = deferred(),
+      finishStale = deferred();
+    f.control.refresh = async () => {
+      staleStarted.resolve();
+      await finishStale.promise;
+      throw new NativeActionError("authorization_expired", "Synthetic delayed old response");
+    };
+    const stale = f.a.authorization(connected.connectionId, context(), true);
+    const staleResult = expect(stale).rejects.toBeInstanceOf(NativeActionError);
+    await staleStarted.promise;
+    const current = await second.prisma.nativeOAuthGrant.findUniqueOrThrow({
+      where: { id: connected.grant.id },
+    });
+    const successor = authorization(2),
+      materialId = randomUUID();
+    const material = await f.secretsB.put(JSON.stringify(successor.tokens), context(), {
+      recordId: materialId,
+    });
+    const newerLease = randomUUID();
+    // Inject an already committed successor, not a second request with the old RT.
+    // Every database mutation is real and fences the exact in-flight version/lease.
+    await second.prisma.$transaction(async (tx) => {
+      await tx.secret.create({
+        data: {
+          id: materialId,
+          spaceId: context().spaceId,
+          userId: context().userId,
+          kind: "native_grant",
+          ciphertext: material.ciphertext,
+        },
+      });
+      const committed = await tx.nativeOAuthGrant.updateMany({
+        where: {
+          id: current.id,
+          tokenVersion: current.tokenVersion,
+          refreshLeaseId: current.refreshLeaseId,
+          revokedAt: null,
+        },
+        data: {
+          tokenVersion: { increment: 1 },
+          secretId: materialId,
+          accessExpiresAt: successor.expiresAt,
+          refreshLeaseId: newerLease,
+          refreshLeaseUntil: new Date(Date.now() + 60_000),
+        },
+      });
+      expect(committed.count).toBe(1);
+      await tx.secret.deleteMany({ where: { id: connected.grant.secretId! } });
+    });
+    finishStale.resolve();
+    await staleResult;
+    const grant = await first.prisma.nativeOAuthGrant.findUniqueOrThrow({
+      where: { id: current.id },
+    });
+    expect(f.control.refreshes).toBe(1);
     expect(grant.tokenVersion).toBe(connected.grant.tokenVersion + 1);
     expect(grant.revokedAt).toBeNull();
-    expect(grant.secretId).not.toBeNull();
+    expect(grant.secretId).toBe(materialId);
+    expect(grant.refreshLeaseId).toBe(newerLease);
     expect(
       (await first.prisma.connection.findUniqueOrThrow({ where: { id: connected.connectionId } }))
         .status,

@@ -252,6 +252,11 @@ msgstr "Jeton d'accès (optionnel)"
 msgid "Account"
 msgstr "Compte"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Account authorization"
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Account default"
 msgstr "Défaut du compte"
@@ -352,6 +357,18 @@ msgstr "Ajouter un compte"
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "Ajoutez une URL de serveur HTTPS."
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add and reprocess knowledge"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add comments"
+msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Add connected model"
@@ -499,6 +516,10 @@ msgstr "Autoriser les actions d'achat sans demander"
 msgid "Allow writing"
 msgstr "Autoriser l'écriture"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed knowledge base IDs"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Allowed once"
 msgstr "Autorisé une fois"
@@ -561,6 +582,10 @@ msgstr "Clé API"
 msgid "API key header"
 msgstr "En-tête de clé API"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "API origin"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "App"
 msgstr ""
@@ -569,9 +594,25 @@ msgstr ""
 msgid "Appearance"
 msgstr "Apparence"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application credentials"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Application filter"
 msgstr "Filtre des applications"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application owner"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application saved"
+msgstr ""
 
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
@@ -632,9 +673,17 @@ msgstr "Demander avant les achats"
 msgid "Ask before sending external email"
 msgstr "Demander avant d'envoyer un e-mail externe"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ask questions"
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Ask the server owner to configure this provider."
 msgstr "Demandez au propriétaire du serveur de configurer ce fournisseur."
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Ask your administrator to enable a connection method."
+msgstr ""
 
 #. placeholder {0}: preset.time
 #: src/pages/RoutineSchedule.tsx
@@ -662,6 +711,10 @@ msgstr "Pièce jointe"
 msgid "Authentication failed."
 msgstr "Échec de l'authentification."
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Authorization"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Authorization code or callback URL"
@@ -687,6 +740,10 @@ msgstr "L'autorisation a expiré. Veuillez réessayer."
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "Autoriser"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Authorize account"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Authorize again"
@@ -717,6 +774,7 @@ msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
@@ -838,6 +896,10 @@ msgstr "Intégré"
 msgid "By Cogine"
 msgstr "Par Cogine"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Callback URL"
+msgstr ""
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "Impossible d'atteindre le serveur."
@@ -845,6 +907,7 @@ msgstr "Impossible d'atteindre le serveur."
 #: src/components/AskCard.tsx
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -890,6 +953,10 @@ msgstr "Vue en cartes"
 msgid "Change password"
 msgstr "Changer le mot de passe"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Changing authorization settings requires accounts to authorize again."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Changing…"
 msgstr "Modification en cours…"
@@ -915,8 +982,17 @@ msgid "Chat Settings"
 msgstr "Paramètres de discussion"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx
 msgid "Check again"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check calendar availability"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check event availability"
 msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
@@ -967,6 +1043,10 @@ msgstr "La copie de travail a des modifications locales. Nettoyez-la avant de me
 msgid "Choose a bot…"
 msgstr "Choisissez un bot…"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Choose a connection method"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "Choisissez un nouveau mot de passe"
@@ -1006,10 +1086,12 @@ msgid "Clearing…"
 msgstr "Effacement en cours…"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client ID"
 msgstr "ID client"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client secret"
 msgstr "Secret client"
 
@@ -1128,6 +1210,10 @@ msgstr ""
 msgid "Complete"
 msgstr "Terminé"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Complete the required application settings"
+msgstr ""
+
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -1191,6 +1277,7 @@ msgstr "Confirmez que l'URL est accessible depuis cette session du navigateur, p
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connect"
 msgstr "Connecter"
@@ -1203,6 +1290,10 @@ msgstr "Connecter un modèle"
 msgid "Connect a provider to add backups."
 msgstr "Connectez un fournisseur pour ajouter des modèles de secours."
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect account"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Connect API key"
 msgstr "Connecter la clé API"
@@ -1210,6 +1301,14 @@ msgstr "Connecter la clé API"
 #: src/pages/PluginsOverlay.tsx
 msgid "Connect Executor"
 msgstr "Connecter l'exécuteur"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect machine"
+msgstr ""
 
 #: src/pages/shell/message-cards.tsx
 msgid "Connect MCP server “{name}”"
@@ -1259,6 +1358,7 @@ msgid "Connected. Its tools are available from your next message."
 msgstr "Connecté. Ses outils sont disponibles dès votre prochain message."
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
@@ -1266,6 +1366,22 @@ msgstr "Connecté. Ses outils sont disponibles dès votre prochain message."
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "Connexion en cours…"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connection method"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method enabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method name"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Connection source"
@@ -1293,6 +1409,10 @@ msgstr "Limite de contexte"
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "Continuer"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Continue authorization"
+msgstr ""
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Continue in Background"
@@ -1375,7 +1495,12 @@ msgstr "Impossible de terminer OAuth"
 msgid "Could not complete the update. Try again."
 msgstr "Impossible de terminer la mise à jour. Réessayez."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not confirm cancellation. Check the pending account."
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not connect"
 msgstr "Impossible de se connecter"
@@ -1504,6 +1629,10 @@ msgstr "Impossible de charger"
 msgid "Could not load activity"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not load applications"
+msgstr ""
+
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not load approval rules"
 msgstr "Impossible de charger les règles d'approbation"
@@ -1526,6 +1655,10 @@ msgstr "Impossible de charger les bots. Rechargez pour réessayer."
 
 #: src/components/computer/TerminalApp.tsx
 msgid "Could not load commands"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Could not load connection methods"
 msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
@@ -1668,6 +1801,10 @@ msgstr "Impossible d'exécuter la routine"
 msgid "Could not save"
 msgstr "Impossible d'enregistrer"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not save application"
+msgstr ""
+
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not save Auto Review"
 msgstr "Impossible d'enregistrer la révision automatique"
@@ -1798,6 +1935,10 @@ msgstr "Créez une section et déplacez {0} dedans."
 msgid "Create account"
 msgstr "Créer un compte"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create and change events"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Create Bot"
 msgstr ""
@@ -1818,6 +1959,10 @@ msgstr "Créer un nouveau groupe"
 #: src/pages/shell/bot-picker.tsx
 msgid "Create new Space"
 msgstr "Créer un nouvel espace"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create pages and blocks"
+msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Create Routine"
@@ -2019,6 +2164,14 @@ msgstr "Mise à jour du bureau"
 msgid "Direct MCP"
 msgstr "MCP direct"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled methods cannot be used. Connected accounts are kept."
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
 msgstr ""
@@ -2155,9 +2308,21 @@ msgstr "Dupliquer"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "ex. Agent Hivenet, Préventes, bot de feuilles de temps"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit application"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Edit first"
 msgstr "Modifier d'abord"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit pages and blocks"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 msgid "Edit Profile"
@@ -2175,6 +2340,15 @@ msgstr "Cette adresse e-mail ne peut pas s’inscrire"
 msgid "Email verification required"
 msgstr "Vérification de l’e-mail requise"
 
+#. placeholder {0}: entry.label
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enable {0}"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enabled"
+msgstr ""
+
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
 msgstr ""
@@ -2189,6 +2363,10 @@ msgstr "Saisissez un mot de passe"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Enter a username and password"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Enter a valid credential"
 msgstr ""
 
 #: src/lib/user-error.ts
@@ -2370,6 +2548,10 @@ msgstr "Finalisation de la connexion MCP…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Flag unexpected actions"
 msgstr "Signaler les actions inattendues"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "For example, Company Calendar"
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Forgot password?"
@@ -2577,6 +2759,16 @@ msgstr "Options d'intégration"
 msgid "Integrations"
 msgstr "Intégrations"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration token"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 #: src/pages/RoutineSchedule.tsx
 msgid "Interval"
@@ -2644,6 +2836,10 @@ msgstr ""
 msgid "Leave"
 msgstr "Quitter"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Leave blank to keep the saved secret."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Light"
 msgstr "Clair"
@@ -2659,6 +2855,10 @@ msgstr "Connecter une application de discussion"
 #: src/components/AccountAccess.tsx
 msgid "Link SSO"
 msgstr "Associer SSO"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "List calendars"
+msgstr ""
 
 #: src/pages/Artifacts.tsx
 msgid "List view"
@@ -2691,6 +2891,14 @@ msgstr "Charger automatiquement les images web"
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "Chargement de l'activité…"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Loading applications…"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Loading connection methods…"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
@@ -2768,6 +2976,11 @@ msgstr ""
 msgid "Lowercase letters, numbers, hyphens and underscores, starting with a letter."
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Machine API key"
+msgstr ""
+
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Make sure nothing is still running on this computer."
 msgstr "Assurez-vous qu'aucun processus ne tourne encore sur cet ordinateur."
@@ -2809,6 +3022,10 @@ msgstr "Marquer comme lu"
 msgid "Mark as Unread"
 msgstr "Marquer comme non lu"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Match the capabilities enabled in your Notion integration."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Max"
@@ -2837,6 +3054,7 @@ msgstr "10 modèles de secours au maximum."
 msgid "Maximum output tokens"
 msgstr "Jetons de sortie maximum"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "MCP endpoint"
 msgstr "Point de terminaison MCP"
@@ -2858,6 +3076,10 @@ msgstr ""
 #: src/pages/GroupPanel.tsx
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "Membres ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Members enter their credentials when connecting from Apps."
+msgstr ""
 
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
@@ -3161,6 +3383,10 @@ msgstr "Aucune application connectée."
 msgid "No connected or pending accounts remain for this source."
 msgstr "Aucun compte connecté ou en attente d’autorisation ne reste pour cette source."
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "No connection method is configured."
+msgstr ""
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3300,6 +3526,11 @@ msgstr "Échec de la connexion OAuth"
 msgid "OAuth expired"
 msgstr "OAuth expiré"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Official application"
+msgstr ""
+
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
 msgid "On a call with {0}"
@@ -3317,6 +3548,10 @@ msgstr "le 1er à {0}"
 #: src/pages/Shell.tsx
 msgid "Only empty spaces can be deleted. Delete its bots and groups first."
 msgstr "Seuls les espaces vides peuvent être supprimés. Supprimez d'abord ses bots et groupes."
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Only pages shared with this integration are available."
+msgstr ""
 
 #: src/components/markdown-link-prompt.tsx
 #: src/pages/ScratchpadSection.tsx
@@ -3478,6 +3713,15 @@ msgstr "En pause"
 msgid "Pending authorization"
 msgstr "Autorisation en attente"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Permissions"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Personal access token"
+msgstr ""
+
 #: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Photo"
@@ -3566,9 +3810,25 @@ msgstr "Réagir"
 msgid "Reactions"
 msgstr "Réactions"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read comments"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read events"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read pages"
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Read replies aloud"
 msgstr "Lire les réponses à voix haute"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ready for accounts"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3589,6 +3849,10 @@ msgstr "Récent"
 
 #: src/pages/shell/chat-recipients.tsx
 msgid "Recipients"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Reconnect account"
 msgstr ""
 
 #: src/pages/McpServersOverlay.tsx
@@ -3673,6 +3937,10 @@ msgstr "Actualiser la vue"
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr "Actualisation en cours…"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Register this exact URL in the application’s OAuth settings."
+msgstr ""
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
@@ -3955,6 +4223,10 @@ msgstr "S'exécute lorsque ce bot reçoit un message vérifié de ce fournisseur
 msgid "Save"
 msgstr "Enregistrer"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Save application"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "Enregistrer les modèles de secours"
@@ -4006,6 +4278,7 @@ msgid "Saving..."
 msgstr "Enregistrement..."
 
 #: src/components/AskCard.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/ModelBackupsSettings.tsx
@@ -4030,6 +4303,10 @@ msgstr "Rechercher"
 
 #: src/pages/ActivityList.tsx
 msgid "Search activity"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Search and read knowledge"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -4115,6 +4392,10 @@ msgstr "Envoi en cours…"
 msgid "Sentry alert"
 msgstr "Alerte Sentry"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Separate IDs with commas"
+msgstr ""
+
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Serenity endpoint is required."
 msgstr "Le point de terminaison Serenity est obligatoire."
@@ -4144,6 +4425,14 @@ msgstr "Nom du serveur"
 msgid "Server URL"
 msgstr "URL du serveur"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Set up an application here. Members connect their accounts from Apps."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Set up application"
+msgstr ""
+
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -4163,6 +4452,10 @@ msgstr "Paramètres : Utilisation"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "Aide à la configuration"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Setup incomplete"
+msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/components/integrations/McpToolAccess.tsx
@@ -4197,6 +4490,10 @@ msgstr "Compétences partagées"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "Shell"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Show account email"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4482,6 +4779,10 @@ msgstr "Message Teams"
 msgid "Teams not enabled"
 msgstr "Teams non activé"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Tenant ID"
+msgstr ""
+
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Terminal"
 msgstr ""
@@ -4534,6 +4835,11 @@ msgstr "Réflexion"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Thinking: {activeThinkingLabel}"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/message-cards.tsx
+msgid "This application is not available for direct connection."
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -4681,6 +4987,8 @@ msgstr ""
 msgid "Trial ends {day}"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
 msgid "Try again"
@@ -4848,6 +5156,10 @@ msgstr "Utiliser votre propre clé"
 msgid "Username"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Uses a machine identity restricted to the configured knowledge bases."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Uses this server's own {hostCredentialSource} credentials to access {selectedProviderName}."
 msgstr "Utilise les identifiants {hostCredentialSource} propres à ce serveur pour accéder à {selectedProviderName}."
@@ -5004,6 +5316,11 @@ msgstr "Vous pouvez fermer cette fenêtre."
 #: src/pages/Shell.tsx
 msgid "You have control"
 msgstr "Vous avez le contrôle"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Your application"
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Your email address"

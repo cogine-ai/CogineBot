@@ -553,6 +553,8 @@ export function ShellPage() {
     commitSnapshot(update(snapshotRef.current));
   }
   const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [connectionsRevision, setConnectionsRevision] = useState(0);
+  const connectionsChanged = useCallback(() => setConnectionsRevision((value) => value + 1), []);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -2138,7 +2140,7 @@ export function ShellPage() {
     return () => {
       cancelled = true;
     };
-  }, [initialBotsLoaded, mentionBotsKey, pluginsOpen]);
+  }, [initialBotsLoaded, mentionBotsKey, pluginsOpen, connectionsRevision]);
 
   useLayoutEffect(() => {
     if (initialBotsLoaded) {
@@ -4077,6 +4079,7 @@ export function ShellPage() {
               mentionTargets={composerMentionTargets}
               onRefresh={refreshActiveThread}
               onBotChanged={refreshBots}
+              onConnectionsChanged={connectionsChanged}
               onAddRoutine={addSkillRoutine}
               voiceReady={Boolean(voiceStatus?.ready)}
               speakingMessageId={speakingMessageId}
@@ -4951,6 +4954,7 @@ export function ShellPage() {
         {pluginsOpen ? (
           <PluginsOverlay
             activeBotId={activeBotId.current}
+            onConnectionsChanged={connectionsChanged}
             onClose={() => setPluginsOpen(false)}
             onOpenMcp={() => {
               setPluginsOpen(false);
@@ -5220,6 +5224,7 @@ const Transcript = memo(function Transcript({
   mentionTargets,
   onRefresh,
   onBotChanged,
+  onConnectionsChanged,
   onAddRoutine,
   voiceReady,
   speakingMessageId,
@@ -5253,6 +5258,7 @@ const Transcript = memo(function Transcript({
   mentionTargets: readonly ComposerMention[];
   onRefresh: () => Promise<void>;
   onBotChanged: () => Promise<void>;
+  onConnectionsChanged: () => void;
   onAddRoutine: (name: string, prompt: string) => void;
   voiceReady: boolean;
   speakingMessageId: string | null;
@@ -5619,6 +5625,7 @@ const Transcript = memo(function Transcript({
                         onJumpToMessage={onJumpToMessage}
                         onRefresh={onRefresh}
                         onBotChanged={onBotChanged}
+                        onConnectionsChanged={onConnectionsChanged}
                         onAddRoutine={onAddRoutine}
                         voiceReady={voiceReady}
                         speaking={speakingMessageId === message.id}
@@ -6881,6 +6888,7 @@ const MessageView = memo(function MessageView({
   onJumpToMessage,
   onRefresh,
   onBotChanged,
+  onConnectionsChanged,
   onAddRoutine,
   voiceReady,
   speaking,
@@ -6903,6 +6911,7 @@ const MessageView = memo(function MessageView({
   onJumpToMessage?: (messageId: string) => void;
   onRefresh: () => Promise<void>;
   onBotChanged: () => Promise<void>;
+  onConnectionsChanged: () => void;
   onAddRoutine: (name: string, prompt: string) => void;
   voiceReady: boolean;
   speaking: boolean;
@@ -7212,7 +7221,11 @@ const MessageView = memo(function MessageView({
             if (!botId) return null;
             return (
               <div key={i} className="flex justify-start py-1">
-                <AppConnectCard botId={botId} block={block} />
+                <AppConnectCard
+                  botId={botId}
+                  block={block}
+                  onConnectionsChanged={onConnectionsChanged}
+                />
               </div>
             );
           }

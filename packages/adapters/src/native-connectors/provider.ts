@@ -46,7 +46,11 @@ import { validateNativeInput } from "./validation.js";
 const APPS = [
   { slug: "coginex", name: "CogineX", actions: coginexActions },
   { slug: "knowai", name: "Knowai", actions: knowaiActions },
-  { slug: "google-calendar", name: "Google Calendar", actions: calendarActions },
+  {
+    slug: "google-calendar",
+    name: "Google Calendar",
+    actions: calendarActions,
+  },
   { slug: "notion", name: "Notion", actions: notionActions },
 ] as const;
 
@@ -73,7 +77,13 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
       options.allowPrivateEndpoint,
     );
     this.authorities = new NativeOAuthAuthorities(options.network);
-    this.oauth = new NativeOAuthStore(prisma, secrets, this.configurations, this.authorities);
+    this.oauth = new NativeOAuthStore(
+      prisma,
+      secrets,
+      this.configurations,
+      this.authorities,
+      options.allowPrivateEndpoint,
+    );
   }
   describe() {
     return {
@@ -208,12 +218,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
         await client.close();
       }
     }
-    if (config.appId === "coginex")
-      throw new NativeActionError(
-        "not_configured",
-        "The CogineX native MCP authorization binding is not ready on this instance.",
-      );
-    if (config.credentialKind === "oauth") {
+    if (["oauth", "mcp_oauth"].includes(config.credentialKind)) {
       if (input.credential)
         throw new NativeActionError(
           "invalid_input",
@@ -380,44 +385,45 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
             (value) => redactConnectorPayload(value, redactions) as Record<string, unknown>,
           );
       let requestTokenVersion = bound.grant.tokenVersion;
-      http = new NativeHttpClient(
-        bound.config.appId === "notion"
-          ? "https://api.notion.com"
-          : bound.config.appId === "knowai"
-            ? settings.endpoint!
-            : "https://www.googleapis.com/calendar/v3",
-        async () => {
-          const live = await revalidate();
-          redactions.push(live.auth.tokens.accessToken);
-          requestTokenVersion = live.grant.tokenVersion;
-          return {
-            kind: bound.config.appId === "knowai" ? "api_key" : "bearer",
-            value: live.auth.tokens.accessToken,
-          };
-        },
-        {
-          network: this.options.network,
-          signal: context.signal,
-          readOnly: action.readOnly,
-          allowPrivateEndpoint: await actorMayUsePrivateEndpoint(
-            this.prisma,
-            context.userId,
-            this.options.allowPrivateEndpoint ?? false,
-          ),
-          headers:
-            bound.config.appId === "notion"
-              ? { "Notion-Version": NOTION_VERSION }
-              : bound.config.appId === "knowai"
-                ? { "X-Tenant-ID": settings.tenantId! }
-                : undefined,
-          onUnauthorized: async () => {
-            const current = await revalidate();
-            if (current.grant.tokenVersion === requestTokenVersion)
-              await this.oauth.authorization(selected.id, context, true);
+      if (bound.config.appId !== "coginex")
+        http = new NativeHttpClient(
+          bound.config.appId === "notion"
+            ? "https://api.notion.com"
+            : bound.config.appId === "knowai"
+              ? settings.endpoint!
+              : "https://www.googleapis.com/calendar/v3",
+          async () => {
+            const live = await revalidate();
+            redactions.push(live.auth.tokens.accessToken);
+            requestTokenVersion = live.grant.tokenVersion;
+            return {
+              kind: bound.config.appId === "knowai" ? "api_key" : "bearer",
+              value: live.auth.tokens.accessToken,
+            };
           },
-          timeoutMs: action.id === "knowai.qa.ask" ? 300_000 : 30_000,
-        },
-      );
+          {
+            network: this.options.network,
+            signal: context.signal,
+            readOnly: action.readOnly,
+            allowPrivateEndpoint: await actorMayUsePrivateEndpoint(
+              this.prisma,
+              context.userId,
+              this.options.allowPrivateEndpoint ?? false,
+            ),
+            headers:
+              bound.config.appId === "notion"
+                ? { "Notion-Version": NOTION_VERSION }
+                : bound.config.appId === "knowai"
+                  ? { "X-Tenant-ID": settings.tenantId! }
+                  : undefined,
+            onUnauthorized: async () => {
+              const current = await revalidate();
+              if (current.grant.tokenVersion === requestTokenVersion)
+                await this.oauth.authorization(selected.id, context, true);
+            },
+            timeoutMs: action.id === "knowai.qa.ask" ? 300_000 : 30_000,
+          },
+        );
       const actionContext: NativeActionContext = {
         operationId: call.executionId,
         signal: context.signal,
@@ -430,11 +436,28 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
           knowledgeBaseIds: settings.knowledgeBaseIds,
           context: bound.auth.identity.context,
         },
-        request: (request) => http!.request(request),
-        callMcp: async () => {
-          throw new NativeActionError(
-            "not_configured",
-            "The native MCP account binding is unavailable.",
+        request: (request) => {
+          if (!http)
+            throw new NativeActionError("invalid_input", "CogineX uses its bound MCP transport.");
+          return http.request(request);
+        },
+        callMcp: async (tool, args) => {
+          if (bound.config.appId !== "coginex")
+            throw new NativeActionError("invalid_input", "This application does not use MCP.");
+          return this.authorities.mcp.call(
+            bound.config,
+            async (force) => {
+              if (force) await this.oauth.authorization(selected.id, context, true);
+              return (await revalidate()).auth;
+            },
+            tool,
+            args,
+            context.signal,
+            await actorMayUsePrivateEndpoint(
+              this.prisma,
+              context.userId,
+              this.options.allowPrivateEndpoint ?? false,
+            ),
           );
         },
         readArtifact: async (id) => {

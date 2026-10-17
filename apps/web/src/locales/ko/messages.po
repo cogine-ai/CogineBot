@@ -252,6 +252,11 @@ msgstr "액세스 토큰(선택 사항)"
 msgid "Account"
 msgstr "계정"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Account authorization"
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Account default"
 msgstr "계정 기본값"
@@ -352,6 +357,18 @@ msgstr "계정 추가"
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "HTTPS 서버 URL을 입력하세요."
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add and reprocess knowledge"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add comments"
+msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Add connected model"
@@ -499,6 +516,10 @@ msgstr "확인 없이 결제 동작 허용"
 msgid "Allow writing"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed knowledge base IDs"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Allowed once"
 msgstr "한 번 허용됨"
@@ -561,6 +582,10 @@ msgstr "API 키"
 msgid "API key header"
 msgstr "API 키 헤더"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "API origin"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "App"
 msgstr ""
@@ -569,9 +594,25 @@ msgstr ""
 msgid "Appearance"
 msgstr "모양"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application credentials"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Application filter"
 msgstr "앱 필터"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application owner"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application saved"
+msgstr ""
 
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
@@ -632,8 +673,16 @@ msgstr "결제하기 전에 확인"
 msgid "Ask before sending external email"
 msgstr "외부 이메일을 보내기 전에 확인"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ask questions"
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Ask the server owner to configure this provider."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Ask your administrator to enable a connection method."
 msgstr ""
 
 #. placeholder {0}: preset.time
@@ -662,6 +711,10 @@ msgstr "첨부 파일"
 msgid "Authentication failed."
 msgstr "인증에 실패했습니다."
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Authorization"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Authorization code or callback URL"
@@ -687,6 +740,10 @@ msgstr "인증 시간이 만료되었습니다. 다시 시도해 주세요."
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "인증하기"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Authorize account"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Authorize again"
@@ -717,6 +774,7 @@ msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
@@ -838,6 +896,10 @@ msgstr "기본 제공"
 msgid "By Cogine"
 msgstr "Cogine 제공"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Callback URL"
+msgstr ""
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "서버에 연결할 수 없습니다."
@@ -845,6 +907,7 @@ msgstr "서버에 연결할 수 없습니다."
 #: src/components/AskCard.tsx
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -890,6 +953,10 @@ msgstr ""
 msgid "Change password"
 msgstr "비밀번호 변경"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Changing authorization settings requires accounts to authorize again."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Changing…"
 msgstr "변경 중…"
@@ -915,8 +982,17 @@ msgid "Chat Settings"
 msgstr "채팅 설정"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx
 msgid "Check again"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check calendar availability"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check event availability"
 msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
@@ -967,6 +1043,10 @@ msgstr "체크아웃에 로컬 변경 사항이 있습니다. 업데이트하기
 msgid "Choose a bot…"
 msgstr "Bot 선택…"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Choose a connection method"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "새 비밀번호 선택"
@@ -1006,10 +1086,12 @@ msgid "Clearing…"
 msgstr "비우는 중…"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client ID"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client secret"
 msgstr ""
 
@@ -1128,6 +1210,10 @@ msgstr ""
 msgid "Complete"
 msgstr "완료"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Complete the required application settings"
+msgstr ""
+
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -1191,6 +1277,7 @@ msgstr "이 브라우저 세션에서 URL에 연결할 수 있는지 확인한 �
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connect"
 msgstr "연결"
@@ -1203,6 +1290,10 @@ msgstr "AI 모델 연결"
 msgid "Connect a provider to add backups."
 msgstr "백업을 추가하려면 제공업체를 연결하세요."
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect account"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Connect API key"
 msgstr "API 키 연결"
@@ -1210,6 +1301,14 @@ msgstr "API 키 연결"
 #: src/pages/PluginsOverlay.tsx
 msgid "Connect Executor"
 msgstr "Executor 연결"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect machine"
+msgstr ""
 
 #: src/pages/shell/message-cards.tsx
 msgid "Connect MCP server “{name}”"
@@ -1259,6 +1358,7 @@ msgid "Connected. Its tools are available from your next message."
 msgstr "연결되었습니다. 다음 메시지부터 이 도구를 사용할 수 있습니다."
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
@@ -1266,6 +1366,22 @@ msgstr "연결되었습니다. 다음 메시지부터 이 도구를 사용할 �
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "연결 중…"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connection method"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method enabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method name"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Connection source"
@@ -1293,6 +1409,10 @@ msgstr "컨텍스트 한도"
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "계속"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Continue authorization"
+msgstr ""
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Continue in Background"
@@ -1375,7 +1495,12 @@ msgstr "OAuth 인증을 완료하지 못했습니다."
 msgid "Could not complete the update. Try again."
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not confirm cancellation. Check the pending account."
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not connect"
 msgstr "연결하지 못했습니다."
@@ -1504,6 +1629,10 @@ msgstr "불러올 수 없음"
 msgid "Could not load activity"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not load applications"
+msgstr ""
+
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not load approval rules"
 msgstr "확인 규칙을 불러오지 못했습니다."
@@ -1526,6 +1655,10 @@ msgstr ""
 
 #: src/components/computer/TerminalApp.tsx
 msgid "Could not load commands"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Could not load connection methods"
 msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
@@ -1668,6 +1801,10 @@ msgstr "루틴을 실행할 수 없습니다"
 msgid "Could not save"
 msgstr "저장하지 못했습니다."
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not save application"
+msgstr ""
+
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not save Auto Review"
 msgstr "자동 검토를 저장할 수 없습니다"
@@ -1798,6 +1935,10 @@ msgstr "새 섹션을 만들고 {0}을 옮깁니다."
 msgid "Create account"
 msgstr "계정 만들기"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create and change events"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Create Bot"
 msgstr ""
@@ -1818,6 +1959,10 @@ msgstr "새 그룹 만들기"
 #: src/pages/shell/bot-picker.tsx
 msgid "Create new Space"
 msgstr "새 스페이스 만들기"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create pages and blocks"
+msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Create Routine"
@@ -2019,6 +2164,14 @@ msgstr ""
 msgid "Direct MCP"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled methods cannot be used. Connected accounts are kept."
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
 msgstr ""
@@ -2155,9 +2308,21 @@ msgstr "복제"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "예: Hivenet Agent, Presales, 근무표 봇"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit application"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Edit first"
 msgstr "수정 후 보내기"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit pages and blocks"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 msgid "Edit Profile"
@@ -2175,6 +2340,15 @@ msgstr "이 이메일은 가입이 허용되지 않습니다"
 msgid "Email verification required"
 msgstr "이메일 인증이 필요합니다"
 
+#. placeholder {0}: entry.label
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enable {0}"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enabled"
+msgstr ""
+
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
 msgstr ""
@@ -2189,6 +2363,10 @@ msgstr "비밀번호를 입력하세요"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Enter a username and password"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Enter a valid credential"
 msgstr ""
 
 #: src/lib/user-error.ts
@@ -2370,6 +2548,10 @@ msgstr "MCP 연결을 마무리하는 중…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Flag unexpected actions"
 msgstr "예상하지 못한 작업 표시"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "For example, Company Calendar"
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Forgot password?"
@@ -2577,6 +2759,16 @@ msgstr ""
 msgid "Integrations"
 msgstr "앱·도구 연동"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration token"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 #: src/pages/RoutineSchedule.tsx
 msgid "Interval"
@@ -2644,6 +2836,10 @@ msgstr ""
 msgid "Leave"
 msgstr "나가기"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Leave blank to keep the saved secret."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Light"
 msgstr "라이트"
@@ -2659,6 +2855,10 @@ msgstr "채팅 앱 연결"
 #: src/components/AccountAccess.tsx
 msgid "Link SSO"
 msgstr "SSO 연결"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "List calendars"
+msgstr ""
 
 #: src/pages/Artifacts.tsx
 msgid "List view"
@@ -2691,6 +2891,14 @@ msgstr "웹 이미지 자동으로 불러오기"
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "활동을 불러오는 중…"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Loading applications…"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Loading connection methods…"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
@@ -2768,6 +2976,11 @@ msgstr ""
 msgid "Lowercase letters, numbers, hyphens and underscores, starting with a letter."
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Machine API key"
+msgstr ""
+
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Make sure nothing is still running on this computer."
 msgstr "이 컴퓨터에서 실행 중인 작업이 없는지 확인하세요."
@@ -2809,6 +3022,10 @@ msgstr "읽음으로 표시"
 msgid "Mark as Unread"
 msgstr "읽지 않음으로 표시"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Match the capabilities enabled in your Notion integration."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Max"
@@ -2837,6 +3054,7 @@ msgstr "백업 모델은 최대 10개까지 추가할 수 있습니다."
 msgid "Maximum output tokens"
 msgstr "최대 출력 토큰 수"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "MCP endpoint"
 msgstr ""
@@ -2858,6 +3076,10 @@ msgstr ""
 #: src/pages/GroupPanel.tsx
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "참여 Bot ({GROUP_MEMBER_MIN}~{GROUP_MEMBER_MAX}개)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Members enter their credentials when connecting from Apps."
+msgstr ""
 
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
@@ -3161,6 +3383,10 @@ msgstr "연결된 앱이 없습니다."
 msgid "No connected or pending accounts remain for this source."
 msgstr "이 소스에 연결되었거나 승인 대기 중인 계정이 없습니다."
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "No connection method is configured."
+msgstr ""
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3300,6 +3526,11 @@ msgstr "OAuth 연결 실패"
 msgid "OAuth expired"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Official application"
+msgstr ""
+
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
 msgid "On a call with {0}"
@@ -3316,6 +3547,10 @@ msgstr "매월 1일 {0}에"
 
 #: src/pages/Shell.tsx
 msgid "Only empty spaces can be deleted. Delete its bots and groups first."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Only pages shared with this integration are available."
 msgstr ""
 
 #: src/components/markdown-link-prompt.tsx
@@ -3478,6 +3713,15 @@ msgstr "일시 중지됨"
 msgid "Pending authorization"
 msgstr "권한 승인 대기 중"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Permissions"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Personal access token"
+msgstr ""
+
 #: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Photo"
@@ -3566,9 +3810,25 @@ msgstr "반응하기"
 msgid "Reactions"
 msgstr "반응"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read comments"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read events"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read pages"
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Read replies aloud"
 msgstr "답변을 자동으로 읽기"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ready for accounts"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3589,6 +3849,10 @@ msgstr "최근"
 
 #: src/pages/shell/chat-recipients.tsx
 msgid "Recipients"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Reconnect account"
 msgstr ""
 
 #: src/pages/McpServersOverlay.tsx
@@ -3673,6 +3937,10 @@ msgstr "화면 새로고침"
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr "새로고침 중…"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Register this exact URL in the application’s OAuth settings."
+msgstr ""
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
@@ -3955,6 +4223,10 @@ msgstr ""
 msgid "Save"
 msgstr "저장"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Save application"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "백업 모델 저장"
@@ -4006,6 +4278,7 @@ msgid "Saving..."
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/ModelBackupsSettings.tsx
@@ -4030,6 +4303,10 @@ msgstr "검색"
 
 #: src/pages/ActivityList.tsx
 msgid "Search activity"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Search and read knowledge"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -4115,6 +4392,10 @@ msgstr "보내는 중…"
 msgid "Sentry alert"
 msgstr "Sentry 알림"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Separate IDs with commas"
+msgstr ""
+
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Serenity endpoint is required."
 msgstr ""
@@ -4144,6 +4425,14 @@ msgstr "서버 이름"
 msgid "Server URL"
 msgstr "서버 URL"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Set up an application here. Members connect their accounts from Apps."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Set up application"
+msgstr ""
+
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -4163,6 +4452,10 @@ msgstr "설정: 사용량"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "설정 도움말"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Setup incomplete"
+msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/components/integrations/McpToolAccess.tsx
@@ -4197,6 +4490,10 @@ msgstr "공유 스킬"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "셸"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Show account email"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4482,6 +4779,10 @@ msgstr "Teams 메시지"
 msgid "Teams not enabled"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Tenant ID"
+msgstr ""
+
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Terminal"
 msgstr ""
@@ -4534,6 +4835,11 @@ msgstr "생각 깊이"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Thinking: {activeThinkingLabel}"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/message-cards.tsx
+msgid "This application is not available for direct connection."
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -4681,6 +4987,8 @@ msgstr ""
 msgid "Trial ends {day}"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
 msgid "Try again"
@@ -4848,6 +5156,10 @@ msgstr "내 키 사용"
 msgid "Username"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Uses a machine identity restricted to the configured knowledge bases."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Uses this server's own {hostCredentialSource} credentials to access {selectedProviderName}."
 msgstr "이 서버의 자체 {hostCredentialSource} 자격 증명으로 {selectedProviderName}에 액세스합니다."
@@ -5004,6 +5316,11 @@ msgstr "이 창을 닫아도 됩니다."
 #: src/pages/Shell.tsx
 msgid "You have control"
 msgstr "직접 조작 중"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Your application"
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Your email address"

@@ -184,6 +184,12 @@ export default function IntegrationSetup() {
           )}
         </>
       )}
+      <Text style={styles.text}>
+        {t(
+          "Application credentials and connection methods are managed in the web app. Account connections remain available in Apps.",
+        )}
+      </Text>
+      {button(t("Application settings on the web"), () => void Linking.openURL(state.webUrl), busy)}
       {busy ? <ActivityIndicator /> : null}
       {error ? (
         <Text accessibilityRole="alert" style={styles.error}>

@@ -76,6 +76,12 @@ function httpError(
       "resource_unavailable",
       "This connection cannot access the requested resource.",
     );
+  if (status === 410)
+    return new NativeActionError(
+      "resource_unavailable",
+      "The service cursor or resource expired. Read the current resource before continuing.",
+      { recovery: { status: 410 } },
+    );
   if (status === 409 || status === 412)
     return new NativeActionError(
       "version_conflict",

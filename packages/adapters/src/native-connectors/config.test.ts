@@ -3,7 +3,13 @@ import { NativeConfigInputSchema, NativeConfigStatusSchema } from "@rakazo/contr
 import type { NativeAppConfig, PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { EncryptedSecretStore } from "../secrets.js";
-import { NativeConfigStore, nativeCallbackUri, nativeConfigStatus } from "./config.js";
+import {
+  NativeConfigSettingsSchema,
+  NativeConfigStore,
+  nativeCallbackUri,
+  nativeConfigStatus,
+} from "./config.js";
+import { NativeHttpClient } from "./http.js";
 
 const context: AdapterContext = {
   userId: "user-1",
@@ -68,6 +74,133 @@ function database() {
 }
 
 describe("native application configuration boundary", () => {
+  it.each([
+    ["https://knowai.example.test", "https://knowai.example.test"],
+    ["https://knowai.example.test/api/v1", "https://knowai.example.test"],
+    ["https://knowai.example.test/api/v1/", "https://knowai.example.test"],
+    ["https://knowai.example.test/atlas/", "https://knowai.example.test/atlas"],
+    ["https://knowai.example.test/atlas/api/v1/", "https://knowai.example.test/atlas"],
+    ["https://knowai.example.test/api/v10/", "https://knowai.example.test/api/v10"],
+  ])(
+    "saves Knowai endpoint %s as its instance base and preserves actual action URLs",
+    async (endpoint, expectedBase) => {
+      const { db } = database();
+      const network = {
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        fetch: vi.fn(
+          async (_input: string | URL | Request, _init?: RequestInit) =>
+            new Response(JSON.stringify({ success: true })),
+        ),
+      };
+      const service = new NativeConfigStore(
+        db,
+        new EncryptedSecretStore("test-key"),
+        "https://api.example.test",
+        network,
+      );
+      await service.save(
+        {
+          appId: "knowai",
+          ownership: "byo",
+          credentialKind: "machine_key",
+          label: "Knowai fixture",
+          endpoint,
+          scopes: [],
+          capabilities: ["retrieve"],
+          knowledgeBaseIds: ["kb-fixture"],
+          tenantId: "42",
+          enabled: true,
+        },
+        context,
+        true,
+      );
+      const editable = await service.configuration("config-1", true);
+      expect(editable.endpoint).toBe(expectedBase);
+      const row = await service.require("config-1");
+      const stored = NativeConfigSettingsSchema.parse(row.config);
+      const client = new NativeHttpClient(
+        stored.endpoint!,
+        async () => ({ kind: "api_key", value: "fixture-key" }),
+        {
+          network,
+          signal: context.signal,
+          readOnly: true,
+        },
+      );
+      try {
+        await client.request({ method: "GET", path: "/api/v1/auth/me" });
+        await client.request({ method: "GET", path: "/api/v1/knowledge-bases" });
+        expect(network.fetch.mock.calls.map(([url]) => String(url))).toEqual([
+          `${expectedBase}/api/v1/auth/me`,
+          `${expectedBase}/api/v1/knowledge-bases`,
+        ]);
+      } finally {
+        await client.close();
+      }
+    },
+  );
+
+  it("does not normalize another service's API path or bypass URL validation", async () => {
+    const { db } = database();
+    const service = new NativeConfigStore(
+      db,
+      new EncryptedSecretStore("test-key"),
+      "https://api.example.test",
+      {
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+      },
+    );
+    await service.save(
+      {
+        appId: "coginex",
+        ownership: "byo",
+        credentialKind: "mcp_oauth",
+        label: "MCP fixture",
+        enabled: true,
+        endpoint: "https://mcp.example.test/atlas/api/v1",
+        scopes: ["mcp"],
+        capabilities: [],
+        knowledgeBaseIds: [],
+      },
+      context,
+      true,
+    );
+    expect((await service.configuration("config-1", true)).endpoint).toBe(
+      "https://mcp.example.test/atlas/api/v1",
+    );
+    for (const endpoint of [
+      "https://user:fixture-password@knowai.example.test/atlas/api/v1",
+      "https://knowai.example.test/atlas/api/v1?api_key=fixture-key",
+      "https://knowai.example.test/atlas/api/v1#fragment",
+    ]) {
+      const { db, nativeAppConfig } = database();
+      const service = new NativeConfigStore(
+        db,
+        new EncryptedSecretStore("test-key"),
+        "https://api.example.test",
+      );
+      await expect(
+        service.save(
+          {
+            appId: "knowai",
+            ownership: "byo",
+            credentialKind: "machine_key",
+            label: "Knowai fixture",
+            enabled: true,
+            endpoint,
+            scopes: [],
+            capabilities: ["retrieve"],
+            knowledgeBaseIds: ["kb-fixture"],
+            tenantId: "42",
+          },
+          context,
+          true,
+        ),
+      ).rejects.toThrow();
+      expect(nativeAppConfig.create).not.toHaveBeenCalled();
+    }
+  });
+
   it("derives a single fixed callback from the configured API origin", () => {
     expect(nativeCallbackUri("https://api.example.test/prefix")).toBe(
       "https://api.example.test/api/connectors/oauth/callback",

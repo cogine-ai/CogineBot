@@ -7,6 +7,7 @@ import { newClientId } from "../../lib/client-id";
 import { connectMcpOauth } from "../../lib/mcp-connect";
 import { rpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
+import { NativeApplicationSetup } from "./NativeApplicationSetup";
 
 type Choice = "direct" | "composio" | "pipedream" | "executor";
 
@@ -362,6 +363,7 @@ export function IntegrationSetup({
           </details>
         </div>
       ) : null}
+      {serverSetup && !managedOnly ? <NativeApplicationSetup /> : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}

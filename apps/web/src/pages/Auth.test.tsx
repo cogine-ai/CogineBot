@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { authClient } from "../lib/auth";
 import type { AuthCapabilities } from "../lib/auth-capabilities";
 import { fetchAuthCapabilities } from "../lib/auth-capabilities";
+import { clearSpaceSelection } from "../lib/rpc";
 import { AuthPage } from "./Auth";
 
 vi.mock("@lingui/react/macro", () => ({
@@ -35,7 +36,12 @@ vi.mock("@rakazo/ui-web", () => ({
   ),
 }));
 vi.mock("../lib/auth-capabilities", () => ({ fetchAuthCapabilities: vi.fn() }));
-vi.mock("../lib/auth", () => ({ authClient: { signIn: { social: vi.fn(async () => ({})) } } }));
+vi.mock("../lib/auth", () => ({
+  authClient: {
+    signIn: { social: vi.fn(async () => ({})), email: vi.fn(async () => ({})) },
+    signUp: { email: vi.fn(async () => ({})) },
+  },
+}));
 vi.mock("../lib/rpc", () => ({ clearSpaceSelection: vi.fn() }));
 const capabilities: AuthCapabilities = {
   passwordAuth: false,
@@ -57,15 +63,35 @@ afterEach(async () => {
   vi.restoreAllMocks();
   delete window.rakazoDesktop;
 });
-async function render(mode: "in" | "up" | "forgot" = "in") {
+async function render(mode: "in" | "up" | "forgot" = "in", path = "/sign-in") {
   await act(async () =>
     root.render(
-      <MemoryRouter>
+      <MemoryRouter key={path} initialEntries={[path]}>
         <AuthPage mode={mode} />
       </MemoryRouter>,
     ),
   );
 }
+it("retains the same native attempt after an SSO cancellation or error and retry", async () => {
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue(capabilities);
+  vi.mocked(authClient.signIn.social).mockResolvedValue({
+    data: null,
+    error: { message: "Cancelled", status: 400, statusText: "Bad Request" },
+  });
+  const kickoff = `/api/connectors/oauth/start?state=${"a".repeat(43)}`;
+  const signIn = `/sign-in?next=${encodeURIComponent(kickoff)}`;
+  for (const path of [signIn, `${signIn}&error=access_denied`]) {
+    await render("in", path);
+    const sso = [...host.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Continue with"),
+    )!;
+    await act(async () => sso.click());
+    expect(authClient.signIn.social).toHaveBeenLastCalledWith(
+      expect.objectContaining({ callbackURL: kickoff, errorCallbackURL: signIn }),
+    );
+  }
+  expect(authClient.signIn.social).toHaveBeenCalledTimes(2);
+});
 it("shows no credential form while capabilities load", async () => {
   vi.mocked(fetchAuthCapabilities).mockReturnValue(new Promise(() => undefined));
   await render();
@@ -153,3 +179,60 @@ it("keeps SSO available for retry while an authorization request is pending", as
   await act(async () => button.click());
   expect(authClient.signIn.social).toHaveBeenCalledTimes(2);
 });
+
+it.each([
+  { mode: "in" as const, native: false },
+  { mode: "in" as const, native: true },
+  { mode: "up" as const, native: true },
+])(
+  "keeps the original Space only for Native email sign-in, not ordinary login/signup: %j",
+  async ({ mode, native }) => {
+    const storageKey = "rakazo:space-id";
+    window.localStorage.setItem(storageKey, "space-original");
+    vi.mocked(clearSpaceSelection).mockImplementation(() => {
+      window.localStorage.removeItem(storageKey);
+    });
+    vi.mocked(fetchAuthCapabilities).mockResolvedValue({ ...capabilities, passwordAuth: true });
+    vi.mocked(authClient.signIn.email).mockResolvedValue({
+      data: { user: { id: "original-user" } },
+      error: null,
+    } as never);
+    vi.mocked(authClient.signUp.email).mockResolvedValue({
+      data: { user: { id: "new-user" } },
+      error: null,
+    } as never);
+    const destination = `/api/connectors/oauth/start?state=${"a".repeat(43)}`;
+    const path = mode === "in" ? "/sign-in" : "/sign-up";
+    await render(mode, native ? `${path}?next=${encodeURIComponent(destination)}` : path);
+    for (const [name, value] of [
+      ["email", "fixture@example.test"],
+      ["password", "fixture-password"],
+    ]) {
+      const input = host.querySelector(`input[name="${name}"]`)!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+          input,
+          value,
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await act(async () => {
+      host
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(mode === "in" ? authClient.signIn.email : authClient.signUp.email).toHaveBeenCalledTimes(
+      1,
+    );
+    if (native && mode === "in") {
+      expect(window.localStorage.getItem(storageKey)).toBe("space-original");
+      expect(clearSpaceSelection).not.toHaveBeenCalled();
+    } else {
+      expect(window.localStorage.getItem(storageKey)).toBeNull();
+      expect(clearSpaceSelection).toHaveBeenCalledOnce();
+    }
+    vi.mocked(clearSpaceSelection).mockReset();
+    window.localStorage.removeItem(storageKey);
+  },
+);

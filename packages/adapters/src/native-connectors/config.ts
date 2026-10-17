@@ -65,6 +65,9 @@ function settingsFor(input: NativeConfigInput): NativeConfigSettings {
     if (!input.scopes.includes("openid")) throw new Error("Calendar identity requires openid");
     if (input.scopes.some((scope) => !CALENDAR_SCOPES.some((allowed) => allowed === scope)))
       throw new Error("Unsupported Calendar scope");
+  } else if (input.appId === "coginex") {
+    if (input.scopes.some((scope) => scope !== "mcp"))
+      throw new Error("CogineX uses the fixed MCP scope");
   } else if (input.scopes.length) {
     throw new Error("This authorization protocol does not accept Calendar OAuth scopes");
   }
@@ -76,10 +79,18 @@ function settingsFor(input: NativeConfigInput): NativeConfigSettings {
         : new Set<string>();
   if (input.capabilities.some((capability) => !allowed.has(capability)))
     throw new Error("Unsupported service capability");
+  let endpoint = input.endpoint?.replace(/\/$/, "");
+  if (endpoint && input.appId === "knowai") {
+    // Knowai's copied API URL includes /api/v1; frozen action paths include it too.
+    // Keep any reverse-proxy prefix and leave URL credentials/query validation intact.
+    const url = new URL(endpoint);
+    url.pathname = url.pathname.replace(/\/+$/, "").replace(/\/api\/v1$/, "");
+    endpoint = url.toString().replace(/\/$/, "");
+  }
   return {
-    ...(input.endpoint ? { endpoint: input.endpoint.replace(/\/$/, "") } : {}),
+    ...(endpoint ? { endpoint } : {}),
     ...(input.clientId ? { clientId: input.clientId } : {}),
-    scopes: [...new Set(input.scopes)].sort(),
+    scopes: input.appId === "coginex" ? ["mcp"] : [...new Set(input.scopes)].sort(),
     capabilities: [...new Set(input.capabilities)].sort(),
     knowledgeBaseIds: [...new Set(input.knowledgeBaseIds)].sort(),
     ...(input.tenantId ? { tenantId: input.tenantId } : {}),
@@ -128,7 +139,9 @@ export class NativeConfigStore {
   async configuration(id: string, isDeploymentOwner: boolean): Promise<NativeConfigEditable> {
     if (!isDeploymentOwner)
       throw new Error("Only the deployment administrator can read application configuration");
-    const row = await this.prisma.nativeAppConfig.findUniqueOrThrow({ where: { id } });
+    const row = await this.prisma.nativeAppConfig.findUniqueOrThrow({
+      where: { id },
+    });
     return NativeConfigEditableSchema.parse({
       ...NativeConfigSettingsSchema.parse(row.config),
       id: row.id,
@@ -174,7 +187,9 @@ export class NativeConfigStore {
       });
     }
     const previous = input.id
-      ? await this.prisma.nativeAppConfig.findUnique({ where: { id: input.id } })
+      ? await this.prisma.nativeAppConfig.findUnique({
+          where: { id: input.id },
+        })
       : null;
     if (input.id && (!previous || previous.revision !== input.expectedRevision))
       throw new Error("Application configuration changed; refresh before saving");
@@ -218,11 +233,16 @@ export class NativeConfigStore {
         if (!previous) return tx.nativeAppConfig.create({ data });
         const changed = await tx.nativeAppConfig.updateMany({
           where: { id: previous.id, revision: input.expectedRevision },
-          data: { ...data, ...(advancesAuthorization ? { revision: { increment: 1 } } : {}) },
+          data: {
+            ...data,
+            ...(advancesAuthorization ? { revision: { increment: 1 } } : {}),
+          },
         });
         if (!changed.count)
           throw new Error("Application configuration changed; refresh before saving");
-        return tx.nativeAppConfig.findUniqueOrThrow({ where: { id: previous.id } });
+        return tx.nativeAppConfig.findUniqueOrThrow({
+          where: { id: previous.id },
+        });
       });
       return nativeConfigStatus(row);
     });

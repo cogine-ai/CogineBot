@@ -1,4 +1,11 @@
-import type { CapabilityInstall, Connection, ConnectionCatalogItem } from "@rakazo/contracts";
+import type {
+  CapabilityInstall,
+  Connection,
+  ConnectionCatalogItem,
+  NativeAppId,
+  NativeBeginInput,
+} from "@rakazo/contracts";
+import { Id, NativeAppIdSchema } from "@rakazo/contracts";
 import type { ConnectionApp } from "@rakazo/core";
 import {
   abortableDelay,
@@ -15,10 +22,11 @@ import {
   groupConnectionCatalog,
   humanizeToolName,
 } from "@rakazo/core";
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  BackHandler,
   Linking,
   Pressable,
   ScrollView,
@@ -31,10 +39,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ConnectorIcon } from "../../components/connector-icon";
 import { MenuPicker } from "../../components/menu-picker";
+import { NativeAccountConnect } from "../../components/native-account-connect";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSegmentedControl } from "../../components/native-segmented-control";
 import { Chevron } from "../../components/row-accessories";
-import { rpc } from "../../lib/api";
+import type { ApiRequestContext } from "../../lib/api";
+import { captureApiRequestContext, rpc } from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
 import { useI18n } from "../../lib/i18n";
 import type { IntegrationsCacheScope, IntegrationsSnapshot } from "../../lib/integrations-cache";
@@ -51,6 +61,12 @@ import { errorText } from "../../lib/user-error";
 
 type SourceKind = "treg" | "executor" | "mcp" | "api" | "graphql";
 type ConnectionTool = { name: string; description: string };
+type NativeAttempt = {
+  controller: AbortController;
+  connectionId: string | null;
+  requestContext: ApiRequestContext;
+  isCurrent: () => boolean;
+};
 
 const LOGO_SIZE = 32;
 
@@ -58,13 +74,29 @@ function itemKey(item: Pick<ConnectionCatalogItem, "connectorId" | "slug">) {
   return connectionCatalogKey(item);
 }
 function sourceLabel(item: Pick<ConnectionCatalogItem, "connectorId">) {
-  const labels: Record<string, string> = { composio: "Composio", pipedream: "Pipedream" };
+  const labels: Record<string, string> = {
+    native: "Cogine",
+    composio: "Composio",
+    pipedream: "Pipedream",
+  };
   return labels[item.connectorId] ?? item.connectorId;
 }
 
 export default function Integrations() {
   const styles = useThemedStyles(createIntegrationsStyles);
   const { t } = useI18n();
+  const { app, botId } = useLocalSearchParams<{
+    app?: string | string[];
+    botId?: string | string[];
+  }>();
+  const initialApp = useRef(typeof app === "string" ? app : null);
+  const initialBotId = useRef(typeof botId === "string" ? botId : null);
+  const initialAppConsumed = useRef(false);
+  const sourceCard = useRef<{
+    appId: NativeAppId;
+    botId: string;
+    scope: IntegrationsCacheScope;
+  } | null>(null);
   const { width } = useWindowDimensions();
   const catalogColumns = width >= 480 ? 2 : 1;
   const [catalog, setCatalog] = useState<ConnectionCatalogItem[]>([]);
@@ -88,12 +120,17 @@ export default function Integrations() {
   const [catalogReady, setCatalogReady] = useState(false);
   const [labelDrafts, setLabelDrafts] = useState<Record<string, string>>({});
   const [detailKey, setDetailKey] = useState<{ connectorId: string; slug: string } | null>(null);
+  const [nativeAccount, setNativeAccount] = useState<{
+    appId: NativeAppId;
+    previous?: Connection;
+  } | null>(null);
   const [tools, setTools] = useState<ConnectionTool[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(true);
   const [toolsTick, setToolsTick] = useState(0);
   const connectionAttempt = useRef<AbortController | null>(null);
+  const nativeAttempt = useRef<NativeAttempt | null>(null);
 
   const cacheScope = useRef<IntegrationsCacheScope | null>(null);
   const snapshot = useRef<IntegrationsSnapshot>({ catalog: [], connections: [] });
@@ -187,12 +224,15 @@ export default function Integrations() {
   function clearStaleScope() {
     if (!cacheScope.current || isIntegrationsScopeCurrent(cacheScope.current)) return;
     cacheScope.current = null;
+    sourceCard.current = null;
     refreshGeneration.current += 1;
     sourcesGeneration.current += 1;
     applySnapshot({ catalog: [], connections: [] });
     setCatalogReady(false);
     setSources([]);
     setDetailKey(null);
+    setNativeAccount(null);
+    cancelNativeAttempt(false);
     setLabelDrafts({});
     setPending(null);
     setNotice(null);
@@ -223,10 +263,13 @@ export default function Integrations() {
     }
     const previous = cacheScope.current;
     if (previous && (previous.userId !== scope.userId || previous.spaceId !== scope.spaceId)) {
+      sourceCard.current = null;
       applySnapshot({ catalog: [], connections: [] });
       setCatalogReady(false);
       setSources([]);
       setDetailKey(null);
+      setNativeAccount(null);
+      cancelNativeAttempt(false);
       setLabelDrafts({});
       setNotice(null);
       setCatalogError(null);
@@ -272,6 +315,22 @@ export default function Integrations() {
     if (generation !== refreshGeneration.current) return;
     applySnapshot(next);
     writeIntegrationsCache(scope, next);
+    // A route hint selects only an app in this scope's first live catalog.
+    // It never chooses credentials or starts an authorization attempt.
+    if (!initialAppConsumed.current) {
+      initialAppConsumed.current = true;
+      const appId = NativeAppIdSchema.safeParse(initialApp.current);
+      if (appId.success) {
+        const item = next.catalog.find(
+          (entry) => entry.connectorId === "native" && entry.slug === appId.data,
+        );
+        if (item) {
+          const bot = Id.safeParse(initialBotId.current);
+          if (bot.success) sourceCard.current = { appId: appId.data, botId: bot.data, scope };
+          openDetail(item);
+        }
+      }
+    }
   }
 
   async function retryRefresh() {
@@ -318,10 +377,13 @@ export default function Integrations() {
       return () => {
         cancelled = true;
         mounted.current = false;
+        sourceCard.current = null;
         focusGeneration.current += 1;
         refreshGeneration.current += 1;
         sourcesGeneration.current += 1;
         connectionAttempt.current?.abort();
+        cancelNativeAttempt(false);
+        setNativeAccount(null);
         setPending(null);
       };
     }, []),
@@ -368,6 +430,8 @@ export default function Integrations() {
   }
 
   function openDetail(item: ConnectionCatalogItem) {
+    initialAppConsumed.current = true;
+    setNativeAccount(null);
     setCatalogError(null);
     setNotice(null);
     setToolsOpen(true);
@@ -375,6 +439,13 @@ export default function Integrations() {
   }
 
   function closeDetail() {
+    if (nativeAccount) {
+      connectionAttempt.current?.abort();
+      cancelNativeAttempt();
+      setPending(null);
+      setNativeAccount(null);
+      return;
+    }
     setDetailKey(null);
     setTools([]);
   }
@@ -401,6 +472,26 @@ export default function Integrations() {
   }
 
   async function notifyAppConnected(item: ConnectionCatalogItem, isCurrent: () => boolean) {
+    const card = sourceCard.current;
+    if (card && item.connectorId === "native" && item.slug === card.appId) {
+      if (!isCurrent() || !isIntegrationsScopeCurrent(card.scope)) return;
+      try {
+        const requestContext = await captureApiRequestContext();
+        if (!isCurrent() || !isIntegrationsScopeCurrent(card.scope)) return;
+        await rpc(
+          "onboarding/appConnected",
+          {
+            botId: card.botId,
+            provider: item.slug,
+            connectorId: item.connectorId,
+          },
+          { requestContext, skipSpaceAuthRecovery: true },
+        );
+      } catch {
+        // A connection remains usable if its conversation card cannot be updated.
+      }
+      return;
+    }
     const botId = lastBotId || (await loadLastBotId());
     if (!botId || !isCurrent()) return;
     if (botId !== lastBotId) setLastBotId(botId);
@@ -411,42 +502,151 @@ export default function Integrations() {
     }).catch(() => undefined);
   }
 
-  async function connect(item: ConnectionCatalogItem, previous?: Connection) {
+  function revokeNativeAttempt(attempt: NativeAttempt, report: boolean) {
+    const connectionId = attempt.connectionId;
+    attempt.connectionId = null;
+    if (!connectionId) return;
+    // Revoke the new attempt in its captured API/user/Space, never the current selection.
+    void rpc(
+      "connections/revoke",
+      { connectionId },
+      { requestContext: attempt.requestContext, skipSpaceAuthRecovery: true },
+    )
+      .then(async () => {
+        if (report && attempt.isCurrent()) await refresh();
+      })
+      .catch((reason: unknown) => {
+        if (report && attempt.isCurrent())
+          setCatalogError(
+            errorText(reason, t("Could not confirm cancellation. Check the pending account.")),
+          );
+      });
+  }
+
+  function cancelNativeAttempt(report = true) {
+    const attempt = nativeAttempt.current;
+    if (!attempt) return;
+    nativeAttempt.current = null;
+    attempt.controller.abort();
+    if (connectionAttempt.current === attempt.controller) {
+      connectionAttempt.current = null;
+      if (report && attempt.isCurrent()) setPending(null);
+    }
+    revokeNativeAttempt(attempt, report);
+  }
+
+  useEffect(() => {
+    if (!nativeAccount) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      closeDetail();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [nativeAccount]);
+
+  async function connect(
+    item: ConnectionCatalogItem,
+    previous?: Connection,
+    nativeInput?: NativeBeginInput,
+  ) {
     const isCurrent = captureConnectionScope();
     if (!isCurrent()) return;
+    if (item.connectorId === "native" && !nativeInput) {
+      const parsed = NativeAppIdSchema.safeParse(item.slug);
+      if (!parsed.success) {
+        setCatalogError(t("This application is not available for direct connection."));
+        return;
+      }
+      openDetail(item);
+      setNativeAccount({ appId: parsed.data, previous });
+      return;
+    }
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;
+    let requestContext: ApiRequestContext | undefined;
+    try {
+      requestContext = nativeInput ? await captureApiRequestContext() : undefined;
+    } catch (reason) {
+      if (connectionAttempt.current === controller) connectionAttempt.current = null;
+      if (controller.signal.aborted || !isCurrent()) return;
+      throw reason;
+    }
+    if (!isCurrent() || controller.signal.aborted) {
+      if (connectionAttempt.current === controller) connectionAttempt.current = null;
+      return;
+    }
+    const native: NativeAttempt | null = requestContext
+      ? { controller, connectionId: null, requestContext, isCurrent }
+      : null;
+    if (native) nativeAttempt.current = native;
+    let nativeStarted = false;
     const key = itemKey(item);
     setPending(key);
     setCatalogError(null);
     setNotice(null);
     try {
-      const started = await rpc<{ connectionId: string; authorizationUrl: string | null }>(
-        "connections/begin",
-        {
-          connectorId: item.connectorId,
-          provider: item.slug,
-          ...(previous ? { connectionId: previous.id } : {}),
-          displayName: (() => {
-            if (previous) return previous.displayName;
-            const count = accountsFor(item).filter((row) => row.status === "connected").length;
-            return count <= 0 ? item.name : `${item.name} ${count + 1}`;
-          })(),
-        },
-      );
-      if (!isCurrent() || controller.signal.aborted) return;
-      const startedRows = await rpc<Connection[]>("connections/list").catch(() => null);
-      if (!isCurrent() || controller.signal.aborted) return;
+      const started = nativeInput
+        ? await rpc<{ connectionId: string; authorizationUrl: string | null }>(
+            "nativeConnectors/begin",
+            nativeInput,
+            { requestContext, timeoutMs: 60_000, skipSpaceAuthRecovery: true },
+          )
+        : await rpc<{ connectionId: string; authorizationUrl: string | null }>(
+            "connections/begin",
+            {
+              connectorId: item.connectorId,
+              provider: item.slug,
+              ...(previous ? { connectionId: previous.id } : {}),
+              displayName: (() => {
+                if (previous) return previous.displayName;
+                const count = accountsFor(item).filter((row) => row.status === "connected").length;
+                return count <= 0 ? item.name : `${item.name} ${count + 1}`;
+              })(),
+            },
+          );
+      if (native) {
+        nativeStarted = true;
+        native.connectionId = started.connectionId;
+      }
+      if (!isCurrent() || controller.signal.aborted) {
+        if (native) revokeNativeAttempt(native, false);
+        return;
+      }
+      const startedRows = await rpc<Connection[]>(
+        "connections/list",
+        {},
+        native ? { requestContext: native.requestContext, skipSpaceAuthRecovery: true } : {},
+      ).catch(() => null);
+      if (!isCurrent() || controller.signal.aborted) {
+        if (native) revokeNativeAttempt(native, false);
+        return;
+      }
       if (startedRows) saveSnapshot({ ...snapshot.current, connections: startedRows });
-      if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
+      if (started.authorizationUrl) {
+        await Linking.openURL(started.authorizationUrl);
+        if (native && isCurrent())
+          setNotice(
+            t("Finish authorization in the browser, then return here to check the result."),
+          );
+      }
       for (let attempt = 0; attempt < 45; attempt += 1) {
         if (controller.signal.aborted || !isCurrent()) return;
-        const row = await rpc<Connection>("connections/complete", {
-          connectionId: started.connectionId,
-        }).catch(() => undefined);
+        const row = await rpc<Connection>(
+          "connections/complete",
+          {
+            connectionId: started.connectionId,
+          },
+          native ? { requestContext: native.requestContext, skipSpaceAuthRecovery: true } : {},
+        ).catch(() => undefined);
+        if (native && (controller.signal.aborted || !isCurrent())) return;
         if (row?.status === "connected") {
           if (controller.signal.aborted || !isCurrent()) return;
+          if (native) {
+            native.connectionId = null;
+            setNativeAccount(null);
+            setNotice(null);
+          }
           updateAccount(row);
           void notifyAppConnected(item, isCurrent);
           await refresh();
@@ -454,6 +654,11 @@ export default function Integrations() {
           return;
         }
         if (row?.status === "error" || row?.status === "revoked") {
+          if (native) {
+            native.connectionId = null;
+            setNativeAccount(null);
+            setNotice(null);
+          }
           updateAccount(row);
           setCatalogError(t("Authorization did not complete. You can authorize again."));
           return;
@@ -463,14 +668,24 @@ export default function Integrations() {
       if (controller.signal.aborted || !isCurrent()) return;
       await refresh().catch(() => undefined);
       if (controller.signal.aborted || !isCurrent()) return;
+      if (native) {
+        native.connectionId = null;
+        setNativeAccount(null);
+      }
       Alert.alert(
         t("Connection pending"),
         t("Finish connecting in the browser, then refresh this page."),
       );
     } catch (reason) {
       if (controller.signal.aborted || !isCurrent()) return;
+      if (native && !nativeStarted) throw reason;
+      if (native) {
+        setNativeAccount(null);
+        await refresh().catch(() => undefined);
+      }
       setCatalogError(errorText(reason, t("Could not connect")));
     } finally {
+      if (nativeAttempt.current === native) nativeAttempt.current = null;
       if (connectionAttempt.current === controller) {
         connectionAttempt.current = null;
         if (isCurrent()) setPending(null);
@@ -999,7 +1214,17 @@ export default function Integrations() {
 
         {notice ? <Text style={styles.secondary}>{notice}</Text> : null}
         {detailItem ? (
-          renderDetail(detailItem)
+          nativeAccount ? (
+            <NativeAccountConnect
+              key={`${itemKey(detailItem)}:${nativeAccount.previous?.id ?? "new"}`}
+              appId={nativeAccount.appId}
+              previousConnectionId={nativeAccount.previous?.id}
+              onSubmit={(input) => connect(detailItem, nativeAccount.previous, input)}
+              onCancel={closeDetail}
+            />
+          ) : (
+            renderDetail(detailItem)
+          )
         ) : (
           <>
             {!catalogReady && !catalogError ? (

@@ -252,6 +252,11 @@ msgstr "访问令牌（可选）"
 msgid "Account"
 msgstr "账户"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Account authorization"
+msgstr "账号授权"
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Account default"
 msgstr "账户默认"
@@ -352,6 +357,18 @@ msgstr "添加账号"
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "请填写 HTTPS 服务器 URL。"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add and reprocess knowledge"
+msgstr "添加并重新处理知识"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add application"
+msgstr "添加应用"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add comments"
+msgstr "添加评论"
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Add connected model"
@@ -499,6 +516,10 @@ msgstr "允许购买操作，无需询问"
 msgid "Allow writing"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed knowledge base IDs"
+msgstr "允许访问的知识库 ID"
+
 #: src/components/AskCard.tsx
 msgid "Allowed once"
 msgstr "已允许一次"
@@ -561,6 +582,10 @@ msgstr "API 密钥"
 msgid "API key header"
 msgstr "API 密钥请求头"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "API origin"
+msgstr "API 地址"
+
 #: src/pages/Shell.tsx
 msgid "App"
 msgstr ""
@@ -569,9 +594,25 @@ msgstr ""
 msgid "Appearance"
 msgstr "外观"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application"
+msgstr "应用"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application credentials"
+msgstr "应用凭据"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Application filter"
 msgstr "筛选应用"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application owner"
+msgstr "应用归属"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application saved"
+msgstr "应用已保存"
 
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
@@ -632,9 +673,17 @@ msgstr "购买前询问"
 msgid "Ask before sending external email"
 msgstr "发送外部邮件前询问"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ask questions"
+msgstr "知识问答"
+
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Ask the server owner to configure this provider."
 msgstr "请联系实例管理员配置此服务。"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Ask your administrator to enable a connection method."
+msgstr "请联系管理员配置连接方式。"
 
 #. placeholder {0}: preset.time
 #: src/pages/RoutineSchedule.tsx
@@ -662,6 +711,10 @@ msgstr "附件"
 msgid "Authentication failed."
 msgstr "身份验证失败。"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Authorization"
+msgstr "授权方式"
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Authorization code or callback URL"
@@ -687,6 +740,10 @@ msgstr "授权超时，请重试。"
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "授权"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Authorize account"
+msgstr "授权账号"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Authorize again"
@@ -717,6 +774,7 @@ msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
@@ -838,6 +896,10 @@ msgstr "内置"
 msgid "By Cogine"
 msgstr "Cogine 出品"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Callback URL"
+msgstr "回调地址"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "无法连接服务器。"
@@ -845,6 +907,7 @@ msgstr "无法连接服务器。"
 #: src/components/AskCard.tsx
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -890,6 +953,10 @@ msgstr ""
 msgid "Change password"
 msgstr "修改密码"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Changing authorization settings requires accounts to authorize again."
+msgstr "修改授权设置后，账号需要重新授权。"
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Changing…"
 msgstr "正在修改…"
@@ -915,9 +982,18 @@ msgid "Chat Settings"
 msgstr "聊天设置"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx
 msgid "Check again"
-msgstr ""
+msgstr "重新检查"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check calendar availability"
+msgstr "查看日历空闲时间"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check event availability"
+msgstr "查看活动空闲时间"
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Check failed"
@@ -967,6 +1043,10 @@ msgstr "工作副本有本地更改。请先清理再更新。"
 msgid "Choose a bot…"
 msgstr "选择 Bot…"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Choose a connection method"
+msgstr "选择连接方式"
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "设置新密码"
@@ -1006,10 +1086,12 @@ msgid "Clearing…"
 msgstr "正在清空…"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client ID"
 msgstr "客户端 ID"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client secret"
 msgstr "客户端密钥"
 
@@ -1128,6 +1210,10 @@ msgstr ""
 msgid "Complete"
 msgstr "完成"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Complete the required application settings"
+msgstr "请填写必要的应用设置"
+
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -1191,6 +1277,7 @@ msgstr "请确认此浏览器会话可以访问该 URL，然后重新测试。"
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connect"
 msgstr "连接"
@@ -1203,6 +1290,10 @@ msgstr "连接模型"
 msgid "Connect a provider to add backups."
 msgstr "连接提供商后即可添加备用模型。"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect account"
+msgstr "连接账号"
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Connect API key"
 msgstr "连接 API 密钥"
@@ -1210,6 +1301,14 @@ msgstr "连接 API 密钥"
 #: src/pages/PluginsOverlay.tsx
 msgid "Connect Executor"
 msgstr "连接 Executor"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect integration"
+msgstr "连接集成"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect machine"
+msgstr "连接机器身份"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Connect MCP server “{name}”"
@@ -1259,6 +1358,7 @@ msgid "Connected. Its tools are available from your next message."
 msgstr "已连接，下一条消息起即可使用其工具。"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
@@ -1266,6 +1366,22 @@ msgstr "已连接，下一条消息起即可使用其工具。"
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "正在连接…"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connection method"
+msgstr "连接方式"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method disabled"
+msgstr "连接方式已停用"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method enabled"
+msgstr "连接方式已启用"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method name"
+msgstr "连接方式名称"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Connection source"
@@ -1293,6 +1409,10 @@ msgstr "上下文限制"
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "继续"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Continue authorization"
+msgstr "继续授权"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Continue in Background"
@@ -1375,7 +1495,12 @@ msgstr "无法完成 OAuth"
 msgid "Could not complete the update. Try again."
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not confirm cancellation. Check the pending account."
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not connect"
 msgstr "无法连接"
@@ -1504,6 +1629,10 @@ msgstr "无法加载"
 msgid "Could not load activity"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not load applications"
+msgstr "无法加载应用"
+
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not load approval rules"
 msgstr "无法加载审批规则"
@@ -1527,6 +1656,10 @@ msgstr ""
 #: src/components/computer/TerminalApp.tsx
 msgid "Could not load commands"
 msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Could not load connection methods"
+msgstr "无法加载连接方式"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Could not load credentials."
@@ -1668,6 +1801,10 @@ msgstr "无法运行例行任务"
 msgid "Could not save"
 msgstr "无法保存"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not save application"
+msgstr "无法保存应用"
+
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not save Auto Review"
 msgstr "无法保存自动审核"
@@ -1798,6 +1935,10 @@ msgstr "创建分组并把 {0} 移入。"
 msgid "Create account"
 msgstr "创建账户"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create and change events"
+msgstr "创建和修改日程"
+
 #: src/pages/Shell.tsx
 msgid "Create Bot"
 msgstr "创建 Bot"
@@ -1818,6 +1959,10 @@ msgstr "新建群组"
 #: src/pages/shell/bot-picker.tsx
 msgid "Create new Space"
 msgstr "新建工作区"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create pages and blocks"
+msgstr "创建页面和内容块"
 
 #: src/pages/RoutineEditor.tsx
 msgid "Create Routine"
@@ -2019,6 +2164,14 @@ msgstr ""
 msgid "Direct MCP"
 msgstr "直连 MCP"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled"
+msgstr "已停用"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled methods cannot be used. Connected accounts are kept."
+msgstr "停用后无法使用此连接方式，已连接的账号会保留。"
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
 msgstr ""
@@ -2155,9 +2308,21 @@ msgstr "复制"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "例如 Hivenet Agent、Presales、工时表机器人"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit"
+msgstr "编辑"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit application"
+msgstr "编辑应用"
+
 #: src/components/AskCard.tsx
 msgid "Edit first"
 msgstr "先编辑"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit pages and blocks"
+msgstr "编辑页面和内容块"
 
 #: src/pages/BotContextMenu.tsx
 msgid "Edit Profile"
@@ -2175,6 +2340,15 @@ msgstr "该邮箱不允许注册"
 msgid "Email verification required"
 msgstr "需要验证邮箱"
 
+#. placeholder {0}: entry.label
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enable {0}"
+msgstr "启用 {0}"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enabled"
+msgstr "已启用"
+
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
 msgstr ""
@@ -2190,6 +2364,10 @@ msgstr "请输入密码"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Enter a username and password"
 msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Enter a valid credential"
+msgstr "请输入有效凭据"
 
 #: src/lib/user-error.ts
 msgid "Enter a valid email"
@@ -2370,6 +2548,10 @@ msgstr "正在完成 MCP 连接…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Flag unexpected actions"
 msgstr "标记异常操作"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "For example, Company Calendar"
+msgstr "例如：公司日历"
 
 #: src/pages/Auth.tsx
 msgid "Forgot password?"
@@ -2577,6 +2759,16 @@ msgstr "接入方式"
 msgid "Integrations"
 msgstr "集成"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration"
+msgstr "内部集成"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration token"
+msgstr "内部集成令牌"
+
 #: src/pages/RoutineEditor.tsx
 #: src/pages/RoutineSchedule.tsx
 msgid "Interval"
@@ -2644,6 +2836,10 @@ msgstr ""
 msgid "Leave"
 msgstr "退出"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Leave blank to keep the saved secret."
+msgstr "留空可保留已保存的密钥。"
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Light"
 msgstr "浅色"
@@ -2659,6 +2855,10 @@ msgstr "关联聊天应用"
 #: src/components/AccountAccess.tsx
 msgid "Link SSO"
 msgstr "关联 SSO"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "List calendars"
+msgstr "查看日历列表"
 
 #: src/pages/Artifacts.tsx
 msgid "List view"
@@ -2691,6 +2891,14 @@ msgstr "自动加载网络图片"
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "正在加载动态…"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Loading applications…"
+msgstr "正在加载应用…"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Loading connection methods…"
+msgstr "正在加载连接方式…"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
@@ -2768,6 +2976,11 @@ msgstr ""
 msgid "Lowercase letters, numbers, hyphens and underscores, starting with a letter."
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Machine API key"
+msgstr "机器 API 密钥"
+
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Make sure nothing is still running on this computer."
 msgstr "请确认这台电脑上没有仍在运行的任务。"
@@ -2809,6 +3022,10 @@ msgstr "标为已读"
 msgid "Mark as Unread"
 msgstr "标为未读"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Match the capabilities enabled in your Notion integration."
+msgstr "请选择 Notion 集成中已启用的权限。"
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Max"
@@ -2837,9 +3054,10 @@ msgstr "最多可添加 10 个备用模型。"
 msgid "Maximum output tokens"
 msgstr "最大输出 token 数"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "MCP endpoint"
-msgstr ""
+msgstr "MCP 地址"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "MCP servers"
@@ -2858,6 +3076,10 @@ msgstr ""
 #: src/pages/GroupPanel.tsx
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "成员（{GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}）"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Members enter their credentials when connecting from Apps."
+msgstr "成员连接应用时填写自己的凭据。"
 
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
@@ -3161,6 +3383,10 @@ msgstr "暂无已连接应用。"
 msgid "No connected or pending accounts remain for this source."
 msgstr "此来源已无已连接或待授权账号。"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "No connection method is configured."
+msgstr "尚未配置连接方式。"
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3300,6 +3526,11 @@ msgstr "OAuth 连接失败"
 msgid "OAuth expired"
 msgstr "授权已过期"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Official application"
+msgstr "官方应用"
+
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
 msgid "On a call with {0}"
@@ -3317,6 +3548,10 @@ msgstr "每月 1 日 {0}"
 #: src/pages/Shell.tsx
 msgid "Only empty spaces can be deleted. Delete its bots and groups first."
 msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Only pages shared with this integration are available."
+msgstr "仅可访问已共享给此集成的页面。"
 
 #: src/components/markdown-link-prompt.tsx
 #: src/pages/ScratchpadSection.tsx
@@ -3478,6 +3713,15 @@ msgstr "已暂停"
 msgid "Pending authorization"
 msgstr "等待授权"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Permissions"
+msgstr "权限"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Personal access token"
+msgstr "个人访问令牌"
+
 #: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Photo"
@@ -3566,9 +3810,25 @@ msgstr "回应"
 msgid "Reactions"
 msgstr "表情回应"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read comments"
+msgstr "读取评论"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read events"
+msgstr "读取日程"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read pages"
+msgstr "读取页面"
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Read replies aloud"
 msgstr "朗读回复"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ready for accounts"
+msgstr "可连接账号"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3590,6 +3850,10 @@ msgstr "最近"
 #: src/pages/shell/chat-recipients.tsx
 msgid "Recipients"
 msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Reconnect account"
+msgstr "重新连接账号"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
@@ -3673,6 +3937,10 @@ msgstr ""
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Register this exact URL in the application’s OAuth settings."
+msgstr "请将此地址填入应用的 OAuth 回调设置。"
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
@@ -3955,6 +4223,10 @@ msgstr ""
 msgid "Save"
 msgstr "保存"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Save application"
+msgstr "保存应用"
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "保存备用模型"
@@ -4006,6 +4278,7 @@ msgid "Saving..."
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/ModelBackupsSettings.tsx
@@ -4031,6 +4304,10 @@ msgstr "搜索"
 #: src/pages/ActivityList.tsx
 msgid "Search activity"
 msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Search and read knowledge"
+msgstr "搜索和读取知识"
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -4115,6 +4392,10 @@ msgstr "正在发送…"
 msgid "Sentry alert"
 msgstr "Sentry 告警"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Separate IDs with commas"
+msgstr "多个 ID 用逗号分隔"
+
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Serenity endpoint is required."
 msgstr ""
@@ -4144,6 +4425,14 @@ msgstr "服务器名称"
 msgid "Server URL"
 msgstr "服务器 URL"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Set up an application here. Members connect their accounts from Apps."
+msgstr "在此配置应用，成员可在应用目录中连接账号。"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Set up application"
+msgstr "配置应用"
+
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -4163,6 +4452,10 @@ msgstr "设置：用量"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "设置帮助"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Setup incomplete"
+msgstr "配置未完成"
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/components/integrations/McpToolAccess.tsx
@@ -4197,6 +4490,10 @@ msgstr "共享技能"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "Shell"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Show account email"
+msgstr "显示账号邮箱"
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4482,6 +4779,10 @@ msgstr "Teams 消息"
 msgid "Teams not enabled"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Tenant ID"
+msgstr "租户 ID"
+
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Terminal"
 msgstr ""
@@ -4534,6 +4835,11 @@ msgstr "思考"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Thinking: {activeThinkingLabel}"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/message-cards.tsx
+msgid "This application is not available for direct connection."
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -4681,6 +4987,8 @@ msgstr ""
 msgid "Trial ends {day}"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
 msgid "Try again"
@@ -4848,6 +5156,10 @@ msgstr "使用自己的密钥"
 msgid "Username"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Uses a machine identity restricted to the configured knowledge bases."
+msgstr "使用机器身份，仅访问指定知识库。"
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Uses this server's own {hostCredentialSource} credentials to access {selectedProviderName}."
 msgstr "使用此服务器自己的 {hostCredentialSource} 凭据访问 {selectedProviderName}。"
@@ -5004,6 +5316,11 @@ msgstr "可以关闭此窗口。"
 #: src/pages/Shell.tsx
 msgid "You have control"
 msgstr "你已接管"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Your application"
+msgstr "自有应用"
 
 #: src/pages/Auth.tsx
 msgid "Your email address"

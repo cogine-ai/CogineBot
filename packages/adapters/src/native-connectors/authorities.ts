@@ -2,15 +2,20 @@ import { createHash } from "node:crypto";
 import type { NativeAppConfig } from "@rakazo/db";
 import { asRecord, readBoundedText } from "../connector-http.js";
 import { combineSignals } from "../connector-safety.js";
+import type { OAuthMaterial } from "../mcp-oauth.js";
 import type { RemoteTransportDependencies, SafeRemoteFetch } from "../remote-mcp.js";
 import { NativeActionError } from "./action.js";
 import { NativeConfigSettingsSchema } from "./config.js";
+import type { NativeMcpPending } from "./mcp.js";
+import { NativeMcpProtocol } from "./mcp.js";
 import { createNativeFetch, nativeAbortable } from "./network.js";
 
 export const NOTION_VERSION = "2026-03-11";
 export interface NativeTokenMaterial {
   accessToken: string;
   refreshToken: string | null;
+  /** Encrypted with the same account grant; never returned in a frontend DTO. */
+  mcp?: OAuthMaterial;
 }
 export interface NativeIdentity {
   authority: string;
@@ -68,11 +73,13 @@ function tokenMaterial(
 /** These two SaaS authorities are fixed code, never model/configuration URLs. */
 export class NativeOAuthAuthorities {
   private readonly fetch: SafeRemoteFetch;
+  readonly mcp: NativeMcpProtocol;
   constructor(network: RemoteTransportDependencies = {}) {
     this.fetch = createNativeFetch(network);
+    this.mcp = new NativeMcpProtocol(network);
   }
   close(): Promise<void> {
-    return this.fetch.close();
+    return Promise.all([this.fetch.close(), this.mcp.close()]).then(() => undefined);
   }
 
   authorizationUrl(config: NativeAppConfig, state: string, verifier: string): string {
@@ -117,7 +124,18 @@ export class NativeOAuthAuthorities {
     code: string,
     verifier: string,
     signal: AbortSignal,
+    mcpPending?: NativeMcpPending,
+    mcpState?: string,
+    allowPrivateEndpoint = false,
   ): Promise<NativeAuthorization> {
+    if (config.appId === "coginex") {
+      if (!mcpPending || !mcpState)
+        throw new NativeActionError(
+          "authorization_required",
+          "The CogineX authorization attempt is unavailable.",
+        );
+      return this.mcp.exchange(config, mcpPending, code, mcpState, signal, allowPrivateEndpoint);
+    }
     const settings = NativeConfigSettingsSchema.parse(config.config);
     const clientId = required(settings.clientId, "an application client ID");
     if (config.appId === "google-calendar") {
@@ -167,7 +185,12 @@ export class NativeOAuthAuthorities {
           "authorization_required",
           "The Notion authorization identity did not match its token.",
         );
-      return { tokens, identity, scopes: [], expiresAt: expiry(body.expires_in) };
+      return {
+        tokens,
+        identity,
+        scopes: [],
+        expiresAt: expiry(body.expires_in),
+      };
     }
     throw new NativeActionError("invalid_input", "This application does not use SaaS OAuth.");
   }
@@ -177,7 +200,10 @@ export class NativeOAuthAuthorities {
     secret: string,
     previous: NativeAuthorization,
     signal: AbortSignal,
+    allowPrivateEndpoint = false,
   ): Promise<NativeAuthorization> {
+    if (config.appId === "coginex")
+      return this.mcp.refresh(config, previous, signal, allowPrivateEndpoint);
     const settings = NativeConfigSettingsSchema.parse(config.config);
     const clientId = required(settings.clientId, "an application client ID");
     if (!previous.tokens.refreshToken)
@@ -219,7 +245,10 @@ export class NativeOAuthAuthorities {
       const body = await this.notionToken(
         clientId,
         secret,
-        { grant_type: "refresh_token", refresh_token: previous.tokens.refreshToken },
+        {
+          grant_type: "refresh_token",
+          refresh_token: previous.tokens.refreshToken,
+        },
         signal,
       );
       // This provider rotates pairs. A missing/null new refresh token is not
@@ -351,14 +380,22 @@ export class NativeOAuthAuthorities {
       subject: `${workspaceId}:${user.id}:${botId}`,
       tenant: workspaceId,
       displayName: typeof body.workspace_name === "string" ? body.workspace_name : "Notion",
-      context: { botId, ownerUserId: user.id, ownerType: "user", credentialKind: "oauth" },
+      context: {
+        botId,
+        ownerUserId: user.id,
+        ownerType: "user",
+        credentialKind: "oauth",
+      },
     };
   }
   private notionMe(token: string, signal: AbortSignal): Promise<Record<string, unknown>> {
     return this.json(
       "https://api.notion.com/v1/users/me",
       {
-        headers: { authorization: `Bearer ${token}`, "Notion-Version": NOTION_VERSION },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Notion-Version": NOTION_VERSION,
+        },
       },
       signal,
     );

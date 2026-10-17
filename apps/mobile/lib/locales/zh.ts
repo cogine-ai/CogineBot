@@ -832,4 +832,36 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Send deletion code": "发送删除验证码",
   "Sign in to your existing account to link SSO": "请登录现有账户以关联 SSO",
   "SSO is temporarily unavailable. Try again.": "SSO 暂时不可用，请重试。",
+  "Account authorization": "账号授权",
+  "Ask your administrator to enable a connection method.": "请联系管理员配置连接方式。",
+  "Authorize account": "授权账号",
+  "Choose a connection method": "选择连接方式",
+  "Connect account": "连接账号",
+  "Connect integration": "连接集成",
+  "Connect machine": "连接机器身份",
+  "Connection method": "连接方式",
+  "Could not load connection methods": "无法加载连接方式",
+  "Enter a valid credential": "请输入有效凭据",
+  "Internal integration": "内部集成",
+  "Internal integration token": "内部集成令牌",
+  "Machine API key": "机器 API 密钥",
+  "Only pages shared with this integration are available.": "仅可访问已共享给此集成的页面。",
+  "Personal access token": "个人访问令牌",
+  "Reconnect account": "重新连接账号",
+  "Uses a machine identity restricted to the configured knowledge bases.":
+    "使用机器身份，仅访问指定知识库。",
+  "Finish authorization in the browser, then return here to check the result.":
+    "请在浏览器中完成授权，然后返回查看结果。",
+  "Application credentials and connection methods are managed in the web app. Account connections remain available in Apps.":
+    "请在网页版管理应用凭据和连接方式，在应用目录中连接账号。",
+  "Application settings on the web": "打开网页版应用设置",
+  "Could not open the web app": "无法打开网页版",
+  "The server or space changed. Return and open this application again.":
+    "服务器或空间已切换，请返回后重新打开此应用。",
+  "Set up a connection method in the web app first.": "请先在网页版配置连接方式。",
+  "Authorization opens in your system browser. If asked, sign in to this CogineBot instance to continue. Then return here to check the result.":
+    "请在系统浏览器中授权。如需登录，请使用当前 CogineBot 实例的账号，然后返回查看结果。",
+  "Open web settings": "打开网页版设置",
+  "Back to application": "返回应用",
+  "Connect {name}": "连接 {name}",
 };

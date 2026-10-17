@@ -615,20 +615,19 @@ export async function createApp(
       "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     );
     try {
+      const state = c.req.query("state") ?? "";
+      if (!/^[A-Za-z0-9_-]{43}$/.test(state)) throw new Error("Invalid authorization attempt");
       const session = await auth.api.getSession({ headers: sessionHeaders(c.req.raw) });
       if (!session?.user.id) {
-        const signInUrl = new URL("/sign-in", env.webOrigin)
-          .toString()
-          .replaceAll("&", "&amp;")
-          .replaceAll('"', "&quot;");
+        const signIn = new URL("/sign-in", env.webOrigin);
+        signIn.searchParams.set("next", `/api/connectors/oauth/start?state=${state}`);
+        const signInUrl = signIn.toString().replaceAll("&", "&amp;").replaceAll('"', "&quot;");
         return c.html(
-          `<!doctype html><html lang="en"><meta charset="utf-8"><title>Sign in to connect</title><body><p>Sign in to this instance in this browser, then return to CogineBot and connect again.</p><p><a href="${signInUrl}">Sign in</a></p></body></html>`,
+          `<!doctype html><html lang="en"><meta charset="utf-8"><title>Sign in to connect</title><body><p>Sign in to continue connecting this account.</p><p><a href="${signInUrl}">Sign in</a></p></body></html>`,
           401,
         );
       }
-      return c.redirect(
-        await native.oauth.launch(c.req.query("state") ?? "", session.user.id, c.req.raw.signal),
-      );
+      return c.redirect(await native.oauth.launch(state, session.user.id, c.req.raw.signal));
     } catch {
       return c.text(
         "This connection attempt is unavailable. Return to CogineBot and connect again.",

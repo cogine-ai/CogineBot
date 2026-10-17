@@ -7,6 +7,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { authClient } from "../lib/auth";
 import type { AuthCapabilities } from "../lib/auth-capabilities";
 import { fetchAuthCapabilities } from "../lib/auth-capabilities";
+import { authDestination, isNativeAuthDestination } from "../lib/auth-destination";
 import { clearSpaceSelection } from "../lib/rpc";
 import { runSsoFlow } from "../lib/sso-flow";
 import { authErrorText, credentialIssueText } from "../lib/user-error";
@@ -111,14 +112,14 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         setSearchParams({ verify: "email" });
         return;
       }
-      clearSpaceSelection();
-      navigate(
-        mode === "up"
-          ? "/onboarding"
-          : searchParams.get("next") === "/integrations/setup"
-            ? "/integrations/setup"
-            : "/app",
-      );
+      const destination = mode === "up" ? "/onboarding" : authDestination(searchParams.get("next"));
+      // Native kickoff checks the initiating user and keeps its original Space.
+      // Clearing shared selection here would cancel that attempt in its opening tab.
+      if (!isNativeAuthDestination(destination)) clearSpaceSelection();
+      // The authenticated route performs the one full-page kickoff after session routing catches up.
+      if (isNativeAuthDestination(destination))
+        navigate(`/sign-in?next=${encodeURIComponent(destination)}`, { replace: true });
+      else navigate(destination);
     } catch {
       setError(t`Could not reach the server`);
     } finally {
@@ -129,18 +130,20 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   async function signInWithSso() {
     setError(null);
     try {
+      const destination = authDestination(searchParams.get("next"));
+      const errorDestination = isNativeAuthDestination(destination)
+        ? `/sign-in?next=${encodeURIComponent(destination)}`
+        : "/sign-in";
       const result = await runSsoFlow(
         (disableRedirect, callbackURL) =>
           authClient.signIn.social({
             disableRedirect,
             provider: "oidc",
             newUserCallbackURL: callbackURL("/onboarding"),
-            callbackURL: callbackURL(
-              searchParams.get("next") === "/integrations/setup" ? "/integrations/setup" : "/app",
-            ),
-            errorCallbackURL: callbackURL("/sign-in"),
+            callbackURL: callbackURL(destination),
+            errorCallbackURL: callbackURL(errorDestination),
           }),
-        ["/app", "/onboarding", "/integrations/setup", "/sign-in"],
+        ["/app", "/onboarding", "/integrations/setup", "/sign-in", destination],
       );
       if (result.error) setError(authErrorText(result.error, t`Could not continue`));
     } catch {

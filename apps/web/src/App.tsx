@@ -17,6 +17,7 @@ import { LoadingState } from "./components/ai/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SubscriptionGate } from "./components/SubscriptionGate";
 import { authClient } from "./lib/auth";
+import { authDestination, isNativeAuthDestination } from "./lib/auth-destination";
 import {
   getTicketBoardEnabled,
   peekInitialBootstrap,
@@ -89,6 +90,14 @@ function SsoCallbackPage() {
   return null;
 }
 
+function SignInRedirect({ destination }: { destination: string }) {
+  const native = isNativeAuthDestination(destination);
+  useEffect(() => {
+    if (native) window.location.replace(destination);
+  }, [destination, native]);
+  return native ? null : <Navigate to={destination} replace />;
+}
+
 // Link icons come from our API, which fetches and caches them; the browser never asks the site.
 const linkFavicons: LinkFavicons = {
   load: (origin) => rpc.links.favicon({ origin }),
@@ -119,8 +128,7 @@ export function App() {
 
 function SessionApp() {
   const [searchParams] = useSearchParams();
-  const signInDestination =
-    searchParams.get("next") === "/integrations/setup" ? "/integrations/setup" : "/app";
+  const signInDestination = authDestination(searchParams.get("next"));
   const session = authClient.useSession();
   const gate = sessionGate(session);
   const [holdingUnreachable, setHoldingUnreachable] = useState(false);
@@ -162,7 +170,11 @@ function SessionApp() {
           <Route
             path="/sign-in"
             element={
-              user ? <Navigate to={signInDestination} replace /> : <AuthPage key="in" mode="in" />
+              user ? (
+                <SignInRedirect destination={signInDestination} />
+              ) : (
+                <AuthPage key="in" mode="in" />
+              )
             }
           />
           <Route
