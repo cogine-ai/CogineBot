@@ -38,6 +38,8 @@ model User {
   modelCredentials            UserModelCredential[]
   voiceCredentials            UserVoiceCredential[]
   secrets                     Secret[]
+  nativeOAuthSessions         NativeOAuthSession[]
+  nativeOAuthGrants           NativeOAuthGrant[]
   mcpServers                  McpServer[]
   botSections                 BotSection[]
   actionApprovalRules         ActionApprovalRule[]
@@ -236,6 +238,8 @@ model Space {
   actionAutoReviewPreferences ActionAutoReviewPreference[]
   memoryConfig                SpaceMemoryConfig?
   secrets                     Secret[]
+  nativeOAuthSessions         NativeOAuthSession[]
+  nativeOAuthGrants           NativeOAuthGrant[]
   chatGroups                  ChatGroup[]
   botSecrets BotSecret[]
   externalConversations       ExternalConversation[]
@@ -875,6 +879,14 @@ model Connection {
   status      String
   secretId    String?
   providerRef String?
+  nativeConfigId String?
+  nativeConfig NativeAppConfig? @relation(fields: [nativeConfigId], references: [id], onDelete: SetNull)
+  nativeConfigRevision Int?
+  oauthGrantId String?
+  oauthGrant NativeOAuthGrant? @relation(fields: [oauthGrantId], references: [id], onDelete: SetNull)
+  mcpServerId String? @unique
+  nativeMcpServer McpServer? @relation(fields: [mcpServerId], references: [id], onDelete: SetNull)
+  nativeOAuthSession NativeOAuthSession?
   metadata    Json     @default("{}")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -1148,6 +1160,9 @@ model Secret {
   mcpServers        McpServer[]
   spaceMemoryConfig SpaceMemoryConfig?
   agentSecret       AgentSecret?
+  nativeAppConfigs NativeAppConfig[]
+  nativeOAuthSessions NativeOAuthSession[]
+  nativeOAuthGrants NativeOAuthGrant[]
 
   @@index([userId, spaceId])
   @@map("secrets")
@@ -1178,6 +1193,8 @@ model McpServer {
   updatedAt     DateTime          @updatedAt
   assignments   BotMcpServer[]
   oauthSessions McpOAuthSession[]
+  nativeAppId String?
+  nativeConnections Connection[]
 
   @@unique([spaceId, userId, slug])
   @@index([spaceId, userId])
@@ -1482,4 +1499,82 @@ model TicketComment {
 
   @@index([ticketId, createdAt])
   @@map("ticket_comments")
+}
+
+
+// Application configuration belongs to this deployment, not to a model or Bot.
+model NativeAppConfig {
+  id String @id @default(cuid())
+  appId String
+  label String
+  ownership String
+  credentialKind String
+  enabled Boolean @default(true)
+  config Json @default("{}")
+  secretId String?
+  secret Secret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  callbackUri String
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sessions NativeOAuthSession[]
+  grants NativeOAuthGrant[]
+  connections Connection[]
+
+  @@index([appId, enabled])
+  @@map("native_app_configs")
+}
+
+model NativeOAuthSession {
+  id String @id
+  stateHash String @unique
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  connectionId String @unique
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  configId String
+  config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  configRevision Int
+  requestedScopes String[] @default([])
+  secretId String?
+  secret Secret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  expiresAt DateTime
+  consumedAt DateTime?
+  cancelledAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, spaceId, expiresAt])
+  @@map("native_oauth_sessions")
+}
+
+model NativeOAuthGrant {
+  id String @id
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  configId String
+  config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Restrict)
+  configRevision Int
+  authority String
+  subject String
+  tenant String?
+  principal Json @default("{}")
+  scopes String[] @default([])
+  secretId String?
+  secret Secret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  accessExpiresAt DateTime?
+  authGeneration Int @default(1)
+  tokenVersion Int @default(1)
+  revokedAt DateTime?
+  refreshLeaseId String?
+  refreshLeaseUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  connections Connection[]
+
+  @@index([userId, spaceId, authority])
+  @@map("native_oauth_grants")
 }
