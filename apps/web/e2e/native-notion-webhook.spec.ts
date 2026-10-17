@@ -1,3 +1,4 @@
+import type { Page, TestInfo } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import type {
   NativeConfigStatus,
@@ -22,11 +23,11 @@ const config: NativeConfigStatus = {
   callbackUri,
   executionLocation: "instance",
 };
-function pendingHook(id: string): NativeNotionHook {
+function pendingHook(id: string, configRevision = config.revision): NativeNotionHook {
   return {
     id,
     configId: config.id,
-    configRevision: 1,
+    configRevision,
     revision: 1,
     phase: "waiting_for_challenge",
     integrationId: null,
@@ -41,15 +42,22 @@ function pendingHook(id: string): NativeNotionHook {
   };
 }
 
-test("Notion owner setup keeps verification ephemeral and requires explicit identity, first signed event and local stop", async ({
-  page,
-}, testInfo) => {
+async function exerciseOwnerSetup(
+  page: Page,
+  testInfo: TestInfo,
+  oldPhase: "active" | "invalidated",
+) {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error" || message.type() === "warning") pageErrors.push(message.text());
   });
-  await signup(page, `notion-hook-owner-${Date.now()}@rakazo.test`, "password12", "Webhook owner");
+  await signup(
+    page,
+    `notion-hook-owner-${oldPhase}-${Date.now()}@rakazo.test`,
+    "password12",
+    "Webhook owner",
+  );
   await completeOnboarding(page);
   const setup: NativeSetupState = { canConfigure: true, callbackUri, configurations: [config] };
   let hooks: NativeNotionHook[] = [];
@@ -57,6 +65,7 @@ test("Notion owner setup keeps verification ephemeral and requires explicit iden
   const reveals: unknown[] = [],
     confirms: Array<{ id: string; integrationId: string; verifiedInNotion: true }> = [],
     disabled: string[] = [];
+  const disableRequests: unknown[] = [];
   let holdReveal = false;
   let releaseReveal: (() => void) | undefined;
   await page.route("**/rpc/integrationSetup/get", (route) =>
@@ -84,7 +93,7 @@ test("Notion owner setup keeps verification ephemeral and requires explicit iden
   });
   await page.route("**/rpc/nativeConnectors/beginNotionWebhookSetup", (route) => {
     expect(route.request().postDataJSON().json).toEqual({ configId: config.id });
-    const next = pendingHook(`owner-hook-${++beginCalls}`);
+    const next = pendingHook(`owner-hook-${++beginCalls}`, setup.configurations[0]!.revision);
     hooks = [next, ...hooks];
     return route.fulfill({ json: { json: next } });
   });
@@ -127,12 +136,14 @@ test("Notion owner setup keeps verification ephemeral and requires explicit iden
     const payload = route.request().postDataJSON().json;
     const hook = hooks.find((entry) => entry.id === payload.id)!;
     expect(payload).toEqual({ configId: config.id, id: hook.id, expectedRevision: hook.revision });
+    disableRequests.push(payload);
     disabled.push(hook.id);
     const next: NativeNotionHook = {
       ...hook,
       revision: hook.revision + 1,
       enabled: false,
-      phase: "disabled",
+      configured: false,
+      phase: hook.configRevision === setup.configurations[0]!.revision ? "disabled" : "invalidated",
     };
     hooks = hooks.map((entry) => (entry.id === next.id ? next : entry));
     return route.fulfill({ json: { json: next } });
@@ -143,6 +154,9 @@ test("Notion owner setup keeps verification ephemeral and requires explicit iden
   await section.getByRole("button", { name: "Set up subscription", exact: true }).click();
   await expect(
     section.getByRole("heading", { name: "Waiting for Notion", exact: true }),
+  ).toBeVisible();
+  await expect(
+    section.getByRole("button", { name: "Stop subscription", exact: true }),
   ).toBeVisible();
   await expect(section.getByLabel("Webhook URL", { exact: true })).toHaveValue(
     hooks[0]!.webhookUrl!,
@@ -201,8 +215,18 @@ test("Notion owner setup keeps verification ephemeral and requires explicit iden
   await expect(
     section.getByRole("heading", { name: "Receiving events", exact: true }),
   ).toBeVisible();
+  if (oldPhase === "invalidated") {
+    setup.configurations = [{ ...config, revision: 2 }];
+    hooks = hooks.map((hook) => ({ ...hook, phase: "invalidated" }));
+    await page.reload();
+    await page.getByRole("button", { name: "Webhooks", exact: true }).click();
+  }
   await section.getByRole("button", { name: "Set up subscription", exact: true }).click();
   await expect.poll(() => beginCalls).toBe(2);
+  expect(hooks.find((hook) => hook.id === "owner-hook-1")!.configRevision).toBe(1);
+  expect(hooks.find((hook) => hook.id === "owner-hook-2")!.configRevision).toBe(
+    oldPhase === "invalidated" ? 2 : 1,
+  );
   await expect(
     section.getByRole("heading", { name: "Waiting for Notion", exact: true }),
   ).toBeVisible();
@@ -220,18 +244,48 @@ test("Notion owner setup keeps verification ephemeral and requires explicit iden
       exact: true,
     }),
   ).toBeVisible();
+  const oldBeforeStop = structuredClone(hooks.find((hook) => hook.id === "owner-hook-1")!);
+  expect(oldBeforeStop).toMatchObject({ phase: oldPhase, enabled: true, configRevision: 1 });
   const oldHeader = section
-    .getByRole("heading", { name: "Receiving events", exact: true })
+    .getByRole("heading", {
+      name: oldPhase === "invalidated" ? "Application settings changed" : "Receiving events",
+      exact: true,
+    })
     .locator("..");
+  await expect(
+    oldHeader.getByRole("button", { name: "Stop subscription", exact: true }),
+  ).toBeVisible();
+  await captureScreenshot(page, testInfo, `notion-owner-${oldPhase}-stop-available`);
   await oldHeader.getByRole("button", { name: "Stop subscription", exact: true }).click();
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText("Routines continue checking Notion for changes.");
   expect(disabled).toEqual([]);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(disabled).toEqual([]);
+  expect(disableRequests).toEqual([]);
+  expect(hooks.find((hook) => hook.id === oldBeforeStop.id)).toEqual(oldBeforeStop);
+  expect(confirms).toHaveLength(1);
+  await expect(enable).toBeDisabled();
   await oldHeader.getByRole("button", { name: "Stop subscription", exact: true }).click();
   await dialog.getByRole("button", { name: "Stop subscription", exact: true }).click();
   await expect.poll(() => disabled).toEqual(["owner-hook-1"]);
+  expect(disableRequests).toEqual([
+    { configId: config.id, id: oldBeforeStop.id, expectedRevision: oldBeforeStop.revision },
+  ]);
+  expect(hooks.find((hook) => hook.id === oldBeforeStop.id)).toMatchObject({
+    phase: oldPhase === "invalidated" ? "invalidated" : "disabled",
+    enabled: false,
+    configured: false,
+    revision: oldBeforeStop.revision + 1,
+  });
+  await expect(
+    oldHeader.getByRole("button", { name: "Stop subscription", exact: true }),
+  ).toHaveCount(0);
+  expect(hooks.find((hook) => hook.id === "owner-hook-2")).toMatchObject({
+    phase: "waiting_for_owner",
+    enabled: false,
+    revision: 2,
+  });
   await expect(section.getByRole("status")).toHaveText(
     "Webhook stopped here. Remove the subscription in Notion separately.",
   );
@@ -258,4 +312,12 @@ test("Notion owner setup keeps verification ephemeral and requires explicit iden
   );
   await captureScreenshot(page, testInfo, "notion-owner-narrow");
   expect(pageErrors).toEqual([]);
-});
+}
+
+for (const oldPhase of ["active", "invalidated"] as const) {
+  test(`Notion owner setup keeps verification ephemeral and requires explicit identity, first signed event and local stop (${oldPhase} previous subscription)`, async ({
+    page,
+  }, testInfo) => {
+    await exerciseOwnerSetup(page, testInfo, oldPhase);
+  });
+}

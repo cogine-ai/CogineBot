@@ -296,7 +296,8 @@ export function NativeNotionWebhookSetup({
             </p>
           ) : null}
           {status.hooks.map((hook) => {
-            const live = hook.phase.startsWith("waiting_for_") || hook.phase === "active";
+            const canStop =
+              hook.enabled || hook.phase.startsWith("waiting_for_") || hook.phase === "active";
             const hasOtherEnabled = status.hooks.some(
               (other) => other.id !== hook.id && other.enabled,
             );
@@ -304,7 +305,7 @@ export function NativeNotionWebhookSetup({
               <div key={hook.id} className="space-y-3 rounded-xl border border-border p-4">
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="text-sm font-medium">{phaseLabel(hook.phase)}</h3>
-                  {live ? (
+                  {canStop ? (
                     <Button
                       type="button"
                       variant="ghost"

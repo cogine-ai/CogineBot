@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import type { BackgroundJob, JobPublisher } from "@rakazo/adapter-kit";
+import { runContinueJob } from "@rakazo/adapter-kit";
 import type {
   NativeEventAuthorizationProof,
   NativeEventObservation,
@@ -8,7 +10,8 @@ import type {
 } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
-import { afterAll, beforeAll, describe, it } from "vitest";
+import { afterAll, beforeAll, describe, it, vi } from "vitest";
+import { createJobReconciler } from "../../job-reconciler.js";
 import type { NativeRoutineTriggerRow } from "./store.js";
 import {
   checkpointNativeEventSource,
@@ -16,8 +19,11 @@ import {
   leaseNativeEventSource,
   listNativeRoutineTriggers,
   listNativeRoutineTriggersBatch,
+  nativeEventRunNonce,
   saveNativeRoutineTrigger,
 } from "./store.js";
+import type { NativeEventReaders } from "./worker.js";
+import { handleNativeSourceJob } from "./worker.js";
 
 const describePostgres =
   process.env.VERIFY_DATABASE && process.env.DATABASE_URL ? describe.sequential : describe.skip;
@@ -302,6 +308,107 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
     const claimed = await claimNativeRoutineEvent(peer, actor, f.event, f.leaseId);
     assert.ok(claimed?.created);
     assert.deepEqual(await counts(f), { tasks: 1, runs: 1, messages: 1, events: 0 });
+  });
+  it("recovers an event Run after queue failure through the existing reconciler without duplicating its receipt", async () => {
+    const f = await fixture(),
+      oldState = { ready: true, syncToken: "synthetic-old-cursor" },
+      attempts: BackgroundJob[] = [],
+      queueError = new Error("Synthetic queue unavailable");
+    const jobs: JobPublisher = {
+      enqueue: async (job) => {
+        attempts.push(job);
+        if (attempts.length === 1) throw queueError;
+      },
+      cancel: async () => undefined,
+      close: async () => undefined,
+    };
+    let reads = 0;
+    const created: boolean[] = [];
+    const readers: NativeEventReaders = {
+      calendar: async ({ row, emit }) => {
+        reads++;
+        assert.equal((row.state as Record<string, unknown>).syncToken, oldState.syncToken);
+        created.push(await emit(f.event));
+        return {
+          state: { ready: true, syncToken: "synthetic-next-cursor" },
+          nextPollAt: new Date(Date.now() + 60_000),
+        };
+      },
+      notion: async () => {
+        throw new Error("A Calendar source must not use the Notion reader");
+      },
+    };
+    assert.equal(
+      await checkpointNativeEventSource(db, scope, {
+        triggerId: f.row.id,
+        triggerVersion: f.row.version,
+        leaseId: f.leaseId,
+        state: oldState,
+        nextPollAt: now(),
+        release: true,
+      }),
+      true,
+    );
+    const payload = { triggerId: f.row.id, triggerVersion: f.row.version },
+      signal = new AbortController().signal,
+      nonce = nativeEventRunNonce(f.row, f.event);
+    await assert.rejects(handleNativeSourceJob(db, jobs, readers, payload, signal), queueError);
+    const receipt = await db.run.findFirstOrThrow({
+      where: { ...scope, routineId: f.routine.id, clientNonce: nonce },
+    });
+    assert.equal(receipt.status, "queued");
+    assert.equal(
+      (await db.task.findUniqueOrThrow({ where: { id: receipt.taskId } })).status,
+      "queued",
+    );
+    assert.deepEqual(attempts, [runContinueJob(receipt.id)]);
+    assert.deepEqual(await counts(f), { tasks: 1, runs: 1, messages: 1, events: 0 });
+    const failed = await db.nativeRoutineTrigger.findUniqueOrThrow({ where: { id: f.row.id } });
+    assert.equal(failed.leaseId, null);
+    assert.ok(failed.nextPollAt && failed.nextPollAt > now());
+    assert.deepEqual(failed.state, {
+      ...oldState,
+      retryAfterAt: failed.nextPollAt.toISOString(),
+      lastErrorCode: "temporarily_unavailable",
+    });
+    // Use the original global queued-Run scan on a separate real DB client.
+    await createJobReconciler({ prisma: peer, jobs }).reconcileOnce();
+    const targetAttempts = () =>
+      attempts.filter((job) => job.name === "run.continue" && job.payload.runId === receipt.id);
+    assert.deepEqual(targetAttempts(), [runContinueJob(receipt.id), runContinueJob(receipt.id)]);
+    assert.equal(
+      (await peer.run.findUniqueOrThrow({ where: { id: receipt.id } })).status,
+      "queued",
+    );
+    assert.deepEqual(await counts(f), { tasks: 1, runs: 1, messages: 1, events: 0 });
+    // Advance only Date beyond the persisted retry bound; PG I/O timers remain real.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(failed.nextPollAt.getTime() + 1));
+    try {
+      assert.equal(await handleNativeSourceJob(peer, jobs, readers, payload, signal), "processed");
+    } finally {
+      vi.useRealTimers();
+    }
+    assert.equal(reads, 2);
+    assert.deepEqual(
+      created,
+      [false],
+      "Replay must read the permanent receipt, not skip the source",
+    );
+    assert.deepEqual(
+      targetAttempts(),
+      Array.from({ length: 3 }, () => runContinueJob(receipt.id)),
+    );
+    assert.equal(await db.run.count({ where: { ...scope, clientNonce: nonce } }), 1);
+    assert.deepEqual(await counts(f), { tasks: 1, runs: 1, messages: 1, events: 0 });
+    const after = await db.nativeRoutineTrigger.findUniqueOrThrow({ where: { id: f.row.id } });
+    assert.deepEqual(after.state, { ready: true, syncToken: "synthetic-next-cursor" });
+    assert.equal(after.leaseId, null);
+    assert.equal(
+      (await db.routine.findUniqueOrThrow({ where: { id: f.routine.id } })).nextRunAt?.getTime(),
+      f.cron.getTime(),
+    );
+    assert.equal(await db.run.count({ where: { routineId: f.untouched.id } }), 0);
   });
   it("permanent receipt prevents another Task+Run even after the first Run completed", async () => {
     const f = await fixture(),
