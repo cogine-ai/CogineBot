@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { NativeActionError } from "../action.js";
 import { ensureCalendarChannel } from "./calendar-watch.js";
 import type { NativeSourceReadContext } from "./worker.js";
