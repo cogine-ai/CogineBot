@@ -44,7 +44,7 @@ type PendingSession = {
   ref?: string;
 };
 
-/** Runtime MCP connector. Authorization is re-checked against the bot assignment on every call. */
+/** Runtime MCP connector. The actor's shared server policy is checked on every call. */
 /**
  * Stale allowlist entries are filtered out below with no error. Discovery already has the
  * live tool list, so compare once and warn when string allowlist names are missing from the
@@ -65,15 +65,15 @@ export function allowlistDrift(
 }
 
 function reportAllowlistDrift(
-  assignment: { allowAllTools: boolean; allowedTools: unknown; server: { slug: string } },
+  server: { allowAllTools: boolean; allowedTools: unknown; slug: string },
   offered: Array<{ name: string }>,
   context: { spaceId: string; botId?: string },
 ): void {
-  if (assignment.allowAllTools) return;
-  const drift = allowlistDrift(assignment.allowedTools, offered);
+  if (server.allowAllTools) return;
+  const drift = allowlistDrift(server.allowedTools, offered);
   if (drift.missing.length === 0) return;
   getLogger().warn(
-    `mcp allowlist drift on ${assignment.server.slug}: ${drift.missing.length}/${drift.stringAllowedCount} allowed tools are not offered (server offers ${drift.offered})`,
+    `mcp allowlist drift on ${server.slug}: ${drift.missing.length}/${drift.stringAllowedCount} allowed tools are not offered (server offers ${drift.offered})`,
     {
       spaceId: context.spaceId,
       botId: context.botId,
@@ -142,53 +142,49 @@ export class McpConnector implements ConnectorProvider {
 
   private async authorizedTools(context: AdapterContext): Promise<ConnectorTool[]> {
     if (!context.botId) return [];
-    const assignments = await this.prisma.botMcpServer.findMany({
+    const servers = await this.prisma.mcpServer.findMany({
       where: {
-        botId: context.botId,
         spaceId: context.spaceId,
         userId: context.userId,
-        server: { enabled: true },
+        enabled: true,
       },
-      include: { server: true },
     });
     const groups = await Promise.all(
-      assignments.map(async (assignment): Promise<ConnectorTool[]> => {
+      servers.map(async (server): Promise<ConnectorTool[]> => {
+        const allowed = Array.isArray(server.allowedTools) ? server.allowedTools : [];
+        if (!server.allowAllTools && !allowed.some((name) => typeof name === "string")) return [];
         const startedAt = Date.now();
         try {
-          const session = await this.sessionFor(assignment.server, context);
+          const session = await this.sessionFor(server, context);
           const listed = await session.listTools({ signal: context.signal });
-          reportAllowlistDrift(assignment, listed.tools, context);
+          reportAllowlistDrift(server, listed.tools, context);
           return listed.tools
-            .filter(
-              (tool) =>
-                assignment.allowAllTools ||
-                (assignment.allowedTools as unknown[]).includes(tool.name),
-            )
+            .filter((tool) => server.allowAllTools || allowed.includes(tool.name))
             .map((tool) => ({
-              name: `mcp__${assignment.server.slug}__${tool.name}`,
+              name: `mcp__${server.slug}__${tool.name}`,
               description: tool.description ?? tool.name,
               inputSchema: tool.inputSchema as Record<string, unknown>,
               route: {
                 connectorId: "mcp",
-                resourceId: assignment.serverId,
-                resourceRevision: assignment.server.revision,
+                resourceId: server.id,
+                resourceRevision: server.revision,
                 toolName: tool.name,
-                catalogGroup: assignment.server.slug,
+                catalogGroup: server.slug,
               },
             }));
         } catch (error) {
           // A single unavailable server must not hide tools from other connectors.
           getLogger().error(
-            `mcp discovery failed for server ${assignment.server.slug}:`,
+            `mcp discovery failed for server ${server.slug}:`,
             sanitizeConnectorError(error),
           );
           // Capture material before eviction so the audited reason stays redacted, the
           // same reason execute() captures it before callTool.
-          const key = this.sessionKey(assignment.server, context);
+          const key = this.sessionKey(server, context);
           const material = this.sessions.get(key)?.material;
           await this.evict(key);
           await this.recordDiscoveryFailure(
-            assignment.server.slug,
+            server.slug,
             error,
             context,
             startedAt,
@@ -264,31 +260,33 @@ export class McpConnector implements ConnectorProvider {
       yield { type: "error", message: "MCP tools require a bot context" };
       return;
     }
-    const assignment = await this.prisma.botMcpServer.findFirst({
+    const server = await this.prisma.mcpServer.findFirst({
       where: {
-        botId: context.botId,
-        serverId: call.route.resourceId,
+        id: call.route.resourceId,
         spaceId: context.spaceId,
         userId: context.userId,
-        server: { enabled: true },
+        enabled: true,
       },
-      include: { server: true },
     });
     if (
-      !assignment ||
-      (!assignment.allowAllTools &&
-        !(assignment.allowedTools as unknown[]).includes(call.route.toolName))
+      !server ||
+      (!server.allowAllTools &&
+        !(Array.isArray(server.allowedTools) && server.allowedTools.includes(call.route.toolName)))
     ) {
-      yield { type: "error", message: "MCP tool is not assigned to this bot" };
+      yield { type: "error", message: "MCP tool is not enabled for this space" };
+      return;
+    }
+    if (call.route.resourceRevision !== server.revision) {
+      yield { type: "error", message: "MCP server permissions or credentials changed; retry" };
       return;
     }
     // Capture material before callTool so a concurrent eviction/replace cannot
     // drop this call's OAuth secrets from model-visible redaction. Recompute via
     // oauthMaterialSecrets(material) so in-place token refresh stays covered.
     let material: OAuthMaterial | undefined;
-    const sessionKey = this.sessionKey(assignment.server, context);
+    const sessionKey = this.sessionKey(server, context);
     try {
-      const session = await this.sessionFor(assignment.server, context);
+      const session = await this.sessionFor(server, context);
       material = this.sessions.get(sessionKey)?.material;
       const result = await session.callTool(call.route.toolName, call.args, {
         signal: context.signal,

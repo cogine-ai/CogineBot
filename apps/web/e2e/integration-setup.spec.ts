@@ -49,7 +49,7 @@ test("setup exposes all integration choices and saves only the selected provider
   });
 });
 
-test("direct MCP connects a catalog result without asking for a URL and assigns it to the first bot", async ({
+test("direct MCP connects a catalog result without asking for a URL and explicitly shares tools with the space", async ({
   page,
 }, testInfo) => {
   await page.route("**/rpc/integrationSetup/get", (route) =>
@@ -99,7 +99,17 @@ test("direct MCP connects a catalog result without asking for a URL and assigns 
   await page.getByRole("button", { name: "Search integrations.sh", exact: true }).click();
   await expect(page.getByText("Notion", { exact: true })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Server URL" })).toBeHidden();
+  await page.getByRole("switch", { name: "Share all tools with this space" }).click();
+  const shared = page.waitForResponse(
+    (response) => response.url().includes("/rpc/mcp/servers/setTools") && response.ok(),
+  );
   await page.getByRole("button", { name: "Connect", exact: true }).click();
+  const sharedResponse = await shared;
+  expect(sharedResponse.request().postDataJSON().json).toMatchObject({
+    id: serverId,
+    allowAllTools: true,
+    allowedTools: [],
+  });
   await expect(page.getByRole("button", { name: "Connected", exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "integration-setup-direct-connected");
   let createCalls = 0;
@@ -113,15 +123,10 @@ test("direct MCP connects a catalog result without asking for a URL and assigns 
     await route.continue();
   });
 
-  const assigned = page.waitForResponse(
-    (response) => response.url().includes("/rpc/mcp/assignments/approve") && response.ok(),
-  );
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByText("Opening chat…")).toBeVisible();
   await expect.poll(() => createCalls).toBe(1);
   releaseCreate();
-  const response = await assigned;
-  expect(response.request().postDataJSON().json.serverId).toBe(serverId);
   await page.waitForURL(/\/app\//);
   await expect(page.getByRole("combobox", { name: "Message Chief" })).toBeVisible();
 });

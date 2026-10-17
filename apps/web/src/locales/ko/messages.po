@@ -18,6 +18,11 @@ msgstr ""
 msgid "{0, plural, one {# model} other {# models}}"
 msgstr "{0, plural, one {모델 #개} other {모델 #개}}"
 
+#. placeholder {0}: tools.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0, plural, one {# tool} other {# tools}}"
+msgstr "{0, plural, one {도구 #개} other {도구 #개}}"
+
 #. placeholder {0}: Math.ceil(oauth.expiresInSeconds / 60)
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -65,6 +70,16 @@ msgstr "{0} KB"
 msgid "{0} MB"
 msgstr "{0} MB"
 
+#. placeholder {0}: summary.errors.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} need attention"
+msgstr "{0}개 확인 필요"
+
+#. placeholder {0}: summary.pending.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} pending"
+msgstr "{0}개 대기 중"
+
 #. placeholder {0}: sender.name
 #: src/pages/ExternalConversationSettings.tsx
 msgid "{0} rollup hours"
@@ -75,6 +90,11 @@ msgstr ""
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "{0} runs · {1} tokens"
 msgstr "{0}회 실행 · 토큰 {1}개"
+
+#. placeholder {0}: server.allowedTools.length
+#: src/components/integrations/McpToolAccess.tsx
+msgid "{0} tools shared in this space"
+msgstr "이 스페이스에서 도구 {0}개 공유 중"
 
 #. placeholder {0}: bot.name
 #: src/pages/ExternalConversationSettings.tsx
@@ -176,13 +196,13 @@ msgstr ""
 msgid "{stepCount, plural, one {Working… · # tool} other {Working… · # tools}}"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "{stopped} accounts disconnected locally"
+msgstr "계정 {stopped}개 로컬 연결 해제"
+
 #: src/pages/ActivityList.tsx
 msgid "{title}, {label}"
 msgstr "{title}, {label}"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "{toolCount, plural, one {# tool} other {# tools}}"
-msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "{workingBotName} is working"
@@ -192,6 +212,10 @@ msgstr "{workingBotName} 작업 중"
 #: src/pages/Shell.tsx
 msgid "@{0}"
 msgstr "@{0}"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "1 account disconnected locally"
+msgstr "계정 1개 로컬 연결 해제"
 
 #: src/pages/shell/message-cards.tsx
 msgid "A bit of everything"
@@ -232,6 +256,14 @@ msgstr "계정"
 msgid "Account default"
 msgstr "계정 기본값"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Account details"
+msgstr "계정 정보"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account disconnected."
+msgstr "계정 연결이 해제되었습니다."
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Account ID"
@@ -244,6 +276,14 @@ msgstr ""
 #: src/pages/PluginsOverlay.tsx
 msgid "Accounts"
 msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts changed. Review them before disconnecting."
+msgstr "계정이 변경되었습니다. 연결 해제 전에 확인하세요."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts that need attention are kept. Manage them individually."
+msgstr "확인이 필요한 계정은 유지됩니다. 개별적으로 관리하세요."
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Action confirmations"
@@ -305,13 +345,13 @@ msgstr "서버 이름을 입력하세요."
 msgid "Add a stdio command."
 msgstr "stdio 명령을 입력하세요."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Add account"
+msgstr "계정 추가"
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "HTTPS 서버 URL을 입력하세요."
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Add another"
-msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Add connected model"
@@ -378,12 +418,7 @@ msgstr "Treg 추가"
 msgid "Add trigger"
 msgstr "트리거 추가"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Added"
-msgstr ""
-
 #: src/pages/McpServersOverlay.tsx
-#: src/pages/PluginsOverlay.tsx
 msgid "Adding…"
 msgstr "추가 중…"
 
@@ -409,9 +444,9 @@ msgstr "Agent 컴퓨터"
 msgid "Agent connections"
 msgstr "Agent 연결"
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Agents:"
-msgstr "사용 Bot:"
+#: src/pages/PluginsOverlay.tsx
+msgid "All apps"
+msgstr "모든 앱"
 
 #: src/pages/Artifacts.tsx
 msgid "All bots"
@@ -428,6 +463,10 @@ msgstr ""
 #: src/pages/Artifacts.tsx
 msgid "All time"
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "All tools shared in this space"
+msgstr "이 스페이스에서 모든 도구 공유 중"
 
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
@@ -530,18 +569,17 @@ msgstr ""
 msgid "Appearance"
 msgstr "모양"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Application filter"
+msgstr "앱 필터"
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
 msgstr "승인이 필요한 범위"
 
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/shell/message-cards.tsx
 msgid "Approve"
 msgstr "승인"
-
-#: src/pages/shell/message-cards.tsx
-msgid "Approve this server to let your agent use its tools."
-msgstr "이 서버를 승인하면 Bot이 제공되는 도구를 사용할 수 있습니다."
 
 #: src/pages/BotContextMenu.tsx
 msgid "Archive"
@@ -629,6 +667,19 @@ msgstr "인증에 실패했습니다."
 msgid "Authorization code or callback URL"
 msgstr "인증 코드 또는 돌아온 페이지 주소"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization did not complete. You can authorize again."
+msgstr "권한 승인이 완료되지 않았습니다. 다시 승인할 수 있습니다."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization is still pending."
+msgstr "아직 권한 승인 대기 중입니다."
+
+#. placeholder {0}: row.remoteAccountId
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization record: {0}"
+msgstr "권한 승인 기록: {0}"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Authorization timed out. Please try again."
 msgstr "인증 시간이 만료되었습니다. 다시 시도해 주세요."
@@ -636,6 +687,10 @@ msgstr "인증 시간이 만료되었습니다. 다시 시도해 주세요."
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "인증하기"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorize again"
+msgstr "다시 승인"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize this server so agents can use its tools. A popup opens."
@@ -779,6 +834,10 @@ msgstr ""
 msgid "Built-in"
 msgstr "기본 제공"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "By Cogine"
+msgstr "Cogine 제공"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "서버에 연결할 수 없습니다."
@@ -797,6 +856,10 @@ msgstr "서버에 연결할 수 없습니다."
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "취소"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Cancel connection"
+msgstr "연결 취소"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -868,6 +931,10 @@ msgstr "업데이트 확인"
 #: src/pages/Shell.tsx
 msgid "Check in."
 msgstr "확인해 주세요."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Check status"
+msgstr "상태 확인"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Check the API key or sign-in, then test again."
@@ -1164,6 +1231,7 @@ msgstr "Treg 연결"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
@@ -1198,6 +1266,14 @@ msgstr "연결되었습니다. 다음 메시지부터 이 도구를 사용할 �
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "연결 중…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection source"
+msgstr "연결 소스"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection status unconfirmed. Refresh status."
+msgstr "연결 상태를 확인하지 못했습니다. 상태를 새로고침하세요."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
@@ -1270,6 +1346,10 @@ msgstr "비밀번호를 변경할 수 없습니다"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Could not change the default model"
 msgstr "기본 모델을 변경하지 못했습니다."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not check connection"
+msgstr "연결을 확인하지 못했습니다"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Could not check stored credentials."
@@ -1490,6 +1570,10 @@ msgstr "이 채팅을 불러오지 못했습니다."
 msgid "Could not load this file."
 msgstr "파일을 불러오지 못했습니다."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not load tools"
+msgstr "도구를 불러오지 못했습니다"
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Could not load update status"
 msgstr "업데이트 상태를 불러올 수 없습니다"
@@ -1574,10 +1658,6 @@ msgstr "차트를 만들지 못했습니다."
 msgid "Could not reset password"
 msgstr "비밀번호를 재설정할 수 없습니다"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Could not revoke connection"
-msgstr "연결을 해제하지 못했습니다."
-
 #: src/pages/Shell.tsx
 msgid "Could not run routine"
 msgstr "루틴을 실행할 수 없습니다"
@@ -1638,6 +1718,10 @@ msgstr ""
 msgid "Could not save this choice"
 msgstr "선택 내용을 저장하지 못했습니다."
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Could not save tool access"
+msgstr "도구 권한을 저장하지 못했습니다"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not search catalog"
 msgstr ""
@@ -1669,10 +1753,6 @@ msgstr "직접 조작으로 전환하지 못했습니다."
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not update"
 msgstr "업데이트하지 못했습니다."
-
-#: src/pages/McpServersOverlay.tsx
-msgid "Could not update agent access"
-msgstr "Bot의 서버 사용 권한을 변경하지 못했습니다."
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Could not update computer"
@@ -1946,6 +2026,7 @@ msgstr ""
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnect"
 msgstr "연결 해제"
@@ -1954,13 +2035,35 @@ msgstr "연결 해제"
 msgid "Disconnect {disconnectName}?"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect account"
+msgstr "계정 연결 해제"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect did not complete. Review the remaining accounts before trying again."
+msgstr "연결 해제가 완료되지 않았습니다. 다시 시도하기 전에 남은 계정을 확인하세요."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect this account?"
+msgstr "이 계정의 연결을 해제할까요?"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected"
+msgstr "연결 해제됨"
+
 #. placeholder {0}: selected.providerName ?? selected.provider
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Disconnected {0}."
 msgstr ""
 
+#. placeholder {0}: history.length
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected accounts ({0})"
+msgstr "연결 해제된 계정 ({0})"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnecting…"
 msgstr "연결 해제 중…"
@@ -2637,6 +2740,10 @@ msgstr "로컬"
 msgid "Local access lets bots run commands without asking. Avoid it on shared or public servers."
 msgstr "로컬 접근을 허용하면 Bot이 묻지 않고 명령을 실행할 수 있습니다. 공유 서버나 공개 서버에서는 허용하지 마세요."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Local access stopped · Provider confirmation pending"
+msgstr "로컬 사용 중지 · 제공자 확인 대기 중"
+
 #: src/pages/LocalSettings.tsx
 msgid "Local Server Settings"
 msgstr ""
@@ -2666,6 +2773,7 @@ msgid "Make sure nothing is still running on this computer."
 msgstr "이 컴퓨터에서 실행 중인 작업이 없는지 확인하세요."
 
 #: src/pages/BillingSettingsPanel.tsx
+#: src/pages/PluginsOverlay.tsx
 msgid "Manage"
 msgstr ""
 
@@ -2953,6 +3061,10 @@ msgstr "이 루틴의 이름을 정하세요"
 msgid "Needs an answer"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Needs attention"
+msgstr "확인 필요"
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -3000,6 +3112,10 @@ msgstr "새 스페이스"
 msgid "New ticket"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No active accounts."
+msgstr "활성 계정이 없습니다."
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No agent connections yet."
 msgstr "아직 Agent 연결이 없습니다."
@@ -3037,6 +3153,14 @@ msgstr ""
 msgid "No chat apps linked yet."
 msgstr "아직 연결된 채팅 앱이 없습니다."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected apps."
+msgstr "연결된 앱이 없습니다."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected or pending accounts remain for this source."
+msgstr "이 소스에 연결되었거나 승인 대기 중인 계정이 없습니다."
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3048,10 +3172,6 @@ msgstr "아직 그룹 채팅이 없습니다."
 #: src/components/AskCard.tsx
 msgid "No longer active"
 msgstr "이미 종료된 요청입니다"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "No managed app catalog is configured on this deployment."
-msgstr "이 서버에는 관리형 앱 목록이 설정되지 않았습니다."
 
 #: src/pages/Artifacts.tsx
 msgid "No matching artifacts on this page."
@@ -3119,6 +3239,10 @@ msgstr ""
 msgid "No tools available."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "No tools shared in this space"
+msgstr "이 스페이스에서 공유 중인 도구 없음"
+
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr "트리거 없음"
@@ -3134,10 +3258,6 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Not connected"
 msgstr "연결되지 않음"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Not in the plugin catalog"
-msgstr "플러그인 카탈로그에 없음"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Not now"
@@ -3236,10 +3356,6 @@ msgstr "전체 창으로 열기"
 msgid "Open navigation"
 msgstr "메뉴 열기"
 
-#: src/components/computer/TerminalApp.tsx
-msgid "Open shell"
-msgstr "셸 열기"
-
 #: src/pages/ScratchpadSection.tsx
 msgid "Open work"
 msgstr "진행 중인 작업"
@@ -3295,6 +3411,10 @@ msgstr "원본 메시지를 사용할 수 없습니다"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "다른 모델 직접 입력…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Other sources stay connected. Operations already sent may still finish."
+msgstr "다른 소스는 연결을 유지합니다. 이미 전송된 작업은 완료될 수 있습니다."
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3353,6 +3473,10 @@ msgstr "API 키를 붙여넣은 뒤 다시 테스트하세요."
 #: src/pages/RoutineEditor.tsx
 msgid "Paused"
 msgstr "일시 중지됨"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Pending authorization"
+msgstr "권한 승인 대기 중"
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
@@ -3538,6 +3662,10 @@ msgstr ""
 msgid "Refresh"
 msgstr "새로고침"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Refresh status"
+msgstr "상태 새로고침"
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refresh view"
 msgstr "화면 새로고침"
@@ -3549,10 +3677,6 @@ msgstr "새로고침 중…"
 #: src/lib/user-error.ts
 msgid "Registration is closed"
 msgstr "가입이 마감되었습니다"
-
-#: src/pages/Shell.tsx
-msgid "Release"
-msgstr "제어권 돌려주기"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Release computer"
@@ -3757,6 +3881,10 @@ msgstr "리비전 {0}"
 msgid "Review provider settings and test again."
 msgstr "서비스 설정을 확인한 뒤 다시 테스트하세요."
 
+#: src/pages/shell/message-cards.tsx
+msgid "Review tool access"
+msgstr "도구 권한 검토"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "연결 해제"
@@ -3846,6 +3974,10 @@ msgstr ""
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Save the workspace and install current software."
 msgstr "작업 공간을 저장하고 최신 소프트웨어를 설치합니다."
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Save tool access"
+msgstr "도구 권한 저장"
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
@@ -3987,11 +4119,19 @@ msgstr "Sentry 알림"
 msgid "Serenity endpoint is required."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Server changed. Close and reopen tool access to review it."
+msgstr "서버가 변경되었습니다. 도구 권한을 닫았다가 다시 열어 확인하세요."
+
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/LocalSettings.tsx
 msgid "Server integrations"
 msgstr ""
+
+#: src/components/integrations/IntegrationSetup.tsx
+msgid "Server is no longer available"
+msgstr "서버를 더 이상 사용할 수 없습니다"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Server name"
@@ -4023,6 +4163,19 @@ msgstr "설정: 사용량"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "설정 도움말"
+
+#: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Share all tools with this space"
+msgstr "이 스페이스에 모든 도구 공유"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share this server's tools with all bots in this space."
+msgstr "이 스페이스의 모든 봇과 이 서버의 도구를 공유합니다."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share tools"
+msgstr "도구 공유"
 
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -4147,6 +4300,10 @@ msgstr "소프트웨어 업데이트"
 #: src/lib/user-error.ts
 msgid "Something went wrong. Try again."
 msgstr "문제가 발생했습니다. 다시 시도하세요."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Source accounts disconnected."
+msgstr "소스 계정의 연결이 해제되었습니다."
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Space changed. Reopen Models to load its backup list."
@@ -4291,6 +4448,11 @@ msgstr "전환 중…"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "System"
 msgstr "시스템"
+
+#: src/components/computer/TerminalApp.tsx
+#: src/pages/Shell.tsx
+msgid "Take control"
+msgstr "제어권 가져오기"
 
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Teach a task"
@@ -4483,6 +4645,14 @@ msgstr "받는 사람:"
 msgid "Today"
 msgstr "오늘"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool access"
+msgstr "도구 권한"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool names, one per line"
+msgstr "도구 이름, 한 줄에 하나씩"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Tool sources"
 msgstr "도구 소스"
@@ -4541,8 +4711,12 @@ msgid "Unavailable"
 msgstr "사용할 수 없음"
 
 #: src/pages/PluginsOverlay.tsx
-msgid "Uninstall"
-msgstr ""
+msgid "Uninstall source"
+msgstr "소스 제거"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Uninstall this source?"
+msgstr "이 소스를 제거할까요?"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Unknown tool"
@@ -4728,6 +4902,10 @@ msgstr "줄에서 기다리는 중…"
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"
 msgstr "기다리는 중…"
+
+#: src/pages/Shell.tsx
+msgid "Watching"
+msgstr "보는 중"
 
 #: src/pages/Paywall.tsx
 msgid "Web, desktop and mobile apps"

@@ -2138,7 +2138,7 @@ export function ShellPage() {
     return () => {
       cancelled = true;
     };
-  }, [initialBotsLoaded, mentionBotsKey]);
+  }, [initialBotsLoaded, mentionBotsKey, pluginsOpen]);
 
   useLayoutEffect(() => {
     if (initialBotsLoaded) {

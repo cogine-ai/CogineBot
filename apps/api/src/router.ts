@@ -85,7 +85,6 @@ import {
   PushSessionEndedError,
   parseModelSecret,
   persistPreparedSecret,
-  pickReusableConnection,
   planLiveConnectionSync,
   prepareApiInstall,
   prepareGraphqlInstall,
@@ -215,6 +214,7 @@ import {
   toTicketCommentDto,
   toTicketDto,
   touchGroupUpdatedAt,
+  withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { deleteAgentSecret, listAgentSecrets, putAgentSecret } from "./agent-secrets.js";
@@ -238,7 +238,6 @@ import {
   toComputerStatus,
 } from "./computer-status.js";
 import { searchIntegrationCatalog } from "./integration-catalog.js";
-import type { ThreadSeq } from "./mcp-approval.js";
 import {
   connectPendingMcpApprovals,
   dismissMcpServerApprovals,
@@ -327,9 +326,9 @@ async function reconcilePendingConnections(
         spaceId: owner.spaceId,
         userId: owner.userId,
         connectorId,
-        status: { in: ["pending", "connected"] },
+        status: { in: ["pending", "connected", "error", "revoked"] },
       },
-      select: { id: true, provider: true, displayName: true, status: true },
+      select: { id: true, provider: true, displayName: true, status: true, metadata: true },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     })
   ).filter((row: { provider: string }) =>
@@ -452,6 +451,8 @@ function mcpServerDto(
     headers: unknown;
     secretId: string | null;
     enabled: boolean;
+    allowAllTools: boolean;
+    allowedTools: unknown;
     revision: number;
     createdAt: Date;
     updatedAt: Date;
@@ -482,6 +483,10 @@ function mcpServerDto(
     hasSecret: row.secretId !== null,
     oauthStatus,
     enabled: row.enabled,
+    allowAllTools: row.allowAllTools,
+    allowedTools: Array.isArray(row.allowedTools)
+      ? row.allowedTools.filter((item): item is string => typeof item === "string")
+      : [],
     revision: row.revision,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -522,6 +527,26 @@ async function assertMcpRemoteEndpoint(
       message: error instanceof Error ? error.message : "MCP endpoint is invalid",
     });
   }
+}
+
+function hasMcpTools(row: { allowAllTools: boolean; allowedTools: unknown }): boolean {
+  return (
+    row.allowAllTools ||
+    (Array.isArray(row.allowedTools) && row.allowedTools.some((name) => typeof name === "string"))
+  );
+}
+
+function sharedMcpAssignmentDto(
+  row: {
+    id: string;
+    allowAllTools: boolean;
+    allowedTools: unknown;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  botId: string,
+) {
+  return mcpAssignmentDto({ ...row, id: `shared:${row.id}:${botId}`, botId, serverId: row.id });
 }
 
 function mcpAssignmentDto(row: {
@@ -1614,25 +1639,6 @@ export function createRouter(deps: RouterDeps) {
           .catch((error: unknown) => {
             throw mapSpaceLifecycleError(error);
           });
-        const assignments = await deps.prisma.botMcpServer.findMany({
-          where: {
-            botId: source.id,
-            spaceId: context.actor.spaceId,
-            userId: context.actor.userId,
-          },
-        });
-        if (assignments.length) {
-          await deps.prisma.botMcpServer.createMany({
-            data: assignments.map((assignment) => ({
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-              botId: duplicate.id,
-              serverId: assignment.serverId,
-              allowAllTools: assignment.allowAllTools,
-              allowedTools: assignment.allowedTools as Prisma.InputJsonValue,
-            })),
-          });
-        }
         return duplicate;
       }),
       reorder: authed.bots.reorder.handler(async ({ context, input }) => {
@@ -4095,9 +4101,64 @@ export function createRouter(deps: RouterDeps) {
                   : {}) as Prisma.InputJsonValue,
                 secretId: stored?.id,
                 enabled: input.enabled,
+                allowAllTools: false,
+                allowedTools: [],
               },
             });
           });
+          return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
+        }),
+        setTools: authed.mcp.servers.setTools.handler(async ({ context, input }) => {
+          const { row, seqs } = await withTransactionRetry(() =>
+            deps.prisma.$transaction(
+              async (tx) => {
+                const existing = await tx.mcpServer.findFirst({
+                  where: {
+                    id: input.id,
+                    spaceId: context.actor.spaceId,
+                    userId: context.actor.userId,
+                  },
+                });
+                if (!existing) throw new IsolationError();
+                const updated = await tx.mcpServer.updateMany({
+                  where: {
+                    id: existing.id,
+                    spaceId: context.actor.spaceId,
+                    userId: context.actor.userId,
+                    revision: input.revision,
+                  },
+                  data: {
+                    allowAllTools: input.allowAllTools,
+                    allowedTools: [...new Set(input.allowedTools)],
+                    revision: { increment: 1 },
+                  },
+                });
+                if (updated.count !== 1)
+                  throw new ORPCError("CONFLICT", {
+                    message: "MCP server changed; reload its tool settings",
+                  });
+                const row = await tx.mcpServer.findFirstOrThrow({
+                  where: {
+                    id: existing.id,
+                    spaceId: context.actor.spaceId,
+                    userId: context.actor.userId,
+                  },
+                });
+                const seqs =
+                  row.enabled && hasMcpTools(row)
+                    ? await connectPendingMcpApprovals(tx, context.actor, { serverId: row.id })
+                    : await revertConnectedMcpApprovals(
+                        onboardingDeps,
+                        context.actor,
+                        { serverId: row.id, status: "pending" },
+                        tx,
+                      );
+                return { row, seqs };
+              },
+              { isolationLevel: "Serializable" },
+            ),
+          );
+          for (const event of seqs) await deps.events.notify(event.threadId, event.seq);
           return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
         }),
         update: authed.mcp.servers.update.handler(async ({ context, input }) => {
@@ -4238,10 +4299,26 @@ export function createRouter(deps: RouterDeps) {
                         userId: context.actor.userId,
                       },
                     });
-                  return updated;
+                  const seqs =
+                    current.enabled === updated.enabled
+                      ? []
+                      : updated.enabled && hasMcpTools(updated)
+                        ? await connectPendingMcpApprovals(tx, context.actor, {
+                            serverId: updated.id,
+                          })
+                        : await revertConnectedMcpApprovals(
+                            onboardingDeps,
+                            context.actor,
+                            { serverId: updated.id, status: "pending" },
+                            tx,
+                          );
+                  return { server: updated, seqs };
                 }),
             );
-            if (row) return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
+            if (row) {
+              for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
+              return mcpServerDto(row.server, await mcpOAuth.statusFor(row.server, context.actor));
+            }
           }
           throw new ORPCError("CONFLICT", { message: "MCP credentials changed; retry" });
         }),
@@ -4281,16 +4358,25 @@ export function createRouter(deps: RouterDeps) {
         }),
       },
       assignments: {
+        // Compatibility reads project the one server policy; no Bot assignment is persisted.
         all: authed.mcp.assignments.all.handler(async ({ context }) => {
-          const rows = await deps.prisma.botMcpServer.findMany({
-            where: {
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-              bot: { archivedAt: null },
-            },
-            orderBy: { createdAt: "asc" },
-          });
-          return rows.map(mcpAssignmentDto);
+          const [bots, servers] = await Promise.all([
+            deps.prisma.bot.findMany({
+              where: {
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+                archivedAt: null,
+              },
+              select: { id: true },
+            }),
+            deps.prisma.mcpServer.findMany({
+              where: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+              orderBy: { createdAt: "asc" },
+            }),
+          ]);
+          return bots.flatMap((bot) =>
+            servers.filter(hasMcpTools).map((server) => sharedMcpAssignmentDto(server, bot.id)),
+          );
         }),
         list: authed.mcp.assignments.list.handler(async ({ context, input }) => {
           const bot = await deps.prisma.bot.findFirst({
@@ -4302,17 +4388,19 @@ export function createRouter(deps: RouterDeps) {
             select: { id: true },
           });
           if (!bot) throw new IsolationError();
-          const rows = await deps.prisma.botMcpServer.findMany({
-            where: {
-              botId: bot.id,
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-            },
+          const servers = await deps.prisma.mcpServer.findMany({
+            where: { spaceId: context.actor.spaceId, userId: context.actor.userId },
             orderBy: { createdAt: "asc" },
           });
-          return rows.map(mcpAssignmentDto);
+          return servers
+            .filter(hasMcpTools)
+            .map((server) => sharedMcpAssignmentDto(server, bot.id));
         }),
         approve: authed.mcp.assignments.approve.handler(async ({ context, input }) => {
+          if (input.revision === undefined)
+            throw new ORPCError("CONFLICT", {
+              message: "Open shared MCP server settings to confirm its current tools",
+            });
           const row = await resolveMcpApprovalCards(
             onboardingDeps,
             context.actor,
@@ -4321,9 +4409,13 @@ export function createRouter(deps: RouterDeps) {
               serverId: input.serverId,
               status: "connected",
               threadId: input.threadId,
+              serverRevision: input.revision,
             },
             async (tx, decision) => {
-              if (!decision.assign) throw new IsolationError();
+              if (!decision.assign)
+                throw new ORPCError("CONFLICT", {
+                  message: "MCP approval is no longer current; open its shared settings",
+                });
               const [bot, server] = await Promise.all([
                 tx.bot.findFirst({
                   where: {
@@ -4340,31 +4432,26 @@ export function createRouter(deps: RouterDeps) {
                     userId: context.actor.userId,
                     enabled: true,
                   },
-                  select: { id: true },
                 }),
               ]);
               if (!bot || !server) throw new IsolationError();
-              return tx.botMcpServer.upsert({
-                where: { botId_serverId: { botId: bot.id, serverId: server.id } },
-                create: {
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                  botId: bot.id,
-                  serverId: server.id,
-                  allowAllTools: true,
-                  allowedTools: [],
-                },
-                update: {},
+              if (server.revision !== input.revision)
+                throw new ORPCError("CONFLICT", {
+                  message: "MCP server changed; open its shared settings",
+                });
+              // An old card must never widen an already configured shared allowlist.
+              if (hasMcpTools(server)) return server;
+              return tx.mcpServer.update({
+                where: { id: server.id },
+                data: { allowAllTools: true, allowedTools: [], revision: { increment: 1 } },
               });
             },
           );
           if (!row) throw new IsolationError();
-          return mcpAssignmentDto(row);
+          return sharedMcpAssignmentDto(row, input.botId);
         }),
         dismiss: authed.mcp.assignments.dismiss.handler(async ({ context, input }) => {
-          // Not now resolves the card only. Assignments are never touched
-          // here: a stale card must not delete a live connection, and server
-          // removal belongs to the MCP settings surface.
+          // A stale card dismissal never revokes an enabled shared server.
           await resolveMcpApprovalCards(onboardingDeps, context.actor, {
             botId: input.botId,
             serverId: input.serverId,
@@ -4373,89 +4460,9 @@ export function createRouter(deps: RouterDeps) {
           });
           return { ok: true as const };
         }),
-        replace: authed.mcp.assignments.replace.handler(async ({ context, input }) => {
-          const { rows, seqs } = await deps.prisma.$transaction(async (tx) => {
-            const bot = await tx.bot.findFirst({
-              where: {
-                id: input.botId,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-              },
-              select: { id: true },
-            });
-            if (!bot) throw new IsolationError();
-            const servers = await tx.mcpServer.findMany({
-              where: {
-                id: { in: input.assignments.map((assignment) => assignment.serverId) },
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-              },
-              select: { id: true },
-            });
-            if (servers.length !== input.assignments.length) throw new IsolationError();
-            const previous = await tx.botMcpServer.findMany({
-              where: {
-                botId: bot.id,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-              },
-              select: { serverId: true },
-            });
-            const nextIds = new Set(input.assignments.map((assignment) => assignment.serverId));
-            const previousIds = new Set(previous.map((row) => row.serverId));
-            const added = [...nextIds].filter((serverId) => !previousIds.has(serverId));
-            const removed = previous
-              .map((row) => row.serverId)
-              .filter((serverId) => !nextIds.has(serverId));
-            await tx.botMcpServer.deleteMany({
-              where: {
-                botId: bot.id,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-              },
-            });
-            if (input.assignments.length)
-              await tx.botMcpServer.createMany({
-                data: input.assignments.map((assignment) => ({
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                  botId: bot.id,
-                  serverId: assignment.serverId,
-                  allowAllTools: assignment.allowAllTools,
-                  allowedTools: assignment.allowedTools as Prisma.InputJsonValue,
-                })),
-              });
-            const seqs: ThreadSeq[] = [];
-            for (const serverId of removed) {
-              seqs.push(
-                ...(await revertConnectedMcpApprovals(
-                  onboardingDeps,
-                  context.actor,
-                  { botId: bot.id, serverId, status: "pending" },
-                  tx,
-                )),
-              );
-            }
-            for (const serverId of added) {
-              seqs.push(
-                ...(await connectPendingMcpApprovals(tx, context.actor, {
-                  botId: bot.id,
-                  serverId,
-                })),
-              );
-            }
-            const rows = await tx.botMcpServer.findMany({
-              where: {
-                botId: bot.id,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-              },
-              orderBy: { createdAt: "asc" },
-            });
-            return { rows, seqs };
-          });
-          for (const event of seqs) await deps.events.notify(event.threadId, event.seq);
-          return rows.map(mcpAssignmentDto);
+        replace: authed.mcp.assignments.replace.handler(async () => {
+          // A stale per-Bot snapshot cannot safely replace a shared server policy.
+          throw new ORPCError("BAD_REQUEST", { message: "Use shared MCP server tool settings" });
         }),
       },
       oauth: {
@@ -4611,12 +4618,17 @@ export function createRouter(deps: RouterDeps) {
           connectorId: row.connectorId,
           provider: row.provider,
           displayName: row.displayName,
+          remoteAccountId:
+            row.status === "connected" && row.providerRef && row.providerRef !== row.provider
+              ? row.providerRef
+              : null,
           status: row.status as "pending" | "connected" | "revoked" | "error",
           capabilities: [],
           createdAt: row.createdAt.toISOString(),
         }));
       }),
       begin: authed.connections.begin.handler(async ({ context, input }) => {
+        const authRevision = randomUUID();
         const connector =
           deps.integrationSettings &&
           (input.connectorId === "composio" || input.connectorId === "pipedream")
@@ -4641,18 +4653,17 @@ export function createRouter(deps: RouterDeps) {
             select: { id: true, status: true },
             orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
           });
-          const reusable = pickReusableConnection(existing);
-          if (reusable) {
-            return tx.connection.update({
-              where: { id: reusable.id },
-              data: {
-                displayName: input.displayName,
-                status: "pending",
-                providerRef: null,
-                metadata: {},
-              },
+          const target = input.connectionId
+            ? existing.find((entry) => entry.id === input.connectionId)
+            : undefined;
+          if (input.connectionId && !target) throw new IsolationError();
+          if (target && target.status !== "error" && target.status !== "revoked") {
+            throw new ORPCError("CONFLICT", {
+              message: "Connection status changed; refresh and retry",
             });
           }
+          // Reauthorization is a new grant. Old account references and queued work
+          // must keep pointing to the original connection, even if login changes identity.
           return tx.connection.create({
             data: {
               spaceId: context.actor.spaceId,
@@ -4661,6 +4672,7 @@ export function createRouter(deps: RouterDeps) {
               provider: input.provider,
               displayName: input.displayName,
               status: "pending",
+              metadata: { authRevision },
             },
           });
         });
@@ -4683,7 +4695,7 @@ export function createRouter(deps: RouterDeps) {
               data: {
                 status: auth.authorizationUrl ? "pending" : "connected",
                 providerRef: auth.state || null,
-                metadata: { state: auth.state },
+                metadata: { state: auth.state, authRevision },
               },
             });
             return updated.count > 0;
@@ -4835,7 +4847,7 @@ export function createRouter(deps: RouterDeps) {
         if (!transactionConnector)
           throw new ORPCError("BAD_REQUEST", { message: "Integration provider is not configured" });
         let row = existing;
-        if (existing.status !== "connected") {
+        if (existing.status !== "connected" && existing.status !== "error") {
           // Hold the provider lock across remote completion, account-id resolution,
           // providerRef persistence, and any overlapping revokeUnreferenced cleanup
           // so a concurrent begin-loss cleanup cannot delete the account we are about
@@ -4861,7 +4873,7 @@ export function createRouter(deps: RouterDeps) {
                   message: "Integration credentials changed; retry.",
                 });
               }
-              if (current.status === "connected") return current;
+              if (current.status === "connected" || current.status === "error") return current;
               if (current.status === "revoked") {
                 // Authorization URLs from a revoke-win begin can still finish
                 // remotely. Cancel leftover Composio request ids / drop Pipedream
@@ -4871,21 +4883,6 @@ export function createRouter(deps: RouterDeps) {
                   "connections.complete",
                   context.signal,
                 );
-                const restoreRevokedForRetry = async () => {
-                  // Cleanup failed while the row is already revoked — restore pending
-                  // so the UI can retry removal instead of leaving an orphan remote.
-                  // Use the root client (not tx): throwing IsolationError aborts this
-                  // transaction and would otherwise roll back a tx-scoped restore.
-                  await deps.prisma.connection.updateMany({
-                    where: {
-                      id: current.id,
-                      spaceId: context.actor.spaceId,
-                      userId: context.actor.userId,
-                      status: "revoked",
-                    },
-                    data: { status: "pending" },
-                  });
-                };
                 const pendingRef = current.providerRef?.trim();
                 try {
                   if (pendingRef && pendingRef !== current.provider) {
@@ -4966,7 +4963,6 @@ export function createRouter(deps: RouterDeps) {
                       provider: existing.provider,
                     },
                   );
-                  await restoreRevokedForRetry();
                 }
                 throw new IsolationError();
               }
@@ -5028,7 +5024,7 @@ export function createRouter(deps: RouterDeps) {
                     id: { not: existing.id },
                     status: { in: ["connected", "pending", "error"] },
                   },
-                  select: { providerRef: true },
+                  select: { providerRef: true, status: true },
                 });
                 // Exclude concrete account ids only. A pending sibling may still
                 // store a slug or authorization-request id; passing those raw refs
@@ -5052,6 +5048,10 @@ export function createRouter(deps: RouterDeps) {
                     ).catch(() => undefined);
                     if (resolvedSiblingId) {
                       excludeIds.push(resolvedSiblingId);
+                    } else if (sibling.status === "error") {
+                      // A failed request must not block a fresh grant forever. Its
+                      // own ref stays excluded; never adopt it as the new account.
+                      excludeIds.push(ref);
                     } else {
                       unresolvedSibling = true;
                     }
@@ -5075,15 +5075,9 @@ export function createRouter(deps: RouterDeps) {
                     );
               }
 
-              // When a resolver exists and providerRef is still a request-scoped
-              // id (not the provider slug), require a concrete account id before
-              // marking connected — otherwise revoke would delete the wrong ref.
-              if (
-                resolveAccountId &&
-                current.providerRef &&
-                current.providerRef !== current.provider &&
-                !resolvedAccountId
-              ) {
+              // An account-aware provider must identify this grant before it can
+              // become usable; a slug cannot safely identify an account to revoke.
+              if (resolveAccountId && !resolvedAccountId) {
                 return current;
               }
 
@@ -5123,6 +5117,10 @@ export function createRouter(deps: RouterDeps) {
           connectorId: row.connectorId,
           provider: row.provider,
           displayName: row.displayName,
+          remoteAccountId:
+            row.status === "connected" && row.providerRef && row.providerRef !== row.provider
+              ? row.providerRef
+              : null,
           status: row.status as "pending" | "connected" | "revoked" | "error",
           capabilities: [],
           createdAt: row.createdAt.toISOString(),
@@ -5146,6 +5144,10 @@ export function createRouter(deps: RouterDeps) {
           connectorId: row.connectorId,
           provider: row.provider,
           displayName: row.displayName,
+          remoteAccountId:
+            row.status === "connected" && row.providerRef && row.providerRef !== row.provider
+              ? row.providerRef
+              : null,
           status: row.status as "pending" | "connected" | "revoked" | "error",
           capabilities: [],
           createdAt: row.createdAt.toISOString(),

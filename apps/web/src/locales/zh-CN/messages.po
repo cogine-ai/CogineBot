@@ -18,6 +18,11 @@ msgstr ""
 msgid "{0, plural, one {# model} other {# models}}"
 msgstr "{0, plural, one {# 个模型} other {# 个模型}}"
 
+#. placeholder {0}: tools.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0, plural, one {# tool} other {# tools}}"
+msgstr "{0, plural, one {# 个工具} other {# 个工具}}"
+
 #. placeholder {0}: Math.ceil(oauth.expiresInSeconds / 60)
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -65,6 +70,16 @@ msgstr "{0} KB"
 msgid "{0} MB"
 msgstr "{0} MB"
 
+#. placeholder {0}: summary.errors.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} need attention"
+msgstr "{0} 个需处理"
+
+#. placeholder {0}: summary.pending.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} pending"
+msgstr "{0} 个待授权"
+
 #. placeholder {0}: sender.name
 #: src/pages/ExternalConversationSettings.tsx
 msgid "{0} rollup hours"
@@ -75,6 +90,11 @@ msgstr ""
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "{0} runs · {1} tokens"
 msgstr "{0} 次运行 · {1} tokens"
+
+#. placeholder {0}: server.allowedTools.length
+#: src/components/integrations/McpToolAccess.tsx
+msgid "{0} tools shared in this space"
+msgstr "{0} 个工具已共享到此空间"
 
 #. placeholder {0}: bot.name
 #: src/pages/ExternalConversationSettings.tsx
@@ -176,13 +196,13 @@ msgstr ""
 msgid "{stepCount, plural, one {Working… · # tool} other {Working… · # tools}}"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "{stopped} accounts disconnected locally"
+msgstr "{stopped} 个账号已在本地断开"
+
 #: src/pages/ActivityList.tsx
 msgid "{title}, {label}"
 msgstr "{title}，{label}"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "{toolCount, plural, one {# tool} other {# tools}}"
-msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "{workingBotName} is working"
@@ -192,6 +212,10 @@ msgstr "{workingBotName} 正在工作"
 #: src/pages/Shell.tsx
 msgid "@{0}"
 msgstr "@{0}"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "1 account disconnected locally"
+msgstr "1 个账号已在本地断开"
 
 #: src/pages/shell/message-cards.tsx
 msgid "A bit of everything"
@@ -218,7 +242,7 @@ msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Access token"
-msgstr ""
+msgstr "访问令牌"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Access token (optional)"
@@ -232,6 +256,14 @@ msgstr "账户"
 msgid "Account default"
 msgstr "账户默认"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Account details"
+msgstr "账号详情"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account disconnected."
+msgstr "账号已断开。"
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Account ID"
@@ -239,11 +271,19 @@ msgstr "账户 ID"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Account label"
-msgstr ""
+msgstr "账号名称"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Accounts"
-msgstr ""
+msgstr "账号"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts changed. Review them before disconnecting."
+msgstr "账号已发生变化，请检查后再断开。"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts that need attention are kept. Manage them individually."
+msgstr "需处理的账号会保留，请逐个管理。"
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Action confirmations"
@@ -305,13 +345,13 @@ msgstr "请填写服务器名称。"
 msgid "Add a stdio command."
 msgstr "请填写 stdio 命令。"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Add account"
+msgstr "添加账号"
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "请填写 HTTPS 服务器 URL。"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Add another"
-msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Add connected model"
@@ -360,7 +400,7 @@ msgstr "添加服务器"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Add server URL"
-msgstr ""
+msgstr "添加服务地址"
 
 #: src/pages/shell/chat-recipients.tsx
 msgid "Add someone…"
@@ -378,12 +418,7 @@ msgstr "添加 Treg"
 msgid "Add trigger"
 msgstr "添加触发器"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Added"
-msgstr ""
-
 #: src/pages/McpServersOverlay.tsx
-#: src/pages/PluginsOverlay.tsx
 msgid "Adding…"
 msgstr "正在添加…"
 
@@ -409,9 +444,9 @@ msgstr "Agent 电脑"
 msgid "Agent connections"
 msgstr "Agent 连接"
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Agents:"
-msgstr "Agent："
+#: src/pages/PluginsOverlay.tsx
+msgid "All apps"
+msgstr "全部应用"
 
 #: src/pages/Artifacts.tsx
 msgid "All bots"
@@ -428,6 +463,10 @@ msgstr ""
 #: src/pages/Artifacts.tsx
 msgid "All time"
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "All tools shared in this space"
+msgstr "此空间已共享全部工具"
 
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
@@ -530,18 +569,17 @@ msgstr ""
 msgid "Appearance"
 msgstr "外观"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Application filter"
+msgstr "筛选应用"
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
 msgstr "审批边界"
 
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/shell/message-cards.tsx
 msgid "Approve"
 msgstr "批准"
-
-#: src/pages/shell/message-cards.tsx
-msgid "Approve this server to let your agent use its tools."
-msgstr "批准此服务器后，Agent 才能使用它的工具。"
 
 #: src/pages/BotContextMenu.tsx
 msgid "Archive"
@@ -596,7 +634,7 @@ msgstr "发送外部邮件前询问"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Ask the server owner to configure this provider."
-msgstr ""
+msgstr "请联系实例管理员配置此服务。"
 
 #. placeholder {0}: preset.time
 #: src/pages/RoutineSchedule.tsx
@@ -629,6 +667,19 @@ msgstr "身份验证失败。"
 msgid "Authorization code or callback URL"
 msgstr "授权码或回调 URL"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization did not complete. You can authorize again."
+msgstr "授权未完成，可重新授权。"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization is still pending."
+msgstr "仍在等待授权。"
+
+#. placeholder {0}: row.remoteAccountId
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization record: {0}"
+msgstr "授权记录：{0}"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Authorization timed out. Please try again."
 msgstr "授权超时，请重试。"
@@ -636,6 +687,10 @@ msgstr "授权超时，请重试。"
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "授权"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorize again"
+msgstr "重新授权"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize this server so agents can use its tools. A popup opens."
@@ -769,7 +824,7 @@ msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Browse MCP servers"
-msgstr ""
+msgstr "浏览 MCP 服务"
 
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Browser"
@@ -778,6 +833,10 @@ msgstr ""
 #: src/pages/KnowledgeSection.tsx
 msgid "Built-in"
 msgstr "内置"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "By Cogine"
+msgstr "Cogine 出品"
 
 #: src/App.tsx
 msgid "Can't reach the server."
@@ -797,6 +856,10 @@ msgstr "无法连接服务器。"
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "取消"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Cancel connection"
+msgstr "取消连接"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -869,6 +932,10 @@ msgstr "检查更新"
 msgid "Check in."
 msgstr "报到。"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Check status"
+msgstr "检查状态"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the API key or sign-in, then test again."
 msgstr "请检查 API 密钥或登录，然后重新测试。"
@@ -940,11 +1007,11 @@ msgstr "正在清空…"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Client ID"
-msgstr ""
+msgstr "客户端 ID"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Client secret"
-msgstr ""
+msgstr "客户端密钥"
 
 #: src/components/ErrorBoundary.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -1097,7 +1164,7 @@ msgstr "电脑未开启。请设置 SANDBOX_PROVIDER=docker 并提供 SANDBOX_SU
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Configure a plugin catalog on the server to connect apps."
-msgstr ""
+msgstr "请先在服务端配置应用目录。"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Configured by deployment"
@@ -1164,6 +1231,7 @@ msgstr "连接 Treg"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
@@ -1198,6 +1266,14 @@ msgstr "已连接，下一条消息起即可使用其工具。"
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "正在连接…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection source"
+msgstr "连接来源"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection status unconfirmed. Refresh status."
+msgstr "连接状态未确认，请刷新状态。"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
@@ -1270,6 +1346,10 @@ msgstr "无法修改密码"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Could not change the default model"
 msgstr "无法更改默认模型"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not check connection"
+msgstr "无法检查连接"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Could not check stored credentials."
@@ -1490,6 +1570,10 @@ msgstr "无法加载此对话。"
 msgid "Could not load this file."
 msgstr "无法加载此文件。"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not load tools"
+msgstr "无法加载工具"
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Could not load update status"
 msgstr "无法加载更新状态"
@@ -1556,7 +1640,7 @@ msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not rename connection"
-msgstr ""
+msgstr "无法修改账号名称"
 
 #: src/pages/shell/dialogs.tsx
 msgid "Could not rename section"
@@ -1573,10 +1657,6 @@ msgstr "无法渲染图表"
 #: src/pages/Auth.tsx
 msgid "Could not reset password"
 msgstr "无法重置密码"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Could not revoke connection"
-msgstr "无法撤销连接"
 
 #: src/pages/Shell.tsx
 msgid "Could not run routine"
@@ -1638,9 +1718,13 @@ msgstr ""
 msgid "Could not save this choice"
 msgstr "无法保存此选择"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Could not save tool access"
+msgstr "无法保存工具权限"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not search catalog"
-msgstr ""
+msgstr "无法搜索应用目录"
 
 #: src/pages/Auth.tsx
 msgid "Could not send reset email"
@@ -1669,10 +1753,6 @@ msgstr "无法接管"
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not update"
 msgstr "无法更新"
-
-#: src/pages/McpServersOverlay.tsx
-msgid "Could not update agent access"
-msgstr "无法更新 Agent 权限"
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Could not update computer"
@@ -1937,7 +2017,7 @@ msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Direct MCP"
-msgstr ""
+msgstr "直连 MCP"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
@@ -1946,6 +2026,7 @@ msgstr ""
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnect"
 msgstr "断开"
@@ -1954,13 +2035,35 @@ msgstr "断开"
 msgid "Disconnect {disconnectName}?"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect account"
+msgstr "断开账号"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect did not complete. Review the remaining accounts before trying again."
+msgstr "断开未完成，请检查剩余账号后重试。"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect this account?"
+msgstr "断开此账号？"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected"
+msgstr "已断开"
+
 #. placeholder {0}: selected.providerName ?? selected.provider
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Disconnected {0}."
 msgstr ""
 
+#. placeholder {0}: history.length
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected accounts ({0})"
+msgstr "已断开的账号（{0}）"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnecting…"
 msgstr "正在断开…"
@@ -2030,7 +2133,7 @@ msgstr "下载为 Markdown"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Download Executor"
-msgstr ""
+msgstr "下载 Executor"
 
 #: src/components/DesktopUpdates.tsx
 msgid "Downloading…"
@@ -2300,7 +2403,7 @@ msgstr "通用"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Get credentials"
-msgstr ""
+msgstr "获取凭据"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Get notified when this Bot finishes or needs input"
@@ -2463,11 +2566,11 @@ msgstr "指令"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Integration domain"
-msgstr ""
+msgstr "服务域名"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Integration options"
-msgstr ""
+msgstr "接入方式"
 
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
@@ -2611,7 +2714,7 @@ msgstr "正在加载规则…"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading tools…"
-msgstr ""
+msgstr "正在加载工具…"
 
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Loading voice providers…"
@@ -2636,6 +2739,10 @@ msgstr "本地"
 #: src/pages/HostComputerPrompt.tsx
 msgid "Local access lets bots run commands without asking. Avoid it on shared or public servers."
 msgstr "本地访问权限允许 Bot 无需询问就执行命令。请勿在共享或公开服务器上启用。"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Local access stopped · Provider confirmation pending"
+msgstr "本地已停用 · 远端待确认"
 
 #: src/pages/LocalSettings.tsx
 msgid "Local Server Settings"
@@ -2666,8 +2773,9 @@ msgid "Make sure nothing is still running on this computer."
 msgstr "请确认这台电脑上没有仍在运行的任务。"
 
 #: src/pages/BillingSettingsPanel.tsx
+#: src/pages/PluginsOverlay.tsx
 msgid "Manage"
-msgstr ""
+msgstr "管理"
 
 #: src/pages/Paywall.tsx
 msgid "Manage billing"
@@ -2687,11 +2795,11 @@ msgstr "管理工作区语义记忆提供方。"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual"
-msgstr ""
+msgstr "手动"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual setup required"
-msgstr ""
+msgstr "需要手动配置"
 
 #: src/pages/BotContextMenu.tsx
 msgid "Mark as Read"
@@ -2953,6 +3061,10 @@ msgstr "给这个例行任务命名"
 msgid "Needs an answer"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Needs attention"
+msgstr "需处理"
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -3000,6 +3112,10 @@ msgstr "新建工作区"
 msgid "New ticket"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No active accounts."
+msgstr "暂无有效账号。"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No agent connections yet."
 msgstr "还没有 Agent 连接。"
@@ -3037,6 +3153,14 @@ msgstr ""
 msgid "No chat apps linked yet."
 msgstr "还没有关联聊天应用。"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected apps."
+msgstr "暂无已连接应用。"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected or pending accounts remain for this source."
+msgstr "此来源已无已连接或待授权账号。"
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3048,10 +3172,6 @@ msgstr "还没有群聊。"
 #: src/components/AskCard.tsx
 msgid "No longer active"
 msgstr "已停用"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "No managed app catalog is configured on this deployment."
-msgstr "此部署未配置托管应用目录。"
 
 #: src/pages/Artifacts.tsx
 msgid "No matching artifacts on this page."
@@ -3087,7 +3207,7 @@ msgstr "未找到提供方。"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "No remote MCP servers found"
-msgstr ""
+msgstr "未找到远程 MCP 服务"
 
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/shell/chat-recipients.tsx
@@ -3117,7 +3237,11 @@ msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "No tools available."
-msgstr ""
+msgstr "暂无可用工具。"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "No tools shared in this space"
+msgstr "此空间尚未共享工具"
 
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
@@ -3134,10 +3258,6 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Not connected"
 msgstr "未连接"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Not in the plugin catalog"
-msgstr "不在插件目录中"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Not now"
@@ -3178,7 +3298,7 @@ msgstr "OAuth 连接失败"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "OAuth expired"
-msgstr ""
+msgstr "授权已过期"
 
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
@@ -3236,10 +3356,6 @@ msgstr "在完整窗口中打开"
 msgid "Open navigation"
 msgstr "打开导航"
 
-#: src/components/computer/TerminalApp.tsx
-msgid "Open shell"
-msgstr "打开 Shell"
-
 #: src/pages/ScratchpadSection.tsx
 msgid "Open work"
 msgstr "待办"
@@ -3295,6 +3411,10 @@ msgstr "原消息不可用"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "其他模型…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Other sources stay connected. Operations already sent may still finish."
+msgstr "其他来源保持连接，已发出的操作仍可能完成。"
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3354,6 +3474,10 @@ msgstr "请粘贴你的 API 密钥，然后重新测试。"
 msgid "Paused"
 msgstr "已暂停"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Pending authorization"
+msgstr "等待授权"
+
 #: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
 msgid "Photo"
@@ -3406,7 +3530,7 @@ msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Project ID"
-msgstr ""
+msgstr "项目 ID"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Protected input"
@@ -3538,6 +3662,10 @@ msgstr ""
 msgid "Refresh"
 msgstr "刷新"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Refresh status"
+msgstr "刷新状态"
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refresh view"
 msgstr ""
@@ -3549,10 +3677,6 @@ msgstr ""
 #: src/lib/user-error.ts
 msgid "Registration is closed"
 msgstr "注册已关闭"
-
-#: src/pages/Shell.tsx
-msgid "Release"
-msgstr "释放"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Release computer"
@@ -3757,6 +3881,10 @@ msgstr "版本 {0}"
 msgid "Review provider settings and test again."
 msgstr "请检查提供方设置并重新测试。"
 
+#: src/pages/shell/message-cards.tsx
+msgid "Review tool access"
+msgstr "检查工具权限"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "撤销"
@@ -3847,6 +3975,10 @@ msgstr ""
 msgid "Save the workspace and install current software."
 msgstr "保存工作区并安装最新软件。"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Save tool access"
+msgstr "保存工具权限"
+
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/ExternalConversationSettings.tsx
@@ -3915,11 +4047,11 @@ msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Search by domain"
-msgstr ""
+msgstr "按域名搜索"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Search integrations.sh"
-msgstr ""
+msgstr "搜索 integrations.sh"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Search models"
@@ -3987,11 +4119,19 @@ msgstr "Sentry 告警"
 msgid "Serenity endpoint is required."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Server changed. Close and reopen tool access to review it."
+msgstr "服务器已变更，请关闭并重新打开工具权限进行检查。"
+
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/LocalSettings.tsx
 msgid "Server integrations"
-msgstr ""
+msgstr "服务端连接"
+
+#: src/components/integrations/IntegrationSetup.tsx
+msgid "Server is no longer available"
+msgstr "服务器已不可用"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Server name"
@@ -4023,6 +4163,19 @@ msgstr "设置：用量"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "设置帮助"
+
+#: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Share all tools with this space"
+msgstr "向此空间共享全部工具"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share this server's tools with all bots in this space."
+msgstr "将此服务器的工具共享给此空间的所有 Bot。"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share tools"
+msgstr "共享工具"
 
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -4147,6 +4300,10 @@ msgstr "软件更新"
 #: src/lib/user-error.ts
 msgid "Something went wrong. Try again."
 msgstr "出了点问题。请重试。"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Source accounts disconnected."
+msgstr "此来源下的账号已断开。"
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Space changed. Reopen Models to load its backup list."
@@ -4291,6 +4448,11 @@ msgstr "正在切换…"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "System"
 msgstr "系统"
+
+#: src/components/computer/TerminalApp.tsx
+#: src/pages/Shell.tsx
+msgid "Take control"
+msgstr "接管"
 
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Teach a task"
@@ -4483,13 +4645,21 @@ msgstr "至:"
 msgid "Today"
 msgstr "今天"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool access"
+msgstr "工具权限"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool names, one per line"
+msgstr "工具名称，每行一个"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Tool sources"
 msgstr "工具源"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Tools"
-msgstr ""
+msgstr "工具"
 
 #: src/components/call/CallCard.tsx
 msgid "Transcript"
@@ -4541,8 +4711,12 @@ msgid "Unavailable"
 msgstr "不可用"
 
 #: src/pages/PluginsOverlay.tsx
-msgid "Uninstall"
-msgstr ""
+msgid "Uninstall source"
+msgstr "卸载来源"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Uninstall this source?"
+msgstr "卸载此来源？"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Unknown tool"
@@ -4728,6 +4902,10 @@ msgstr "排队等候…"
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"
 msgstr "等待中…"
+
+#: src/pages/Shell.tsx
+msgid "Watching"
+msgstr "查看中"
 
 #: src/pages/Paywall.tsx
 msgid "Web, desktop and mobile apps"

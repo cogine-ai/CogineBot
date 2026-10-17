@@ -225,6 +225,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     kind: z.literal("mcp_approval"),
     name: z.string(),
     serverId: Id,
+    serverRevision: z.number().int().positive().optional(),
     transport: McpTransportSchema,
     endpoint: z.string().nullable(),
     needsOAuth: z.boolean(),

@@ -18,6 +18,11 @@ msgstr ""
 msgid "{0, plural, one {# model} other {# models}}"
 msgstr "{0, plural, one {# model} other {# model}}"
 
+#. placeholder {0}: tools.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0, plural, one {# tool} other {# tools}}"
+msgstr "{0, plural, one {# araç} other {# araç}}"
+
 #. placeholder {0}: Math.ceil(oauth.expiresInSeconds / 60)
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -65,6 +70,16 @@ msgstr "{0} KB"
 msgid "{0} MB"
 msgstr "{0} MB"
 
+#. placeholder {0}: summary.errors.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} need attention"
+msgstr "{0} için işlem gerekli"
+
+#. placeholder {0}: summary.pending.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} pending"
+msgstr "{0} bekliyor"
+
 #. placeholder {0}: sender.name
 #: src/pages/ExternalConversationSettings.tsx
 msgid "{0} rollup hours"
@@ -75,6 +90,11 @@ msgstr ""
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "{0} runs · {1} tokens"
 msgstr "{0} çalıştırma · {1} token"
+
+#. placeholder {0}: server.allowedTools.length
+#: src/components/integrations/McpToolAccess.tsx
+msgid "{0} tools shared in this space"
+msgstr "Bu alanda {0} araç paylaşılıyor"
 
 #. placeholder {0}: bot.name
 #: src/pages/ExternalConversationSettings.tsx
@@ -176,13 +196,13 @@ msgstr ""
 msgid "{stepCount, plural, one {Working… · # tool} other {Working… · # tools}}"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "{stopped} accounts disconnected locally"
+msgstr "{stopped} hesabın yerel bağlantısı kesildi"
+
 #: src/pages/ActivityList.tsx
 msgid "{title}, {label}"
 msgstr "{title}, {label}"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "{toolCount, plural, one {# tool} other {# tools}}"
-msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "{workingBotName} is working"
@@ -192,6 +212,10 @@ msgstr "{workingBotName} çalışıyor"
 #: src/pages/Shell.tsx
 msgid "@{0}"
 msgstr "@{0}"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "1 account disconnected locally"
+msgstr "1 hesabın yerel bağlantısı kesildi"
 
 #: src/pages/shell/message-cards.tsx
 msgid "A bit of everything"
@@ -232,6 +256,14 @@ msgstr "Hesap"
 msgid "Account default"
 msgstr "Hesap varsayılanı"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Account details"
+msgstr "Hesap ayrıntıları"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account disconnected."
+msgstr "Hesap bağlantısı kesildi."
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Account ID"
@@ -244,6 +276,14 @@ msgstr ""
 #: src/pages/PluginsOverlay.tsx
 msgid "Accounts"
 msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts changed. Review them before disconnecting."
+msgstr "Hesaplar değişti. Bağlantıyı kesmeden önce gözden geçirin."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts that need attention are kept. Manage them individually."
+msgstr "İşlem gereken hesaplar korunur. Bunları ayrı ayrı yönetin."
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Action confirmations"
@@ -305,13 +345,13 @@ msgstr "Bir sunucu adı gir."
 msgid "Add a stdio command."
 msgstr "Bir stdio komutu gir."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Add account"
+msgstr "Hesap ekle"
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "Bir HTTPS sunucu URL'si gir."
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Add another"
-msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Add connected model"
@@ -378,12 +418,7 @@ msgstr "Treg ekle"
 msgid "Add trigger"
 msgstr ""
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Added"
-msgstr ""
-
 #: src/pages/McpServersOverlay.tsx
-#: src/pages/PluginsOverlay.tsx
 msgid "Adding…"
 msgstr "Ekleniyor…"
 
@@ -409,9 +444,9 @@ msgstr "Agent bilgisayarı"
 msgid "Agent connections"
 msgstr ""
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Agents:"
-msgstr "Agent'lar:"
+#: src/pages/PluginsOverlay.tsx
+msgid "All apps"
+msgstr "Tüm uygulamalar"
 
 #: src/pages/Artifacts.tsx
 msgid "All bots"
@@ -428,6 +463,10 @@ msgstr ""
 #: src/pages/Artifacts.tsx
 msgid "All time"
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "All tools shared in this space"
+msgstr "Bu alanda tüm araçlar paylaşılıyor"
 
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
@@ -530,18 +569,17 @@ msgstr ""
 msgid "Appearance"
 msgstr "Görünüm"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Application filter"
+msgstr "Uygulama filtresi"
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
 msgstr "Onay sınırları"
 
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/shell/message-cards.tsx
 msgid "Approve"
 msgstr "Onayla"
-
-#: src/pages/shell/message-cards.tsx
-msgid "Approve this server to let your agent use its tools."
-msgstr "Agent'ının bu sunucunun araçlarını kullanabilmesi için sunucuyu onayla."
 
 #: src/pages/BotContextMenu.tsx
 msgid "Archive"
@@ -629,6 +667,19 @@ msgstr "Kimlik doğrulama başarısız."
 msgid "Authorization code or callback URL"
 msgstr "Yetkilendirme kodu veya callback URL'si"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization did not complete. You can authorize again."
+msgstr "Yetkilendirme tamamlanmadı. Yeniden yetkilendirebilirsiniz."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization is still pending."
+msgstr "Yetkilendirme hâlâ bekleniyor."
+
+#. placeholder {0}: row.remoteAccountId
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization record: {0}"
+msgstr "Yetkilendirme kaydı: {0}"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Authorization timed out. Please try again."
 msgstr "Yetkilendirme zaman aşımına uğradı. Lütfen tekrar dene."
@@ -636,6 +687,10 @@ msgstr "Yetkilendirme zaman aşımına uğradı. Lütfen tekrar dene."
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "Yetkilendir"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorize again"
+msgstr "Yeniden yetkilendir"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize this server so agents can use its tools. A popup opens."
@@ -779,6 +834,10 @@ msgstr ""
 msgid "Built-in"
 msgstr "Yerleşik"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "By Cogine"
+msgstr "Cogine tarafından"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "Sunucuya ulaşılamıyor."
@@ -797,6 +856,10 @@ msgstr "Sunucuya ulaşılamıyor."
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "İptal"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Cancel connection"
+msgstr "Bağlantıyı iptal et"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -868,6 +931,10 @@ msgstr ""
 #: src/pages/Shell.tsx
 msgid "Check in."
 msgstr "Durum bildir."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Check status"
+msgstr "Durumu kontrol et"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Check the API key or sign-in, then test again."
@@ -1164,6 +1231,7 @@ msgstr "Treg'i bağla"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
@@ -1198,6 +1266,14 @@ msgstr "Bağlandı. Araçları bir sonraki mesajından itibaren kullanılabilir.
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "Bağlanıyor…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection source"
+msgstr "Bağlantı kaynağı"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection status unconfirmed. Refresh status."
+msgstr "Bağlantı durumu doğrulanamadı. Durumu yenileyin."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
@@ -1270,6 +1346,10 @@ msgstr "Parola değiştirilemedi"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Could not change the default model"
 msgstr "Varsayılan model değiştirilemedi"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not check connection"
+msgstr "Bağlantı kontrol edilemedi"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Could not check stored credentials."
@@ -1490,6 +1570,10 @@ msgstr "Bu sohbet yüklenemedi."
 msgid "Could not load this file."
 msgstr "Bu dosya yüklenemedi."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not load tools"
+msgstr "Araçlar yüklenemedi"
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Could not load update status"
 msgstr ""
@@ -1574,10 +1658,6 @@ msgstr "Grafik çizilemedi"
 msgid "Could not reset password"
 msgstr "Parola sıfırlanamadı"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Could not revoke connection"
-msgstr "Bağlantı iptal edilemedi"
-
 #: src/pages/Shell.tsx
 msgid "Could not run routine"
 msgstr ""
@@ -1638,6 +1718,10 @@ msgstr ""
 msgid "Could not save this choice"
 msgstr "Bu seçim kaydedilemedi"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Could not save tool access"
+msgstr "Araç erişimi kaydedilemedi"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not search catalog"
 msgstr ""
@@ -1669,10 +1753,6 @@ msgstr "Kontrol alınamadı"
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not update"
 msgstr "Güncellenemedi"
-
-#: src/pages/McpServersOverlay.tsx
-msgid "Could not update agent access"
-msgstr "Agent erişimi güncellenemedi"
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Could not update computer"
@@ -1946,6 +2026,7 @@ msgstr ""
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnect"
 msgstr "Bağlantıyı kes"
@@ -1954,13 +2035,35 @@ msgstr "Bağlantıyı kes"
 msgid "Disconnect {disconnectName}?"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect account"
+msgstr "Hesap bağlantısını kes"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect did not complete. Review the remaining accounts before trying again."
+msgstr "Bağlantı kesilemedi. Yeniden denemeden önce kalan hesapları gözden geçirin."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect this account?"
+msgstr "Bu hesabın bağlantısı kesilsin mi?"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected"
+msgstr "Bağlantı kesildi"
+
 #. placeholder {0}: selected.providerName ?? selected.provider
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Disconnected {0}."
 msgstr ""
 
+#. placeholder {0}: history.length
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected accounts ({0})"
+msgstr "Bağlantısı kesilen hesaplar ({0})"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnecting…"
 msgstr "Bağlantı kesiliyor…"
@@ -2637,6 +2740,10 @@ msgstr "Yerel"
 msgid "Local access lets bots run commands without asking. Avoid it on shared or public servers."
 msgstr "Yerel erişim, botların sormadan komut çalıştırmasına izin verir. Paylaşılan veya herkese açık sunucularda bunu kullanma."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Local access stopped · Provider confirmation pending"
+msgstr "Yerel erişim durduruldu · Sağlayıcı onayı bekleniyor"
+
 #: src/pages/LocalSettings.tsx
 msgid "Local Server Settings"
 msgstr ""
@@ -2666,6 +2773,7 @@ msgid "Make sure nothing is still running on this computer."
 msgstr "Bu bilgisayarda hâlâ çalışan bir şey olmadığından emin ol."
 
 #: src/pages/BillingSettingsPanel.tsx
+#: src/pages/PluginsOverlay.tsx
 msgid "Manage"
 msgstr ""
 
@@ -2953,6 +3061,10 @@ msgstr ""
 msgid "Needs an answer"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Needs attention"
+msgstr "İşlem gerekli"
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -3000,6 +3112,10 @@ msgstr ""
 msgid "New ticket"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No active accounts."
+msgstr "Etkin hesap yok."
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No agent connections yet."
 msgstr ""
@@ -3037,6 +3153,14 @@ msgstr ""
 msgid "No chat apps linked yet."
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected apps."
+msgstr "Bağlı uygulama yok."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected or pending accounts remain for this source."
+msgstr "Bu kaynakta bağlı veya yetkilendirme bekleyen hesap kalmadı."
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3048,10 +3172,6 @@ msgstr ""
 #: src/components/AskCard.tsx
 msgid "No longer active"
 msgstr "Artık etkin değil"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "No managed app catalog is configured on this deployment."
-msgstr ""
 
 #: src/pages/Artifacts.tsx
 msgid "No matching artifacts on this page."
@@ -3119,6 +3239,10 @@ msgstr ""
 msgid "No tools available."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "No tools shared in this space"
+msgstr "Bu alanda paylaşılan araç yok"
+
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr ""
@@ -3134,10 +3258,6 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Not connected"
 msgstr "Bağlı değil"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Not in the plugin catalog"
-msgstr ""
 
 #: src/pages/shell/message-cards.tsx
 msgid "Not now"
@@ -3236,10 +3356,6 @@ msgstr "Tam pencerede aç"
 msgid "Open navigation"
 msgstr "Gezinmeyi aç"
 
-#: src/components/computer/TerminalApp.tsx
-msgid "Open shell"
-msgstr "Kabuğu aç"
-
 #: src/pages/ScratchpadSection.tsx
 msgid "Open work"
 msgstr "Açık işler"
@@ -3295,6 +3411,10 @@ msgstr "Orijinal mesaj kullanılamıyor"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "Başka model…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Other sources stay connected. Operations already sent may still finish."
+msgstr "Diğer kaynaklar bağlı kalır. Gönderilmiş işlemler yine de tamamlanabilir."
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3353,6 +3473,10 @@ msgstr "API anahtarını yapıştır, sonra yeniden test et."
 #: src/pages/RoutineEditor.tsx
 msgid "Paused"
 msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Pending authorization"
+msgstr "Yetkilendirme bekleniyor"
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
@@ -3538,6 +3662,10 @@ msgstr ""
 msgid "Refresh"
 msgstr "Yenile"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Refresh status"
+msgstr "Durumu yenile"
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refresh view"
 msgstr ""
@@ -3549,10 +3677,6 @@ msgstr ""
 #: src/lib/user-error.ts
 msgid "Registration is closed"
 msgstr "Kayıt kapalı"
-
-#: src/pages/Shell.tsx
-msgid "Release"
-msgstr "Bırak"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Release computer"
@@ -3757,6 +3881,10 @@ msgstr "rev {0}"
 msgid "Review provider settings and test again."
 msgstr "Sağlayıcı ayarlarını gözden geçir ve yeniden test et."
 
+#: src/pages/shell/message-cards.tsx
+msgid "Review tool access"
+msgstr "Araç erişimini gözden geçir"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "İptal et"
@@ -3846,6 +3974,10 @@ msgstr ""
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Save the workspace and install current software."
 msgstr "Çalışma alanını kaydedin ve güncel yazılımı yükleyin."
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Save tool access"
+msgstr "Araç erişimini kaydet"
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
@@ -3987,11 +4119,19 @@ msgstr ""
 msgid "Serenity endpoint is required."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Server changed. Close and reopen tool access to review it."
+msgstr "Sunucu değişti. İncelemek için araç erişimini kapatıp yeniden açın."
+
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/LocalSettings.tsx
 msgid "Server integrations"
 msgstr ""
+
+#: src/components/integrations/IntegrationSetup.tsx
+msgid "Server is no longer available"
+msgstr "Sunucu artık kullanılamıyor"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Server name"
@@ -4023,6 +4163,19 @@ msgstr "Ayarlar: Kullanım"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "Kurulum yardımı"
+
+#: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Share all tools with this space"
+msgstr "Tüm araçları bu alanla paylaş"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share this server's tools with all bots in this space."
+msgstr "Bu sunucunun araçlarını alandaki tüm botlarla paylaşın."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share tools"
+msgstr "Araçları paylaş"
 
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -4147,6 +4300,10 @@ msgstr ""
 #: src/lib/user-error.ts
 msgid "Something went wrong. Try again."
 msgstr "Bir şeyler ters gitti. Tekrar deneyin."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Source accounts disconnected."
+msgstr "Kaynak hesaplarının bağlantısı kesildi."
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Space changed. Reopen Models to load its backup list."
@@ -4291,6 +4448,11 @@ msgstr "Geçiliyor…"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "System"
 msgstr "Sistem"
+
+#: src/components/computer/TerminalApp.tsx
+#: src/pages/Shell.tsx
+msgid "Take control"
+msgstr "Kontrolü devral"
 
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Teach a task"
@@ -4483,6 +4645,14 @@ msgstr "Kime:"
 msgid "Today"
 msgstr "Bugün"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool access"
+msgstr "Araç erişimi"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool names, one per line"
+msgstr "Araç adları, her satıra bir ad"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Tool sources"
 msgstr "Araç kaynakları"
@@ -4541,8 +4711,12 @@ msgid "Unavailable"
 msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
-msgid "Uninstall"
-msgstr ""
+msgid "Uninstall source"
+msgstr "Kaynağı kaldır"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Uninstall this source?"
+msgstr "Bu kaynak kaldırılsın mı?"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Unknown tool"
@@ -4728,6 +4902,10 @@ msgstr "Sırada bekleniyor…"
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"
 msgstr "Bekleniyor…"
+
+#: src/pages/Shell.tsx
+msgid "Watching"
+msgstr "İzleme"
 
 #: src/pages/Paywall.tsx
 msgid "Web, desktop and mobile apps"

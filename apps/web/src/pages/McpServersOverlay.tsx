@@ -1,6 +1,6 @@
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { Bot, BotMcpServer, McpServer, McpTransport } from "@rakazo/contracts";
+import type { McpServer, McpTransport } from "@rakazo/contracts";
 import { deriveMcpSlug } from "@rakazo/core";
 import {
   Badge,
@@ -17,14 +17,14 @@ import {
   Field,
   FieldGroup,
   FieldLabel,
-  FieldTitle,
   Input,
   Tabs,
   TabsList,
   TabsTrigger,
 } from "@rakazo/ui-web";
-import { Check, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { McpToolAccess } from "../components/integrations/McpToolAccess";
 import { connectMcpOauth, MCP_OAUTH_CHANNEL } from "../lib/mcp-connect";
 import { rpc } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
@@ -43,10 +43,7 @@ function oauthActionLabel(server: McpServer, pending: boolean): string {
 export function McpServersOverlay({ onClose }: { onClose: () => void }) {
   const { t } = useLingui();
   const [servers, setServers] = useState<McpServer[]>([]);
-  const [bots, setBots] = useState<Bot[]>([]);
-  const [botAssignments, setBotAssignments] = useState<Record<string, BotMcpServer[]>>({});
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
-  const [selectedBotIds, setSelectedBotIds] = useState<string[]>([]);
   const [transport, setTransport] = useState<McpTransport>("streamable_http");
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("");
@@ -60,22 +57,7 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
   const [oauthPending, setOauthPending] = useState<string | null>(null);
 
   async function refresh() {
-    const [nextServers, nextBots, assignments] = await Promise.all([
-      rpc.mcp.servers.list(),
-      rpc.bots.list(),
-      rpc.mcp.assignments.all(),
-    ]);
-    const activeBots = nextBots.filter((bot) => !bot.archivedAt);
-    setServers(nextServers);
-    setBots(activeBots);
-    setBotAssignments(
-      Object.fromEntries(
-        activeBots.map((bot) => [
-          bot.id,
-          assignments.filter((assignment) => assignment.botId === bot.id),
-        ]),
-      ),
-    );
+    setServers(await rpc.mcp.servers.list());
   }
 
   useEffect(() => {
@@ -94,12 +76,6 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
     };
     return () => channel.close();
   }, []);
-
-  function toggleBot(id: string) {
-    setSelectedBotIds((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
 
   async function addServer() {
     setError(null);
@@ -121,42 +97,26 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
       const headers = headerValue.trim()
         ? { [headerName.trim() || "Authorization"]: headerValue.trim() }
         : {};
-      const created =
-        transport === "stdio"
-          ? await rpc.mcp.servers.create({
-              slug,
-              name: name.trim(),
-              transport,
-              command: command.trim(),
-              args: args.split(/\s+/).filter(Boolean),
-              env: {},
-              secret: secret || undefined,
-              enabled: true,
-            })
-          : await rpc.mcp.servers.create({
-              slug,
-              name: name.trim(),
-              transport,
-              endpoint: endpoint.trim(),
-              headers,
-              secret: secret || undefined,
-              enabled: true,
-            });
-      // replace() overwrites the bot's whole list, so merge with what it already has.
-      await Promise.all(
-        selectedBotIds.map((botId) => {
-          const existing = (botAssignments[botId] ?? []).filter(
-            (entry) => entry.serverId !== created.id,
-          );
-          return rpc.mcp.assignments.replace({
-            botId,
-            assignments: [
-              ...existing,
-              { serverId: created.id, allowAllTools: true, allowedTools: [] },
-            ],
-          });
-        }),
-      );
+      await (transport === "stdio"
+        ? rpc.mcp.servers.create({
+            slug,
+            name: name.trim(),
+            transport,
+            command: command.trim(),
+            args: args.split(/\s+/).filter(Boolean),
+            env: {},
+            secret: secret || undefined,
+            enabled: true,
+          })
+        : rpc.mcp.servers.create({
+            slug,
+            name: name.trim(),
+            transport,
+            endpoint: endpoint.trim(),
+            headers,
+            secret: secret || undefined,
+            enabled: true,
+          }));
       await refresh();
       setName("");
       setEndpoint("");
@@ -164,7 +124,6 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
       setHeaderValue("");
       setCommand("");
       setArgs("");
-      setSelectedBotIds([]);
     } catch (err) {
       setError(errorText(err, t`Could not add MCP server`));
     } finally {
@@ -192,21 +151,6 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
     } catch (err) {
       setError(errorText(err, t`Could not start OAuth`));
       setOauthPending(null);
-    }
-  }
-
-  async function toggleAssignment(server: McpServer, botId: string) {
-    setError(null);
-    const current = botAssignments[botId] ?? [];
-    const assigned = current.some((entry) => entry.serverId === server.id);
-    const next = assigned
-      ? current.filter((entry) => entry.serverId !== server.id)
-      : [...current, { serverId: server.id, allowAllTools: true, allowedTools: [] }];
-    try {
-      const updated = await rpc.mcp.assignments.replace({ botId, assignments: next });
-      setBotAssignments((map) => ({ ...map, [botId]: updated }));
-    } catch (err) {
-      setError(errorText(err, t`Could not update agent access`));
     }
   }
 
@@ -378,32 +322,6 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
                     ) : null}
                   </div>
                 </details>
-                {bots.length > 0 ? (
-                  <Field>
-                    <FieldTitle>
-                      <Trans>Agents:</Trans>
-                    </FieldTitle>
-                    <div className="flex flex-wrap gap-1.5">
-                      {bots.map((bot) => {
-                        const selected = selectedBotIds.includes(bot.id);
-                        return (
-                          <Button
-                            key={bot.id}
-                            type="button"
-                            variant={selected ? "default" : "outline"}
-                            size="xs"
-                            className="rounded-full"
-                            aria-pressed={selected}
-                            onClick={() => toggleBot(bot.id)}
-                          >
-                            {selected ? <Check aria-hidden="true" /> : null}
-                            {bot.name}
-                          </Button>
-                        );
-                      })}
-                    </div>
-                  </Field>
-                ) : null}
               </FieldGroup>
               <Button
                 type="button"
@@ -446,30 +364,7 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
                             {statusText}
                           </p>
                         ) : null}
-                        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                          <span className="text-[11px] text-muted-foreground">
-                            <Trans>Agents:</Trans>
-                          </span>
-                          {bots.map((bot) => {
-                            const assigned = (botAssignments[bot.id] ?? []).some(
-                              (entry) => entry.serverId === server.id,
-                            );
-                            return (
-                              <Button
-                                key={bot.id}
-                                type="button"
-                                variant={assigned ? "default" : "outline"}
-                                size="xs"
-                                className="rounded-full"
-                                aria-pressed={assigned}
-                                onClick={() => void toggleAssignment(server, bot.id)}
-                              >
-                                {assigned ? <Check aria-hidden="true" /> : null}
-                                {bot.name}
-                              </Button>
-                            );
-                          })}
-                        </div>
+                        <McpToolAccess server={server} onSaved={refresh} />
                         <div className="mt-3 flex flex-wrap gap-2">
                           {server.transport !== "stdio" ? (
                             <>

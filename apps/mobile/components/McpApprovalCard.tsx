@@ -1,4 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import type { ViewProps } from "react-native";
 import { Alert, StyleSheet, Text, View } from "react-native";
@@ -53,7 +54,16 @@ export function McpApprovalCard({
     setPendingAction(action);
     try {
       if (action === "approve") {
-        await rpc("mcp/assignments/approve", { botId, serverId: block.serverId, threadId });
+        if (block.serverRevision === undefined) {
+          router.push("/(settings)/mcp");
+          return;
+        }
+        await rpc("mcp/assignments/approve", {
+          botId,
+          serverId: block.serverId,
+          threadId,
+          revision: block.serverRevision,
+        });
       } else {
         await rpc("mcp/assignments/dismiss", { botId, serverId: block.serverId, threadId });
       }
@@ -106,17 +116,25 @@ export function McpApprovalCard({
           <Text style={[styles.description, { color: tokens.foreground }]}>
             {block.needsOAuth
               ? t("Finish MCP authorization in the web app.")
-              : t("Approve this server to let your agent use its tools.")}
+              : t("Share this server's tools with all bots in this space.")}
           </Text>
           <View style={styles.actions}>
             {!block.needsOAuth ? (
               <NativeActionButton
-                label={t("Approve")}
+                label={
+                  block.serverRevision === undefined ? t("Review tool access") : t("Share tools")
+                }
                 fill={false}
                 disabled={pendingAction !== null}
                 onPress={() => void submit("approve")}
               />
             ) : null}
+            <NativeActionButton
+              label={t("MCP settings")}
+              fill={false}
+              prominence="secondary"
+              onPress={() => router.push("/(settings)/mcp")}
+            />
             <NativeActionButton
               label={t("Not now")}
               prominence="secondary"

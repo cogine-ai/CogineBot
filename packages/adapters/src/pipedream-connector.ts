@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import type {
   AdapterContext,
+  ConnectedConnector,
   ConnectorCall,
   ConnectorCatalogItem,
   ConnectorEvent,
@@ -10,6 +11,10 @@ import type {
 import { getLogger } from "@rakazo/logging";
 import { catalogToolPrefix } from "./approval-effect.js";
 import { collectPages, filterCatalog } from "./composio-connector.js";
+import {
+  assertBoundConnectorAccount,
+  connectorAccountRevision,
+} from "./connector-account-binding.js";
 import {
   combineSignals,
   redactConnectorPayload,
@@ -22,6 +27,7 @@ import {
   executeLazyCatalogControl,
   isLazyCatalogControlRoute,
   lazyCatalogTools,
+  parseConnectorToolArgs,
   resolveCatalogCall,
 } from "./lazy-tool-catalog.js";
 import {
@@ -36,6 +42,8 @@ const API_BASE = "https://api.pipedream.com";
 const MCP_ENDPOINT = "https://remote.mcp.pipedream.net/v3";
 const DIRECTORY_TTL_MS = 10 * 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Local authorization selector, never forwarded as an upstream business argument. */
+export const PIPEDREAM_CONNECTION_SELECTOR = "__connectionId";
 export const MAX_PIPEDREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export interface PipedreamConnectorConfig {
@@ -162,31 +170,80 @@ export class PipedreamConnector implements ManagedConnectorProvider {
   }
 
   private async allTools(context: AdapterContext): Promise<ConnectorTool[]> {
-    const apps =
-      context.connectedConnections
-        ?.filter((connection) => connection.connectorId === "pipedream")
-        .map((connection) => connection.externalId) ?? [];
+    const connections = this.connections(context);
+    const apps = connections.map((connection) => connection.externalId);
     if (apps.length === 0) return [];
     const token = await this.token();
     const groups = await Promise.all(
       [...new Set(apps)].map(async (app) => {
         try {
-          const tools = await listRemoteMcpTools({
-            endpoint: MCP_ENDPOINT,
-            headers: this.mcpHeaders(context, app, token),
-            signal: context.signal,
-            fetch: this.dependencies.fetch,
-            resolveHostname: this.dependencies.resolveHostname,
+          const accounts = connections.filter((connection) => connection.externalId === app);
+          if (accounts.length > 1 && accounts.some((account) => !this.accountRef(account))) {
+            throw new Error(
+              "Reconnect each Pipedream account before using multiple accounts for this app",
+            );
+          }
+          const perAccount = await Promise.all(
+            accounts.map(async (connection) => {
+              try {
+                return { connection, tools: await this.accountTools(context, connection, token) };
+              } catch (error) {
+                getLogger().error(
+                  "pipedream account discovery failed",
+                  sanitizeConnectorError(error),
+                );
+                return { connection, tools: [] };
+              }
+            }),
+          );
+          const byName = new Map<
+            string,
+            Array<{ connection: ConnectedConnector; tool: ConnectorTool }>
+          >();
+          for (const { connection, tools } of perAccount) {
+            for (const tool of tools) {
+              const variants = byName.get(tool.name) ?? [];
+              variants.push({ connection, tool });
+              byName.set(tool.name, variants);
+            }
+          }
+          return [...byName.values()].map((variants) => {
+            const first = variants[0]!;
+            if (accounts.length === 1) return first.tool;
+            const schemas = variants.map(({ connection, tool }) => {
+              const properties = tool.inputSchema.properties as Record<string, unknown> | undefined;
+              if (properties && PIPEDREAM_CONNECTION_SELECTOR in properties) {
+                throw new Error("Pipedream tool schema conflicts with the local account selector");
+              }
+              return {
+                ...tool.inputSchema,
+                properties: {
+                  ...properties,
+                  [PIPEDREAM_CONNECTION_SELECTOR]: {
+                    type: "string",
+                    const: connection.id,
+                    description: `Authorized account: ${connection.displayName} (${connection.id})`,
+                  },
+                },
+                required: [
+                  ...new Set([
+                    ...(Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required : []),
+                    PIPEDREAM_CONNECTION_SELECTOR,
+                  ]),
+                ],
+              };
+            });
+            return {
+              ...first.tool,
+              inputSchema: { type: "object", anyOf: schemas },
+              route: {
+                connectorId: "pipedream",
+                resourceId: app,
+                toolName: first.tool.route!.toolName,
+                catalogGroup: app,
+              },
+            };
           });
-          return tools.map((tool) => ({
-            ...tool,
-            route: {
-              connectorId: "pipedream",
-              resourceId: app,
-              toolName: tool.name,
-              catalogGroup: app,
-            },
-          }));
         } catch (error) {
           // A single unavailable app must not hide tools from other connections.
           getLogger().error(
@@ -215,9 +272,118 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     call: ConnectorCall,
     context: AdapterContext,
   ): Promise<{ call: ConnectorCall; tool: ConnectorTool } | undefined> {
-    // Wrappers have no resourceId; real tools always do.
-    if (call.route?.resourceId || call.route?.toolName !== CATALOG_EXECUTE) return undefined;
-    return resolveCatalogCall(call, catalogEntries(await this.allTools(context)));
+    if (!call.route?.resourceId) {
+      if (call.route?.toolName !== CATALOG_EXECUTE) return undefined;
+      const resolved = resolveCatalogCall(call, catalogEntries(await this.allTools(context)));
+      return this.resolveCall(resolved.call, context);
+    }
+    const app = call.route.resourceId;
+    const accounts = this.connections(context).filter(
+      (connection) => connection.externalId === app,
+    );
+    const bound = assertBoundConnectorAccount(call, context);
+    const selectedId = call.args[PIPEDREAM_CONNECTION_SELECTOR];
+    const requestedId = bound?.id ?? call.connectionId ?? call.route.connectionId ?? selectedId;
+    if (selectedId !== undefined && typeof selectedId !== "string")
+      throw new Error("Select a valid Pipedream account");
+    if (bound && selectedId !== undefined && selectedId !== bound.id)
+      throw new Error("Pipedream account selection does not match its authorized route");
+    const connection =
+      requestedId !== undefined
+        ? accounts.find((candidate) => candidate.id === requestedId)
+        : accounts.length === 1
+          ? accounts[0]
+          : undefined;
+    if (!connection) throw new Error("Select an available Pipedream account explicitly");
+    if (accounts.length > 1 && !this.accountRef(connection))
+      throw new Error("Reconnect the selected Pipedream account before using it");
+    const tools = await this.accountTools(context, connection, await this.token());
+    const tool = tools.find((candidate) => candidate.route?.toolName === call.route?.toolName);
+    if (!tool) throw new Error("Pipedream tool is unavailable for the selected account");
+    const businessArgs = { ...call.args };
+    // Only the adapter-added selector is consumed; upstream `accountId` remains untouched.
+    delete businessArgs[PIPEDREAM_CONNECTION_SELECTOR];
+    const parsed = parseConnectorToolArgs(tool.inputSchema, businessArgs);
+    const explicit = selectedId !== undefined || accounts.length > 1;
+    // Keep the local selector in the persisted approval arguments, so approval
+    // replay remains executable through the same published multi-account schema.
+    const selectedTool = explicit
+      ? {
+          ...tool,
+          inputSchema: {
+            ...tool.inputSchema,
+            properties: {
+              ...(tool.inputSchema.properties as Record<string, unknown> | undefined),
+              [PIPEDREAM_CONNECTION_SELECTOR]: { type: "string", const: connection.id },
+            },
+            required: [
+              ...new Set([
+                ...(Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required : []),
+                PIPEDREAM_CONNECTION_SELECTOR,
+              ]),
+            ],
+          },
+        }
+      : tool;
+    return {
+      tool: selectedTool,
+      call: {
+        ...call,
+        connectionId: connection.id,
+        route: tool.route,
+        args: {
+          ...parsed,
+          ...(explicit ? { [PIPEDREAM_CONNECTION_SELECTOR]: connection.id } : {}),
+        },
+      },
+    };
+  }
+
+  private connections(context: AdapterContext): ConnectedConnector[] {
+    return (
+      context.connectedConnections?.filter(
+        (connection) => connection.connectorId === "pipedream",
+      ) ?? []
+    );
+  }
+
+  private accountRef(connection: ConnectedConnector): string | undefined {
+    const ref = connection.providerRef?.trim();
+    return ref && ref !== connection.externalId ? ref : undefined;
+  }
+
+  private async accountTools(
+    context: AdapterContext,
+    connection: ConnectedConnector,
+    token: string,
+  ): Promise<ConnectorTool[]> {
+    const tools = await listRemoteMcpTools({
+      endpoint: MCP_ENDPOINT,
+      headers: this.mcpHeaders(context, connection.externalId, token, this.accountRef(connection)),
+      signal: context.signal,
+      fetch: this.dependencies.fetch,
+      resolveHostname: this.dependencies.resolveHostname,
+    });
+    return tools.map((tool) => {
+      if (
+        (tool.inputSchema.properties as Record<string, unknown> | undefined)?.[
+          PIPEDREAM_CONNECTION_SELECTOR
+        ] !== undefined
+      ) {
+        throw new Error("Pipedream tool schema conflicts with the local account selector");
+      }
+      return {
+        ...tool,
+        route: {
+          connectorId: "pipedream",
+          resourceId: connection.externalId,
+          toolName: tool.name,
+          catalogGroup: connection.externalId,
+          connectionId: connection.id,
+          resourceRevision: connectorAccountRevision(connection),
+        },
+      };
+    });
   }
 
   async *execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent> {
@@ -240,17 +406,24 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     }
     let token: string | undefined;
     try {
+      const resolved = await this.resolveCall(call, context);
+      if (!resolved) throw new Error("Pipedream account route is missing");
+      call = resolved.call;
+      const connection = assertBoundConnectorAccount(call, context);
+      if (!connection) throw new Error("Pipedream account route is missing");
       token = await this.token();
+      const businessArgs = { ...call.args };
+      delete businessArgs[PIPEDREAM_CONNECTION_SELECTOR];
       const result = await callRemoteMcpTool(
         {
           endpoint: MCP_ENDPOINT,
-          headers: this.mcpHeaders(context, app, token),
+          headers: this.mcpHeaders(context, app, token, this.accountRef(connection)),
           signal: context.signal,
           fetch: this.dependencies.fetch,
           resolveHostname: this.dependencies.resolveHostname,
         },
         call.route?.toolName ?? call.tool,
-        call.args,
+        businessArgs,
       );
       yield {
         type: "result",
@@ -400,6 +573,7 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     context: AdapterContext,
     app: string,
     accessToken: string,
+    accountId?: string,
   ): Record<string, string> {
     return {
       authorization: `Bearer ${accessToken}`,
@@ -407,6 +581,7 @@ export class PipedreamConnector implements ManagedConnectorProvider {
       "x-pd-environment": this.config.environment,
       "x-pd-external-user-id": this.externalUserId(context),
       "x-pd-app-slug": app,
+      ...(accountId ? { "x-pd-account-id": accountId } : {}),
     };
   }
 

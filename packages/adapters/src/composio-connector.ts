@@ -15,6 +15,10 @@ import {
   mergeCatalogWithConnected,
   type ToolkitDirectoryEntry,
 } from "./composio-catalog-cache.js";
+import {
+  allowsLegacyConnectorRecovery,
+  connectorAccountSetRevision,
+} from "./connector-account-binding.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 import { isVitestRuntime } from "./test-runtime.js";
 
@@ -217,14 +221,21 @@ export type PluginConnectionRow = {
   provider: string;
   status: string;
   displayName: string;
+  metadata?: unknown;
 };
 
-export function needsLivePluginSync(rows: { status: string }[]): boolean {
-  return rows.some((row) => row.status === "pending" || row.status === "error");
+export function needsLivePluginSync(
+  rows: { status: string; provider?: string; metadata?: unknown }[],
+): boolean {
+  return rows.some(
+    (row) =>
+      (row.status === "pending" || row.status === "error") &&
+      allowsLegacyConnectorRecovery(row, rows),
+  );
 }
 
 export function mergeConnectedPlugins(
-  rows: { provider: string; displayName: string; status?: string }[],
+  rows: { provider: string; displayName: string; status?: string; metadata?: unknown }[],
   liveSlugs: string[],
 ): { provider: string; displayName: string }[] {
   const live = new Set(liveSlugs.map((slug) => composioSlugKey(slug)).filter(Boolean));
@@ -235,6 +246,7 @@ export function mergeConnectedPlugins(
       row.status === "connected" ||
       row.status === undefined ||
       ((row.status === "pending" || row.status === "error") &&
+        allowsLegacyConnectorRecovery(row, rows) &&
         live.has(composioSlugKey(row.provider)));
     if (!include) continue;
     const current = byProvider.get(composioSlugKey(row.provider));
@@ -273,7 +285,11 @@ export function planLiveConnectionSync(
     // Recover in-flight pending/error rows only. A revoked sibling stays
     // revoked even when another row (or the upstream listing) is live for
     // the same slug — reviving it would reattach a dead providerRef.
-    const reusable = matches.find((row) => row.status === "pending" || row.status === "error");
+    const reusable = matches.find(
+      (row) =>
+        (row.status === "pending" || row.status === "error") &&
+        allowsLegacyConnectorRecovery(row, rows),
+    );
     if (!reusable) continue;
     connectIds.push(reusable.id);
     connectedProviders.add(slug);
@@ -289,6 +305,7 @@ export function planLiveConnectionSync(
   const revokeIds = rows
     .filter((row) => {
       if (row.status !== "pending" && row.status !== "error") return false;
+      if (!allowsLegacyConnectorRecovery(row, rows)) return false;
       if (connectIdSet.has(row.id)) return false;
       // Keep only in-flight additional-account pendings; clear abandoned errors
       // so live sync does not keep re-listing forever after a failed attempt.
@@ -337,21 +354,31 @@ export class ComposioConnector implements ComposioProvider {
   async sessionForExecute(
     userId: string,
     connections: ReturnType<typeof connectedComposioConnections>,
+    selectedAccountIds: ReadonlySet<string> = new Set(),
   ): Promise<ComposioSession> {
-    const canonicalToolkits = await this.canonicalizeToolkits(
+    if (connections.length === 0) throw new Error("No authorized Composio accounts are available");
+    let canonicalToolkits = await this.canonicalizeToolkits(
       connections.map((connection) => connection.externalId),
     );
     const canonicalByKey = new Map(
       canonicalToolkits.map((toolkit) => [composioSlugKey(toolkit), toolkit]),
     );
     const liveAccountIds = await this.listActiveAccountIds(userId, canonicalToolkits);
+    const authorizedAccountIds = new Set(connections.map((connection) => connection.providerRef));
+    for (const id of selectedAccountIds) {
+      if (!authorizedAccountIds.has(id) || (liveAccountIds && !liveAccountIds.has(id))) {
+        throw new Error("Selected Composio account is unavailable. Reconnect or select it again.");
+      }
+    }
     const accountIdsByToolkit = new Map<string, Set<string>>();
+    const concreteToolkits = new Set<string>();
     for (const connection of connections) {
       const accountId = connection.providerRef?.trim();
       if (!accountId) continue;
       // No-auth and legacy rows store the toolkit slug rather than a remote
       // connected-account id. Only concrete account ids can scope a session.
       if (composioSlugKey(accountId) === composioSlugKey(connection.externalId)) continue;
+      concreteToolkits.add(composioSlugKey(connection.externalId));
       // Drop refs the provider no longer lists as ACTIVE so a revoked sibling
       // with a deleted account cannot fail the whole tool-router session.
       if (liveAccountIds && !liveAccountIds.has(accountId)) continue;
@@ -365,8 +392,15 @@ export class ComposioConnector implements ComposioProvider {
     for (const [toolkit, ids] of accountIdsByToolkit) {
       connectedAccounts[toolkit] = [...ids].sort();
     }
+    // A concrete but unavailable authorization must never become an unpinned
+    // toolkit session (which can otherwise select a different remote account).
+    canonicalToolkits = canonicalToolkits.filter(
+      (toolkit) =>
+        !concreteToolkits.has(composioSlugKey(toolkit)) ||
+        Boolean(connectedAccounts[toolkit]?.length),
+    );
     const key = executeSessionKey(canonicalToolkits, connectedAccounts);
-    if (!key) return this.sessionFor(userId);
+    if (!key) throw new Error("No authorized Composio accounts are available");
     const composio = this.sdk();
     const existing = this.executeSessions.get(userId);
     if (existing?.key === key) {
@@ -459,16 +493,109 @@ export class ComposioConnector implements ComposioProvider {
     if (connections.length === 0) return [];
     const session = await this.sessionForExecute(context.userId, connections);
     const raw = await session.tools();
-    return asConnectorTools(raw);
+    return asConnectorTools(raw).map((tool) => ({
+      ...tool,
+      route: {
+        ...tool.route!,
+        resourceId: "authorized-accounts",
+        resourceRevision: connectorAccountSetRevision(connections),
+      },
+    }));
+  }
+
+  private async resolveAccountArgs(
+    call: ConnectorCall,
+    context: AdapterContext,
+  ): Promise<Record<string, unknown>> {
+    if (call.tool !== COMPOSIO_MULTI_EXECUTE_TOOL || !Array.isArray(call.args.tools))
+      return call.args;
+    const selections = call.args.tools.filter(
+      (item) => typeof asObject(item)?.account === "string",
+    );
+    if (selections.length === 0) return call.args;
+    const connections = connectedComposioConnections(context);
+    const toolkits = await this.canonicalizeToolkits(
+      connections.map((connection) => connection.externalId),
+    );
+    // Alias resolution is scoped to this user's ACTIVE accounts, then restricted
+    // again to the local Space's authorization IDs. Freeze aliases as IDs before
+    // persisting approval, so changing an alias cannot redirect an old approval.
+    const listed = await this.sdk().connectedAccounts.list({
+      userIds: [context.userId],
+      toolkitSlugs: toolkits,
+      statuses: ["ACTIVE"],
+    });
+    const allowed = new Map(
+      connections
+        .filter(
+          (connection) =>
+            connection.providerRef &&
+            composioSlugKey(connection.providerRef) !== composioSlugKey(connection.externalId),
+        )
+        .map((connection) => [connection.providerRef!, connection]),
+    );
+    const tools = call.args.tools.map((item) => {
+      const record = asObject(item);
+      if (typeof record?.account !== "string") return item;
+      const selector = record.account.trim();
+      const slug = typeof record.tool_slug === "string" ? record.tool_slug.toUpperCase() : "";
+      const matches = (listed.items ?? []).filter((account) => {
+        const connection = allowed.get(account.id);
+        if (!connection) return false;
+        if (account.id === selector) return true;
+        const alias = (account as { alias?: string | null }).alias;
+        return alias === selector && slug.startsWith(`${connection.externalId.toUpperCase()}_`);
+      });
+      if (matches.length !== 1)
+        throw new Error(
+          "Selected Composio account or alias is unavailable or ambiguous. Select it again.",
+        );
+      return { ...record, account: matches[0]!.id };
+    });
+    return { ...call.args, tools };
+  }
+
+  async resolveCall(
+    call: ConnectorCall,
+    context: AdapterContext,
+  ): Promise<{ call: ConnectorCall; tool: ConnectorTool } | undefined> {
+    if (
+      call.tool !== COMPOSIO_MULTI_EXECUTE_TOOL ||
+      !Array.isArray(call.args.tools) ||
+      !call.args.tools.some((item) => typeof asObject(item)?.account === "string")
+    )
+      return undefined;
+    const args = await this.resolveAccountArgs(call, context);
+    const tools = await this.discoverTools(context);
+    const tool = tools.find((candidate) => candidate.route?.toolName === call.tool);
+    if (!tool) throw new Error("Composio tool is unavailable for these authorized accounts");
+    return { call: { ...call, args, route: tool.route }, tool };
   }
 
   async *execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent> {
     const executed = [];
     try {
-      const session = await this.sessionForExecute(
-        context.userId,
-        connectedComposioConnections(context),
-      );
+      call = { ...call, args: await this.resolveAccountArgs(call, context) };
+      const connections = connectedComposioConnections(context);
+      if (
+        call.route?.resourceRevision !== undefined &&
+        call.route.resourceRevision !== connectorAccountSetRevision(connections)
+      ) {
+        throw new Error(
+          "Composio authorization changed. Select the account and request approval again.",
+        );
+      }
+      const selectedAccountIds = new Set<string>();
+      // `account` here is Tool Router's explicit authorization selector. Do not
+      // inspect business `arguments.account` or rewrite provider tool schemas.
+      if (call.tool === COMPOSIO_MULTI_EXECUTE_TOOL && Array.isArray(call.args.tools)) {
+        for (const item of call.args.tools) {
+          const record = asObject(item);
+          if (typeof record?.account === "string" && record.account.trim())
+            selectedAccountIds.add(record.account.trim());
+        }
+      }
+      const session = await this.sessionForExecute(context.userId, connections, selectedAccountIds);
       const planned = expandComposioMultiExecute(call.tool, call.args ?? {});
       for (const item of planned) {
         const result = await session.execute(
