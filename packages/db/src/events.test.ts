@@ -9,6 +9,7 @@ import {
   claimSteering,
   clearThread,
   completedRunBlocks,
+  createPendingSteeringRun,
   finalizeComputerControlRelease,
   finalizeRun,
   followThreadEvents,
@@ -3126,5 +3127,261 @@ describe("appendEvent", () => {
     ).rejects.toThrow(RunHistoryWriteError);
     expect(tx.run.findUnique).not.toHaveBeenCalled();
     expect(tx.event.create).not.toHaveBeenCalled();
+  });
+});
+
+// Account mentions are execution metadata. They must follow the existing steering
+// claim and continuation boundaries without rewriting prompt or scheduling state.
+describe("steering connection selection metadata", () => {
+  const scope = { spaceId: "space-1", userId: "user-1" };
+  const references = [
+    { id: "gmail-1", connectorId: "pipedream", provider: "gmail" },
+    { id: "gmail-2", connectorId: "composio", provider: "gmail" },
+    { id: "gmail-3", connectorId: "pipedream", provider: "gmail" },
+    { id: "calendar-1", connectorId: "pipedream", provider: "googlecalendar" },
+    { id: "slack-1", connectorId: "composio", provider: "slack" },
+  ];
+  const claim = {
+    threadId: "thread-1",
+    botId: "bot-1",
+    runId: "run-1",
+    leaseOwner: "worker-1",
+    leaseFence: 2,
+    seenIds: [] as string[],
+  };
+  function steering(id: string, seq: number, connectionIds: string[] = []) {
+    return {
+      id,
+      userId: scope.userId,
+      messageId: `message-${id}`,
+      originTrigger: null as string | null,
+      runId: "run-1" as string | null,
+      connectionIds,
+      message: { id: `message-${id}`, seq, blocks: [{ kind: "text", text: `Question ${seq}` }] },
+    };
+  }
+  function claimFixture(
+    rows = [steering("first", 1, ["gmail-2"]), steering("second", 2, ["slack-1", "gmail-3"])],
+  ) {
+    const task = {
+      connectionIds: ["gmail-1", "calendar-1"],
+      prompt: "Original user question",
+      status: "running",
+    };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      run: {
+        findFirst: vi.fn(async ({ where }: { where: { leaseFence: number } }) =>
+          where.leaseFence === 2
+            ? { id: "run-1", taskId: "task-1", trigger: "user", ...scope }
+            : null,
+        ),
+      },
+      task: {
+        findFirst: vi.fn(async () => ({ connectionIds: task.connectionIds })),
+        updateMany: vi.fn(async ({ data }: { data: { connectionIds: string[] } }) => {
+          task.connectionIds = data.connectionIds;
+          return { count: 1 };
+        }),
+      },
+      connection: { findMany: vi.fn(async () => references) },
+      steeringMessage: {
+        findMany: vi.fn(async () => rows),
+        updateMany: vi.fn(async () => ({ count: rows.length })),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (effect: (client: typeof tx) => unknown) => effect(tx)),
+    } as unknown as PrismaClient;
+    return { tx, prisma, task };
+  }
+  function continuationFixture(rows: ReturnType<typeof steering>[]) {
+    const pending = rows.map((row) => ({ ...row, runId: null }));
+    const tx = {
+      run: {
+        findFirst: vi.fn(async () => null as { id: string } | null),
+        create: vi.fn(async () => ({ id: "continuation-run" })),
+      },
+      task: { create: vi.fn(async () => ({ id: "continuation-task" })) },
+      connection: { findMany: vi.fn(async () => references) },
+      steeringMessage: {
+        findMany: vi.fn(async () => pending),
+        updateMany: vi.fn(async () => ({ count: rows.length })),
+      },
+    };
+    return { tx, client: tx as unknown as Parameters<typeof createPendingSteeringRun>[0] };
+  }
+
+  it("waits for the thread lock and valid run fence before consuming account choices", async () => {
+    const { tx, prisma, task } = claimFixture();
+    let release!: () => void;
+    let lockStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      lockStarted = resolve;
+    });
+    const held = new Promise<never[]>((resolve) => {
+      release = () => resolve([]);
+    });
+    tx.$queryRaw.mockImplementationOnce(() => {
+      lockStarted();
+      return held;
+    });
+    const consuming = claimSteering(prisma, claim);
+    await started;
+    expect(task.connectionIds).toEqual(["gmail-1", "calendar-1"]);
+    expect(tx.task.updateMany).not.toHaveBeenCalled();
+    expect(tx.steeringMessage.findMany).not.toHaveBeenCalled();
+    release();
+    const result = await consuming;
+    expect(task).toEqual({
+      connectionIds: ["calendar-1", "slack-1", "gmail-3"],
+      prompt: "Original user question",
+      status: "running",
+    });
+    expect(result.map((item) => item.text)).toEqual(["Question 1", "Question 2"]);
+    expect(tx.task.findFirst).toHaveBeenCalledWith({
+      where: { id: "task-1", ...scope },
+      select: { connectionIds: true },
+    });
+    expect(tx.task.updateMany).toHaveBeenCalledWith({
+      where: { id: "task-1", ...scope },
+      data: { connectionIds: ["calendar-1", "slack-1", "gmail-3"] },
+    });
+    expect(tx.connection.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ["gmail-1", "calendar-1", "gmail-2", "slack-1", "gmail-3"] }, ...scope },
+      select: { id: true, connectorId: true, provider: true },
+    });
+    expect(tx.steeringMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ orderBy: [{ message: { seq: "asc" } }, { id: "asc" }] }),
+    );
+    expect(tx.task.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.steeringMessage.updateMany.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does not alter metadata or consume pending rows for a stale run fence", async () => {
+    const { tx, prisma, task } = claimFixture();
+    expect(await claimSteering(prisma, { ...claim, leaseFence: 1 })).toEqual([]);
+    expect(task.connectionIds).toEqual(["gmail-1", "calendar-1"]);
+    expect(tx.steeringMessage.findMany).not.toHaveBeenCalled();
+    expect(tx.task.findFirst).not.toHaveBeenCalled();
+    expect(tx.task.updateMany).not.toHaveBeenCalled();
+    expect(tx.connection.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns ordinary steering unchanged without clearing selections or querying account metadata", async () => {
+    const row = steering("question", 1);
+    const { tx, prisma, task } = claimFixture([row]);
+    expect(await claimSteering(prisma, claim)).toEqual([
+      { id: row.id, messageId: row.messageId, text: "Question 1", blocks: row.message.blocks },
+    ]);
+    expect(task.connectionIds).toEqual(["gmail-1", "calendar-1"]);
+    expect(tx.task.findFirst).not.toHaveBeenCalled();
+    expect(tx.task.updateMany).not.toHaveBeenCalled();
+    expect(tx.connection.findMany).not.toHaveBeenCalled();
+    expect(tx.steeringMessage.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["question"] }, claimedAt: null },
+      data: { runId: "run-1", claimedAt: expect.any(Date) },
+    });
+  });
+
+  it("retains an unavailable explicitly mentioned ID while claiming, instead of selecting its sibling", async () => {
+    const { tx, prisma, task } = claimFixture([steering("missing", 1, ["deleted-target"])]);
+    await claimSteering(prisma, claim);
+    expect(task.connectionIds).toEqual(["gmail-1", "calendar-1", "deleted-target"]);
+    expect(task.connectionIds).not.toContain("gmail-2");
+    expect(tx.connection.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: ["gmail-1", "calendar-1", "deleted-target"] }, ...scope },
+      }),
+    );
+  });
+
+  it("builds a continuation from ordered selections in the same origin batch without changing its prompt or trigger", async () => {
+    const first = steering("first", 1, ["gmail-1", "calendar-1"]);
+    const second = steering("second", 2, ["slack-1", "gmail-2"]);
+    const otherOrigin = steering("channel", 3, ["gmail-3"]);
+    otherOrigin.originTrigger = "messaging";
+    const { tx, client } = continuationFixture([first, second, otherOrigin]);
+    expect(
+      await createPendingSteeringRun(client, {
+        spaceId: scope.spaceId,
+        threadId: "thread-1",
+        botId: "bot-1",
+      }),
+    ).toBe("continuation-run");
+    expect(tx.task.create).toHaveBeenCalledWith({
+      data: {
+        ...scope,
+        botId: "bot-1",
+        threadId: "thread-1",
+        connectionIds: ["calendar-1", "slack-1", "gmail-2"],
+        prompt: "Respond to the user's steering context.",
+        status: "queued",
+      },
+    });
+    expect(tx.run.create).toHaveBeenCalledWith({
+      data: {
+        ...scope,
+        botId: "bot-1",
+        threadId: "thread-1",
+        taskId: "continuation-task",
+        status: "queued",
+        trigger: "follow_up",
+        sourceMessageId: second.message.id,
+      },
+    });
+    expect(tx.steeringMessage.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [first.id, second.id] }, runId: null },
+      data: { runId: "continuation-run", claimedAt: null },
+    });
+    expect(tx.connection.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ["gmail-1", "calendar-1", "slack-1", "gmail-2"] }, ...scope },
+      select: { id: true, connectorId: true, provider: true },
+    });
+  });
+
+  it("does not read references or attach a metadata override for a continuation without account mentions", async () => {
+    const { tx, client } = continuationFixture([steering("plain", 1)]);
+    await createPendingSteeringRun(client, {
+      spaceId: scope.spaceId,
+      threadId: "thread-1",
+      botId: "bot-1",
+    });
+    expect(tx.connection.findMany).not.toHaveBeenCalled();
+    expect(tx.task.create).toHaveBeenCalledWith({
+      data: {
+        ...scope,
+        botId: "bot-1",
+        threadId: "thread-1",
+        prompt: "Respond to the user's steering context.",
+        status: "queued",
+      },
+    });
+  });
+
+  it("keeps missing targets in a queued continuation and leaves every held selection untouched while a run is active", async () => {
+    const { tx, client } = continuationFixture([steering("missing", 1, ["deleted-target"])]);
+    tx.run.findFirst.mockResolvedValueOnce({ id: "active-run" });
+    expect(
+      await createPendingSteeringRun(client, {
+        spaceId: scope.spaceId,
+        threadId: "thread-1",
+        botId: "bot-1",
+      }),
+    ).toBeNull();
+    expect(tx.task.create).not.toHaveBeenCalled();
+    expect(tx.steeringMessage.findMany).not.toHaveBeenCalled();
+    expect(tx.connection.findMany).not.toHaveBeenCalled();
+    expect(
+      await createPendingSteeringRun(client, {
+        spaceId: scope.spaceId,
+        threadId: "thread-1",
+        botId: "bot-1",
+      }),
+    ).toBe("continuation-run");
+    expect(tx.task.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ connectionIds: ["deleted-target"] }),
+    });
   });
 });

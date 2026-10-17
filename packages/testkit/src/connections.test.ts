@@ -204,6 +204,49 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     ).resolves.toContainEqual(expect.objectContaining({ slug: "GMAIL", connected: false }));
   });
 
+  it.each(["error", "revoked"])(
+    "creates a fresh authorization without replacing a %s connection",
+    async (status) => {
+      const cookie = await signup(app, `fresh-${status}-${stamp}@rakazo.test`, "Fresh Grant");
+      const actor = await rpc<Actor>(app, cookie, "me");
+      const original = await handles.prisma.connection.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          connectorId: "composio",
+          provider: "GMAIL",
+          providerRef: "old-authorization-record",
+          displayName: "Previous account",
+          status,
+          metadata: { authRevision: "old-grant" },
+        },
+      });
+      const next = await rpc<{ connectionId: string }>(app, cookie, "connections/begin", {
+        connectorId: "composio",
+        provider: "GMAIL",
+        connectionId: original.id,
+        displayName: "New account",
+      });
+      expect(next.connectionId).not.toBe(original.id);
+      await expect(
+        handles.prisma.connection.findUnique({ where: { id: original.id } }),
+      ).resolves.toEqual(original);
+      const created = await handles.prisma.connection.findUniqueOrThrow({
+        where: { id: next.connectionId },
+      });
+      expect(created).toMatchObject({
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        connectorId: "composio",
+        provider: "GMAIL",
+        displayName: "New account",
+        status: "connected",
+        metadata: { authRevision: expect.any(String) },
+      });
+      expect(created.metadata).not.toEqual(original.metadata);
+    },
+  );
+
   it("returns the remote catalog when local reconciliation fails", async () => {
     const cookie = await signup(app, `db-failure-connections-${stamp}@rakazo.test`, "DB Failure");
     const actor = await rpc<Actor>(app, cookie, "me");

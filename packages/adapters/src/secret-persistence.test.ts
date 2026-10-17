@@ -28,6 +28,10 @@ type Row = {
   botId?: string;
   endpoint?: string;
   secretId?: string | null;
+  enabled?: boolean;
+  allowAllTools?: boolean;
+  allowedTools?: string[];
+  revision?: number;
   organizationId?: string;
 };
 type Args = { where?: Record<string, unknown>; data?: Row; create?: Row; update?: Row };
@@ -352,20 +356,23 @@ describe("MCP OAuth prepared persistence", () => {
         secretId: initial.id,
         spaceId: "space",
         userId: "user",
-      });
-      const assignment = () => ({
-        serverId: "server",
+        enabled: true,
         allowAllTools: true,
-        server: {
-          ...db.tables.get("mcpServer")![0],
-          slug: "demo",
-          transport: "streamable_http",
-          revision: 1,
-          args: [],
-        },
+        allowedTools: [],
+        revision: 1,
       });
-      Object.assign(prisma, {
-        botMcpServer: { findMany: async () => [assignment()], findFirst: async () => assignment() },
+      const server = () => ({
+        ...db.tables.get("mcpServer")![0],
+        slug: "demo",
+        transport: "streamable_http",
+        revision: 1,
+        args: [],
+        enabled: true,
+        allowAllTools: true,
+        allowedTools: [],
+      });
+      Object.assign(prisma.mcpServer, {
+        findMany: async () => [server()],
       });
       const broker = new McpOAuthBroker(prisma, store);
       const held = new Map<McpSession, OAuthClientProvider>();

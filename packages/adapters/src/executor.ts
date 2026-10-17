@@ -234,6 +234,13 @@ import {
   unchangedVisualStreakAfterPageBrowser,
 } from "./computer-tools.js";
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
+import {
+  allowsLegacyConnectorRecovery,
+  assertBoundConnectorAccount,
+  connectionAuthorizationRevision,
+  refreshRunConnectorContext,
+  selectExplicitConnectorAccounts,
+} from "./connector-account-binding.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
@@ -2832,29 +2839,35 @@ export async function persistLivePluginConnections(
 ): Promise<void> {
   const sync = planLiveConnectionSync(rows, liveSlugs);
   if (sync.connectIds.length > 0) {
-    await prisma.connection.updateMany({
+    const updated = await prisma.connection.updateMany({
       where: {
         id: { in: sync.connectIds },
         userId: owner.userId,
         spaceId: owner.spaceId,
+        status: { in: ["pending", "error"] },
       },
       data: { status: "connected" },
     });
-    for (const row of rows) {
-      if (sync.connectIds.includes(row.id)) row.status = "connected";
+    if (updated.count === sync.connectIds.length) {
+      for (const row of rows) {
+        if (sync.connectIds.includes(row.id)) row.status = "connected";
+      }
     }
   }
   if (sync.revokeIds.length > 0) {
-    await prisma.connection.updateMany({
+    const updated = await prisma.connection.updateMany({
       where: {
         id: { in: sync.revokeIds },
         userId: owner.userId,
         spaceId: owner.spaceId,
+        status: { in: ["pending", "error"] },
       },
       data: { status: "revoked" },
     });
-    for (const row of rows) {
-      if (sync.revokeIds.includes(row.id)) row.status = "revoked";
+    if (updated.count === sync.revokeIds.length) {
+      for (const row of rows) {
+        if (sync.revokeIds.includes(row.id)) row.status = "revoked";
+      }
     }
   }
 }
@@ -3396,6 +3409,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               providerRef: true,
               displayName: true,
               status: true,
+              metadata: true,
+              updatedAt: true,
             },
           }),
           findDefaultModelCredential(deps.prisma, run),
@@ -3470,9 +3485,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         }
         const connectedComposio = mergeConnectedPlugins(composioRows, liveSlugs);
-        const connectedPlugins = selectRunConnections(
-          storedConnections,
-          connectedComposio.map((connection) => connection.provider),
+        const connectedPlugins = selectExplicitConnectorAccounts(
+          selectRunConnections(
+            storedConnections,
+            connectedComposio.map((connection) => connection.provider),
+          ),
+          task.connectionIds ?? [],
         );
         const context = {
           operationId: runId,
@@ -3489,6 +3507,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             externalId: row.provider,
             displayName: row.displayName,
             providerRef: row.providerRef ?? undefined,
+            revision: connectionAuthorizationRevision(row),
           })),
           connectedProviders: connectedComposio.map((row) => row.provider),
         };
@@ -4072,6 +4091,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             executionId,
             route: connectorTools.get(name)?.route,
           };
+          let connectorContext: AdapterContext = context;
+          const revalidateManagedAccounts = Boolean(
+            connectorCall.route &&
+              storedConnections.some((row) => row.connectorId === connectorCall.route?.connectorId),
+          );
+          if (revalidateManagedAccounts) {
+            try {
+              connectorContext = await refreshRunConnectorContext(deps.prisma, context, run.taskId);
+              assertBoundConnectorAccount(connectorCall, connectorContext);
+            } catch (error) {
+              return { error: sanitizeConnectorError(error) };
+            }
+          }
           const onCatalogExecuteRoute = Boolean(
             connectorCall.route &&
               !connectorCall.route.resourceId &&
@@ -4095,7 +4127,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           let effectRequest: unknown = args;
           if (connectorCall.route && deps.connector?.resolveCall) {
             try {
-              const resolved = await deps.connector.resolveCall(connectorCall, context);
+              const resolved = await deps.connector.resolveCall(connectorCall, connectorContext);
               if (resolved) {
                 if (BUILTIN_AGENT_TOOL_NAMES.has(resolved.tool.name)) {
                   return {
@@ -4104,23 +4136,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
                 name = resolved.tool.name;
                 args = resolved.call.args;
-                catalogRemapped = true;
+                catalogRemapped = onCatalogExecuteRoute;
                 resolvedTool = resolved.tool;
-                effectRequest = catalogApprovalRequest(
-                  connectorCall.tool,
-                  connectorCall.args,
-                  CATALOG_APPROVAL_TOOL,
-                  resolved.tool.route?.resourceId &&
-                    resolved.tool.route.connectorId &&
-                    resolved.tool.route.toolName
-                    ? {
-                        connectorId: resolved.tool.route.connectorId,
-                        resourceId: resolved.tool.route.resourceId,
-                        resourceRevision: resolved.tool.route.resourceRevision,
-                        toolName: resolved.tool.route.toolName,
-                      }
-                    : undefined,
-                );
+                if (catalogRemapped)
+                  effectRequest = catalogApprovalRequest(
+                    connectorCall.tool,
+                    connectorCall.args,
+                    CATALOG_APPROVAL_TOOL,
+                    resolved.tool.route?.resourceId &&
+                      resolved.tool.route.connectorId &&
+                      resolved.tool.route.toolName
+                      ? {
+                          connectorId: resolved.tool.route.connectorId,
+                          resourceId: resolved.tool.route.resourceId,
+                          resourceRevision: resolved.tool.route.resourceRevision,
+                          connectionId: resolved.tool.route.connectionId,
+                          toolName: resolved.tool.route.toolName,
+                        }
+                      : undefined,
+                  );
                 connectorCall = resolved.call;
               }
             } catch (error) {
@@ -4144,6 +4178,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 connectorId: connectorCall.route.connectorId,
                 resourceId: connectorCall.route.resourceId,
                 resourceRevision: connectorCall.route.resourceRevision,
+                connectionId: connectorCall.route.connectionId,
                 toolName: connectorCall.route.toolName,
               },
               args,
@@ -4163,6 +4198,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   connectorId: connectorCall.route.connectorId,
                   resourceId: connectorCall.route.resourceId,
                   resourceRevision: connectorCall.route.resourceRevision,
+                  connectionId: connectorCall.route.connectionId,
                   toolName: connectorCall.route.toolName,
                 }
               : undefined;
@@ -5535,6 +5571,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     ),
                     secretId: storedCredential?.id,
                     enabled: true,
+                    allowAllTools: false,
+                    allowedTools: [],
                   },
                 });
                 if (!parsed.assignToSelf) return { server };
@@ -5543,6 +5581,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     kind: "mcp_approval",
                     name: server.name,
                     serverId: server.id,
+                    serverRevision: server.revision,
                     transport: parsed.transport,
                     endpoint: parsed.endpoint ?? null,
                     needsOAuth: oauthLikely,
@@ -5571,11 +5610,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ok: true,
               server_id: serverRow.id,
               assigned_to_self: false,
+              shared_tools_enabled: false,
               next_step: parsed.assignToSelf
                 ? oauthLikely
-                  ? "An approval card was posted. The user must authorize and approve it before its tools become available."
-                  : "An approval card was posted. The user must approve it before its tools become available."
-                : "The server was registered without assigning it to this bot.",
+                  ? "An approval card was posted. The user must authorize and approve it before its tools become available to all bots in the space."
+                  : "An approval card was posted. The user must approve it before its tools become available to all bots in the space."
+                : "The server was registered with its shared tools disabled.",
             });
           }
           if (name === "recall_memory") {
@@ -6281,10 +6321,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return archived;
           }
           if (deps.connector) {
+            if (revalidateManagedAccounts) {
+              try {
+                connectorContext = await refreshRunConnectorContext(
+                  deps.prisma,
+                  context,
+                  run.taskId,
+                );
+                assertBoundConnectorAccount(connectorCall, connectorContext);
+              } catch (error) {
+                return finish({ error: sanitizeConnectorError(error) });
+              }
+            }
             let result: unknown = { error: `unknown tool ${name}` };
             for await (const event of deps.connector.execute(
               { ...connectorCall, tool: name, args, executionId: effectKey },
-              context,
+              connectorContext,
             )) {
               if (event.type === "result") {
                 result = event.data;
@@ -8563,7 +8615,7 @@ function cloudflareRunFields(resolved: { accountId?: string; gatewayId?: string 
 }
 
 export function selectRunConnections<
-  T extends { connectorId: string; provider: string; status: string },
+  T extends { connectorId: string; provider: string; status: string; metadata?: unknown },
 >(rows: T[], connectedComposioProviders: string[]): T[] {
   const liveProviders = new Set(
     connectedComposioProviders.map((provider) => provider.trim().toLowerCase()).filter(Boolean),
@@ -8581,6 +8633,13 @@ export function selectRunConnections<
     // pull a non-live row — and its dead providerRef — into the run.
     if (row.connectorId !== "composio") return false;
     if (row.status !== "pending" && row.status !== "error") return false;
+    if (
+      !allowsLegacyConnectorRecovery(
+        row,
+        rows.filter((candidate) => candidate.connectorId === row.connectorId),
+      )
+    )
+      return false;
     const providerKey = row.provider.trim().toLowerCase();
     if (!liveProviders.has(providerKey)) return false;
     return !connectedKeys.has(`composio:${providerKey}`);

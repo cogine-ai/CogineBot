@@ -661,6 +661,8 @@ describe("MCP prepared credential updates", () => {
       name: "Demo",
       description: "",
       enabled: true,
+      allowAllTools: false,
+      allowedTools: [],
       transport: "streamable_http",
       endpoint: "https://mcp.example.test/mcp",
       secretId: "old",
@@ -971,37 +973,29 @@ describe("private API connectors", () => {
 });
 
 describe("connections.begin", () => {
-  it("reuses a revoked row for the same provider instead of inserting a duplicate", async () => {
-    const begin = vi.fn().mockResolvedValue({ state: "gmail-state", authorizationUrl: null });
-    const update = vi.fn().mockResolvedValue({
-      id: "conn-old",
-      connectorId: "composio",
-      provider: "gmail",
-      displayName: "Gmail",
-      status: "pending",
-      createdAt: new Date("2026-08-26T00:00:00.000Z"),
+  function fixture(rows: Array<{ id: string; status: string }> = []) {
+    const begin = vi.fn().mockResolvedValue({
+      state: "new-authorization-request",
+      authorizationUrl: "https://auth.example/authorize",
     });
+    const findMany = vi.fn().mockResolvedValue(rows);
+    const update = vi.fn();
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
-    const create = vi.fn();
-    const prisma = {
-      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
-        const tx = {
-          $executeRaw: vi.fn().mockResolvedValue(undefined),
-          connection: {
-            findMany: vi.fn().mockResolvedValue([{ id: "conn-old", status: "revoked" }]),
-            update,
-            updateMany,
-            create,
-          },
-        };
-        return fn(tx);
-      }),
-    } as unknown as PrismaClient;
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      id: "conn-new",
+      ...data,
+      createdAt: new Date(0),
+    }));
+    const tx = {
+      $executeRaw: vi.fn(),
+      connection: { findMany, update, updateMany, create },
+    };
     const deps = {
-      prisma,
-      connectors: {
-        managed: vi.fn(() => ({ begin })),
+      prisma: {
+        connection: { updateMany },
+        $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(tx)),
       },
+      connectors: { managed: vi.fn(() => ({ begin })) },
       env: {
         defaultProvider: "fake",
         defaultModel: "fake-model",
@@ -1017,42 +1011,313 @@ describe("connections.begin", () => {
       email: "user@rakazo.test",
       isDeploymentOwner: true,
     } satisfies Actor;
-    const handler = new RPCHandler(createRouter(deps));
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    return { begin, findMany, update, updateMany, create, client };
+  }
 
-    const { matched, response } = await handler.handle(
-      new Request("http://127.0.0.1/rpc/connections/begin", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          json: {
-            connectorId: "composio",
-            provider: "gmail",
-            displayName: "Gmail",
-          },
+  it("creates a new grant and preserves old revoked references", async () => {
+    const f = fixture([{ id: "conn-old", status: "revoked" }]);
+    await expect(
+      f.client.connections.begin({
+        connectorId: "composio",
+        provider: "gmail",
+        displayName: "Gmail",
+      }),
+    ).resolves.toEqual({
+      connectionId: "conn-new",
+      authorizationUrl: "https://auth.example/authorize",
+    });
+    expect(f.update).not.toHaveBeenCalled();
+    expect(f.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        spaceId: "workspace-1",
+        userId: "user-1",
+        provider: "gmail",
+        status: "pending",
+        metadata: { authRevision: expect.any(String) },
+      }),
+    });
+    const revision = f.create.mock.calls[0]![0].data.metadata;
+    expect(f.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "conn-new", spaceId: "workspace-1", userId: "user-1", status: "pending" },
+        data: expect.objectContaining({
+          metadata: { ...(revision as object), state: "new-authorization-request" },
         }),
       }),
-      { prefix: "/rpc", context: { actor } },
     );
+  });
 
-    expect(matched).toBe(true);
-    expect(response.status).toBe(200);
-    expect(create).not.toHaveBeenCalled();
-    expect(update).toHaveBeenCalledWith({
-      where: { id: "conn-old" },
-      data: {
+  it.each(["error", "revoked"])(
+    "reauthorizes only the requested %s source into a new row",
+    async (status) => {
+      const f = fixture([
+        { id: "sibling-error", status: "error" },
+        { id: "requested", status },
+      ]);
+      await f.client.connections.begin({
+        connectorId: "pipedream",
+        provider: "gmail",
+        displayName: "My account",
+        connectionId: "requested",
+      });
+      expect(f.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            spaceId: "workspace-1",
+            userId: "user-1",
+            connectorId: "pipedream",
+            provider: "gmail",
+          },
+        }),
+      );
+      expect(f.update).not.toHaveBeenCalled();
+      expect(f.create).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not replace a live account or an in-progress authorization", async () => {
+    for (const status of ["connected", "pending"]) {
+      const f = fixture([{ id: "live", status }]);
+      await expect(
+        f.client.connections.begin({
+          connectorId: "composio",
+          provider: "gmail",
+          displayName: "Gmail",
+          connectionId: "live",
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(f.begin).not.toHaveBeenCalled();
+      expect(f.create).not.toHaveBeenCalled();
+      expect(f.update).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rejects a target outside this owner, Space, and catalog item", async () => {
+    const f = fixture([{ id: "owned-sibling", status: "error" }]);
+    await expect(
+      f.client.connections.begin({
+        connectorId: "composio",
+        provider: "gmail",
         displayName: "Gmail",
-        status: "pending",
-        providerRef: null,
-        metadata: {},
-      },
-    });
-    await expect(response.json()).resolves.toMatchObject({
-      json: { connectionId: "conn-old" },
+        connectionId: "not-in-scope",
+      }),
+    ).rejects.toThrow();
+    expect(f.begin).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it("does not change old accounts when the new authorization fails", async () => {
+    const f = fixture([{ id: "old-error", status: "error" }]);
+    f.begin.mockRejectedValue(new Error("Authorization unavailable"));
+    await expect(
+      f.client.connections.begin({
+        connectorId: "composio",
+        provider: "gmail",
+        displayName: "Gmail",
+        connectionId: "old-error",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(f.update).not.toHaveBeenCalled();
+    expect(f.updateMany).toHaveBeenCalledWith({
+      where: { id: "conn-new", spaceId: "workspace-1", userId: "user-1", status: "pending" },
+      data: { status: "error" },
     });
   });
 });
 
 describe("connections.complete", () => {
+  it.each(["error", "connected", "pending"])(
+    "handles an unresolved %s sibling without adopting its raw ref",
+    async (siblingStatus) => {
+      const current = {
+        id: "new-grant",
+        connectorId: "pipedream",
+        provider: "gmail",
+        providerRef: "new-explicit-request",
+        displayName: "New Gmail",
+        status: "pending",
+        createdAt: new Date(0),
+        metadata: { authRevision: "new-authorization" },
+      };
+      const sibling = {
+        id: "old-grant",
+        providerRef: "old-unresolvable-ref",
+        status: siblingStatus,
+      };
+      const resolveConnectedAccountId = vi.fn(
+        async (
+          _userId: string,
+          _slug: string,
+          ref: string,
+          _excludeIds: string[],
+          _spaceId: string,
+        ) => (ref === current.providerRef ? "apn_new_explicit" : undefined),
+      );
+      const update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...current,
+        ...data,
+      }));
+      const tx = {
+        $executeRaw: vi.fn(),
+        connection: {
+          findFirst: vi.fn(async ({ where }: { where: { id?: unknown; providerRef?: string } }) =>
+            typeof where.id === "string"
+              ? current
+              : where.providerRef === sibling.providerRef
+                ? sibling
+                : null,
+          ),
+          findMany: vi.fn(async () => [sibling]),
+          update,
+        },
+      };
+      const deps = {
+        prisma: {
+          connection: { findFirst: vi.fn(async () => current) },
+          $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+            callback(tx),
+          ),
+        },
+        connectors: {
+          managed: vi.fn(() => ({
+            connectionReady: vi.fn(async () => true),
+            resolveConnectedAccountId,
+          })),
+        },
+        env: {
+          defaultProvider: "fake",
+          defaultModel: "fake-model",
+          webOrigin: "http://127.0.0.1:5173",
+          screenProxySecret: "fake-test-secret",
+          sandboxProvider: "fake",
+        },
+      } as unknown as RouterDeps;
+      const actor = {
+        spaceId: "workspace-1",
+        userId: "user-1",
+        email: "user@rakazo.test",
+        isDeploymentOwner: true,
+      } satisfies Actor;
+      const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+      const result = await client.connections.complete({ connectionId: current.id });
+      expect(tx.connection.findMany).toHaveBeenCalledWith({
+        where: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          connectorId: current.connectorId,
+          provider: current.provider,
+          id: { not: current.id },
+          status: { in: ["connected", "pending", "error"] },
+        },
+        select: { providerRef: true, status: true },
+      });
+      expect(resolveConnectedAccountId).toHaveBeenCalledWith(
+        actor.userId,
+        current.provider,
+        sibling.providerRef,
+        [],
+        actor.spaceId,
+      );
+      if (siblingStatus === "error") {
+        expect(result.status).toBe("connected");
+        expect(resolveConnectedAccountId).toHaveBeenCalledWith(
+          actor.userId,
+          current.provider,
+          current.providerRef,
+          [sibling.providerRef],
+          actor.spaceId,
+        );
+        expect(update).toHaveBeenCalledWith({
+          where: { id: current.id },
+          data: { status: "connected", providerRef: "apn_new_explicit" },
+        });
+      } else {
+        expect(result.status).toBe("pending");
+        expect(resolveConnectedAccountId).toHaveBeenCalledOnce();
+        expect(update).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("keeps a failed sibling's raw ref excluded when its resolver throws", async () => {
+    const current = {
+      id: "new-grant",
+      connectorId: "composio",
+      provider: "gmail",
+      providerRef: "new-request",
+      displayName: "New Gmail",
+      status: "pending",
+      createdAt: new Date(0),
+    };
+    const resolveConnectedAccountId = vi.fn(
+      async (
+        _userId: string,
+        _slug: string,
+        ref: string,
+        _excludeIds: string[],
+        _spaceId: string,
+      ) => {
+        if (ref === "failed-request") throw new Error("Old authorization request no longer exists");
+        return "ca_new_explicit";
+      },
+    );
+    const update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...current,
+      ...data,
+    }));
+    const tx = {
+      $executeRaw: vi.fn(),
+      connection: {
+        findFirst: vi.fn().mockResolvedValueOnce(current).mockResolvedValueOnce(null),
+        findMany: vi.fn(async () => [{ providerRef: "failed-request", status: "error" }]),
+        update,
+      },
+    };
+    const deps = {
+      prisma: {
+        connection: { findFirst: vi.fn(async () => current) },
+        $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+          callback(tx),
+        ),
+      },
+      connectors: {
+        managed: vi.fn(() => ({
+          connectionReady: vi.fn(async () => true),
+          resolveConnectedAccountId,
+        })),
+      },
+      env: {
+        defaultProvider: "fake",
+        defaultModel: "fake-model",
+        webOrigin: "http://127.0.0.1:5173",
+        screenProxySecret: "fake-test-secret",
+        sandboxProvider: "fake",
+      },
+    } as unknown as RouterDeps;
+    const actor = {
+      spaceId: "workspace-1",
+      userId: "user-1",
+      email: "user@rakazo.test",
+      isDeploymentOwner: true,
+    } satisfies Actor;
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    expect((await client.connections.complete({ connectionId: current.id })).status).toBe(
+      "connected",
+    );
+    expect(resolveConnectedAccountId).toHaveBeenLastCalledWith(
+      actor.userId,
+      current.provider,
+      current.providerRef,
+      ["failed-request"],
+      actor.spaceId,
+    );
+    expect(update).toHaveBeenCalledWith({
+      where: { id: current.id },
+      data: { status: "connected", providerRef: "ca_new_explicit" },
+    });
+  });
+
   it.each([
     ["complete", false],
     ["complete", true],

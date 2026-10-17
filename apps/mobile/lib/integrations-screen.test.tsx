@@ -5,6 +5,7 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Integrations from "../app/(settings)/integrations";
+import McpSettings from "../app/(settings)/mcp";
 import { ConnectorIcon } from "../components/connector-icon";
 
 const state = vi.hoisted(() => ({
@@ -15,8 +16,11 @@ const state = vi.hoisted(() => ({
   scope: vi.fn(),
   persisted: vi.fn(),
   focused: true,
+  alert: vi.fn(),
 }));
 vi.mock("expo-router", () => ({
+  router: { push: vi.fn() },
+  Stack: { Screen: () => null },
   useFocusEffect: (callback: () => undefined | (() => void)) => {
     useEffect(() => {
       if (state.focused) return callback();
@@ -55,6 +59,59 @@ vi.mock("../components/native-action-button", () => ({
     <button type="button" disabled={disabled} onClick={onPress}>
       {label}
     </button>
+  ),
+}));
+vi.mock("../components/native-switch", () => ({
+  NativeSwitch: ({
+    value,
+    onValueChange,
+  }: {
+    value: boolean;
+    onValueChange: (value: boolean) => void;
+  }) => (
+    <input
+      type="checkbox"
+      checked={value}
+      onChange={(event) => onValueChange(event.target.checked)}
+    />
+  ),
+}));
+vi.mock("../components/native-segmented-control", () => ({
+  NativeSegmentedControl: ({
+    options,
+    onChange,
+  }: {
+    options: { value: string; label: string }[];
+    onChange: (value: string) => void;
+  }) => (
+    <div>
+      {options.map((option) => (
+        <button type="button" key={option.value} onClick={() => onChange(option.value)}>
+          {option.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
+vi.mock("../components/menu-picker", () => ({
+  MenuPicker: ({
+    label,
+    value,
+    choices,
+    onChange,
+  }: {
+    label: string;
+    value: string;
+    choices: { key: string; label: string }[];
+    onChange: (key: string) => void;
+  }) => (
+    <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
+      {choices.map((choice) => (
+        <option key={choice.key} value={choice.key}>
+          {choice.label}
+        </option>
+      ))}
+    </select>
   ),
 }));
 vi.mock("react-native-svg", () => ({
@@ -96,7 +153,7 @@ vi.mock("react-native", () => {
       createElement("img", { src: source.uri, onError }),
     StyleSheet: { create: (styles: unknown) => styles },
     useWindowDimensions: () => ({ width: 390 }),
-    Alert: { alert: vi.fn() },
+    Alert: { alert: state.alert },
     Linking: { openURL: vi.fn() },
   };
 });
@@ -130,6 +187,7 @@ beforeEach(() => {
   state.persisted.mockReset().mockResolvedValue(null);
   state.read.mockReset().mockReturnValue(null);
   state.write.mockReset();
+  state.alert.mockReset();
   const pending = new Promise<(typeof item)[]>((resolve, reject) => {
     resolveCatalog = resolve;
     rejectCatalog = reject;
@@ -159,7 +217,7 @@ it("keeps Search visible and shows rows on a cold load until the first success",
   expect(container.querySelector('[data-testid="integrations-loading"]')?.children).toHaveLength(8);
   await act(async () => resolveCatalog([item]));
   expect(container.querySelector('[data-testid="integrations-loading"]')).toBeNull();
-  expect(container.textContent).toContain("Example appAdded");
+  expect(container.textContent).toContain("Example appConnectedManage");
   expect(state.write).toHaveBeenCalledWith(expect.anything(), {
     catalog: [item],
     connections: [account],
@@ -168,16 +226,16 @@ it("keeps Search visible and shows rows on a cold load until the first success",
 it("paints the cached list and Added state before replacing it in the background", async () => {
   state.read.mockReturnValue({ catalog: [item], connections: [account] });
   await render();
-  expect(container.textContent).toContain("Example appAdded");
+  expect(container.textContent).toContain("Example appConnectedManage");
   expect(container.querySelector('[data-testid="integrations-loading"]')).toBeNull();
   await act(async () => resolveCatalog([{ ...item, name: "Refreshed app" }]));
-  expect(container.textContent).toContain("Refreshed appAdded");
+  expect(container.textContent).toContain("Refreshed appConnectedManage");
 });
 it("keeps cached rows after a refresh failure and offers Retry", async () => {
   state.read.mockReturnValue({ catalog: [item], connections: [account] });
   await render();
   await act(async () => rejectCatalog(new Error("Unavailable")));
-  expect(container.textContent).toContain("Example appAdded");
+  expect(container.textContent).toContain("Example appConnectedManage");
   const retry = [...container.querySelectorAll("button")].find(
     (button) => button.textContent === "Retry",
   );
@@ -235,7 +293,7 @@ it("persists a rename before a pending stale refresh can overwrite it", async ()
   state.read.mockReturnValue({ catalog: [item], connections: [account] });
   await render();
   const added = [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Added",
+    (button) => button.textContent === "Manage",
   );
   await act(async () => added?.click());
   const input = container.querySelector("input")!;
@@ -261,24 +319,29 @@ it("persists a rename before a pending stale refresh can overwrite it", async ()
   expect(state.write).toHaveBeenCalledTimes(1);
 });
 
-it.each(["Remove", "Uninstall"])(
-  "persists revoked Added state after %s even if the following refresh fails",
+it.each(["Disconnect", "Uninstall source"])(
+  "confirms and persists a local revoke after %s even when its final read fails",
   async (action) => {
     state.read.mockReturnValue({ catalog: [item], connections: [account] });
     await render();
-    const added = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Added",
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Manage")
+        ?.click(),
     );
-    await act(async () => added?.click());
-    state.rpc.mockImplementation((proc: string) =>
-      proc === "connections/catalog"
-        ? Promise.reject(new Error("Unavailable"))
-        : Promise.resolve([]),
+    let reads = 0;
+    state.rpc.mockImplementation((proc: string) => {
+      if (proc === "connections/list")
+        return ++reads <= 2 ? Promise.resolve([account]) : Promise.reject(new Error("Unavailable"));
+      return Promise.resolve([]);
+    });
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === action)
+        ?.click(),
     );
-    const remove = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === action,
-    );
-    await act(async () => remove?.click());
+    expect(state.rpc.mock.calls.some(([proc]) => proc === "connections/revoke")).toBe(false);
+    await act(async () => state.alert.mock.lastCall?.[2]?.at(-1)?.onPress());
     expect(state.write).toHaveBeenLastCalledWith(expect.anything(), {
       catalog: [{ ...item, connected: false }],
       connections: [{ ...account, status: "revoked" }],
@@ -304,7 +367,7 @@ it("persists a completed connection before refreshing", async () => {
     catalog: [item],
     connections: [account],
   });
-  expect(container.textContent).toContain("Example appAdded");
+  expect(container.textContent).toContain("Example appConnectedManage");
 });
 
 it("paints persisted cached rows while identity is pending or offline", async () => {
@@ -317,10 +380,10 @@ it("paints persisted cached rows while identity is pending or offline", async ()
     }),
   );
   await render();
-  expect(container.textContent).toContain("Example appAdded");
+  expect(container.textContent).toContain("Example appConnectedManage");
   expect(state.rpc).not.toHaveBeenCalled();
   await act(async () => rejectIdentity(new Error("offline")));
-  expect(container.textContent).toContain("Example appAdded");
+  expect(container.textContent).toContain("Example appConnectedManage");
   expect(container.textContent).toContain("Retry");
 });
 
@@ -363,7 +426,7 @@ it("keeps sources loading when a rename cancels the catalog refresh", async () =
   );
   await render();
   await act(async () =>
-    [...container.querySelectorAll("button")].find((b) => b.textContent === "Added")?.click(),
+    [...container.querySelectorAll("button")].find((b) => b.textContent === "Manage")?.click(),
   );
   const input = container.querySelector("input")!;
   await act(async () => {
@@ -433,7 +496,7 @@ it.each(["rename", "revoke", "uninstall", "connect"])(
     state.read.mockReturnValue({ catalog: [item], connections: [account] });
     await render();
     await act(async () =>
-      [...container.querySelectorAll("button")].find((b) => b.textContent === "Added")?.click(),
+      [...container.querySelectorAll("button")].find((b) => b.textContent === "Manage")?.click(),
     );
     let finish!: (value: unknown) => void;
     const pending = new Promise((resolve) => {
@@ -463,11 +526,17 @@ it.each(["rename", "revoke", "uninstall", "connect"])(
       await act(async () => input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
     } else {
       const label =
-        action === "revoke" ? "Remove" : action === "uninstall" ? "Uninstall" : "Add another";
+        action === "revoke"
+          ? "Disconnect"
+          : action === "uninstall"
+            ? "Uninstall source"
+            : "Add account";
       await act(async () =>
         [...container.querySelectorAll("button")].find((b) => b.textContent === label)?.click(),
       );
     }
+    if (action === "revoke" || action === "uninstall")
+      await act(async () => state.alert.mock.lastCall?.[2]?.at(-1)?.onPress());
     expect(state.rpc).toHaveBeenCalledWith(
       action === "rename"
         ? "connections/rename"
@@ -527,4 +596,62 @@ it("ignores an old focus identity error after the new focus succeeds", async () 
   expect(container.textContent).not.toContain("Old focus failed");
   expect(container.textContent).not.toContain("Retry");
   expect(container.textContent).toContain("New space appAdd");
+});
+
+it("retries MCP server identity after an initial failure instead of leaving Reload inert", async () => {
+  state.scope.mockRejectedValueOnce(new Error("Unavailable"));
+  state.rpc.mockResolvedValue([]);
+  await render(<McpSettings />);
+  expect(container.textContent).toContain("Unavailable");
+  state.scope.mockResolvedValue({ userId: "user-a", spaceId: "space-a" });
+  state.rpc.mockResolvedValue([
+    { id: "server-a", name: "Fixture", revision: 2, allowAllTools: false, allowedTools: [] },
+  ]);
+  await act(async () =>
+    [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Reload settings")
+      ?.click(),
+  );
+  expect(state.scope).toHaveBeenCalledTimes(2);
+  expect(container.textContent).toContain("Fixture");
+  expect(container.textContent).not.toContain("Unavailable");
+});
+
+it("keeps the selected MCP server visible while saving the exact reviewed revision", async () => {
+  const server = {
+    id: "server-a",
+    name: "Fixture",
+    revision: 2,
+    allowAllTools: false,
+    allowedTools: [],
+  };
+  let finish!: (value: unknown) => void;
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "mcp/servers/setTools"
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve([server]),
+  );
+  await render(<McpSettings />);
+  await act(async () => {
+    const picker = container.querySelector("select")!;
+    picker.value = "server-a";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () =>
+    [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Save tool access")
+      ?.click(),
+  );
+  expect(state.rpc).toHaveBeenCalledWith("mcp/servers/setTools", {
+    id: "server-a",
+    revision: 2,
+    allowAllTools: false,
+    allowedTools: [],
+  });
+  expect(container.textContent).toContain("Fixture");
+  expect(container.textContent).not.toContain("No MCP servers yet.");
+  await act(async () => finish({ ...server, revision: 3 }));
+  expect(container.textContent).toContain("Tool access saved.");
 });

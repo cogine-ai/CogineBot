@@ -1,13 +1,21 @@
 import type { CapabilityInstall, Connection, ConnectionCatalogItem } from "@rakazo/contracts";
+import type { ConnectionApp } from "@rakazo/core";
 import {
   abortableDelay,
-  buildFeaturedConnectorTiles,
   CONNECTION_CATALOG_PAGE_SIZE,
+  catalogAccounts,
+  catalogItemConnected,
+  catalogUninstallAccounts,
+  connectionAppSummary,
+  connectionCatalogKey,
+  connectionMatchesCatalog,
+  connectionRemovalState,
   EMPTY_PLUGIN_CATALOG_MESSAGE,
-  filterConnectionCatalogItems,
+  filterConnectionApps,
+  groupConnectionCatalog,
   humanizeToolName,
 } from "@rakazo/core";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -22,7 +30,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ConnectorIcon } from "../../components/connector-icon";
+import { MenuPicker } from "../../components/menu-picker";
 import { NativeActionButton } from "../../components/native-action-button";
+import { NativeSegmentedControl } from "../../components/native-segmented-control";
 import { Chevron } from "../../components/row-accessories";
 import { rpc } from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
@@ -45,7 +55,11 @@ type ConnectionTool = { name: string; description: string };
 const LOGO_SIZE = 32;
 
 function itemKey(item: Pick<ConnectionCatalogItem, "connectorId" | "slug">) {
-  return `${item.connectorId}:${item.slug}`;
+  return connectionCatalogKey(item);
+}
+function sourceLabel(item: Pick<ConnectionCatalogItem, "connectorId">) {
+  const labels: Record<string, string> = { composio: "Composio", pipedream: "Pipedream" };
+  return labels[item.connectorId] ?? item.connectorId;
 }
 
 export default function Integrations() {
@@ -56,6 +70,9 @@ export default function Integrations() {
   const [catalog, setCatalog] = useState<ConnectionCatalogItem[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [query, setQuery] = useState("");
+  const [catalogFilter, setCatalogFilter] = useState<"all" | "connected">("all");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [unconfirmedRemovalId, setUnconfirmedRemovalId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(CONNECTION_CATALOG_PAGE_SIZE);
   const [sources, setSources] = useState<CapabilityInstall[]>([]);
   const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
@@ -73,6 +90,7 @@ export default function Integrations() {
   const [detailKey, setDetailKey] = useState<{ connectorId: string; slug: string } | null>(null);
   const [tools, setTools] = useState<ConnectionTool[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
+  const [toolsError, setToolsError] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(true);
   const [toolsTick, setToolsTick] = useState(0);
   const connectionAttempt = useRef<AbortController | null>(null);
@@ -91,9 +109,7 @@ export default function Integrations() {
     setCatalogReady(true);
     setLabelDrafts((current) =>
       Object.fromEntries(
-        next.connections
-          .filter((row) => row.status === "connected" || row.status === "pending")
-          .map((row) => [row.id, current[row.id] ?? row.displayName]),
+        next.connections.map((row) => [row.id, current[row.id] ?? row.displayName]),
       ),
     );
   }
@@ -147,9 +163,10 @@ export default function Integrations() {
     });
   }
 
-  const featuredTiles = useMemo(() => buildFeaturedConnectorTiles(catalog), [catalog]);
-  const showFeatured = !query.trim();
-  const catalogApps = useMemo(() => filterConnectionCatalogItems(catalog, query), [catalog, query]);
+  const apps = useMemo(() => groupConnectionCatalog(catalog), [catalog]);
+  const catalogApps = filterConnectionApps(apps, query).filter(
+    (app) => catalogFilter === "all" || connectionAppSummary(app, connections).isConnected,
+  );
   const renderedApps = catalogApps.slice(0, visibleCount);
 
   const detailItem = useMemo(() => {
@@ -160,6 +177,12 @@ export default function Integrations() {
       ) ?? null
     );
   }, [catalog, detailKey]);
+  const detailApp = apps.find((app) =>
+    app.sources.some(
+      (item) =>
+        detailKey && item.connectorId === detailKey.connectorId && item.slug === detailKey.slug,
+    ),
+  );
 
   function clearStaleScope() {
     if (!cacheScope.current || isIntegrationsScopeCurrent(cacheScope.current)) return;
@@ -172,6 +195,10 @@ export default function Integrations() {
     setDetailKey(null);
     setLabelDrafts({});
     setPending(null);
+    setNotice(null);
+    setCatalogError(null);
+    setUnconfirmedRemovalId(null);
+    setToolsError(null);
     connectionAttempt.current?.abort();
   }
 
@@ -201,6 +228,9 @@ export default function Integrations() {
       setSources([]);
       setDetailKey(null);
       setLabelDrafts({});
+      setNotice(null);
+      setCatalogError(null);
+      setUnconfirmedRemovalId(null);
     }
     cacheScope.current = scope;
     if (!previous || previous.userId !== scope.userId || previous.spaceId !== scope.spaceId) {
@@ -224,7 +254,6 @@ export default function Integrations() {
         }
       })
       .catch(() => undefined);
-    setCatalogError(null);
     let next: IntegrationsSnapshot;
     try {
       const [catalog, connections] = await Promise.all([
@@ -249,6 +278,13 @@ export default function Integrations() {
     const focus = focusGeneration.current;
     try {
       await refresh();
+      if (mounted.current && focus === focusGeneration.current)
+        setCatalogError(
+          unconfirmedRemovalId &&
+            connectionRemovalState(snapshot.current.connections, unconfirmedRemovalId) === "revoked"
+            ? t("Local access stopped · Provider confirmation pending")
+            : null,
+        );
     } catch (reason) {
       if (
         mounted.current &&
@@ -299,6 +335,7 @@ export default function Integrations() {
     }
     let cancelled = false;
     setToolsLoading(true);
+    setToolsError(null);
     void rpc<ConnectionTool[]>("connections/tools", {
       connectorId: detailKey.connectorId,
       provider: detailKey.slug,
@@ -306,8 +343,11 @@ export default function Integrations() {
       .then((list) => {
         if (!cancelled) setTools(list);
       })
-      .catch(() => {
-        if (!cancelled) setTools([]);
+      .catch((reason) => {
+        if (!cancelled) {
+          setTools([]);
+          setToolsError(errorText(reason, t("Could not load tools")));
+        }
       })
       .finally(() => {
         if (!cancelled) setToolsLoading(false);
@@ -329,6 +369,7 @@ export default function Integrations() {
 
   function openDetail(item: ConnectionCatalogItem) {
     setCatalogError(null);
+    setNotice(null);
     setToolsOpen(true);
     setDetailKey({ connectorId: item.connectorId, slug: item.slug });
   }
@@ -341,14 +382,22 @@ export default function Integrations() {
   function accountsFor(item: Pick<ConnectionCatalogItem, "connectorId" | "slug">) {
     return connections.filter(
       (row) =>
-        row.connectorId === item.connectorId &&
-        row.provider === item.slug &&
+        connectionMatchesCatalog(row, item) &&
         (row.status === "connected" || row.status === "pending"),
     );
   }
 
   function itemConnected(item: ConnectionCatalogItem) {
-    return item.connected || accountsFor(item).some((row) => row.status === "connected");
+    return catalogItemConnected(connections, item);
+  }
+  function openApp(app: ConnectionApp) {
+    const item =
+      app.sources.find(itemConnected) ??
+      app.sources.find((source) =>
+        catalogAccounts(connections, source).some((row) => row.status === "pending"),
+      ) ??
+      app.sources[0];
+    if (item) openDetail(item);
   }
 
   async function notifyAppConnected(item: ConnectionCatalogItem, isCurrent: () => boolean) {
@@ -362,7 +411,7 @@ export default function Integrations() {
     }).catch(() => undefined);
   }
 
-  async function connect(item: ConnectionCatalogItem) {
+  async function connect(item: ConnectionCatalogItem, previous?: Connection) {
     const isCurrent = captureConnectionScope();
     if (!isCurrent()) return;
     connectionAttempt.current?.abort();
@@ -371,19 +420,25 @@ export default function Integrations() {
     const key = itemKey(item);
     setPending(key);
     setCatalogError(null);
+    setNotice(null);
     try {
       const started = await rpc<{ connectionId: string; authorizationUrl: string | null }>(
         "connections/begin",
         {
           connectorId: item.connectorId,
           provider: item.slug,
+          ...(previous ? { connectionId: previous.id } : {}),
           displayName: (() => {
+            if (previous) return previous.displayName;
             const count = accountsFor(item).filter((row) => row.status === "connected").length;
             return count <= 0 ? item.name : `${item.name} ${count + 1}`;
           })(),
         },
       );
       if (!isCurrent() || controller.signal.aborted) return;
+      const startedRows = await rpc<Connection[]>("connections/list").catch(() => null);
+      if (!isCurrent() || controller.signal.aborted) return;
+      if (startedRows) saveSnapshot({ ...snapshot.current, connections: startedRows });
       if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
       for (let attempt = 0; attempt < 45; attempt += 1) {
         if (controller.signal.aborted || !isCurrent()) return;
@@ -398,8 +453,15 @@ export default function Integrations() {
           if (isCurrent()) setToolsTick((tick) => tick + 1);
           return;
         }
+        if (row?.status === "error" || row?.status === "revoked") {
+          updateAccount(row);
+          setCatalogError(t("Authorization did not complete. You can authorize again."));
+          return;
+        }
         await abortableDelay(2_000, controller.signal);
       }
+      if (controller.signal.aborted || !isCurrent()) return;
+      await refresh().catch(() => undefined);
       if (controller.signal.aborted || !isCurrent()) return;
       Alert.alert(
         t("Connection pending"),
@@ -416,20 +478,166 @@ export default function Integrations() {
     }
   }
 
-  async function revokeAccount(row: Connection) {
+  async function checkAccount(row: Connection, item: ConnectionCatalogItem) {
     const isCurrent = captureConnectionScope();
     if (!isCurrent()) return;
-    setPending(row.id);
+    setPending(`check:${row.id}`);
     setCatalogError(null);
+    setNotice(null);
     try {
-      await rpc("connections/revoke", { connectionId: row.id });
+      const next = await rpc<Connection>("connections/complete", { connectionId: row.id });
       if (!isCurrent()) return;
-      updateAccount({ ...row, status: "revoked" });
-      await refresh();
-      if (isCurrent()) setToolsTick((tick) => tick + 1);
+      updateAccount(next);
+      if (next.status === "connected") void notifyAppConnected(item, isCurrent);
+      if (next.status === "pending") setNotice(t("Authorization is still pending."));
+      setToolsTick((value) => value + 1);
     } catch (reason) {
+      if (isCurrent()) setCatalogError(errorText(reason, t("Could not check connection")));
+    } finally {
+      if (isCurrent()) setPending(null);
+    }
+  }
+
+  async function prepareRemoval(item: ConnectionCatalogItem, account?: Connection) {
+    const isCurrent = captureConnectionScope();
+    if (!isCurrent()) return;
+    setCatalogError(null);
+    setNotice(null);
+    try {
+      const rows = await rpc<Connection[]>("connections/list");
       if (!isCurrent()) return;
-      setCatalogError(errorText(reason, t("Could not revoke connection")));
+      saveSnapshot({ ...snapshot.current, connections: rows });
+      const targets = account
+        ? rows.filter(
+            (row) =>
+              row.id === account.id &&
+              connectionMatchesCatalog(row, item) &&
+              row.status !== "revoked",
+          )
+        : catalogUninstallAccounts(rows, item);
+      if (!targets.length) {
+        setNotice(t("No connected or pending accounts remain for this source."));
+        return;
+      }
+      const keptErrors =
+        !account && catalogAccounts(rows, item).some((row) => row.status === "error");
+      Alert.alert(
+        account ? t("Disconnect this account?") : t("Uninstall this source?"),
+        `${sourceLabel(item)} · ${item.slug}\n${targets.map((row) => row.displayName).join("\n")}${keptErrors ? `\n${t("Accounts that need attention are kept. Manage them individually.")}` : ""}`,
+        [
+          { text: t("Cancel"), style: "cancel" },
+          {
+            text: account ? t("Disconnect account") : t("Uninstall source"),
+            style: "destructive",
+            onPress: () => void runRemoval(item, targets, !!account, isCurrent),
+          },
+        ],
+      );
+    } catch (reason) {
+      if (isCurrent()) setCatalogError(errorText(reason, t("Could not check connection")));
+    }
+  }
+
+  async function runRemoval(
+    item: ConnectionCatalogItem,
+    expected: Connection[],
+    single: boolean,
+    isCurrent: () => boolean,
+  ) {
+    if (!isCurrent()) return;
+    setPending("remove");
+    setCatalogError(null);
+    setNotice(null);
+    let failedId: string | null = null;
+    let failure: unknown;
+    try {
+      const rows = await rpc<Connection[]>("connections/list");
+      if (!isCurrent()) return;
+      const targets = single
+        ? rows.filter(
+            (row) =>
+              row.id === expected[0]?.id &&
+              connectionMatchesCatalog(row, item) &&
+              row.status !== "revoked",
+          )
+        : catalogUninstallAccounts(rows, item);
+      if (
+        targets.length !== expected.length ||
+        targets.some(
+          (row) =>
+            !expected.some(
+              (old) =>
+                old.id === row.id &&
+                old.status === row.status &&
+                old.remoteAccountId === row.remoteAccountId,
+            ),
+        )
+      ) {
+        saveSnapshot({ ...snapshot.current, connections: rows });
+        setNotice(t("Accounts changed. Review them before disconnecting."));
+        return;
+      }
+      for (const row of targets) {
+        if (!isCurrent()) return;
+        try {
+          await rpc("connections/revoke", { connectionId: row.id });
+        } catch (reason) {
+          failedId = row.id;
+          failure = reason;
+          break;
+        }
+        if (!isCurrent()) return;
+        updateAccount({ ...row, status: "revoked" });
+      }
+      const remaining = await rpc<Connection[]>("connections/list").catch(() => null);
+      if (!isCurrent()) return;
+      if (remaining)
+        saveSnapshot({
+          connections: remaining,
+          catalog: snapshot.current.catalog.map((entry) =>
+            itemKey(entry) === itemKey(item)
+              ? {
+                  ...entry,
+                  connected: catalogAccounts(remaining, item).some(
+                    (row) => row.status === "connected",
+                  ),
+                }
+              : entry,
+          ),
+        });
+      if (failedId) {
+        const state = connectionRemovalState(remaining, failedId);
+        if (state === "revoked") setUnconfirmedRemovalId(failedId);
+        const stopped = expected.filter(
+          (row) => connectionRemovalState(remaining, row.id) === "revoked",
+        ).length;
+        if (stopped)
+          setNotice(
+            stopped === 1
+              ? t("1 account disconnected locally")
+              : t("{count} accounts disconnected locally", { count: stopped }),
+          );
+        setCatalogError(
+          state === "revoked"
+            ? t("Local access stopped · Provider confirmation pending")
+            : state === "unverified"
+              ? t("Connection status unconfirmed. Refresh status.")
+              : errorText(
+                  failure,
+                  t(
+                    "Disconnect did not complete. Review the remaining accounts before trying again.",
+                  ),
+                ),
+        );
+      } else if (
+        !remaining ||
+        expected.some((row) => connectionRemovalState(remaining, row.id) !== "revoked")
+      )
+        setCatalogError(t("Connection status unconfirmed. Refresh status."));
+      else setNotice(single ? t("Account disconnected.") : t("Source accounts disconnected."));
+      setToolsTick((value) => value + 1);
+    } catch (reason) {
+      if (isCurrent()) setCatalogError(errorText(reason, t("Could not check connection")));
     } finally {
       if (isCurrent()) setPending(null);
     }
@@ -453,34 +661,6 @@ export default function Integrations() {
     } catch (reason) {
       if (!isCurrent()) return;
       setCatalogError(errorText(reason, t("Could not rename connection")));
-    } finally {
-      if (isCurrent()) setPending(null);
-    }
-  }
-
-  async function uninstall(item: ConnectionCatalogItem) {
-    const isCurrent = captureConnectionScope();
-    if (!isCurrent()) return;
-    const matches = accountsFor(item);
-    const key = itemKey(item);
-    if (matches.length === 0) {
-      closeDetail();
-      return;
-    }
-    setPending(`uninstall:${key}`);
-    setCatalogError(null);
-    try {
-      for (const row of matches) {
-        await rpc("connections/revoke", { connectionId: row.id });
-        if (!isCurrent()) return;
-        updateAccount({ ...row, status: "revoked" });
-      }
-      await refresh();
-      if (isCurrent()) closeDetail();
-    } catch (reason) {
-      if (!isCurrent()) return;
-      setCatalogError(errorText(reason, t("Could not revoke connection")));
-      await refresh().catch(() => undefined);
     } finally {
       if (isCurrent()) setPending(null);
     }
@@ -548,133 +728,196 @@ export default function Integrations() {
     }
   }
 
-  function renderCatalogActions(item: ConnectionCatalogItem, label: string) {
-    const key = itemKey(item);
-    const connected = itemConnected(item);
-    const connecting = pending === key;
-    if (connected) {
-      return (
-        <NativeActionButton
-          accessibilityLabel={t("Added")}
-          disabled={connecting}
-          fill={false}
-          label={connecting ? t("Working…") : t("Added")}
-          onPress={() => openDetail(item)}
-          prominence="secondary"
-        />
-      );
-    }
+  function statusLabel(status: Connection["status"]) {
+    return status === "connected"
+      ? t("Connected")
+      : status === "pending"
+        ? t("Pending authorization")
+        : status === "error"
+          ? t("Needs attention")
+          : t("Disconnected");
+  }
+
+  function renderCatalogTile(app: ConnectionApp) {
+    const summary = connectionAppSummary(app, connections),
+      waiting = summary.pending[0],
+      old = summary.errors[0] ?? summary.revoked[0];
+    const action = summary.isConnected
+      ? t("Manage")
+      : waiting
+        ? t("Check status")
+        : old
+          ? t("Authorize again")
+          : t("Add");
     return (
-      <NativeActionButton
-        accessibilityLabel={t("Add {name}", { name: label })}
-        disabled={connecting}
-        fill={false}
-        label={connecting ? t("Working…") : t("Add")}
-        onPress={() => void connect(item)}
-        prominence="secondary"
-      />
+      <View key={app.id} style={[styles.row, catalogColumns === 2 ? styles.catalogCell : null]}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => openApp(app)}
+          style={[styles.detailTitleRow, styles.grow]}
+        >
+          <ConnectorIcon logo={app.logo} name={app.name} size={LOGO_SIZE} />
+          <View style={styles.grow}>
+            <Text numberOfLines={1} style={styles.title}>
+              {app.name}
+            </Text>
+            {summary.status ? (
+              <Text style={styles.secondary}>
+                {statusLabel(summary.status)}
+                {summary.isConnected && summary.errors.length
+                  ? ` · ${t("Needs attention")}: ${summary.errors.length}`
+                  : ""}
+                {summary.isConnected && summary.pending.length
+                  ? ` · ${t("Pending authorization")}: ${summary.pending.length}`
+                  : ""}
+              </Text>
+            ) : null}
+          </View>
+        </Pressable>
+        <NativeActionButton
+          label={action}
+          disabled={pending !== null}
+          fill={false}
+          prominence="secondary"
+          onPress={() => {
+            if (summary.isConnected || app.sources.length > 1) {
+              openApp(app);
+              return;
+            }
+            const item = app.sources[0];
+            if (!item) return;
+            if (waiting) void checkAccount(waiting, item);
+            else void connect(item, old);
+          }}
+        />
+      </View>
     );
   }
 
-  function renderCatalogTile(item: ConnectionCatalogItem, label: string) {
-    const connected = itemConnected(item);
-    const body = (
-      <>
-        <ConnectorIcon logo={item.logo} name={label} size={LOGO_SIZE} />
-        <View style={styles.grow}>
-          <Text numberOfLines={1} style={styles.title}>
-            {label}
+  function renderAccount(row: Connection, item: ConnectionCatalogItem) {
+    const editable = row.status === "connected" || row.status === "pending";
+    return (
+      <View key={row.id} style={styles.card}>
+        <View style={styles.accountRow}>
+          {editable ? (
+            <TextInput
+              value={labelDrafts[row.id] ?? row.displayName}
+              editable={pending === null}
+              onChangeText={(value) =>
+                setLabelDrafts((current) => ({ ...current, [row.id]: value }))
+              }
+              onEndEditing={() => void renameAccount(row)}
+              accessibilityLabel={t("Account label")}
+              style={styles.accountLabel}
+            />
+          ) : (
+            <Text style={[styles.title, styles.grow]}>{row.displayName}</Text>
+          )}
+          <Text style={row.status === "error" ? styles.error : styles.secondary}>
+            {statusLabel(row.status)}
           </Text>
         </View>
-        {renderCatalogActions(item, label)}
-      </>
-    );
-    const tileStyle = [styles.row, catalogColumns === 2 ? styles.catalogCell : null];
-    if (connected) {
-      return (
-        <Pressable
-          key={itemKey(item)}
-          accessibilityRole="button"
-          onPress={() => openDetail(item)}
-          style={tileStyle}
-        >
-          {body}
-        </Pressable>
-      );
-    }
-    return (
-      <View key={itemKey(item)} style={tileStyle}>
-        {body}
+        <Text style={styles.secondary}>{sourceLabel(item)}</Text>
+        <View style={styles.accountActions}>
+          {row.status === "pending" ? (
+            <NativeActionButton
+              label={t("Check status")}
+              disabled={pending !== null}
+              fill={false}
+              prominence="secondary"
+              onPress={() => void checkAccount(row, item)}
+            />
+          ) : null}
+          {row.status === "error" || row.status === "revoked" ? (
+            <NativeActionButton
+              label={t("Authorize again")}
+              disabled={pending !== null}
+              fill={false}
+              prominence="secondary"
+              onPress={() => void connect(item, row)}
+            />
+          ) : null}
+          {row.status !== "revoked" ? (
+            <NativeActionButton
+              label={row.status === "pending" ? t("Cancel connection") : t("Disconnect")}
+              disabled={pending !== null}
+              fill={false}
+              prominence="destructive"
+              onPress={() => void prepareRemoval(item, row)}
+            />
+          ) : null}
+          {row.status === "connected" && row.remoteAccountId ? (
+            <NativeActionButton
+              label={t("Account details")}
+              fill={false}
+              prominence="quiet"
+              onPress={() =>
+                Alert.alert(t("Authorization record"), row.remoteAccountId ?? undefined)
+              }
+            />
+          ) : null}
+        </View>
       </View>
     );
   }
 
   function renderDetail(item: ConnectionCatalogItem) {
-    const accounts = accountsFor(item);
-    const key = itemKey(item);
-    const connecting = pending === key;
-    const uninstalling = pending === `uninstall:${key}`;
-    const toolCount = tools.length;
-
+    const rows = catalogAccounts(connections, item),
+      current = rows.filter((row) => row.status !== "revoked"),
+      history = rows.filter((row) => row.status === "revoked");
     return (
       <View style={styles.detail}>
-        <View style={styles.detailHeader}>
-          <View style={styles.detailTitleRow}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("Back")}
-              onPress={closeDetail}
-              style={styles.backButton}
-            >
-              <Text style={styles.link}>{t("Back")}</Text>
-            </Pressable>
-            <ConnectorIcon logo={item.logo} name={item.name} size={LOGO_SIZE} />
-            <Text numberOfLines={1} style={styles.detailTitle}>
-              {item.name}
-            </Text>
-          </View>
+        <View style={styles.detailTitleRow}>
           <NativeActionButton
-            accessibilityLabel={t("Uninstall")}
-            disabled={uninstalling || connecting}
+            label={t("Back")}
             fill={false}
-            label={uninstalling ? t("Working…") : t("Uninstall")}
-            onPress={() => void uninstall(item)}
-            prominence="destructive"
+            prominence="quiet"
+            onPress={closeDetail}
           />
+          <ConnectorIcon
+            logo={detailApp?.logo ?? item.logo}
+            name={detailApp?.name ?? item.name}
+            size={LOGO_SIZE}
+          />
+          <Text style={styles.detailTitle}>{detailApp?.name ?? item.name}</Text>
         </View>
-
-        <View style={styles.card}>
-          <Text style={styles.section}>{t("Accounts")}</Text>
-          {accounts.map((row) => (
-            <View key={row.id} style={styles.accountRow}>
-              <TextInput
-                value={labelDrafts[row.id] ?? row.displayName}
-                onChangeText={(value) =>
-                  setLabelDrafts((current) => ({ ...current, [row.id]: value }))
-                }
-                onEndEditing={() => void renameAccount(row)}
-                accessibilityLabel={t("Account label")}
-                style={styles.accountLabel}
-              />
-              <NativeActionButton
-                accessibilityLabel={t("Remove {name}", { name: row.displayName })}
-                disabled={pending === row.id || uninstalling}
-                fill={false}
-                label={pending === row.id ? t("Working…") : t("Remove")}
-                onPress={() => void revokeAccount(row)}
-                prominence="destructive"
-              />
-            </View>
-          ))}
+        {detailApp && detailApp.sources.length > 1 && !pending ? (
+          <MenuPicker
+            label={t("Connection source")}
+            value={itemKey(item)}
+            choices={detailApp.sources.map((source) => ({
+              key: itemKey(source),
+              label: `${sourceLabel(source)} · ${source.slug}`,
+            }))}
+            onChange={(key) => {
+              const source = detailApp.sources.find((entry) => itemKey(entry) === key);
+              if (source) openDetail(source);
+            }}
+          />
+        ) : (
+          <Text style={styles.secondary}>{sourceLabel(item)}</Text>
+        )}
+        <View style={styles.accountRow}>
+          <Text style={[styles.section, styles.grow]}>{t("Accounts")}</Text>
           <NativeActionButton
-            accessibilityLabel={t("Add another {name}", { name: item.name })}
-            disabled={connecting || uninstalling}
-            label={connecting ? t("Working…") : t("Add another")}
-            onPress={() => void connect(item)}
+            label={t("Add account")}
+            disabled={pending !== null}
+            fill={false}
             prominence="secondary"
+            onPress={() => void connect(item)}
           />
         </View>
-
+        {current.length ? (
+          current.map((row) => renderAccount(row, item))
+        ) : (
+          <Text style={styles.secondary}>{t("No active accounts.")}</Text>
+        )}
+        {history.length ? (
+          <View style={styles.card}>
+            <Text style={styles.section}>{t("Disconnected accounts")}</Text>
+            {history.map((row) => renderAccount(row, item))}
+          </View>
+        ) : null}
         <View style={styles.card}>
           <Pressable
             accessibilityRole="button"
@@ -683,11 +926,7 @@ export default function Integrations() {
             style={styles.toolsToggle}
           >
             <Text style={styles.title}>
-              {toolsLoading
-                ? t("Tools")
-                : toolCount === 1
-                  ? t("1 tool")
-                  : t("{count} tools", { count: toolCount })}
+              {toolsLoading ? t("Tools") : t("{count} tools", { count: tools.length })}
             </Text>
             <Chevron expanded={toolsOpen} />
           </Pressable>
@@ -695,18 +934,29 @@ export default function Integrations() {
             <View style={styles.toolsBody}>
               {toolsLoading ? (
                 <Text style={styles.secondary}>{t("Loading tools…")}</Text>
-              ) : tools.length === 0 ? (
-                <Text style={styles.secondary}>{t("No tools available.")}</Text>
-              ) : (
+              ) : toolsError ? (
+                <Text style={styles.error}>{toolsError}</Text>
+              ) : tools.length ? (
                 tools.map((tool) => (
                   <Text key={tool.name} style={styles.toolName}>
                     {humanizeToolName(tool.name)}
                   </Text>
                 ))
+              ) : (
+                <Text style={styles.secondary}>{t("No tools available.")}</Text>
               )}
             </View>
           ) : null}
         </View>
+        {catalogUninstallAccounts(connections, item).length ? (
+          <NativeActionButton
+            label={t("Uninstall source")}
+            disabled={pending !== null}
+            fill={false}
+            prominence="destructive"
+            onPress={() => void prepareRemoval(item)}
+          />
+        ) : null}
       </View>
     );
   }
@@ -747,6 +997,7 @@ export default function Integrations() {
           </View>
         ) : null}
 
+        {notice ? <Text style={styles.secondary}>{notice}</Text> : null}
         {detailItem ? (
           renderDetail(detailItem)
         ) : (
@@ -777,46 +1028,34 @@ export default function Integrations() {
               <Text style={styles.secondary}>{t(EMPTY_PLUGIN_CATALOG_MESSAGE)}</Text>
             ) : null}
 
-            {catalogReady && catalog.length > 0 ? (
-              <View style={catalogColumns === 2 ? styles.catalogGrid : styles.catalogStack}>
-                {showFeatured
-                  ? featuredTiles.map((tile) => {
-                      const item = tile.item;
-                      const key = item ? itemKey(item) : tile.id;
-                      const disabled = tile.missing || !item;
-                      if (item && !tile.missing) {
-                        return renderCatalogTile(item, tile.label);
-                      }
-                      return (
-                        <View
-                          key={key}
-                          style={[
-                            styles.row,
-                            catalogColumns === 2 ? styles.catalogCell : null,
-                            disabled ? { opacity: 0.7 } : null,
-                          ]}
-                        >
-                          <ConnectorIcon logo={item?.logo} name={tile.label} size={LOGO_SIZE} />
-                          <View style={styles.grow}>
-                            <Text numberOfLines={1} style={styles.title}>
-                              {tile.label}
-                            </Text>
-                            {disabled ? (
-                              <Text style={styles.secondary}>{t("Not in the plugin catalog")}</Text>
-                            ) : null}
-                          </View>
-                        </View>
-                      );
-                    })
-                  : null}
-                {renderedApps.map((item) => renderCatalogTile(item, item.name))}
+            {catalogReady ? (
+              <NativeSegmentedControl
+                accessibilityLabel={t("Application filter")}
+                value={catalogFilter}
+                onChange={(value) => {
+                  setCatalogFilter(value);
+                  setVisibleCount(CONNECTION_CATALOG_PAGE_SIZE);
+                }}
+                options={[
+                  { value: "all", label: t("All apps") },
+                  { value: "connected", label: t("Connected") },
+                ]}
+              />
+            ) : null}
+            {renderedApps.some((app) => app.firstParty) ? (
+              <View style={styles.catalogStack}>
+                <Text style={styles.section}>{t("By Cogine")}</Text>
+                {renderedApps.filter((app) => app.firstParty).map(renderCatalogTile)}
               </View>
             ) : null}
-
-            {catalogReady && catalog.length > 0 && catalogApps.length === 0 && !showFeatured ? (
-              <Text style={styles.secondary}>{t("No apps match your search.")}</Text>
+            <View style={catalogColumns === 2 ? styles.catalogGrid : styles.catalogStack}>
+              {renderedApps.filter((app) => !app.firstParty).map(renderCatalogTile)}
+            </View>
+            {catalogReady && catalog.length > 0 && !catalogApps.length ? (
+              <Text style={styles.secondary}>
+                {query.trim() ? t("No apps match your search.") : t("No connected apps.")}
+              </Text>
             ) : null}
-
             {renderedApps.length < catalogApps.length ? (
               <NativeActionButton
                 label={t("Show more")}
@@ -841,6 +1080,11 @@ export default function Integrations() {
 
             {advancedOpen ? (
               <View style={styles.advancedBody}>
+                <NativeActionButton
+                  label={t("MCP servers")}
+                  prominence="secondary"
+                  onPress={() => router.push("/(settings)/mcp")}
+                />
                 <View style={styles.accountActions}>
                   {(["mcp", "api", "graphql", "executor", "treg"] as const).map((kind) => (
                     <NativeActionButton

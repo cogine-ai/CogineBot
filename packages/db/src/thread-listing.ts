@@ -107,7 +107,7 @@ export async function loadThreadAttention(
         : [],
     ),
   );
-  const [bots, servers, assignments] = mcp.length
+  const [bots, servers] = mcp.length
     ? await Promise.all([
         prisma.bot.findMany({
           where: { id: { in: [...new Set(mcp.map((card) => card.botId))] } },
@@ -115,22 +115,18 @@ export async function loadThreadAttention(
         }),
         prisma.mcpServer.findMany({
           where: { id: { in: [...new Set(mcp.map((card) => card.serverId))] }, enabled: true },
-          select: { id: true, spaceId: true, userId: true },
-        }),
-        prisma.botMcpServer.findMany({
-          where: {
-            botId: { in: [...new Set(mcp.map((card) => card.botId))] },
-            serverId: { in: [...new Set(mcp.map((card) => card.serverId))] },
+          select: {
+            id: true,
+            spaceId: true,
+            userId: true,
+            allowAllTools: true,
+            allowedTools: true,
           },
-          select: { botId: true, serverId: true, spaceId: true, userId: true },
         }),
       ])
-    : [[], [], []];
+    : [[], []];
   const botsById = new Map(bots.map((bot) => [bot.id, bot]));
   const serversById = new Map(servers.map((server) => [server.id, server]));
-  const assigned = new Set(
-    assignments.map((assignment) => `${assignment.botId}:${assignment.serverId}`),
-  );
   const validMcp = new Set(
     mcp
       .filter((card) => {
@@ -143,7 +139,11 @@ export async function loadThreadAttention(
           bot.userId === thread.userId &&
           server?.spaceId === thread.spaceId &&
           server.userId === thread.userId &&
-          !assigned.has(`${card.botId}:${card.serverId}`)
+          !server.allowAllTools &&
+          !(
+            Array.isArray(server.allowedTools) &&
+            server.allowedTools.some((name) => typeof name === "string")
+          )
         );
       })
       .map((card) => card.message.id),

@@ -1,6 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { IntegrationCatalogResult, IntegrationSetupState } from "@rakazo/contracts";
-import { Button, Input } from "@rakazo/ui-web";
+import { Button, Field, FieldLabel, Input, Switch } from "@rakazo/ui-web";
 import { Check } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { newClientId } from "../../lib/client-id";
@@ -15,7 +15,6 @@ export function IntegrationSetup({
   serverSetup = false,
   managedOnly = false,
   initialState,
-  botId,
   onServerConnected,
 }: {
   onDone?: () => void;
@@ -41,6 +40,7 @@ export function IntegrationSetup({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState<string[]>([]);
+  const [shareTools, setShareTools] = useState(false);
   const choices: { id: Choice; label: string }[] = [
     { id: "direct", label: t`Direct MCP` },
     { id: "composio", label: "Composio" },
@@ -120,7 +120,16 @@ export function IntegrationSetup({
       }
       const result = await connectMcpOauth(server.id);
       if (result === "cancelled") return;
-      if (botId) await rpc.mcp.assignments.approve({ botId, serverId: server.id });
+      if (shareTools) {
+        const current = (await rpc.mcp.servers.list()).find((item) => item.id === server.id);
+        if (!current) throw new Error(t`Server is no longer available`);
+        await rpc.mcp.servers.setTools({
+          id: current.id,
+          revision: current.revision,
+          allowAllTools: true,
+          allowedTools: [],
+        });
+      }
       setConnected((current) => [...current, url]);
       onServerConnected?.(server.id);
     });
@@ -231,6 +240,19 @@ export function IntegrationSetup({
             </p>
           ) : null}
         </>
+      ) : null}
+      {!managed ? (
+        <Field orientation="horizontal">
+          <Switch
+            id={`${fieldId}-share-tools`}
+            checked={shareTools}
+            disabled={busy}
+            onCheckedChange={setShareTools}
+          />
+          <FieldLabel htmlFor={`${fieldId}-share-tools`}>
+            <Trans>Share all tools with this space</Trans>
+          </FieldLabel>
+        </Field>
       ) : null}
       {choice === "direct" ? (
         <>

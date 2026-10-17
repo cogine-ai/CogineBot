@@ -670,6 +670,16 @@ export const appContract = {
     servers: {
       list: oc.output(z.array(McpServerSchema)),
       create: oc.input(McpServerConfigInput).output(McpServerSchema),
+      setTools: oc
+        .input(
+          z.object({
+            id: Id,
+            revision: z.number().int().positive(),
+            allowAllTools: z.boolean(),
+            allowedTools: z.array(z.string().min(1).max(200)).max(500),
+          }),
+        )
+        .output(McpServerSchema),
       update: oc
         .input(
           z.union([
@@ -684,7 +694,14 @@ export const appContract = {
       list: oc.input(botId).output(z.array(BotMcpServerSchema)),
       all: oc.output(z.array(BotMcpServerSchema)),
       approve: oc
-        .input(z.object({ botId: Id, serverId: Id, threadId: Id.optional() }))
+        .input(
+          z.object({
+            botId: Id,
+            serverId: Id,
+            threadId: Id.optional(),
+            revision: z.number().int().positive().optional(),
+          }),
+        )
         .output(BotMcpServerSchema),
       dismiss: oc
         .input(z.object({ botId: Id, serverId: Id, threadId: Id.optional() }))
@@ -756,6 +773,8 @@ export const appContract = {
           connectorId: z.string().default("composio"),
           provider: z.string(),
           displayName: z.string(),
+          /** Derive a new authorization from this unavailable connection; never replace its identity. */
+          connectionId: Id.optional(),
         }),
       )
       .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),

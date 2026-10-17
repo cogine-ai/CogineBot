@@ -28,6 +28,8 @@ export interface ConnectedConnector {
   externalId: string;
   displayName: string;
   providerRef?: string;
+  /** Authorization generation; routine token refresh and display-name changes leave it unchanged. */
+  revision?: string;
 }
 
 export interface AdapterDescriptor<TCapabilities> {
@@ -240,6 +242,8 @@ export interface ConnectorRoute {
   toolName: string;
   resourceId?: string;
   resourceRevision?: string | number;
+  /** Local authorized account selected outside the upstream tool's business arguments. */
+  connectionId?: string;
   /** Source label for lazy catalog name indexes. Never exposed as a model schema field. */
   catalogGroup?: string;
 }

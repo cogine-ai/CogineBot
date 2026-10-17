@@ -84,6 +84,7 @@ export type BoundApprovalRoute = {
   resourceId: string;
   toolName: string;
   resourceRevision?: string | number;
+  connectionId?: string;
 };
 
 export function catalogApprovalRequest(
@@ -124,7 +125,9 @@ export function catalogApprovalDetails(
     typeof (route as BoundApprovalRoute).toolName !== "string" ||
     ((route as BoundApprovalRoute).resourceRevision !== undefined &&
       typeof (route as BoundApprovalRoute).resourceRevision !== "string" &&
-      typeof (route as BoundApprovalRoute).resourceRevision !== "number")
+      typeof (route as BoundApprovalRoute).resourceRevision !== "number") ||
+    ((route as BoundApprovalRoute).connectionId !== undefined &&
+      typeof (route as BoundApprovalRoute).connectionId !== "string")
   ) {
     return undefined;
   }
@@ -170,6 +173,8 @@ export function boundDirectApprovalDetails(
     ((route as BoundApprovalRoute).resourceRevision !== undefined &&
       typeof (route as BoundApprovalRoute).resourceRevision !== "string" &&
       typeof (route as BoundApprovalRoute).resourceRevision !== "number") ||
+    ((route as BoundApprovalRoute).connectionId !== undefined &&
+      typeof (route as BoundApprovalRoute).connectionId !== "string") ||
     !payload.args ||
     typeof payload.args !== "object" ||
     Array.isArray(payload.args)
@@ -195,6 +200,7 @@ export function approvalRoutesMatch(
       left.connectorId === right.connectorId &&
       left.resourceId === right.resourceId &&
       left.toolName === right.toolName &&
+      left.connectionId === right.connectionId &&
       left.resourceRevision === right.resourceRevision,
   );
 }

@@ -571,20 +571,30 @@ describe("PipedreamConnector", () => {
     expect(calls).toEqual([{ app: "gmail", name: "send_email", args: { text: "hello" } }]);
   });
 
-  it("leaves a direct app route to the normal execute path", async () => {
-    const connector = new PipedreamConnector(FAKE_CONFIG, TEST_NETWORK);
+  it("binds a direct app route to its sole authorized local account", async () => {
+    const connector = new PipedreamConnector(FAKE_CONFIG, {
+      ...TEST_NETWORK,
+      fetch: pipedreamMcpFetch({ gmail: ["send_email"] }),
+    });
 
     await expect(
       connector.resolveCall(
         {
           tool: "send_email",
-          args: {},
+          args: { text: "hello" },
           executionId: "direct",
           route: { connectorId: "pipedream", resourceId: "gmail", toolName: "send_email" },
         },
         connectedContext("gmail"),
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual(
+      expect.objectContaining({
+        call: expect.objectContaining({
+          connectionId: "connection-gmail",
+          args: { text: "hello" },
+        }),
+      }),
+    );
   });
 
   it("runs catalog, connection, discovery, execution, and revoke against the protocol emulator", async () => {

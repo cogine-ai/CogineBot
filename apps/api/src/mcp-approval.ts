@@ -13,11 +13,12 @@ export type McpApprovalResolution = {
   botId: string;
   serverId: string;
   status: "connected" | "dismissed";
+  serverRevision?: number;
   /** The chat whose cards should resolve; defaults to the bot's own thread. */
   threadId?: string;
 };
 
-/** Whether this decision may create the bot's assignment. */
+/** Whether this decision may enable the shared server policy. */
 export type McpApprovalDecision = {
   assign: boolean;
 };
@@ -93,7 +94,12 @@ async function rewriteCards(
   tx: Prisma.TransactionClient,
   actor: Actor,
   threads: ApprovalThread[],
-  input: { botId: string; serverId: string; status: ApprovalBlock["status"] },
+  input: {
+    botId: string;
+    serverId: string;
+    status: ApprovalBlock["status"];
+    serverRevision?: number;
+  },
   selectable: (block: ApprovalBlock) => boolean,
 ): Promise<{ seqs: ThreadSeq[]; flipped: number; dismissed: boolean; connected: boolean }> {
   const seqs: ThreadSeq[] = [];
@@ -114,8 +120,10 @@ async function rewriteCards(
     for (const message of messages) {
       if (message.botId && message.botId !== input.botId) continue;
       const blocks = message.blocks as MessageBlock[];
-      const matching = blocks.filter((block): block is ApprovalBlock =>
-        isApproval(block, input.serverId),
+      const matching = blocks.filter(
+        (block): block is ApprovalBlock =>
+          isApproval(block, input.serverId) &&
+          (input.serverRevision === undefined || block.serverRevision === input.serverRevision),
       );
       if (matching.length === 0) continue;
       for (const block of matching) {
@@ -124,7 +132,9 @@ async function rewriteCards(
       }
       if (!matching.some(selectable)) continue;
       const next = blocks.map((block) =>
-        isApproval(block, input.serverId) && selectable(block)
+        isApproval(block, input.serverId) &&
+        (input.serverRevision === undefined || block.serverRevision === input.serverRevision) &&
+        selectable(block)
           ? { ...block, status: input.status }
           : block,
       );
@@ -148,8 +158,8 @@ async function rewriteCards(
 /** Flip every open mcp_approval card for this server. The read, the writes,
     and `effect` share one serializable transaction. A card decision (one that
     passes threadId) sees `assign: false` when a dismissal already won, so that
-    race does not create an assignment. Settings approval omits threadId and
-    still assigns. */
+    race does not enable tools. Settings approval omits threadId and can still
+    enable the shared policy. */
 export async function resolveMcpApprovalCards<T>(
   deps: McpApprovalDeps,
   actor: Actor,
@@ -166,15 +176,14 @@ export async function resolveMcpApprovalCards<T>(
             : isOpen;
         const painted = await rewriteCards(tx, actor, threads, input, selectable);
         // Only a card decision can lose to a dismissal that already committed.
-        // Settings and onboarding approve without a threadId and must still assign.
-        const dismissalWon =
-          input.threadId !== undefined &&
-          painted.flipped === 0 &&
-          !painted.connected &&
-          painted.dismissed;
-        const assign = !dismissalWon;
+        // Settings and onboarding approve without a threadId and can still enable tools.
+        const assign = input.threadId === undefined || painted.flipped > 0 || painted.connected;
         const value = effect ? await effect(tx, { assign }) : undefined;
-        return { seqs: painted.seqs, value };
+        const sharedSeqs =
+          input.status === "connected" && assign && effect
+            ? await connectPendingMcpApprovals(tx, actor, { serverId: input.serverId })
+            : [];
+        return { seqs: [...painted.seqs, ...sharedSeqs], value };
       },
       { isolationLevel: "Serializable" },
     ),
@@ -187,32 +196,54 @@ export async function resolveMcpApprovalCards<T>(
 export async function connectPendingMcpApprovals(
   tx: Prisma.TransactionClient,
   actor: Actor,
-  input: { botId: string; serverId: string },
+  input: { botId?: string; serverId: string },
 ): Promise<ThreadSeq[]> {
+  if (!input.botId)
+    return paintServerCards(
+      tx,
+      actor,
+      input.serverId,
+      "connected",
+      (block) => block.status === "pending",
+    );
   const threads = await threadsForBot(tx, actor, input.botId);
   const painted = await rewriteCards(
     tx,
     actor,
     threads,
-    { ...input, status: "connected" },
+    { botId: input.botId, serverId: input.serverId, status: "connected" },
     (block) => block.status === "pending",
   );
   return painted.seqs;
 }
 
-/** A removed assignment must not leave its card saying the server is connected.
-    Pass `tx` to commit the repaint with the assignment change; otherwise this
+/** A disabled shared policy must not leave its card saying the server is connected.
+    Pass `tx` to commit the repaint with the policy change; otherwise this
     notifies after its own transaction. */
 export async function revertConnectedMcpApprovals(
   deps: McpApprovalDeps,
   actor: Actor,
-  input: { botId: string; serverId: string; status: "pending" | "dismissed" },
+  input: { botId?: string; serverId: string; status: "pending" | "dismissed" },
   tx?: Prisma.TransactionClient,
 ): Promise<ThreadSeq[]> {
   const selectable = (block: ApprovalBlock) =>
     input.status === "dismissed" ? block.status !== "dismissed" : block.status === "connected";
+  if (!input.botId) {
+    if (tx) return paintServerCards(tx, actor, input.serverId, input.status, selectable);
+    const seqs = await withTransactionRetry(() =>
+      deps.prisma.$transaction(
+        (client) => paintServerCards(client, actor, input.serverId, input.status, selectable),
+        { isolationLevel: "Serializable" },
+      ),
+    );
+    for (const event of seqs) await deps.events.notify(event.threadId, event.seq);
+    return seqs;
+  }
+  const botId = input.botId;
   const paint = (client: Prisma.TransactionClient, threads: ApprovalThread[]) =>
-    rewriteCards(client, actor, threads, input, selectable).then((painted) => painted.seqs);
+    rewriteCards(client, actor, threads, { ...input, botId }, selectable).then(
+      (painted) => painted.seqs,
+    );
   if (tx) return paint(tx, await threadsForBot(tx, actor, input.botId));
   const threads = await threadsForBot(deps.prisma, actor, input.botId);
   const seqs = await withTransactionRetry(() =>
@@ -224,10 +255,12 @@ export async function revertConnectedMcpApprovals(
   return seqs;
 }
 
-async function closeServerCards(
+async function paintServerCards(
   client: Prisma.TransactionClient,
   actor: Actor,
   serverId: string,
+  status: ApprovalBlock["status"],
+  selectable: (block: ApprovalBlock) => boolean,
 ): Promise<ThreadSeq[]> {
   const messages = await client.message.findMany({
     where: {
@@ -245,13 +278,11 @@ async function closeServerCards(
   const seqs: ThreadSeq[] = [];
   for (const message of messages) {
     const blocks = message.blocks as MessageBlock[];
-    if (!blocks.some((block) => isApproval(block, serverId) && block.status !== "dismissed")) {
+    if (!blocks.some((block) => isApproval(block, serverId) && selectable(block))) {
       continue;
     }
     const next = blocks.map((block) =>
-      isApproval(block, serverId) && block.status !== "dismissed"
-        ? { ...block, status: "dismissed" as const }
-        : block,
+      isApproval(block, serverId) && selectable(block) ? { ...block, status } : block,
     );
     await client.message.update({ where: { id: message.id }, data: { blocks: next } });
     const eventBotId = message.botId ?? message.thread?.botId;
@@ -276,9 +307,11 @@ export async function dismissMcpServerApprovals(
   serverId: string,
   tx?: Prisma.TransactionClient,
 ): Promise<ThreadSeq[]> {
-  if (tx) return closeServerCards(tx, actor, serverId);
+  const paint = (client: Prisma.TransactionClient) =>
+    paintServerCards(client, actor, serverId, "dismissed", (block) => block.status !== "dismissed");
+  if (tx) return paint(tx);
   const seqs = await withTransactionRetry(() =>
-    deps.prisma.$transaction((client) => closeServerCards(client, actor, serverId), {
+    deps.prisma.$transaction(paint, {
       isolationLevel: "Serializable",
     }),
   );

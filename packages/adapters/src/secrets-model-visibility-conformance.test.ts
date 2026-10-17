@@ -233,6 +233,13 @@ describe("secrets model-visibility conformance", () => {
     it("redacts access token and client secret from echoed tool results", async () => {
       const accessToken = "pd-access-token-conformance";
       const clientSecret = "pd-client-secret-conformance";
+      vi.spyOn(remoteMcp, "listRemoteMcpTools").mockResolvedValue([
+        {
+          name: "gmail.list",
+          description: "List mail",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ]);
       vi.spyOn(remoteMcp, "callRemoteMcpTool").mockResolvedValue({
         content: [
           {
@@ -383,9 +390,9 @@ describe("secrets model-visibility conformance", () => {
       );
 
       const prisma = {
-        botMcpServer: {
-          findMany: vi.fn().mockResolvedValue([assignment]),
-          findFirst: vi.fn().mockResolvedValue(assignment),
+        mcpServer: {
+          findMany: vi.fn().mockResolvedValue([{ ...server, ...assignment, enabled: true }]),
+          findFirst: vi.fn().mockResolvedValue({ ...server, ...assignment, enabled: true }),
         },
         secret: {
           findFirst: vi.fn().mockResolvedValue({ id: "secret-1", ciphertext: "encrypted" }),
@@ -413,7 +420,12 @@ describe("secrets model-visibility conformance", () => {
         {
           tool: "mcp__demo__echo",
           args: {},
-          route: { connectorId: "mcp", resourceId: "server-1", toolName: "echo" },
+          route: {
+            connectorId: "mcp",
+            resourceId: "server-1",
+            resourceRevision: 1,
+            toolName: "echo",
+          },
         } as never,
         context,
       )) {

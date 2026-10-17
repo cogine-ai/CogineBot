@@ -18,6 +18,11 @@ msgstr ""
 msgid "{0, plural, one {# model} other {# models}}"
 msgstr "{0, plural, one {# modelo} other {# modelos}}"
 
+#. placeholder {0}: tools.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0, plural, one {# tool} other {# tools}}"
+msgstr "{0, plural, one {# herramienta} other {# herramientas}}"
+
 #. placeholder {0}: Math.ceil(oauth.expiresInSeconds / 60)
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -65,6 +70,16 @@ msgstr "{0} KB"
 msgid "{0} MB"
 msgstr "{0} MB"
 
+#. placeholder {0}: summary.errors.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} need attention"
+msgstr "{0} requieren atención"
+
+#. placeholder {0}: summary.pending.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} pending"
+msgstr "{0} pendientes"
+
 #. placeholder {0}: sender.name
 #: src/pages/ExternalConversationSettings.tsx
 msgid "{0} rollup hours"
@@ -75,6 +90,11 @@ msgstr ""
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "{0} runs · {1} tokens"
 msgstr "{0} ejecuciones · {1} tokens"
+
+#. placeholder {0}: server.allowedTools.length
+#: src/components/integrations/McpToolAccess.tsx
+msgid "{0} tools shared in this space"
+msgstr "{0} herramientas compartidas en este espacio"
 
 #. placeholder {0}: bot.name
 #: src/pages/ExternalConversationSettings.tsx
@@ -176,13 +196,13 @@ msgstr ""
 msgid "{stepCount, plural, one {Working… · # tool} other {Working… · # tools}}"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "{stopped} accounts disconnected locally"
+msgstr "{stopped} cuentas desconectadas localmente"
+
 #: src/pages/ActivityList.tsx
 msgid "{title}, {label}"
 msgstr "{title}, {label}"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "{toolCount, plural, one {# tool} other {# tools}}"
-msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "{workingBotName} is working"
@@ -192,6 +212,10 @@ msgstr "{workingBotName} está trabajando"
 #: src/pages/Shell.tsx
 msgid "@{0}"
 msgstr "@{0}"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "1 account disconnected locally"
+msgstr "1 cuenta desconectada localmente"
 
 #: src/pages/shell/message-cards.tsx
 msgid "A bit of everything"
@@ -232,6 +256,14 @@ msgstr "Cuenta"
 msgid "Account default"
 msgstr "Predeterminado de la cuenta"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Account details"
+msgstr "Detalles de la cuenta"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account disconnected."
+msgstr "Cuenta desconectada."
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Account ID"
@@ -244,6 +276,14 @@ msgstr ""
 #: src/pages/PluginsOverlay.tsx
 msgid "Accounts"
 msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts changed. Review them before disconnecting."
+msgstr "Las cuentas han cambiado. Revísalas antes de desconectarlas."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts that need attention are kept. Manage them individually."
+msgstr "Se conservan las cuentas que requieren atención. Gestiónalas individualmente."
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Action confirmations"
@@ -305,13 +345,13 @@ msgstr "Agrega un nombre de servidor."
 msgid "Add a stdio command."
 msgstr "Agrega un comando stdio."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Add account"
+msgstr "Añadir cuenta"
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "Agrega una URL de servidor HTTPS."
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Add another"
-msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Add connected model"
@@ -378,12 +418,7 @@ msgstr "Agregar Treg"
 msgid "Add trigger"
 msgstr "Agregar disparador"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Added"
-msgstr ""
-
 #: src/pages/McpServersOverlay.tsx
-#: src/pages/PluginsOverlay.tsx
 msgid "Adding…"
 msgstr "Agregando…"
 
@@ -409,9 +444,9 @@ msgstr "Computadora del agente"
 msgid "Agent connections"
 msgstr "Conexiones de agentes"
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Agents:"
-msgstr "Agentes:"
+#: src/pages/PluginsOverlay.tsx
+msgid "All apps"
+msgstr "Todas las aplicaciones"
 
 #: src/pages/Artifacts.tsx
 msgid "All bots"
@@ -428,6 +463,10 @@ msgstr ""
 #: src/pages/Artifacts.tsx
 msgid "All time"
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "All tools shared in this space"
+msgstr "Todas las herramientas compartidas en este espacio"
 
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
@@ -530,18 +569,17 @@ msgstr ""
 msgid "Appearance"
 msgstr "Apariencia"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Application filter"
+msgstr "Filtro de aplicaciones"
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
 msgstr "Límites de aprobación"
 
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/shell/message-cards.tsx
 msgid "Approve"
 msgstr "Aprobar"
-
-#: src/pages/shell/message-cards.tsx
-msgid "Approve this server to let your agent use its tools."
-msgstr "Aprueba este servidor para que tu agente use sus herramientas."
 
 #: src/pages/BotContextMenu.tsx
 msgid "Archive"
@@ -629,6 +667,19 @@ msgstr "Error de autenticación."
 msgid "Authorization code or callback URL"
 msgstr "Código de autorización o URL de callback"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization did not complete. You can authorize again."
+msgstr "La autorización no se completó. Puedes volver a autorizar."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization is still pending."
+msgstr "La autorización sigue pendiente."
+
+#. placeholder {0}: row.remoteAccountId
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization record: {0}"
+msgstr "Registro de autorización: {0}"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Authorization timed out. Please try again."
 msgstr "Se agotó el tiempo de autorización. Inténtalo de nuevo."
@@ -636,6 +687,10 @@ msgstr "Se agotó el tiempo de autorización. Inténtalo de nuevo."
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "Autorizar"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorize again"
+msgstr "Volver a autorizar"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize this server so agents can use its tools. A popup opens."
@@ -779,6 +834,10 @@ msgstr ""
 msgid "Built-in"
 msgstr "Integrado"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "By Cogine"
+msgstr "De Cogine"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "No se puede alcanzar el servidor."
@@ -797,6 +856,10 @@ msgstr "No se puede alcanzar el servidor."
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "Cancelar"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Cancel connection"
+msgstr "Cancelar conexión"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -868,6 +931,10 @@ msgstr "Buscar actualizaciones"
 #: src/pages/Shell.tsx
 msgid "Check in."
 msgstr "Regístrate."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Check status"
+msgstr "Comprobar estado"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Check the API key or sign-in, then test again."
@@ -1164,6 +1231,7 @@ msgstr "Conectar Treg"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
@@ -1198,6 +1266,14 @@ msgstr "Conectado: sus herramientas estarán disponibles desde tu próximo mensa
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "Conectando…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection source"
+msgstr "Fuente de conexión"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection status unconfirmed. Refresh status."
+msgstr "Estado de conexión sin confirmar. Actualiza el estado."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
@@ -1270,6 +1346,10 @@ msgstr "No se pudo cambiar la contraseña"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Could not change the default model"
 msgstr "No se pudo cambiar el modelo predeterminado"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not check connection"
+msgstr "No se pudo comprobar la conexión"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Could not check stored credentials."
@@ -1490,6 +1570,10 @@ msgstr "No se pudo cargar este chat."
 msgid "Could not load this file."
 msgstr "No se pudo cargar este archivo."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not load tools"
+msgstr "No se pudieron cargar las herramientas"
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Could not load update status"
 msgstr "No se pudo cargar el estado de actualización"
@@ -1574,10 +1658,6 @@ msgstr "No se pudo renderizar el gráfico"
 msgid "Could not reset password"
 msgstr "No se pudo restablecer la contraseña"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Could not revoke connection"
-msgstr "No se pudo revocar la conexión"
-
 #: src/pages/Shell.tsx
 msgid "Could not run routine"
 msgstr "No se pudo ejecutar la rutina"
@@ -1638,6 +1718,10 @@ msgstr ""
 msgid "Could not save this choice"
 msgstr "No se pudo guardar esta opción"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Could not save tool access"
+msgstr "No se pudieron guardar los permisos de herramientas"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not search catalog"
 msgstr ""
@@ -1669,10 +1753,6 @@ msgstr "No se pudo tomar el control"
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not update"
 msgstr "No se pudo actualizar"
-
-#: src/pages/McpServersOverlay.tsx
-msgid "Could not update agent access"
-msgstr "No se pudo actualizar el acceso del agente"
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Could not update computer"
@@ -1946,6 +2026,7 @@ msgstr ""
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnect"
 msgstr "Desconectar"
@@ -1954,13 +2035,35 @@ msgstr "Desconectar"
 msgid "Disconnect {disconnectName}?"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect account"
+msgstr "Desconectar cuenta"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect did not complete. Review the remaining accounts before trying again."
+msgstr "La desconexión no se completó. Revisa las cuentas restantes antes de reintentarlo."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect this account?"
+msgstr "¿Desconectar esta cuenta?"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected"
+msgstr "Desconectado"
+
 #. placeholder {0}: selected.providerName ?? selected.provider
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Disconnected {0}."
 msgstr ""
 
+#. placeholder {0}: history.length
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected accounts ({0})"
+msgstr "Cuentas desconectadas ({0})"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnecting…"
 msgstr "Desconectando…"
@@ -2637,6 +2740,10 @@ msgstr "Local"
 msgid "Local access lets bots run commands without asking. Avoid it on shared or public servers."
 msgstr "El acceso local permite que los bots ejecuten comandos sin preguntar. Evítalo en servidores compartidos o públicos."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Local access stopped · Provider confirmation pending"
+msgstr "Acceso local desactivado · Confirmación del proveedor pendiente"
+
 #: src/pages/LocalSettings.tsx
 msgid "Local Server Settings"
 msgstr ""
@@ -2666,6 +2773,7 @@ msgid "Make sure nothing is still running on this computer."
 msgstr "Asegúrate de que no quede nada en ejecución en este ordenador."
 
 #: src/pages/BillingSettingsPanel.tsx
+#: src/pages/PluginsOverlay.tsx
 msgid "Manage"
 msgstr ""
 
@@ -2953,6 +3061,10 @@ msgstr "Nombra esta rutina"
 msgid "Needs an answer"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Needs attention"
+msgstr "Requiere atención"
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -3000,6 +3112,10 @@ msgstr "Nuevo space"
 msgid "New ticket"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No active accounts."
+msgstr "No hay cuentas activas."
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No agent connections yet."
 msgstr "Aún no hay conexiones de agentes."
@@ -3037,6 +3153,14 @@ msgstr ""
 msgid "No chat apps linked yet."
 msgstr "Aún no hay apps de chat vinculadas."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected apps."
+msgstr "No hay aplicaciones conectadas."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected or pending accounts remain for this source."
+msgstr "No quedan cuentas conectadas ni pendientes de autorización en esta fuente."
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3048,10 +3172,6 @@ msgstr "Aún no hay chats de grupo."
 #: src/components/AskCard.tsx
 msgid "No longer active"
 msgstr "Ya no está activo"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "No managed app catalog is configured on this deployment."
-msgstr "No hay un catálogo de apps administradas configurado en este despliegue."
 
 #: src/pages/Artifacts.tsx
 msgid "No matching artifacts on this page."
@@ -3119,6 +3239,10 @@ msgstr ""
 msgid "No tools available."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "No tools shared in this space"
+msgstr "No hay herramientas compartidas en este espacio"
+
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr "Sin disparador"
@@ -3134,10 +3258,6 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Not connected"
 msgstr "No conectado"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Not in the plugin catalog"
-msgstr "No está en el catálogo de plugins"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Not now"
@@ -3236,10 +3356,6 @@ msgstr "Abrir en ventana completa"
 msgid "Open navigation"
 msgstr "Abrir navegación"
 
-#: src/components/computer/TerminalApp.tsx
-msgid "Open shell"
-msgstr "Abrir shell"
-
 #: src/pages/ScratchpadSection.tsx
 msgid "Open work"
 msgstr "Trabajo abierto"
@@ -3295,6 +3411,10 @@ msgstr "Mensaje original no disponible"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "Otro modelo…"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Other sources stay connected. Operations already sent may still finish."
+msgstr "Las demás fuentes siguen conectadas. Las operaciones ya enviadas aún pueden completarse."
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3353,6 +3473,10 @@ msgstr "Pega tu clave de API y vuelve a probar."
 #: src/pages/RoutineEditor.tsx
 msgid "Paused"
 msgstr "En pausa"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Pending authorization"
+msgstr "Autorización pendiente"
 
 #: src/pages/Shell.tsx
 #: src/pages/shell/chat-context.tsx
@@ -3538,6 +3662,10 @@ msgstr ""
 msgid "Refresh"
 msgstr "Actualizar"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Refresh status"
+msgstr "Actualizar estado"
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refresh view"
 msgstr "Actualizar vista"
@@ -3549,10 +3677,6 @@ msgstr "Actualizando…"
 #: src/lib/user-error.ts
 msgid "Registration is closed"
 msgstr "El registro está cerrado"
-
-#: src/pages/Shell.tsx
-msgid "Release"
-msgstr "Liberar"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Release computer"
@@ -3757,6 +3881,10 @@ msgstr "rev. {0}"
 msgid "Review provider settings and test again."
 msgstr "Revisa la configuración del proveedor y vuelve a probar."
 
+#: src/pages/shell/message-cards.tsx
+msgid "Review tool access"
+msgstr "Revisar permisos de herramientas"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "Revocar"
@@ -3846,6 +3974,10 @@ msgstr ""
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Save the workspace and install current software."
 msgstr "Guardar el espacio de trabajo e instalar el software actual."
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Save tool access"
+msgstr "Guardar permisos de herramientas"
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
@@ -3987,11 +4119,19 @@ msgstr "Alerta de Sentry"
 msgid "Serenity endpoint is required."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Server changed. Close and reopen tool access to review it."
+msgstr "El servidor ha cambiado. Cierra y vuelve a abrir los permisos de herramientas para revisarlos."
+
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/LocalSettings.tsx
 msgid "Server integrations"
 msgstr ""
+
+#: src/components/integrations/IntegrationSetup.tsx
+msgid "Server is no longer available"
+msgstr "El servidor ya no está disponible"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Server name"
@@ -4023,6 +4163,19 @@ msgstr "Configuración: Uso"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "Ayuda de configuración"
+
+#: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Share all tools with this space"
+msgstr "Compartir todas las herramientas con este espacio"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share this server's tools with all bots in this space."
+msgstr "Comparte las herramientas de este servidor con todos los bots de este espacio."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share tools"
+msgstr "Compartir herramientas"
 
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -4147,6 +4300,10 @@ msgstr "Actualización de software"
 #: src/lib/user-error.ts
 msgid "Something went wrong. Try again."
 msgstr "Algo salió mal. Inténtalo de nuevo."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Source accounts disconnected."
+msgstr "Cuentas de esta fuente desconectadas."
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Space changed. Reopen Models to load its backup list."
@@ -4291,6 +4448,11 @@ msgstr "Cambiando…"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "System"
 msgstr "Sistema"
+
+#: src/components/computer/TerminalApp.tsx
+#: src/pages/Shell.tsx
+msgid "Take control"
+msgstr "Tomar el control"
 
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Teach a task"
@@ -4483,6 +4645,14 @@ msgstr "Para:"
 msgid "Today"
 msgstr "Hoy"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool access"
+msgstr "Permisos de herramientas"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool names, one per line"
+msgstr "Nombres de herramientas, uno por línea"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Tool sources"
 msgstr "Fuentes de herramientas"
@@ -4541,8 +4711,12 @@ msgid "Unavailable"
 msgstr "No disponible"
 
 #: src/pages/PluginsOverlay.tsx
-msgid "Uninstall"
-msgstr ""
+msgid "Uninstall source"
+msgstr "Desinstalar fuente"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Uninstall this source?"
+msgstr "¿Desinstalar esta fuente?"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Unknown tool"
@@ -4728,6 +4902,10 @@ msgstr "Esperando en la cola…"
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"
 msgstr "Esperando…"
+
+#: src/pages/Shell.tsx
+msgid "Watching"
+msgstr "Observando"
 
 #: src/pages/Paywall.tsx
 msgid "Web, desktop and mobile apps"

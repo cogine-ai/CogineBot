@@ -606,6 +606,7 @@ model Task {
   userId    String
   prompt    String
   status    String
+  connectionIds String[] @default([])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   runs      Run[]
@@ -676,6 +677,7 @@ model SteeringMessage {
   botId     String
   bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
   userId    String
+  connectionIds String[] @default([])
   runId     String?
   run       Run?     @relation(fields: [runId], references: [id], onDelete: SetNull)
   /// Set when a pending row must resume as this trigger so its reply can be delivered.
@@ -1169,6 +1171,8 @@ model McpServer {
   secretId      String?
   secret        Secret?           @relation(fields: [secretId], references: [id], onDelete: SetNull)
   enabled       Boolean           @default(true)
+  allowAllTools Boolean           @default(false)
+  allowedTools  Json              @default("[]")
   revision      Int               @default(1)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt

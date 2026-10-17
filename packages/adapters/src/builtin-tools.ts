@@ -492,7 +492,7 @@ export const builtinAgentTools: ConnectorTool[] = [
         assign_to_self: {
           type: "boolean",
           description:
-            "Assign the server to you so its tools are usable in this conversation (default true).",
+            "Post a user approval card to enable this server for all bots in the space (default true).",
         },
       },
       required: ["name", "transport"],
