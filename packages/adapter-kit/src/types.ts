@@ -259,7 +259,14 @@ export interface ConnectorCall {
 export type ConnectorEvent =
   | { type: "log"; message: string }
   | { type: "result"; data: unknown }
-  | { type: "error"; message: string; logIds?: string[] };
+  | {
+      type: "error";
+      message: string;
+      logIds?: string[];
+      code?: string;
+      uncertain?: boolean;
+      recovery?: Record<string, unknown>;
+    };
 
 export interface ConnectorCapabilities {
   discover: boolean;

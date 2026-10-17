@@ -30,6 +30,7 @@ import type {
   getBotSecretMetadata,
   IntegrationProviderSettings,
   MemoryProviderResolver,
+  NativeConnectorProvider,
   PiOAuthLogins,
   RemoteConnectorDependencies,
   TicketChangeNotifier,
@@ -601,6 +602,7 @@ export interface RouterDeps {
     provider: string,
   ) => void;
   integrationSettings?: IntegrationProviderSettings;
+  nativeConnectors?: NativeConnectorProvider;
   composio?: ComposioProvider;
   mcpOAuth?: McpOAuthBroker;
   connectors: ConnectorRegistry;
@@ -4571,6 +4573,57 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
     },
+    nativeConnectors: {
+      status: authed.nativeConnectors.status.handler(async ({ context }) => {
+        if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+        return {
+          canConfigure: context.actor.isDeploymentOwner ?? false,
+          callbackUri: deps.nativeConnectors.configurations.callbackUri,
+          configurations: await deps.nativeConnectors.configurations.statuses(),
+        };
+      }),
+      configuration: authed.nativeConnectors.configuration.handler(async ({ context, input }) => {
+        if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+        if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+        try {
+          return await deps.nativeConnectors.configurations.configuration(input.id, true);
+        } catch {
+          throw new ORPCError("NOT_FOUND");
+        }
+      }),
+      save: authed.nativeConnectors.save.handler(async ({ context, input }) => {
+        if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+        if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+        try {
+          return await deps.nativeConnectors.configurations.save(
+            input,
+            connectionContext(context.actor, "nativeConnectors.save", context.signal),
+            true,
+          );
+        } catch {
+          throw new ORPCError("BAD_REQUEST", {
+            message:
+              "Could not save this application configuration. Check the fields and current revision.",
+          });
+        }
+      }),
+      begin: authed.nativeConnectors.begin.handler(async ({ context, input }) => {
+        if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+        try {
+          return await deps.nativeConnectors.connect(
+            input,
+            connectionContext(context.actor, "nativeConnectors.begin", context.signal),
+          );
+        } catch (error) {
+          throw new ORPCError("BAD_REQUEST", {
+            message:
+              error instanceof Error
+                ? sanitizeComposioError(error)
+                : "Could not begin this connection.",
+          });
+        }
+      }),
+    },
     connections: {
       catalog: authed.connections.catalog.handler(async ({ context, input }) => {
         const adapterContext = connectionContext(
@@ -4588,7 +4641,7 @@ export function createRouter(deps: RouterDeps) {
             try {
               const items = await provider.catalog(adapterContext, input.query);
               const nowConnected = items.filter((item) => item.connected).map((item) => item.slug);
-              if (nowConnected.length > 0) {
+              if (nowConnected.length > 0 && provider.describe().id !== "native") {
                 await reconcilePendingConnections(
                   deps.prisma,
                   context.actor,
@@ -4610,6 +4663,9 @@ export function createRouter(deps: RouterDeps) {
         return catalogs.flat();
       }),
       list: authed.connections.list.handler(async ({ context }) => {
+        await deps.nativeConnectors?.oauth.expireSessions(
+          connectionContext(context.actor, "connections.list", context.signal),
+        );
         const rows = await deps.prisma.connection.findMany({
           where: { spaceId: context.actor.spaceId, userId: context.actor.userId },
         });
@@ -4628,6 +4684,10 @@ export function createRouter(deps: RouterDeps) {
         }));
       }),
       begin: authed.connections.begin.handler(async ({ context, input }) => {
+        if (input.connectorId === "native")
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Choose the native application's connection source first.",
+          });
         const authRevision = randomUUID();
         const connector =
           deps.integrationSettings &&
@@ -4833,6 +4893,17 @@ export function createRouter(deps: RouterDeps) {
           },
         });
         if (!existing) throw new IsolationError();
+        if (existing.connectorId === "native")
+          return {
+            id: existing.id,
+            connectorId: existing.connectorId,
+            provider: existing.provider,
+            displayName: existing.displayName,
+            remoteAccountId: existing.status === "connected" ? existing.providerRef : null,
+            status: existing.status as "pending" | "connected" | "revoked" | "error",
+            capabilities: [],
+            createdAt: existing.createdAt.toISOString(),
+          };
         const connector = deps.connectors.managed(existing.connectorId);
         if (!connector) {
           throw new ORPCError("BAD_REQUEST", {
@@ -5166,6 +5237,14 @@ export function createRouter(deps: RouterDeps) {
             userId: context.actor.userId,
           },
         });
+        if (snapshot?.connectorId === "native") {
+          if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+          await deps.nativeConnectors.revoke(
+            snapshot.id,
+            connectionContext(context.actor, "connections.revoke", context.signal),
+          );
+          return { ok: true as const };
+        }
         const needsProvider =
           snapshot &&
           ["connected", "pending", "error"].includes(snapshot.status) &&

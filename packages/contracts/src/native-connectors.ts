@@ -75,6 +75,25 @@ export const NativeConfigStatusSchema = z.object({
 });
 export type NativeConfigStatus = z.infer<typeof NativeConfigStatusSchema>;
 
+/** Deployment-owner editor values; account credentials and client secrets stay write-only. */
+export const NativeConfigEditableSchema = z
+  .object(NativeConfigInputSchema.shape)
+  .omit({ clientSecret: true, expectedRevision: true })
+  .extend({
+    id: Id,
+    revision: z.number().int().positive(),
+    hasClientSecret: z.boolean(),
+    callbackUri: z.url(),
+  });
+export type NativeConfigEditable = z.infer<typeof NativeConfigEditableSchema>;
+export const NativeSetupStateSchema = z.object({
+  canConfigure: z.boolean(),
+  callbackUri: z.url(),
+  configurations: z.array(NativeConfigStatusSchema),
+});
+export type NativeSetupState = z.infer<typeof NativeSetupStateSchema>;
+export type NativeBeginInput = z.infer<typeof NativeBeginInputSchema>;
+
 export const NativeBeginInputSchema = z
   .object({
     configId: Id,

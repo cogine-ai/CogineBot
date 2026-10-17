@@ -53,6 +53,7 @@ import {
   McpConnector,
   McpOAuthBroker,
   messagingPlatformsFromEnv,
+  NativeConnectorProvider,
   PiAgentRuntime,
   PiOAuthLogins,
   PipedreamConnector,
@@ -370,7 +371,13 @@ export async function createApp(
         : undefined),
     pipedream,
   });
+  const native = new NativeConnectorProvider(prisma, secrets, env.apiUrl, {
+    network: remoteConnectors,
+    allowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
+    artifacts,
+  });
   const stack = createConnectorStack(false, composioOverride, [
+    native,
     installed,
     ...integrationSettings
       .providers()
@@ -545,6 +552,7 @@ export async function createApp(
     secrets,
     oauthLogins,
     integrationSettings,
+    nativeConnectors: native,
     mcpOAuth,
     composio: stack.composio,
     connectors: stack.connector,
@@ -594,12 +602,68 @@ export async function createApp(
     }),
   );
   // Session and account replies must never be stored by a client or an HTTP cache.
-  for (const path of ["/api/auth/*", "/rpc/*"]) {
+  for (const path of ["/api/auth/*", "/rpc/*", "/api/connectors/oauth/*"]) {
     app.use(path, async (c, next) => {
       await next();
       c.header("cache-control", "no-store");
     });
   }
+  app.get("/api/connectors/oauth/start", async (c) => {
+    c.header("referrer-policy", "no-referrer");
+    c.header(
+      "content-security-policy",
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    try {
+      const session = await auth.api.getSession({ headers: sessionHeaders(c.req.raw) });
+      if (!session?.user.id) {
+        const signInUrl = new URL("/sign-in", env.webOrigin)
+          .toString()
+          .replaceAll("&", "&amp;")
+          .replaceAll('"', "&quot;");
+        return c.html(
+          `<!doctype html><html lang="en"><meta charset="utf-8"><title>Sign in to connect</title><body><p>Sign in to this instance in this browser, then return to CogineBot and connect again.</p><p><a href="${signInUrl}">Sign in</a></p></body></html>`,
+          401,
+        );
+      }
+      return c.redirect(
+        await native.oauth.launch(c.req.query("state") ?? "", session.user.id, c.req.raw.signal),
+      );
+    } catch {
+      return c.text(
+        "This connection attempt is unavailable. Return to CogineBot and connect again.",
+        400,
+      );
+    }
+  });
+  app.get("/api/connectors/oauth/callback", async (c) => {
+    c.header("referrer-policy", "no-referrer");
+    c.header(
+      "content-security-policy",
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    try {
+      const session = await auth.api.getSession({ headers: sessionHeaders(c.req.raw) });
+      if (!session?.user.id) throw new Error("An authenticated initiating user is required");
+      await native.oauth.callback(
+        {
+          state: c.req.query("state") ?? "",
+          code: c.req.query("code"),
+          denied: Boolean(c.req.query("error")),
+        },
+        c.req.raw.signal,
+        session.user.id,
+      );
+      return c.html(
+        '<!doctype html><html lang="en"><meta charset="utf-8"><title>Account connected</title><body><p>Account connected. You can close this window and return to CogineBot.</p></body></html>',
+      );
+    } catch {
+      return c.html(
+        '<!doctype html><html lang="en"><meta charset="utf-8"><title>Authorization not completed</title><body><p>Authorization did not complete. Return to CogineBot and connect the account again.</p></body></html>',
+        400,
+      );
+    }
+  });
   app.get("/api/auth/capabilities", (c) => {
     return c.json({
       sso: env.oidc
@@ -1006,6 +1070,7 @@ export async function createApp(
       await realtime.close();
       await connector.stop();
       await mcp.close();
+      await native.close();
       await prisma.$disconnect().catch(() => undefined);
       await created.pool?.end().catch(() => undefined);
       await ownedJobPool?.end().catch(() => undefined);

@@ -708,6 +708,7 @@ describe("MCP prepared credential updates", () => {
       },
       botSecret: { count: async () => 0 },
       integrationProviderConfig: { count: async () => 0 },
+      nativeAppConfig: { count: async () => 0 },
       $executeRaw: async () => 1,
       $queryRaw: async () => [],
       async $transaction(callback: (tx: typeof prisma) => Promise<unknown>) {

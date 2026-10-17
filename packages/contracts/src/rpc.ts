@@ -105,6 +105,13 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
+import {
+  NativeBeginInputSchema,
+  NativeConfigEditableSchema,
+  NativeConfigInputSchema,
+  NativeConfigStatusSchema,
+  NativeSetupStateSchema,
+} from "./native-connectors.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { RoutineHistorySchema, RoutineRunCursorSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -761,6 +768,14 @@ export const appContract = {
   integrationSetup: {
     get: oc.output(IntegrationSetupStateSchema),
     save: oc.input(IntegrationProviderConfigSchema).output(z.object({ ok: z.literal(true) })),
+  },
+  nativeConnectors: {
+    status: oc.output(NativeSetupStateSchema),
+    configuration: oc.input(z.object({ id: Id })).output(NativeConfigEditableSchema),
+    save: oc.input(NativeConfigInputSchema).output(NativeConfigStatusSchema),
+    begin: oc
+      .input(NativeBeginInputSchema)
+      .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),
   },
   connections: {
     catalog: oc

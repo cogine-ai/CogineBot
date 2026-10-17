@@ -1,0 +1,4301 @@
+{
+  "$defs": {
+    "AccessLevel": {
+      "type": "string",
+      "enum": ["view", "comment", "edit", "owner"],
+      "description": "Ordered from least to most access top -> bottom"
+    },
+    "AgentSessionAuthor": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "user",
+          "description": "User prompt."
+        },
+        {
+          "type": "string",
+          "const": "agent",
+          "description": "Agent response."
+        }
+      ],
+      "description": "Side of a folded conversation."
+    },
+    "AgentSessionSearchResponseItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Session ID."
+        },
+        "name": {
+          "type": "string",
+          "description": "Current persisted name."
+        },
+        "owner_id": {
+          "type": "string",
+          "description": "Session owner."
+        },
+        "bot_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Agent persona ID."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Session creation time."
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Current persisted modification time."
+        },
+        "agent_session_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentSessionSearchResult"
+          },
+          "description": "Name and folded-message matches."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "owner_id",
+        "bot_id",
+        "created_at",
+        "updated_at",
+        "agent_session_search_results"
+      ],
+      "description": "One accessible agent session, grouped with its matching folded messages."
+    },
+    "AgentSessionSearchResult": {
+      "type": "object",
+      "properties": {
+        "goto": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SearchGotoAgentSession"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent for a name-only match."
+        },
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double",
+          "description": "Search score."
+        }
+      },
+      "required": ["highlight"],
+      "description": "A name match or one matching folded message."
+    },
+    "AppliedTag": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "The tag's label."
+        },
+        "scope": {
+          "$ref": "#/$defs/TagScope"
+        }
+      },
+      "required": ["label", "scope"],
+      "description": "A tag applied to an item, resolved to its human-readable label."
+    },
+    "CalendarEventMetadata": {
+      "type": "object",
+      "properties": {
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "description": "Canonical status (`confirmed`, `tentative`, `cancelled`)."
+        },
+        "time": {
+          "$ref": "#/$defs/CalendarEventSearchTime"
+        },
+        "isRecurring": {
+          "type": "boolean",
+          "description": "Whether the series carries a recurrence rule. Lets a row render a\nrecurring badge without parsing the rules."
+        },
+        "occurrence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CalendarEventSearchOccurrence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The instance this row points at. `None` when the series has no\nmaterialized occurrence — occurrences exist only inside a rolling\nwindow, so a row can legitimately fall back to `time`."
+        },
+        "conferenceUrl": {
+          "type": ["string", "null"],
+          "description": "Direct conference join URL when known."
+        },
+        "isReadOnly": {
+          "type": "boolean",
+          "description": "Whether the canonical source prohibits mutation."
+        },
+        "organizer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CalendarEventOrganizer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The event's organizer (creator), when the source names one."
+        },
+        "description": {
+          "type": ["string", "null"],
+          "description": "Free-text description, when the event carries one. May contain HTML from\nthe source; clients render a plain-text preview."
+        }
+      },
+      "required": ["createdAt", "updatedAt", "status", "time", "isRecurring", "isReadOnly"],
+      "description": "Metadata for a calendar event fetched from the database.\n\nThe index carries the master span for ranking, but the occurrence a row\nshould display depends on when the query ran, so it is resolved here\nrather than indexed."
+    },
+    "CalendarEventOrganizer": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": ["string", "null"],
+          "description": "Display name, when the source provided one."
+        },
+        "email": {
+          "type": ["string", "null"],
+          "description": "Organizer email address, when known."
+        }
+      },
+      "description": "The event's organizer — its creator, in Google's model. Either field can be\nabsent when the source does not name it."
+    },
+    "CalendarEventSearchOccurrence": {
+      "type": "object",
+      "properties": {
+        "occurrenceKey": {
+          "type": "string",
+          "description": "Stable key of the resolved instance within its series."
+        },
+        "time": {
+          "$ref": "#/$defs/CalendarEventSearchTime"
+        }
+      },
+      "required": ["occurrenceKey", "time"],
+      "description": "The instance a search row points at.\n\nA recurring series is indexed once, as its master. Which instance the row\nshould show is decided per request rather than baked into the index: the\nnext occurrence at or after now, else the most recent past one. This is\nthe same resolution a calendar mention performs, so a search row and a\nmention of the same event agree on where they land."
+    },
+    "CalendarEventSearchResponseItemWithMetadata": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CalendarEventMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Metadata from the database. None if the event no longer exists."
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Standardized fields that all item types will share."
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "calendar_event_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CalendarEventSearchResult"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "owner_id",
+        "updated_at",
+        "created_at",
+        "calendar_event_search_results"
+      ],
+      "description": "CalendarEventSearchResponseItem with metadata fetched from the database."
+    },
+    "CalendarEventSearchResult": {
+      "type": "object",
+      "properties": {
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double",
+          "description": "The score of the result"
+        }
+      },
+      "required": ["highlight"]
+    },
+    "CalendarEventSearchTime": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "startsAt": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Inclusive start."
+            },
+            "endsAt": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Exclusive end."
+            },
+            "timeZone": {
+              "type": ["string", "null"],
+              "description": "Original IANA time zone."
+            },
+            "kind": {
+              "type": "string",
+              "const": "timed"
+            }
+          },
+          "required": ["kind", "startsAt", "endsAt"],
+          "description": "Absolute timed event."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "startDate": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date."
+            },
+            "endDate": {
+              "type": "string",
+              "format": "date",
+              "description": "Exclusive end date."
+            },
+            "kind": {
+              "type": "string",
+              "const": "allDay"
+            }
+          },
+          "required": ["kind", "startDate", "endDate"],
+          "description": "All-day event with an exclusive end date."
+        }
+      ],
+      "description": "Timed or all-day span of a calendar event.\n\nDeliberately a local mirror of `models_soup::calendar_event::SoupCalendarEventTime`\nrather than a reuse of it: this module needs both `ToSchema` (OpenAPI) and\n`JsonSchema` (AI tool schemas), and `models_soup` carries no schemars\ndependency. The wire shape is identical and must stay that way, so a\nclient can decode a search row and a soup row with one mapping.\n\nFields are camelCased per variant rather than via `rename_all_fields`,\nwhich utoipa ignores."
+    },
+    "CallRecordMetadata": {
+      "type": "object",
+      "properties": {
+        "created_by": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "channel_name": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "$ref": "#/$defs/CallStatus"
+        },
+        "attended": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "created_by",
+        "started_at",
+        "ended_at",
+        "duration_ms",
+        "updated_at",
+        "status",
+        "attended"
+      ]
+    },
+    "CallRecordSearchResponseItemWithMetadata": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CallRecordMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`None` if the call has been deleted."
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": ["string", "null"]
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "participant_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "call_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CallRecordSearchResult"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "owner_id",
+        "call_id",
+        "channel_id",
+        "participant_ids",
+        "call_search_results"
+      ]
+    },
+    "CallRecordSearchResult": {
+      "type": "object",
+      "properties": {
+        "transcript_id": {
+          "type": ["string", "null"],
+          "format": "uuid"
+        },
+        "speaker_id": {
+          "type": ["string", "null"]
+        },
+        "sequence_num": {
+          "type": ["integer", "null"],
+          "format": "int32"
+        },
+        "started_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double"
+        }
+      },
+      "required": ["highlight"]
+    },
+    "CallStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ATTENDED",
+          "description": "The viewer is a call participant."
+        },
+        {
+          "type": "string",
+          "const": "MISSED",
+          "description": "The viewer is not a call participant and is in the call's channel."
+        },
+        {
+          "type": "string",
+          "const": "UNATTENDED",
+          "description": "The viewer is not a call participant and is not in the call's channel."
+        }
+      ],
+      "description": "Viewer-relative attendance status for a call record.\nSerializes as `ATTENDED`, `MISSED`, or `UNATTENDED`."
+    },
+    "ChannelMetadata": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "viewed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "interacted_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      },
+      "required": ["created_at", "updated_at"],
+      "description": "Metadata for a channel fetched from the database"
+    },
+    "ChannelSearchResponseItemWithMetadata": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChannelMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Metadata from the database. None if the channel doesn't exist in the database."
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Standardized fields that all item types will share.\nThese field names are being aligned across all item types\nfor consistency in our data model."
+        },
+        "owner_id": {
+          "type": ["string", "null"],
+          "description": "we don't store this for channels atm but keeping it here for consistency"
+        },
+        "channel_type": {
+          "type": "string",
+          "description": "The type of channel"
+        },
+        "channel_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the channel"
+        },
+        "channel_message_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChannelSearchResult"
+          },
+          "description": "The search results for the channel\nThis may be empty if the search result match was not on content"
+        }
+      },
+      "required": ["id", "channel_type", "channel_id", "channel_message_search_results"],
+      "description": "ChannelSearchResponseItem object with channel metadata we fetch from coginexdb. we don't store these\ntimestamps in opensearch as they would require us to update each chat message record for the chat\nevery time the chat updates (specifically for updated_at and viewed_at and interacted_at)"
+    },
+    "ChannelSearchResult": {
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "The channel message id\nThis is only prsent if the search result is on the message content"
+        },
+        "thread_id": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "The channel message thread id"
+        },
+        "sender_id": {
+          "type": ["string", "null"],
+          "description": "The sender id\nThis is only prsent if the search result is on the message content"
+        },
+        "created_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the channel message was created\nThis is only prsent if the search result is on the message content"
+        },
+        "updated_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the channel message was last updated\nThis is only prsent if the search result is on the message content"
+        },
+        "deleted_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the channel message was deleted, if it has been"
+        },
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double",
+          "description": "The score of the result"
+        }
+      },
+      "required": ["highlight"],
+      "description": "A channel message match for a given channel id"
+    },
+    "ChannelThreadWindowType": {
+      "type": "string",
+      "enum": ["allIfSmall", "latest", "aroundReply"],
+      "description": "Which part of a thread to read."
+    },
+    "ChatMessageSearchResult": {
+      "type": "object",
+      "properties": {
+        "chat_message_id": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "The chat message id for the chat\nThis is only present if the search match was on the chat message content"
+        },
+        "role": {
+          "type": ["string", "null"],
+          "description": "The role of the chat message\nThis is only present if the search match was on the chat message content"
+        },
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double",
+          "description": "The score of the result"
+        }
+      },
+      "required": ["highlight"],
+      "description": "A chat match for a given message id"
+    },
+    "ChatMetadata": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "viewed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "project_id": {
+          "type": ["string", "null"]
+        },
+        "deleted_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      },
+      "required": ["created_at", "updated_at"],
+      "description": "Metadata for a chat fetched from the database"
+    },
+    "ChatSearchResponseItemWithMetadata": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChatMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Metadata from the database. None if the chat doesn't exist in the database."
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Standardized fields that all item types will share.\nThese field names are being aligned across all item types\nfor consistency in our data model."
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the chat"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "The id of the creator of the chat"
+        },
+        "chat_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatMessageSearchResult"
+          },
+          "description": "The search results for the chat\nThis may be empty if the search result match was on the chat title only"
+        }
+      },
+      "required": ["id", "name", "owner_id", "chat_id", "user_id", "chat_search_results"],
+      "description": "ChatSearchResponse object with channel metadata we fetch from coginexdb. we don't store these\ntimestamps in opensearch as they would require us to update each chat message record for the chat\nevery time the chat updates (specifically for updated_at and viewed_at)"
+    },
+    "Comment": {
+      "type": "object",
+      "properties": {
+        "commentId": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The unique id of the comment."
+        },
+        "threadId": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The thread this comment belongs to."
+        },
+        "order": {
+          "type": ["integer", "null"],
+          "format": "int32",
+          "description": "Ordering position within the thread."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The user id of the comment owner."
+        },
+        "sender": {
+          "type": ["string", "null"],
+          "description": "Sender display string."
+        },
+        "text": {
+          "type": "string",
+          "description": "Comment body."
+        },
+        "metadata": {
+          "description": "Arbitrary comment metadata."
+        },
+        "createdAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the comment was created."
+        },
+        "updatedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the comment was last updated."
+        },
+        "deletedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the comment was deleted, if ever."
+        }
+      },
+      "required": ["commentId", "threadId", "owner", "text"],
+      "description": "A single comment in a thread."
+    },
+    "CommentThread": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/Thread"
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Comment"
+          },
+          "description": "The comments in the thread, ordered by `createdAt` ASC."
+        }
+      },
+      "required": ["thread", "comments"],
+      "description": "A thread bundled together with its ordered comments."
+    },
+    "Content": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": ["text"],
+          "additionalProperties": false,
+          "description": "Simple text content"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "markdown": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MarkdownNode"
+              }
+            }
+          },
+          "required": ["markdown"],
+          "additionalProperties": false,
+          "description": "All nodes of the markdown file"
+        }
+      ],
+      "description": "The content of the document"
+    },
+    "CrmCompanySearchDomain": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the domain record."
+        },
+        "companyId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the company the domain belongs to."
+        },
+        "domain": {
+          "type": "string",
+          "description": "The domain (lowercased, e.g. \"acme.com\")."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the domain record was created."
+        }
+      },
+      "required": ["id", "companyId", "domain", "createdAt"],
+      "description": "A CRM domain attached to a company in search results."
+    },
+    "CrmCompanySearchResponseItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the company."
+        },
+        "teamId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the team that owns this company record."
+        },
+        "name": {
+          "type": ["string", "null"],
+          "description": "Display name from the primary domain's directory entry."
+        },
+        "nameHighlighted": {
+          "type": ["string", "null"],
+          "description": "`name` with matched spans wrapped in `<coginex_em>…</coginex_em>`."
+        },
+        "description": {
+          "type": ["string", "null"],
+          "description": "Display description from the primary domain's directory entry."
+        },
+        "hidden": {
+          "type": "boolean",
+          "description": "Whether the company is hidden from CRM listings."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the company was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the company was last updated (the sort key)."
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CrmCompanySearchDomain"
+          },
+          "description": "Domains associated with this company, primary first."
+        }
+      },
+      "required": ["id", "teamId", "hidden", "createdAt", "updatedAt", "domains"],
+      "description": "A CRM company match in unified search results. Carries the display\nmetadata resolved from the primary domain plus the highlighted name."
+    },
+    "DocumentContent": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/DocumentContentState"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentContentLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The content location, when known."
+        }
+      },
+      "required": ["state"],
+      "description": "API-visible content lifecycle and location metadata."
+    },
+    "DocumentContentLocation": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "object_storage",
+          "description": "Content is stored as a document-storage object."
+        },
+        {
+          "type": "string",
+          "const": "sync_service",
+          "description": "Content is stored in sync-service."
+        },
+        {
+          "type": "string",
+          "const": "docx_bom_parts",
+          "description": "DOCX content is stored as document-storage BOM parts."
+        },
+        {
+          "type": "string",
+          "const": "converted_pdf",
+          "description": "DOCX content is exposed through a converted PDF object in document storage."
+        },
+        {
+          "type": "string",
+          "const": "unknown",
+          "description": "Legacy metadata says content is uploaded, but not where the canonical\nfinalized content lives."
+        }
+      ],
+      "description": "Where document content is, or is expected to be, read from."
+    },
+    "DocumentContentState": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "unknown",
+          "description": "The service cannot determine the content lifecycle state from current metadata."
+        },
+        {
+          "type": "string",
+          "const": "pending",
+          "description": "Metadata exists, but canonical content is not ready to consume yet."
+        },
+        {
+          "type": "string",
+          "const": "ready",
+          "description": "Content is finalized and should be readable from `location`."
+        }
+      ],
+      "description": "API-visible content lifecycle state derived from current document metadata."
+    },
+    "DocumentMetadata": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "viewed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "project_id": {
+          "type": ["string", "null"]
+        },
+        "deleted_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      },
+      "required": ["created_at", "updated_at"],
+      "description": "Metadata for a document fetched from the database"
+    },
+    "DocumentSearchResponseItemWithMetadata": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Metadata from the database. None if the document doesn't exist in the database."
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Standardized fields that all item types will share.\nThese field names are being aligned across all item types\nfor consistency in our data model."
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "document_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the document"
+        },
+        "document_name": {
+          "type": "string",
+          "description": "The name of the document"
+        },
+        "file_type": {
+          "type": ["string", "null"],
+          "description": "The file type of the document"
+        },
+        "sub_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentSubType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The sub type of the document if present."
+        },
+        "document_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentSearchResult"
+          },
+          "description": "The search results for the document\nThis may be empty if the search result match was on the document name only"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "owner_id",
+        "document_id",
+        "document_name",
+        "document_search_results"
+      ],
+      "description": "DocumentSearchResponseItem object with document metadata we fetch from coginexdb. we don't store these\ntimestamps in opensearch as they would require us to update document page record\nevery time the document updates (specifically for updated_at and viewed_at)"
+    },
+    "DocumentSearchResult": {
+      "type": "object",
+      "properties": {
+        "node_id": {
+          "type": ["string", "null"],
+          "description": "The node id for the document.\nThis is only useful for markdown at the moment\nThis will only be provided if the match was on content"
+        },
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "raw_content": {
+          "type": ["string", "null"],
+          "description": "The raw content of the document.\nThis is only included for markdown files and will be the raw json node of the match"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double",
+          "description": "The score of the result"
+        }
+      },
+      "required": ["highlight"],
+      "description": "A document match for a given node"
+    },
+    "DocumentSubType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "task",
+          "description": "A task document"
+        },
+        {
+          "type": "string",
+          "const": "snippet",
+          "description": "A snippet document — a reusable block of markdown that can be inserted\ninto any markdown area"
+        },
+        {
+          "type": "string",
+          "const": "skill",
+          "description": "A skill document — a markdown document containing instructions that AI\ncan read and follow when referenced in an AI input"
+        }
+      ],
+      "description": "The document sub type enum represents all values of document sub types.\nThese values should match the `document_sub_type_value` table in coginexdb."
+    },
+    "EmailPreset": {
+      "type": "string",
+      "enum": ["signal"]
+    },
+    "EmailSearchParticipant": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "name": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["email"],
+      "description": "A participant (sender) in an email thread"
+    },
+    "EmailSearchResponseItemWithMetadata": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "viewed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "snippet": {
+          "type": ["string", "null"]
+        },
+        "is_read": {
+          "type": "boolean"
+        },
+        "inbox_visible": {
+          "type": "boolean"
+        },
+        "is_draft": {
+          "type": "boolean"
+        },
+        "is_important": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Standardized fields that all item types will share.\nThese field names are being aligned across all item types\nfor consistency in our data model."
+        },
+        "name": {
+          "type": ["string", "null"],
+          "description": "Subject of the email thread"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": ["string", "null"],
+          "description": "The subject of the email\nThis is only present if the search result is on the message content"
+        },
+        "thread_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The id of the email thread"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "The id of the owner of the email thread"
+        },
+        "link_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The inbox that owns the thread. Drives the multi-inbox indicator\nwhen the caller has more than one inbox."
+        },
+        "email_message_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmailSearchResult"
+          },
+          "description": "The search results for the document\nThis may be empty if the search result match was on the email subject only"
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmailSearchParticipant"
+          },
+          "description": "The participants (senders) in this email thread"
+        }
+      },
+      "required": [
+        "created_at",
+        "updated_at",
+        "is_read",
+        "inbox_visible",
+        "is_draft",
+        "is_important",
+        "id",
+        "owner_id",
+        "thread_id",
+        "user_id",
+        "link_id",
+        "email_message_search_results",
+        "participants"
+      ],
+      "description": "EmailSearchResponseItem object with email metadata we fetch from email service. we don't store these\ntimestamps in opensearch as they would require us to update each email message record for the thread\nevery time the thread updates (specifically for updated_at and viewed_at)"
+    },
+    "EmailSearchResult": {
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "The email message id.\nThis is only present if the search result is on the message content"
+        },
+        "sender": {
+          "type": "string",
+          "description": "The sender.\nIf the match is on the subject, the sender is the latest sender on the thread."
+        },
+        "pretty_sender": {
+          "type": "string",
+          "description": "The pretty sender.\nIf the match is on the subject, the pretty sender is the latest sender on the thread.\nThis could be the sender's email if there is no contact name for the sender."
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "This is only present if the search result is on the message content"
+        },
+        "cc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "This is only present if the search result is on the message content"
+        },
+        "bcc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "This is only present if the search result is on the message content"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "This is only present if the search result is on the message content"
+        },
+        "sent_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the email message was sent\nThis is only present if the search result is on the message content"
+        },
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double",
+          "description": "The score of the result"
+        }
+      },
+      "required": ["sender", "pretty_sender", "recipients", "cc", "bcc", "labels", "highlight"],
+      "description": "A email message match for a given thread id"
+    },
+    "EntityItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Document id."
+            },
+            "name": {
+              "type": "string",
+              "description": "Document name."
+            },
+            "fileType": {
+              "type": ["string", "null"],
+              "description": "The document's file type (e.g. md, pdf, docx), when known."
+            },
+            "subType": {
+              "type": ["string", "null"],
+              "description": "The document's sub type: \"task\" for CogineX tasks, \"snippet\" for snippets."
+            },
+            "taskSummary": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Minimal task-only projection from the already hydrated Soup row."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AppliedTag"
+              },
+              "description": "Tags on the document visible to the user."
+            },
+            "type": {
+              "type": "string",
+              "const": "document"
+            }
+          },
+          "required": ["type", "id", "name"],
+          "description": "CogineX document item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Chat id."
+            },
+            "name": {
+              "type": "string",
+              "description": "Chat name."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AppliedTag"
+              },
+              "description": "Tags on the chat visible to the user."
+            },
+            "type": {
+              "type": "string",
+              "const": "aiChat"
+            }
+          },
+          "required": ["type", "id", "name"],
+          "description": "AI chat item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Project id."
+            },
+            "name": {
+              "type": "string",
+              "description": "Project name."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AppliedTag"
+              },
+              "description": "Tags on the project visible to the user."
+            },
+            "type": {
+              "type": "string",
+              "const": "project"
+            }
+          },
+          "required": ["type", "id", "name"],
+          "description": "Project item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Email thread id."
+            },
+            "subject": {
+              "type": ["string", "null"],
+              "description": "Email subject, when present."
+            },
+            "snippet": {
+              "type": ["string", "null"],
+              "description": "Preview text from the thread's latest relevant message."
+            },
+            "senderName": {
+              "type": ["string", "null"],
+              "description": "Sender display name, when present."
+            },
+            "senderEmail": {
+              "type": ["string", "null"],
+              "description": "Sender email address, when present."
+            },
+            "inboxVisible": {
+              "type": "boolean",
+              "description": "Whether the thread currently belongs in the inbox."
+            },
+            "isRead": {
+              "type": "boolean",
+              "description": "Whether the thread has been read."
+            },
+            "isDraft": {
+              "type": "boolean",
+              "description": "Whether the thread contains a draft."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AppliedTag"
+              },
+              "description": "Tags on the thread visible to the user."
+            },
+            "type": {
+              "type": "string",
+              "const": "email"
+            }
+          },
+          "required": ["type", "id", "inboxVisible", "isRead", "isDraft"],
+          "description": "Email thread item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Channel id."
+            },
+            "name": {
+              "type": ["string", "null"],
+              "description": "Channel name, when present."
+            },
+            "type": {
+              "type": "string",
+              "const": "channel"
+            }
+          },
+          "required": ["type", "id"],
+          "description": "Channel item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Parent message id for the thread."
+            },
+            "channelId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Channel id containing the thread."
+            },
+            "type": {
+              "type": "string",
+              "const": "channelThread"
+            }
+          },
+          "required": ["type", "id", "channelId"],
+          "description": "Channel thread item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Calendar event id."
+            },
+            "title": {
+              "type": "string",
+              "description": "Event title."
+            },
+            "status": {
+              "type": "string",
+              "description": "Event status."
+            },
+            "location": {
+              "type": ["string", "null"],
+              "description": "Optional location."
+            },
+            "conferenceUrl": {
+              "type": ["string", "null"],
+              "description": "Optional conference join URL."
+            },
+            "conferenceProvider": {
+              "type": ["string", "null"],
+              "description": "Which conferencing system backs the join URL."
+            },
+            "time": {
+              "description": "Canonical timed or all-day span."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AppliedTag"
+              },
+              "description": "Tags on the event visible to the user."
+            },
+            "type": {
+              "type": "string",
+              "const": "calendarEvent"
+            }
+          },
+          "required": ["type", "id", "title", "status", "time"],
+          "description": "Canonical calendar event item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Call id."
+            },
+            "createdBy": {
+              "type": "string",
+              "description": "User or actor that created the call."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AppliedTag"
+              },
+              "description": "Tags on the call visible to the user."
+            },
+            "type": {
+              "type": "string",
+              "const": "call"
+            }
+          },
+          "required": ["type", "id", "createdBy"],
+          "description": "Call record item."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Foreign entity row id."
+            },
+            "foreignEntityId": {
+              "type": "string",
+              "description": "Provider-specific foreign entity id."
+            },
+            "foreignEntitySource": {
+              "type": "string",
+              "description": "Provider/source name for the foreign entity."
+            },
+            "metadata": {
+              "description": "Foreign entity metadata."
+            },
+            "type": {
+              "type": "string",
+              "const": "foreignEntity"
+            }
+          },
+          "required": ["type", "id", "foreignEntityId", "foreignEntitySource", "metadata"],
+          "description": "Foreign entity item."
+        }
+      ],
+      "description": "Item returned by the list entities AI tool."
+    },
+    "ItemType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "document",
+          "description": "CogineX document."
+        },
+        {
+          "type": "string",
+          "const": "ai_chat",
+          "description": "AI chat conversation."
+        },
+        {
+          "type": "string",
+          "const": "project",
+          "description": "CogineX project."
+        },
+        {
+          "type": "string",
+          "const": "email",
+          "description": "Email thread."
+        },
+        {
+          "type": "string",
+          "const": "channel",
+          "description": "Chat channel."
+        },
+        {
+          "type": "string",
+          "const": "channel_thread",
+          "description": "Chat channel thread."
+        },
+        {
+          "type": "string",
+          "const": "call",
+          "description": "Call record."
+        },
+        {
+          "type": "string",
+          "const": "calendar_event",
+          "description": "Calendar event."
+        },
+        {
+          "type": "string",
+          "const": "foreign_entity",
+          "description": "Foreign entity record."
+        }
+      ],
+      "description": "Entity types that can be returned by the list entities AI tool."
+    },
+    "MarkdownNode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "nodeId": {
+              "type": "string",
+              "description": "The node id"
+            },
+            "content": {
+              "type": "string",
+              "description": "Human readable content"
+            },
+            "tag": {
+              "type": "string",
+              "description": "The style on the node, h1, paragraph, code, etc."
+            },
+            "type": {
+              "type": "string",
+              "const": "generic"
+            }
+          },
+          "required": ["type", "nodeId", "content", "tag"],
+          "description": "A textual content node (paragraph, heading, list, code block, etc.)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "URL the image can be fetched from."
+            },
+            "type": {
+              "type": "string",
+              "const": "staticImage"
+            }
+          },
+          "required": ["type", "url"],
+          "description": "An image hosted at a publicly fetchable URL. Fetch the URL to view it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The DSS id of the image. Use the read tool with this id to read it."
+            },
+            "type": {
+              "type": "string",
+              "const": "dssImage"
+            }
+          },
+          "required": ["type", "id"],
+          "description": "An image stored in DSS. Pass this id to the read tool to view the image."
+        }
+      ],
+      "description": "A single node of a markdown document as seen by the AI."
+    },
+    "NameSearchMatchType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "partial",
+          "description": "Prefix matching, retained as the default for existing callers."
+        },
+        {
+          "type": "string",
+          "const": "exact",
+          "description": "Whole-token or phrase matching."
+        },
+        {
+          "type": "string",
+          "const": "contains",
+          "description": "Case-insensitive name and word fragments; document searches only."
+        }
+      ],
+      "description": "Name search adds fragment matching without changing ContentSearch modes."
+    },
+    "ProjectMetadata": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "viewed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "parent_project_id": {
+          "type": ["string", "null"]
+        },
+        "deleted_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      },
+      "required": ["created_at", "updated_at"],
+      "description": "Metadata for a project fetched from the database"
+    },
+    "ProjectSearchResponseItemWithMetadata": {
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Metadata from the database. None if the project doesn't exist in the database."
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Standardized fields that all item types will share.\nThese field names are being aligned across all item types\nfor consistency in our data model."
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "project_search_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProjectSearchResult"
+          }
+        }
+      },
+      "required": ["id", "name", "owner_id", "updated_at", "created_at", "project_search_results"],
+      "description": "ProjectSearchResponseItem object with project metadata we fetch from coginexdb.\nThe index carries created_at/updated_at for ranking, but viewed_at is\nper-user and deleted_at changes without a reindex, so metadata stays\ndatabase-sourced."
+    },
+    "ProjectSearchResult": {
+      "type": "object",
+      "properties": {
+        "highlight": {
+          "$ref": "#/$defs/SearchHighlight"
+        },
+        "score": {
+          "type": ["number", "null"],
+          "format": "double",
+          "description": "The score of the result"
+        }
+      },
+      "required": ["highlight"]
+    },
+    "ReadChannelThreadInfo": {
+      "type": "object",
+      "properties": {
+        "channelId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Channel id containing the thread."
+        },
+        "threadId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Thread id, equal to the top-level parent message id."
+        },
+        "parent": {
+          "$ref": "#/$defs/ToolChannelMessage"
+        },
+        "replyCount": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "Total number of replies in this thread."
+        },
+        "latestReplyAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Timestamp of the latest reply, if any."
+        }
+      },
+      "required": ["channelId", "threadId", "parent", "replyCount"],
+      "description": "Metadata about the thread being read."
+    },
+    "ReadDocumentMetadata": {
+      "type": "object",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "description": "The document id"
+        },
+        "documentVersionId": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The version of the document\nThis could be the document_instance_id or document_bom_id depending on\nthe file type"
+        },
+        "owner": {
+          "type": "string",
+          "description": "The owner of the document"
+        },
+        "documentName": {
+          "type": "string",
+          "description": "The name of the document"
+        },
+        "fileType": {
+          "type": ["string", "null"],
+          "description": "The file type of the document (file extension)"
+        },
+        "sha": {
+          "type": ["string", "null"],
+          "description": "If the document is a PDF, this is the SHA of the pdf\nIf the document is a DOCX, this will not be present"
+        },
+        "projectId": {
+          "type": ["string", "null"],
+          "description": "The id of the project that this document belongs to"
+        },
+        "projectName": {
+          "type": ["string", "null"],
+          "description": "The name of the project that this document belongs to"
+        },
+        "branchedFromId": {
+          "type": ["string", "null"],
+          "description": "The id of the document this document branched from"
+        },
+        "branchedFromVersionId": {
+          "type": ["integer", "null"],
+          "format": "int64",
+          "description": "The id of the version this document branched from\nThis could be either DocumentInstance or DocumentBom id depending on\nthe file type"
+        },
+        "documentFamilyId": {
+          "type": ["integer", "null"],
+          "format": "int64",
+          "description": "The id of the document family this document belongs to"
+        },
+        "documentBom": {
+          "description": "If the document is a DOCX document and unzipped, the document_bom will be present"
+        },
+        "modificationData": {
+          "description": "The modification data for the document instance.\nThis is only used for PDF documents."
+        },
+        "createdAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "The time the document was created"
+        },
+        "updatedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "The time the document instance / document BOM was updated"
+        },
+        "deletedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "The time the document was deleted"
+        },
+        "subType": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentSubType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The sub type of the document if present."
+        },
+        "teamId": {
+          "type": ["string", "null"],
+          "description": "The team this task number is scoped to, for task documents."
+        },
+        "teamTaskId": {
+          "type": ["integer", "null"],
+          "format": "int32",
+          "description": "The task number assigned within the team, for task documents."
+        },
+        "content": {
+          "$ref": "#/$defs/DocumentContent"
+        },
+        "branchName": {
+          "type": ["string", "null"],
+          "description": "If the document is a \"task\" the branch name of the document will be provided."
+        }
+      },
+      "required": ["documentId", "documentVersionId", "owner", "documentName", "content"],
+      "description": "Full document metadata plus content lifecycle metadata."
+    },
+    "SearchGotoAgentSession": {
+      "type": "object",
+      "properties": {
+        "message_turn": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Fold-assigned turn."
+        },
+        "author": {
+          "$ref": "#/$defs/AgentSessionAuthor"
+        }
+      },
+      "required": ["message_turn", "author"],
+      "description": "Stable navigation target from the fold, independent of raw ACP log IDs."
+    },
+    "SearchHighlight": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": ["string", "null"],
+          "description": "The highlight match on the name field"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The highlight match on the content field"
+        },
+        "user_id": {
+          "type": ["string", "null"],
+          "description": "The highlight match on the user (owner) of the entity"
+        },
+        "sender": {
+          "type": ["string", "null"],
+          "description": "The highlight match on the sender (email only)"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The highlight match on the recipients (email only)"
+        },
+        "cc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The highlight match on the cc (email only)"
+        },
+        "bcc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The highlight match on the bcc (email only)"
+        }
+      }
+    },
+    "SearchMatchType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "partial",
+          "description": "Prefix matching: a single-word term matches tokens that start with it."
+        },
+        {
+          "type": "string",
+          "const": "exact",
+          "description": "Whole-token / exact-phrase matching, no prefix expansion."
+        }
+      ],
+      "description": "How search tools match query terms. Restricted to partial/exact — the\nbackend also supports regexp and an internal query mode, but those are not\noffered to the model."
+    },
+    "SortBy": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "recently_viewed",
+          "description": "Sort by most recently viewed."
+        },
+        {
+          "type": "string",
+          "const": "recently_updated",
+          "description": "Sort by most recently updated."
+        },
+        {
+          "type": "string",
+          "const": "recently_created",
+          "description": "Sort by most recently created."
+        }
+      ],
+      "description": "Sort order for the list entities AI tool."
+    },
+    "TagFilter": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "The tag label to match, case-insensitive."
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TagScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Restrict the label match to \"personal\" or \"team\". Omit to match both scopes.",
+          "default": null
+        }
+      },
+      "required": ["label"],
+      "description": "A tag selector in a tool request, matched by label against the caller's tag sets."
+    },
+    "TagMatch": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "any",
+          "description": "Items carrying at least one of the tags match."
+        },
+        {
+          "type": "string",
+          "const": "all",
+          "description": "Only items carrying every one of the tags match."
+        }
+      ],
+      "description": "How multiple tag filters combine when filtering items."
+    },
+    "TagScope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "personal",
+          "description": "The caller's personal tag set."
+        },
+        {
+          "type": "string",
+          "const": "team",
+          "description": "A team tag set the caller belongs to."
+        }
+      ],
+      "description": "Which tag set a tag belongs to, relative to the caller."
+    },
+    "TaggedSearchResult": {
+      "type": "object",
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/AgentSessionSearchResponseItem"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "agentSession"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/DocumentSearchResponseItemWithMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "document"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ChatSearchResponseItemWithMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "chat"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/EmailSearchResponseItemWithMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "email"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ChannelSearchResponseItemWithMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "channel"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProjectSearchResponseItemWithMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "project"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CallRecordSearchResponseItemWithMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "call"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CalendarEventSearchResponseItemWithMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "calendarEvent"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CrmCompanySearchResponseItem"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "company"
+                }
+              },
+              "required": ["type"]
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "tags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AppliedTag"
+          },
+          "description": "Tags on this item visible to the user."
+        }
+      },
+      "description": "A search result annotated with the caller-visible tags on the item."
+    },
+    "TaskStatusSummary": {
+      "type": "object",
+      "properties": {
+        "optionId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Canonical system status option id."
+        },
+        "displayValue": {
+          "type": ["string", "null"],
+          "description": "Canonical display value, or null for an unknown forward-compatible option."
+        }
+      },
+      "required": ["optionId"],
+      "description": "Current task status derived from the system Status property."
+    },
+    "TaskSummary": {
+      "type": "object",
+      "properties": {
+        "assigneeIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "CogineX principal ids assigned to the task."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskStatusSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Current canonical task status, when set."
+        }
+      },
+      "required": ["assigneeIds"],
+      "description": "Minimal task fields needed by list and search callers without per-task reads."
+    },
+    "Thread": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The unique id of the thread."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The user id of the thread owner."
+        },
+        "resolved": {
+          "type": "boolean",
+          "description": "Whether the thread has been resolved."
+        },
+        "documentId": {
+          "type": "string",
+          "description": "The document the thread is attached to."
+        },
+        "createdAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the thread was created."
+        },
+        "updatedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the thread was last updated."
+        },
+        "deletedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the thread was deleted, if ever."
+        },
+        "metadata": {
+          "description": "Arbitrary thread metadata."
+        }
+      },
+      "required": ["threadId", "owner", "resolved", "documentId"],
+      "description": "A comment thread attached to a document."
+    },
+    "ToolAttachment": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Attachment id."
+        },
+        "entityType": {
+          "type": "string",
+          "description": "Attached entity type."
+        },
+        "entityId": {
+          "type": "string",
+          "description": "Attached entity id."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the attachment was created."
+        }
+      },
+      "required": ["id", "entityType", "entityId", "createdAt"],
+      "description": "A compact attachment reference on a message."
+    },
+    "ToolChannelMessage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Message id."
+        },
+        "channelId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Channel id."
+        },
+        "senderId": {
+          "type": "string",
+          "description": "Sender user id."
+        },
+        "content": {
+          "type": "string",
+          "description": "Message content, possibly truncated."
+        },
+        "contentTruncated": {
+          "type": "boolean",
+          "description": "Whether message content was truncated."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the message was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the message was last updated."
+        },
+        "editedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the message was edited, if ever."
+        },
+        "deletedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the message was deleted, if ever."
+        },
+        "thread": {
+          "$ref": "#/$defs/ToolThreadSummary"
+        },
+        "reactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolReaction"
+          },
+          "description": "Reactions on this message."
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolAttachment"
+          },
+          "description": "Attachments on this message."
+        }
+      },
+      "required": [
+        "id",
+        "channelId",
+        "senderId",
+        "content",
+        "contentTruncated",
+        "createdAt",
+        "updatedAt",
+        "thread",
+        "reactions",
+        "attachments"
+      ],
+      "description": "A compact top-level channel message returned by channel AI tools."
+    },
+    "ToolMessageKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "topLevelMessage",
+          "description": "A top-level message in the channel timeline."
+        },
+        {
+          "type": "string",
+          "const": "threadReply",
+          "description": "A reply inside a top-level message's thread."
+        }
+      ],
+      "description": "Position of a channel message."
+    },
+    "ToolOmission": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ToolOmissionKind"
+        },
+        "messageId": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "Message id associated with the omission, when applicable."
+        },
+        "threadId": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "Thread id associated with the omission, when applicable."
+        },
+        "count": {
+          "type": ["integer", "null"],
+          "format": "int64",
+          "description": "Number of omitted items, when known."
+        },
+        "cursor": {
+          "type": ["string", "null"],
+          "description": "Cursor that can be used to continue reading, when available."
+        }
+      },
+      "required": ["kind"],
+      "description": "Information about content omitted from a tool response."
+    },
+    "ToolOmissionKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "olderMessages",
+          "description": "Older channel messages exist outside the returned window."
+        },
+        {
+          "type": "string",
+          "const": "newerMessages",
+          "description": "Newer channel messages exist outside the returned window."
+        },
+        {
+          "type": "string",
+          "const": "threadReplies",
+          "description": "Thread replies were omitted."
+        },
+        {
+          "type": "string",
+          "const": "truncatedContent",
+          "description": "Message content was truncated."
+        }
+      ],
+      "description": "Kind of content omitted from a bounded tool response."
+    },
+    "ToolReaction": {
+      "type": "object",
+      "properties": {
+        "emoji": {
+          "type": "string",
+          "description": "Emoji that was reacted with."
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "User ids that reacted with this emoji."
+        }
+      },
+      "required": ["emoji", "users"],
+      "description": "A reaction summary on a message."
+    },
+    "ToolResolvedMessage": {
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Requested message id."
+        },
+        "channelId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Channel id."
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolMessageKind"
+        },
+        "threadId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Parent thread id. Equals `message_id` for top-level messages."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the requested message was created."
+        }
+      },
+      "required": ["messageId", "channelId", "kind", "threadId", "createdAt"],
+      "description": "Resolution details for a requested message id."
+    },
+    "ToolThreadReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reply message id."
+        },
+        "threadId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Parent thread id."
+        },
+        "senderId": {
+          "type": "string",
+          "description": "Sender user id."
+        },
+        "content": {
+          "type": "string",
+          "description": "Reply content, possibly truncated."
+        },
+        "contentTruncated": {
+          "type": "boolean",
+          "description": "Whether the reply content was truncated."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the reply was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the reply was last updated."
+        },
+        "editedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When the reply was edited, if ever."
+        },
+        "reactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolReaction"
+          },
+          "description": "Reactions on this reply."
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolAttachment"
+          },
+          "description": "Attachments on this reply."
+        }
+      },
+      "required": [
+        "id",
+        "threadId",
+        "senderId",
+        "content",
+        "contentTruncated",
+        "createdAt",
+        "updatedAt",
+        "reactions",
+        "attachments"
+      ],
+      "description": "A compact thread reply returned by channel AI tools."
+    },
+    "ToolThreadSummary": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Parent thread id. This equals the top-level message id."
+        },
+        "replyCount": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Total number of replies in the thread."
+        },
+        "latestReplyAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Timestamp of the latest reply, if any."
+        },
+        "preview": {
+          "type": ["array", "null"],
+          "items": {
+            "$ref": "#/$defs/ToolThreadReply"
+          },
+          "description": "Preview replies, when requested."
+        },
+        "omittedReplyCount": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Reply count not included in `preview`."
+        }
+      },
+      "required": ["threadId", "replyCount", "omittedReplyCount"],
+      "description": "Thread metadata attached to a top-level message."
+    },
+    "UnifiedSearchIndex": {
+      "type": "string",
+      "enum": [
+        "agent_sessions",
+        "documents",
+        "chats",
+        "emails",
+        "channels",
+        "projects",
+        "call_records",
+        "calendar_events"
+      ]
+    }
+  },
+  "actions": [
+    {
+      "actionId": "coginex.entities.list",
+      "effect": "retrieve",
+      "readOnly": true,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["ListEntities"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "ListEntities",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 4450,
+            "input_definition": "ListEntities",
+            "output_definition": "ListEntitiesResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "includeTypes": {
+                "type": ["array", "null"],
+                "items": {
+                  "$ref": "#/$defs/ItemType"
+                },
+                "description": "Filter returned items to specific item types. If not provided, returns all types. Example: [\"document\", \"email\"] returns only documents and emails. CogineX tasks are returned as document items, so use includeTypes=[\"document\"] with df subtype task for task requests. This is folded into the AST and applied as part of cursor-level filtering."
+              },
+              "sortBy": {
+                "$ref": "#/$defs/SortBy"
+              },
+              "df": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST document filter (df). Every AST map is a single-key enum node; combine comparisons with & or | instead of putting multiple operators in one map. Use the same shape as /items/soup/ast, e.g. {\"l\":{\"id\":\"...\"}}. For CogineX tasks, use {\"l\":{\"dst\":\"task\"}}. For \"completed yesterday\", AND the task subtype with updatedAt bounds, e.g. {\"&\":[{\"l\":{\"dst\":\"task\"}},{\"&\":[{\"l\":{\"ua\":{\"gte\":\"<start>\"}}},{\"l\":{\"ua\":{\"lt\":\"<end>\"}}}]}]} using ISO timestamps.",
+                "default": null
+              },
+              "pf": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST project filter (pf).",
+                "default": null
+              },
+              "cf": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST AI chat filter (cf).",
+                "default": null
+              },
+              "emailPreset": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EmailPreset"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "High-level email filter preset. Use \"signal\" for signal emails. Signal emails and important emails are synonymous: if the user asks for important emails, use emailPreset=\"signal\". This expands to the email AST {\"&\":[{\"l\":{\"Importance\":true}},{\"l\":{\"Shared\":\"exclude\"}}]} and defaults results to emails if includeTypes is omitted."
+              },
+              "ef": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Advanced full soup AST email filter (ef). Prefer emailPreset=\"signal\" for common requests. Signal emails and important emails are synonymous; they use {\"&\":[{\"l\":{\"Importance\":true}},{\"l\":{\"Shared\":\"exclude\"}}]}.",
+                "default": null
+              },
+              "chanf": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST channel filter (chanf).",
+                "default": null
+              },
+              "cthf": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST channel thread filter (cthf).",
+                "default": null
+              },
+              "callf": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST call filter (callf).",
+                "default": null
+              },
+              "fef": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST foreign entity filter (fef).",
+                "default": null
+              },
+              "propf": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+                "description": "Full soup AST property filter (propf). Use this for CogineX task Status, Assignees, Priority, and other entity properties. For task Status Completed: {\"l\":{\"pd\":\"00000001-0000-0000-0000-000000000002\",\"et\":\"TASK\",\"v\":{\"so\":\"00000001-0000-0000-0002-000000000004\"}}}. For tasks assigned to the current user: {\"l\":{\"pd\":\"00000001-0000-0000-0000-000000000001\",\"et\":\"TASK\",\"v\":{\"er\":\"coginex|user@example.com\"}}}. Combine both with &: {\"&\":[statusCompleted, assignedToMe]}. Prefer this over Linear tools for unqualified task requests.",
+                "default": null
+              },
+              "emailView": {
+                "type": ["string", "null"],
+                "description": "Which mailbox view to hydrate previews from for email results. Valid values: inbox (default), sent, drafts, starred, all, important, other, or user:<label>.\n\nWhen the user asks about signal or important emails, use emailView=\"inbox\" together with emailPreset=\"signal\" — do not set emailView=\"important\" in that case. Only override the default when the user explicitly asks for a specific mailbox or label view (e.g. \"sent\", \"drafts\", \"my Foo label\").",
+                "default": null
+              },
+              "inbox": {
+                "type": ["string", "null"],
+                "description": "Restrict email results to a single connected inbox, given as that inbox's email address. Omit to span every inbox the user can access (their own plus any delegated to them). Only set this when the user scopes the request to a specific mailbox (e.g. \"my work inbox\", \"the shared inbox\"); call ListInboxes first to get the exact address. Only affects email results.",
+                "default": null
+              },
+              "tags": {
+                "type": ["array", "null"],
+                "items": {
+                  "$ref": "#/$defs/TagFilter"
+                },
+                "description": "Filter results to items carrying the given tags — any of them by default, every one of them with tagsMatch=\"all\". Each entry names a tag by its label, matched case-insensitively against the user's own tags; only set scope (\"personal\" or \"team\") when the user distinguishes between their personal and team tags. An unknown label fails with the list of available tags — call ListTags first when unsure what tags exist. Only taggable items (documents, tasks, projects, emails, AI chats, call records) can match a tag filter. Prefer this over hand-building a propf filter for tags."
+              },
+              "tagsMatch": {
+                "$ref": "#/$defs/TagMatch"
+              },
+              "limit": {
+                "type": ["integer", "null"],
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535,
+                "description": "Maximum number of items to return. Defaults to 50; max 500.",
+                "default": null
+              }
+            },
+            "title": "ListEntities",
+            "description": "Browse the user's CogineX workspace to see recent items they have access to. Returns CogineX documents, AI conversations, projects, emails, chat channels, call records, and foreign entities. Use this to get an overview of what the user has been working on or to find items by type. Start here for activity-summary questions such as \"what happened today\", \"what's going on\", \"catch me up\", or \"what happened in standup today\"; apply precise time, type, channel, or mailbox filters when the user gives that scope. For CogineX task requests such as \"list my tasks\", \"tasks assigned to me\", or \"tasks I completed yesterday\", prefer this tool over external task trackers such as Linear unless the user explicitly asks for Linear. CogineX tasks are document items with df subtype {\"l\":{\"dst\":\"task\"}} and includeTypes [\"document\"]. Filter task Status and Assignees through propf using entity_type TASK: Status property 00000001-0000-0000-0000-000000000002, Completed option 00000001-0000-0000-0002-000000000004, Assignees property 00000001-0000-0000-0000-000000000001. The current user's assignee entity id is their CogineX user id, usually coginex|<their email address from context>. For \"completed yesterday\", combine status Completed, assigned-to-me, and a df updatedAt yesterday window with ua gte/lt ISO timestamps. Returned documents, AI chats, projects, emails, and call records include the tags visible to the user as {label, scope} pairs. To filter by tag (e.g. \"my items tagged bug-report\"), pass the tag labels in the tags argument — ListTags shows which tags exist. For finding specific items by name or content, use the search tool instead."
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/EntityItem"
+                },
+                "description": "Items returned for the request."
+              },
+              "summary": {
+                "type": "string",
+                "description": "Human-readable summary of the returned items."
+              },
+              "hasMore": {
+                "type": "boolean",
+                "description": "Whether additional matching items exist beyond this response."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether the response was cut at the requested limit."
+              }
+            },
+            "required": ["items", "summary", "hasMore", "truncated"],
+            "description": "Response returned by the list entities AI tool."
+          }
+        }
+      ],
+      "constraints": [
+        "Require explicit includeTypes from upstream ItemType intersected with configured allowed types; organization is verified-context-bound, never model supplied.",
+        "Tasks: includeTypes=[document], df={l:{dst:task}}."
+      ],
+      "pagination": {
+        "kind": "bounded_result",
+        "cursor_supported": false,
+        "signals": ["hasMore", "truncated"]
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.search.name",
+      "effect": "retrieve",
+      "readOnly": true,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["NameSearch"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "NameSearch",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 5861,
+            "input_definition": "NameSearch",
+            "output_definition": "SearchToolResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The name or title to search. Pass 1-3 keywords drawn from words that would literally appear in the title, not the user's natural-language description. Whitespace-separated terms are ANDed. For non-email types the whole query is matched as a single adjacent phrase prefix, so long phrases will not match. For emails each term is matched against the subject. Wrap a multi-word phrase in double quotes to match it as one phrase. Use matchType 'exact' for whole-token matching instead of prefix."
+              },
+              "matchType": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/NameSearchMatchType"
+                  },
+                  {
+                    "default": "partial"
+                  }
+                ]
+              },
+              "entityTypes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/UnifiedSearchIndex"
+                },
+                "description": "Which types of items to search. Leave empty (the default) to search all types — this is almost always what you want. Only set this when the user's request clearly targets one or more specific types. Examples: ['documents'], ['emails', 'documents'], ['channels'], ['call_records'].",
+                "default": []
+              },
+              "inbox": {
+                "type": ["string", "null"],
+                "description": "Restrict email results to a single connected inbox, given as that inbox's email address (from ListInboxes). Omit to search every inbox the user can access. Only set this when the user scopes the request to a specific mailbox. Only affects email results.",
+                "default": null
+              },
+              "tags": {
+                "type": ["array", "null"],
+                "items": {
+                  "$ref": "#/$defs/TagFilter"
+                },
+                "description": "Restrict results to items carrying the given tags — any of them by default, every one of them with tagsMatch=\"all\". Each entry names a tag by its label, matched case-insensitively against the user's own tags; only set scope (\"personal\" or \"team\") when the user distinguishes between their personal and team tags. An unknown label fails with the list of available tags — call ListTags first when unsure what tags exist. Only taggable items (documents, emails, AI chats, projects, call records) can match, so channels are dropped while a tag filter is active."
+              },
+              "tagsMatch": {
+                "$ref": "#/$defs/TagMatch"
+              }
+            },
+            "required": ["name"],
+            "title": "NameSearch",
+            "description": "Search items by their name or title: document name, email subject, chat title, project name, the channel name a call belongs to. This is keyword search, not semantic search: queries only match literal words/tokens, prefixes, or exact quoted terms that appear in the indexed title/name. Use this for targeted name/title lookup, not for activity-summary questions like \"what happened today\", \"what's going on\", \"catch me up\", or \"what happened in standup today\"; those should start with ListEntities using time/type/channel filters. For emails, whitespace-separated terms are ANDed and each is a prefix match against the subject. For all other types the whole query is matched as a single adjacent phrase prefix — so pass 1-3 targeted keywords drawn from words that would literally appear in the title, not the user's natural-language description; long phrases will not match. Matching defaults to prefix; set matchType to 'contains' for fragments inside document names (for example 1134 in PR1134), or 'exact' to match whole tokens/phrases with no prefix expansion. Wrap a multi-word phrase in double quotes to keep it together as one adjacent phrase. If the user's request combines a person with a topic, run separate searches (NameSearch for the person, ContentSearch for the topic) rather than one combined query. Leave entityTypes empty by default; only filter when the user explicitly scopes to a type. Results for documents, emails, AI chats, projects, and call records include the tags visible to the user as {label, scope} pairs; to restrict a search to tagged items, pass the tag labels in the tags argument (ListTags shows which tags exist)."
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "results": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/TaggedSearchResult"
+                }
+              }
+            },
+            "required": ["results"]
+          }
+        }
+      ],
+      "constraints": [
+        "Require explicit entityTypes from upstream UnifiedSearchIndex intersected with configured allowed types; ambiguous matches remain candidates."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.search.content",
+      "effect": "retrieve",
+      "readOnly": true,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["ContentSearch"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "ContentSearch",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 336,
+            "input_definition": "ContentSearch",
+            "output_definition": "SearchToolResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "The text to search. Pass 1-3 keywords drawn from words that would literally appear in the content, not the user's natural-language description. Whitespace-separated terms are ANDed. For documents, every term must appear somewhere in the document (different chunks/pages are fine). For emails each term is matched across subject/body/sender/recipient. For chats/channels/calls the whole query is matched as a single adjacent phrase prefix, so long phrases will not match. Wrap a multi-word phrase in double quotes to match it as one phrase. Use matchType 'exact' for whole-token (or full email address) matching instead of prefix."
+              },
+              "matchType": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/SearchMatchType"
+                  },
+                  {
+                    "default": "partial"
+                  }
+                ]
+              },
+              "entityTypes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/UnifiedSearchIndex"
+                },
+                "description": "Which types of items to search. Leave empty (the default) to search all types — this is almost always what you want. Only set this when the user's request clearly targets one or more specific types. Examples: ['documents'], ['emails', 'documents'], ['channels'], ['call_records'].",
+                "default": []
+              },
+              "inbox": {
+                "type": ["string", "null"],
+                "description": "Restrict email results to a single connected inbox, given as that inbox's email address (from ListInboxes). Omit to search every inbox the user can access. Only set this when the user scopes the request to a specific mailbox. Only affects email results.",
+                "default": null
+              },
+              "tags": {
+                "type": ["array", "null"],
+                "items": {
+                  "$ref": "#/$defs/TagFilter"
+                },
+                "description": "Restrict results to items carrying the given tags — any of them by default, every one of them with tagsMatch=\"all\". Each entry names a tag by its label, matched case-insensitively against the user's own tags; only set scope (\"personal\" or \"team\") when the user distinguishes between their personal and team tags. An unknown label fails with the list of available tags — call ListTags first when unsure what tags exist. Only taggable items (documents, emails, AI chats, projects, call records) can match, so channels are dropped while a tag filter is active."
+              },
+              "tagsMatch": {
+                "$ref": "#/$defs/TagMatch"
+              }
+            },
+            "required": ["query"],
+            "title": "ContentSearch",
+            "description": "Search items by their content: document body text; email subject/body/sender/recipient/cc/bcc and the display names on those addresses; chat messages; call transcripts. This is keyword search, not semantic search: queries only match literal words/tokens, prefixes, or exact quoted terms that appear in the indexed content. Use this for targeted keyword/content lookup, not for activity-summary questions like \"what happened today\", \"what's going on\", \"catch me up\", or \"what happened in standup today\"; those should start with ListEntities using time/type/channel filters. Whitespace-separated terms are ANDed. For documents and emails, every term must match somewhere in the document — different terms can appear in different chunks/pages or different fields. For documents and emails specifically, each single-word term is matched as a prefix (so `scri` matches `script`); for emails the prefix expansion also runs against the local-part of address fields. For chats, channels, and call transcripts the whole query is matched as a single adjacent phrase prefix — so pass 1-3 targeted keywords drawn from words that would literally appear in the content, not the user's natural-language description; long phrases will not match. Matching defaults to prefix; set matchType to 'exact' to match whole tokens/phrases with no prefix expansion (e.g. an exact word, identifier, or full email address). Wrap a multi-word phrase in double quotes to keep it together as one adjacent phrase. If the user's request combines a person with a topic, run separate searches rather than one combined query. Leave entityTypes empty by default; only filter when the user explicitly scopes to a type. Results for documents, emails, AI chats, projects, and call records include the tags visible to the user as {label, scope} pairs; to restrict a search to tagged items, pass the tag labels in the tags argument (ListTags shows which tags exist)."
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "results": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/TaggedSearchResult"
+                }
+              }
+            },
+            "required": ["results"]
+          }
+        }
+      ],
+      "constraints": [
+        "Require explicit entityTypes from upstream UnifiedSearchIndex intersected with configured allowed types; do not invent limit/cursor fields."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.documents.read",
+      "effect": "retrieve",
+      "readOnly": true,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["ReadMetadata", "ReadContent"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "ReadMetadata",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 7811,
+            "input_definition": "ReadMetadata",
+            "output_definition": "ReadMetadataResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "The id of the document you want to retrieve metadata for."
+              }
+            },
+            "required": ["documentId"],
+            "title": "ReadMetadata",
+            "description": "Retrieve a documents metadata"
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "documentMetadata": {
+                "$ref": "#/$defs/ReadDocumentMetadata"
+              },
+              "userAccessLevel": {
+                "$ref": "#/$defs/AccessLevel"
+              }
+            },
+            "required": ["documentMetadata", "userAccessLevel"]
+          }
+        },
+        {
+          "tool": "ReadContent",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 7371,
+            "input_definition": "ReadContent",
+            "output_definition": "ReadContentResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "The id of the document you want to retrieve content for."
+              },
+              "maxChars": {
+                "type": ["integer", "null"],
+                "format": "uint",
+                "minimum": 1,
+                "description": "Maximum Unicode characters to return. When set, must be between 1 and 32000.",
+                "maximum": 32000,
+                "default": null
+              },
+              "includeComments": {
+                "type": "boolean",
+                "description": "Whether to include comments. Defaults to true.",
+                "default": true
+              }
+            },
+            "required": ["documentId"],
+            "title": "ReadContent",
+            "description": "Retrieve a documents content"
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "$ref": "#/$defs/Content"
+              },
+              "comments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/CommentThread"
+                },
+                "description": "Any comments on the document"
+              },
+              "contentTruncated": {
+                "type": "boolean",
+                "description": "Whether content was truncated at the requested character bound."
+              }
+            },
+            "required": ["content", "comments", "contentTruncated"]
+          }
+        }
+      ],
+      "constraints": [
+        "Same documentId for both calls; preserve documentVersionId/userAccessLevel/contentTruncated.",
+        "Combined Bot envelope is adapter output, not an existing upstream DTO."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.documents.create",
+      "effect": "external_write",
+      "readOnly": false,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["CreateDocument"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "CreateDocument",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 2733,
+            "input_definition": "CreateDocument",
+            "output_definition": "CreateDocumentResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "documentName": {
+                "type": "string",
+                "description": "The name of the document without the file extension"
+              },
+              "fileContent": {
+                "type": "string",
+                "description": "The string content of the document you are creating."
+              },
+              "fileExtension": {
+                "type": "string",
+                "description": "The extension of the plaintext file you are creating."
+              },
+              "isTask": {
+                "type": "boolean",
+                "description": "Whether this document is a task. Only applies to md documents.",
+                "default": false
+              }
+            },
+            "required": ["documentName", "fileContent", "fileExtension"],
+            "title": "CreateDocument",
+            "description": "Create a plaintext document."
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "The id of the document"
+              }
+            },
+            "required": ["documentId"],
+            "description": "The read content response"
+          }
+        }
+      ],
+      "constraints": [
+        "No organizationId/parentId/version/idempotency parameter exists; reject unsupported explicit placement instead of pretending it was honored.",
+        "No automatic duplicate create after lost response; isTask=false here; Task creation uses CreateXTask."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.documents.rename",
+      "effect": "external_write",
+      "readOnly": false,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["RenameDocument"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "RenameDocument",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 8071,
+            "input_definition": "RenameDocument",
+            "output_definition": "RenameDocumentResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "The id of the document you want to rename."
+              },
+              "documentName": {
+                "type": "string",
+                "description": "The new name for the document without the file extension."
+              }
+            },
+            "required": ["documentId", "documentName"],
+            "title": "RenameDocument",
+            "description": "Rename a document. Requires edit access to the document."
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "success": {
+                "type": "boolean",
+                "description": "Whether the rename succeeded."
+              },
+              "documentId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "The id of the renamed document."
+              },
+              "message": {
+                "type": "string",
+                "description": "A human-readable result message."
+              }
+            },
+            "required": ["success", "documentId", "message"],
+            "description": "The rename document response."
+          }
+        }
+      ],
+      "constraints": [
+        "No expectedVersion/etag/operationId; readback does not create atomic CAS semantics."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.tasks.create",
+      "effect": "external_write",
+      "readOnly": false,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["CreateXTask"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "CreateXTask",
+          "schema_source": {
+            "path": "services/mcp_service/src/x_task_create/mod.rs",
+            "line": 67,
+            "derivation": "server literal schemas; helper schema functions expanded without behavior changes"
+          },
+          "request_schema": {
+            "type": "object",
+            "required": ["operationId", "title", "visibility"],
+            "properties": {
+              "operationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "visibility": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": ["scope"],
+                    "properties": {
+                      "scope": {
+                        "const": "selfOnly"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": ["scope", "expectedTeamId"],
+                    "properties": {
+                      "scope": {
+                        "const": "teamVisible"
+                      },
+                      "expectedTeamId": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "response_schema": {
+            "type": "object",
+            "required": ["schemaVersion", "operationId", "outcome"],
+            "properties": {
+              "schemaVersion": {
+                "const": 1
+              },
+              "operationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "outcome": {
+                "enum": ["confirmed", "rejected", "incomplete"]
+              },
+              "task": {
+                "type": "object"
+              },
+              "failure": {
+                "type": "object"
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "outcome": {
+                      "const": "confirmed"
+                    }
+                  },
+                  "required": ["outcome"]
+                },
+                "then": {
+                  "required": ["task"],
+                  "properties": {
+                    "task": {
+                      "type": "object",
+                      "required": ["id", "title", "ownerId", "assigneeIds", "status", "visibility"],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "ownerId": {
+                          "type": "string"
+                        },
+                        "assigneeIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "object",
+                          "required": ["semantic", "displayValue"],
+                          "properties": {
+                            "semantic": {
+                              "const": "notStarted"
+                            },
+                            "displayValue": {
+                              "const": "Not Started"
+                            }
+                          }
+                        },
+                        "visibility": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "confirmed_shape_source": "services/mcp_service/src/x_task_create/mod.rs:161-202"
+        }
+      ],
+      "constraints": [
+        "Inject stable ExternalEffect operationId; default visibility.scope=selfOnly.",
+        "teamVisible requires explicit intent and expectedTeamId matching trusted context.",
+        "No added Agent execution config; upstream user automation may react independently."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.tasks.status.get",
+      "effect": "retrieve",
+      "readOnly": true,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["GetXTaskStatus"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "GetXTaskStatus",
+          "schema_source": {
+            "path": "services/mcp_service/src/x_task_status/inbound.rs",
+            "line": 74,
+            "derivation": "server literal schemas; helper schema functions expanded without behavior changes"
+          },
+          "request_schema": {
+            "type": "object",
+            "required": ["taskId"],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "additionalProperties": false
+          },
+          "response_schema": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["schemaVersion", "outcome", "status"],
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "outcome": {
+                    "const": "available"
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": ["notStarted", "inProgress", "inReview", "completed", "canceled"]
+                      },
+                      "version": {
+                        "type": "string",
+                        "pattern": "^task-status-version/v1/[0-9a-f]{16}$"
+                      }
+                    },
+                    "required": ["value", "version"],
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "outcome": {
+                    "const": "rejected"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "taskUnavailable"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "outcome", "failure"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "outcome": {
+                    "const": "rejected"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "statusUnavailable"
+                      },
+                      "retryable": {
+                        "const": true
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "outcome", "failure"],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      ],
+      "constraints": ["Preserve opaque status.version."],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.tasks.status.set",
+      "effect": "external_write",
+      "readOnly": false,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["SetXTaskStatus"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "SetXTaskStatus",
+          "schema_source": {
+            "path": "services/mcp_service/src/x_task_status/inbound.rs",
+            "line": 104,
+            "derivation": "server literal schemas; helper schema functions expanded without behavior changes"
+          },
+          "request_schema": {
+            "type": "object",
+            "required": ["taskId", "operationId", "expectedStatus", "newStatus"],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "operationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "expectedStatus": {
+                "type": "object",
+                "required": ["value", "version"],
+                "properties": {
+                  "value": {
+                    "const": "inProgress"
+                  },
+                  "version": {
+                    "type": "string",
+                    "pattern": "^task-status-version/v1/[0-9a-f]{16}$"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "newStatus": {
+                "const": "inReview"
+              }
+            },
+            "additionalProperties": false
+          },
+          "response_schema": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "updated"
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": ["notStarted", "inProgress", "inReview", "completed", "canceled"]
+                      },
+                      "version": {
+                        "type": "string",
+                        "pattern": "^task-status-version/v1/[0-9a-f]{16}$"
+                      }
+                    },
+                    "required": ["value", "version"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "status"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "alreadyApplied"
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": ["notStarted", "inProgress", "inReview", "completed", "canceled"]
+                      },
+                      "version": {
+                        "type": "string",
+                        "pattern": "^task-status-version/v1/[0-9a-f]{16}$"
+                      }
+                    },
+                    "required": ["value", "version"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "status"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["schemaVersion", "operationId", "outcome", "status", "failure"],
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "conflict"
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "enum": ["notStarted", "inProgress", "inReview", "completed", "canceled"]
+                      },
+                      "version": {
+                        "type": "string",
+                        "pattern": "^task-status-version/v1/[0-9a-f]{16}$"
+                      }
+                    },
+                    "required": ["value", "version"],
+                    "additionalProperties": false
+                  },
+                  "failure": {
+                    "type": "object",
+                    "required": ["code", "retryable"],
+                    "properties": {
+                      "code": {
+                        "const": "statusConflict"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "outcome": {
+                    "const": "rejected"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "taskUnavailable"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": ["schemaVersion", "outcome", "failure", "operationId"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "outcome": {
+                    "const": "rejected"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "statusUnavailable"
+                      },
+                      "retryable": {
+                        "const": true
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": ["schemaVersion", "outcome", "failure", "operationId"],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      ],
+      "constraints": [
+        "Only expectedStatus.value=inProgress -> newStatus=inReview; all other transitions unavailable.",
+        "Inject stable operationId; freeze expectedStatus.version from readback."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.tasks.progress.post",
+      "effect": "external_write",
+      "readOnly": false,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["PostXTaskThreadMessage"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "PostXTaskThreadMessage",
+          "schema_source": {
+            "path": "services/mcp_service/src/x_task_thread_message/inbound.rs",
+            "line": 80,
+            "derivation": "server literal schemas; helper schema functions expanded without behavior changes"
+          },
+          "request_schema": {
+            "type": "object",
+            "required": ["taskId", "operationId", "content", "mode"],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "sourceRef": {
+                "type": ["string", "null"],
+                "pattern": "^task-channel-thread/v1/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "operationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "mode": {
+                "enum": ["commit", "readbackOnly"]
+              }
+            },
+            "additionalProperties": false
+          },
+          "response_schema": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "posted"
+                  },
+                  "message": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    },
+                    "required": ["id"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "message"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "existing"
+                  },
+                  "message": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    },
+                    "required": ["id"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "message"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "conflict"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "operationConflict"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "failure"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "incomplete"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "operationNotFound"
+                      },
+                      "retryable": {
+                        "const": true
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "failure"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "rejected"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "taskUnavailable"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "failure"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "rejected"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "sourceUnavailable"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "failure"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "outcome": {
+                    "const": "rejected"
+                  },
+                  "failure": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "const": "messageUnavailable"
+                      },
+                      "retryable": {
+                        "const": true
+                      }
+                    },
+                    "required": ["code", "retryable"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["schemaVersion", "operationId", "outcome", "failure"],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      ],
+      "constraints": [
+        "Inject stable operationId; omit sourceRef for Task comments.",
+        "Only trusted related-thread sourceRef; arbitrary threadId forbidden.",
+        "readbackOnly checks the same operation; action remains conservatively write-classified."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.channels.thread.read",
+      "effect": "retrieve",
+      "readOnly": true,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["ReadChannelThread"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "ReadChannelThread",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 7122,
+            "input_definition": "ReadChannelThread",
+            "output_definition": "ReadChannelThreadResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "channelId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Channel id containing the thread."
+              },
+              "messageId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Parent message id or any reply id in the thread."
+              },
+              "windowType": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ChannelThreadWindowType"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Thread window to read: latest, allIfSmall, or aroundReply. Defaults to latest.",
+                "default": null
+              },
+              "replyId": {
+                "type": ["string", "null"],
+                "format": "uuid",
+                "description": "Reply id to center around. Required when windowType is aroundReply.",
+                "default": null
+              },
+              "before": {
+                "type": ["integer", "null"],
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535,
+                "description": "Number of replies before replyId for aroundReply windows. Defaults to 10, maximum 50.",
+                "default": null
+              },
+              "after": {
+                "type": ["integer", "null"],
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535,
+                "description": "Number of replies after replyId for aroundReply windows. Defaults to 10, maximum 50.",
+                "default": null
+              },
+              "limit": {
+                "type": ["integer", "null"],
+                "format": "uint16",
+                "minimum": 0,
+                "maximum": 65535,
+                "description": "Maximum number of replies to return for latest/all-if-small windows. Defaults to 25, maximum 100.",
+                "default": null
+              },
+              "includeChannelContext": {
+                "type": ["boolean", "null"],
+                "description": "Whether to include nearby top-level channel messages around the parent. Defaults to false.",
+                "default": null
+              },
+              "maxCharsPerMessage": {
+                "type": ["integer", "null"],
+                "format": "uint",
+                "minimum": 0,
+                "description": "Maximum characters to return per message/reply. Defaults to 4000, maximum 16000.",
+                "default": null
+              }
+            },
+            "required": ["channelId", "messageId"],
+            "title": "ReadChannelThread",
+            "description": "Read replies from a channel message thread. The messageId may be either the top-level parent message id or any reply id in the thread. Use this after ReadChannelMessages or ContentSearch finds a relevant threaded discussion."
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "anchor": {
+                "$ref": "#/$defs/ToolResolvedMessage"
+              },
+              "thread": {
+                "$ref": "#/$defs/ReadChannelThreadInfo"
+              },
+              "replies": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ToolThreadReply"
+                },
+                "description": "Replies returned for the requested window, in chronological order."
+              },
+              "channelContext": {
+                "type": ["array", "null"],
+                "items": {
+                  "$ref": "#/$defs/ToolChannelMessage"
+                },
+                "description": "Nearby top-level channel messages around the parent, when requested."
+              },
+              "omissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ToolOmission"
+                },
+                "description": "Information about omitted or truncated content."
+              }
+            },
+            "required": ["anchor", "thread", "replies", "omissions"],
+            "description": "Response from `ReadChannelThread`."
+          }
+        }
+      ],
+      "constraints": [
+        "Exact channelId/messageId; preserve omissions and supported continuation anchors."
+      ],
+      "pagination": {
+        "kind": "message_window",
+        "cursor_supported": false,
+        "parameters": ["windowType", "replyId", "before", "after", "limit"],
+        "signals": ["omissions"]
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    },
+    {
+      "actionId": "coginex.channels.message.send",
+      "effect": "external_write",
+      "readOnly": false,
+      "capability": {
+        "oauth_scope": "mcp",
+        "tool_allowlist": ["SendChannelMessage"],
+        "resource_acl": "verified upstream principal/entity ACL"
+      },
+      "upstream_calls": [
+        {
+          "tool": "SendChannelMessage",
+          "schema_source": {
+            "path": "crates/ai_tools/schemas/tools.json",
+            "line": 8171,
+            "input_definition": "SendChannelMessage",
+            "output_definition": "SendChannelMessageResponse"
+          },
+          "request_schema": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "Message content in CogineX Markdown format. This uses the same syntax as markdown documents"
+              },
+              "channel_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "The channel id to send the message to"
+              },
+              "thread_id": {
+                "type": ["string", "null"],
+                "format": "uuid",
+                "description": "An optional thread id to reply too"
+              }
+            },
+            "required": ["content", "channel_id"],
+            "title": "SendChannelMessage",
+            "description": "Send or reply to a channel on behalf of the user. Only use this when explicitly asked to send a message"
+          },
+          "response_schema": {
+            "type": "object",
+            "properties": {
+              "channel_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "message_id": {
+                "type": "string"
+              }
+            },
+            "required": ["channel_id", "message_id"]
+          }
+        }
+      ],
+      "constraints": [
+        "Exact snake_case channel_id/thread_id; no operationId argument.",
+        "No automatic resend on uncertain result; no Agent execution."
+      ],
+      "pagination": {
+        "kind": "none",
+        "cursor_supported": false
+      },
+      "errors": {
+        "standard_mcp_error_fixture": {
+          "isError": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "Synthetic access denied"
+            }
+          ]
+        },
+        "policy": "Preserve structured rejected/conflict/incomplete outcomes; do not turn permission errors into invalid_grant."
+      },
+      "fixture_kind": "synthetic offline only"
+    }
+  ]
+}

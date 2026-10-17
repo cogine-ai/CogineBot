@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterContext, SecretStore } from "@rakazo/adapter-kit";
-import type { NativeConfigInput, NativeConfigStatus } from "@rakazo/contracts";
-import { NATIVE_OAUTH_CALLBACK_PATH, NativeConfigInputSchema } from "@rakazo/contracts";
+import type {
+  NativeConfigEditable,
+  NativeConfigInput,
+  NativeConfigStatus,
+} from "@rakazo/contracts";
+import {
+  NATIVE_OAUTH_CALLBACK_PATH,
+  NativeConfigEditableSchema,
+  NativeConfigInputSchema,
+} from "@rakazo/contracts";
 import type { NativeAppConfig, PrismaClient } from "@rakazo/db";
 import { z } from "zod";
 import { assertNoSensitiveQuery } from "../connector-http.js";
@@ -117,6 +125,24 @@ export class NativeConfigStore {
     return rows.map(nativeConfigStatus);
   }
 
+  async configuration(id: string, isDeploymentOwner: boolean): Promise<NativeConfigEditable> {
+    if (!isDeploymentOwner)
+      throw new Error("Only the deployment administrator can read application configuration");
+    const row = await this.prisma.nativeAppConfig.findUniqueOrThrow({ where: { id } });
+    return NativeConfigEditableSchema.parse({
+      ...NativeConfigSettingsSchema.parse(row.config),
+      id: row.id,
+      revision: row.revision,
+      appId: row.appId,
+      label: row.label,
+      ownership: row.ownership,
+      credentialKind: row.credentialKind,
+      enabled: row.enabled,
+      hasClientSecret: Boolean(row.ciphertext && row.secretRecordId),
+      callbackUri: row.callbackUri,
+    });
+  }
+
   async require(id: string): Promise<NativeAppConfig> {
     const row = await this.prisma.nativeAppConfig.findUnique({ where: { id } });
     if (!row?.enabled || !nativeConfigStatus(row).configured)
@@ -170,6 +196,12 @@ export class NativeConfigStore {
     const material = input.clientSecret
       ? await this.prepareSecret(input.clientSecret, context)
       : undefined;
+    const advancesAuthorization =
+      !previous ||
+      Boolean(material) ||
+      previous.enabled !== input.enabled ||
+      previous.callbackUri !== this.callbackUri ||
+      JSON.stringify(NativeConfigSettingsSchema.parse(previous.config)) !== JSON.stringify(config);
     return persistPreparedSecret(this.prisma, this.secrets, material, async () => {
       const row = await this.prisma.$transaction(async (tx) => {
         const data = {
@@ -186,7 +218,7 @@ export class NativeConfigStore {
         if (!previous) return tx.nativeAppConfig.create({ data });
         const changed = await tx.nativeAppConfig.updateMany({
           where: { id: previous.id, revision: input.expectedRevision },
-          data: { ...data, revision: { increment: 1 } },
+          data: { ...data, ...(advancesAuthorization ? { revision: { increment: 1 } } : {}) },
         });
         if (!changed.count)
           throw new Error("Application configuration changed; refresh before saving");

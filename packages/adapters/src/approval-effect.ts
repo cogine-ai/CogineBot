@@ -1,4 +1,5 @@
 import type { AgentToolExecutionResult } from "@rakazo/adapter-kit";
+import type { Prisma } from "@rakazo/db";
 
 export type ApprovalPausedToolResult = AgentToolExecutionResult & { terminate: true };
 
@@ -388,7 +389,11 @@ export function resolveDuplicateEffectGate(
   return { action: "uncertain", toolName };
 }
 
-export type UncertainEffectResult = { error: string; uncertain: true };
+export type UncertainEffectResult = {
+  error: string;
+  uncertain: true;
+  recovery?: Record<string, unknown>;
+};
 
 export function uncertainEffectResult(toolName: string): UncertainEffectResult {
   return {
@@ -402,7 +407,7 @@ export async function settleUncertainEffect(
     externalEffect: {
       updateMany: (args: {
         where: { id: string; status: string };
-        data: { status: string; result: UncertainEffectResult };
+        data: { status: string; result: Prisma.InputJsonValue };
       }) => Promise<{ count: number }>;
       findUnique: (args: {
         where: { id: string };
@@ -411,11 +416,15 @@ export async function settleUncertainEffect(
   },
   effectId: string,
   toolName: string,
+  recovery?: Record<string, unknown>,
 ): Promise<unknown> {
-  const result = uncertainEffectResult(toolName);
+  const result = { ...uncertainEffectResult(toolName), ...(recovery ? { recovery } : {}) };
   const settled = await store.externalEffect.updateMany({
     where: { id: effectId, status: "executing" },
-    data: { status: "uncertain", result },
+    data: {
+      status: "uncertain",
+      result: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+    },
   });
   if (settled.count === 1) return result;
 

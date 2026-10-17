@@ -286,6 +286,7 @@ import {
   modelAcceptsImageInput,
   modelIdSupportsImages,
 } from "./model-vision.js";
+import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
@@ -4546,7 +4547,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const retryGate = resolveDuplicateEffectGate(current, name);
               if (retryGate.action === "return") return retryGate.result;
               if (retryGate.action === "uncertain") {
-                return settleUncertainEffect(deps.prisma, applied!.effect.id, name);
+                return settleUncertainEffect(
+                  deps.prisma,
+                  applied!.effect.id,
+                  name,
+                  nativeCheckpointRecovery(current.result),
+                );
               }
             }
             throw uncertainEffectError(name);
@@ -4645,7 +4651,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 return requestApproval();
               }
             } else if (gate.action === "uncertain") {
-              return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName);
+              const recovery = nativeCheckpointRecovery(applied.effect.result);
+              return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
             } else if (gate.action === "execute") {
               const early = await claimOrReturn("approved");
               if (early !== undefined) return early;
@@ -6353,7 +6360,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
               if (event.type === "error") {
-                result = { error: event.message };
+                result = {
+                  error: event.message,
+                  ...(event.code ? { code: event.code } : {}),
+                  ...(event.uncertain ? { uncertain: true } : {}),
+                  ...(event.recovery ? { recovery: event.recovery } : {}),
+                };
                 for (const logId of event.logIds ?? []) {
                   await deps.events.append({
                     spaceId: run.spaceId,
@@ -6365,6 +6377,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   });
                 }
               }
+            }
+            if (
+              connectorCall.route?.connectorId === "native" &&
+              result &&
+              typeof result === "object" &&
+              "uncertain" in result &&
+              result.uncertain === true &&
+              applied
+            ) {
+              const changed = await deps.prisma.externalEffect.updateMany({
+                where: { id: applied.effect.id, status: claimedEffect ? "executing" : "intended" },
+                data: { status: "uncertain", result: result as never },
+              });
+              return changed.count === 1 ? result : uncertainEffectResult(name);
             }
             return finish(result);
           }
