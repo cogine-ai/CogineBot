@@ -1281,8 +1281,8 @@ export function ShellPage() {
         if (cancelled) return;
         const groupList = bootstrap.groups;
         setBootstrapMe(bootstrap.me);
-        // Skip list/route writes only if a later refreshBots() successfully
-        // committed (failed refreshes bump epoch but not botsRefreshApplied).
+        // A successful refresh, creation, or save makes older bootstrap writes stale.
+        // Failed refreshes only bump the request epoch, not botsRefreshApplied.
         const applyBotLists = appliedAtStart === botsRefreshApplied.current;
         if (applyBotLists) {
           setBots(bootstrap.bots);
@@ -1293,6 +1293,7 @@ export function ShellPage() {
           setSpaces(bootstrap.spaces);
           setInitialBotsLoaded(true);
         }
+        if (!applyBotLists) return;
         if (!groupId && bootstrap.thread) {
           bootstrappedThread.current = bootstrap.thread;
           commitSnapshot(bootstrap.thread);
@@ -1302,7 +1303,6 @@ export function ShellPage() {
           markOnce("rk:renderer:bots-response");
           markOnce("rk:renderer:thread-response");
         }
-        if (!applyBotLists) return;
         if (
           bootstrap.bots.length === 0 &&
           bootstrap.archivedBots.length === 0 &&
@@ -1327,7 +1327,7 @@ export function ShellPage() {
       .catch(() => {
         if (cancelled) return;
         setBootstrapMe(null);
-        void refreshBots(true);
+        void refreshBots(true).catch(() => undefined);
       });
     let refreshTimer: number | undefined;
     const refreshVisibleBots = () => {
@@ -2668,6 +2668,9 @@ export function ShellPage() {
       notifyOnFinish: true,
       computerMode: input.computerMode,
     });
+    // Successful creation wins over list/bootstrap reads started before it.
+    botsRefreshEpoch.current += 1;
+    botsRefreshApplied.current = botsRefreshEpoch.current;
     setBots((current) =>
       current.some((item) => item.id === bot.id) ? current : [bot, ...current],
     );
@@ -5865,7 +5868,7 @@ export const Composer = memo(function Composer({
       text: typeof value === "function" ? value(current.text) : value,
     }));
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const [mentionHighlightIndex, setMentionHighlightIndex] = useState(0);
+  const [mentionHighlightKey, setMentionHighlightKey] = useState<string | null>(null);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const selectedSkill = draftState.selectedSkill;
   const selectedMentions = draftState.selectedMentions;
@@ -6001,7 +6004,7 @@ export const Composer = memo(function Composer({
       current.replace(mentionQueryPattern, (match) => match.slice(0, match.lastIndexOf("@"))),
     );
     setMentionQuery(null);
-    setMentionHighlightIndex(0);
+    setMentionHighlightKey(null);
     setSelectedMentions((current) =>
       current.some((selected) => mentionChipKey(selected) === mentionChipKey(mention))
         ? current
@@ -6039,11 +6042,11 @@ export const Composer = memo(function Composer({
   }, [mentionQuery, mentionTargets]);
 
   useEffect(() => {
-    setMentionHighlightIndex(0);
-  }, [mentionQuery, mentionOptions]);
+    setMentionHighlightKey(null);
+  }, [mentionQuery]);
 
   const activeMentionIndex = clampMentionHighlightIndex(
-    mentionHighlightIndex,
+    mentionOptions.findIndex((mention) => mentionChipKey(mention) === mentionHighlightKey),
     mentionOptions.length,
   );
   const mentionPickerOpen = mentionOptions.length > 0;
@@ -6083,7 +6086,7 @@ export const Composer = memo(function Composer({
     void onSend(text, selectedMentions, draftState.version).then((succeeded) => {
       if (!succeeded || readComposerDraft(draftKey).version !== 0) return;
       setMentionQuery(null);
-      setMentionHighlightIndex(0);
+      setMentionHighlightKey(null);
       setSlashQuery(null);
     });
   }
@@ -6279,7 +6282,7 @@ export const Composer = memo(function Composer({
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => insertMention(mention)}
                   // Opening the list under a stationary pointer must not steal the keyboard highlight.
-                  onMouseMove={() => setMentionHighlightIndex(index)}
+                  onMouseMove={() => setMentionHighlightKey(mentionChipKey(mention))}
                   className={`flex h-9 w-full items-center gap-2 rounded-[8px] px-2 text-start text-[13px] leading-5 hover:bg-accent ${
                     highlighted ? "bg-accent" : ""
                   }`}
@@ -6529,13 +6532,14 @@ export const Composer = memo(function Composer({
                 }
                 if (action.type === "move") {
                   event.preventDefault();
-                  setMentionHighlightIndex(action.index);
+                  const mention = mentionOptions[action.index];
+                  if (mention) setMentionHighlightKey(mentionChipKey(mention));
                   return;
                 }
                 if (action.type === "dismiss") {
                   event.preventDefault();
                   setMentionQuery(null);
-                  setMentionHighlightIndex(0);
+                  setMentionHighlightKey(null);
                   return;
                 }
                 if (action.type === "send") {
