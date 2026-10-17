@@ -79,10 +79,9 @@ describePostgres("native deployment configuration lifecycle (PostgreSQL)", () =>
     );
     configId = saved.id;
     const configured = await store.require(configId);
-    const appSecret = await prisma.secret.findUniqueOrThrow({
-      where: { id: configured.secretId! },
-    });
-    expect(appSecret.spaceId).toBeNull();
+    expect(configured.ciphertext).toBeTruthy();
+    expect(configured.secretRecordId).toBeTruthy();
+    expect(await prisma.secret.count({ where: { id: configured.secretRecordId! } })).toBe(0);
     await expect(
       prisma.secret.create({
         data: {
@@ -119,9 +118,12 @@ describePostgres("native deployment configuration lifecycle (PostgreSQL)", () =>
       },
     });
     await prisma.space.delete({ where: { id: spaceA } });
-    expect((await store.require(configId)).secretId).toBe(appSecret.id);
-    const after = await prisma.secret.findUniqueOrThrow({ where: { id: appSecret.id } });
-    expect(await secrets.load(after.ciphertext, after.id)).toBe("fake-application-secret");
+    expect((await store.require(configId)).ciphertext).toBe(configured.ciphertext);
+    await prisma.user.delete({ where: { id: userIds[0]! } });
+    const after = await store.require(configId);
+    expect(await secrets.load(after.ciphertext!, after.secretRecordId!)).toBe(
+      "fake-application-secret",
+    );
     expect(await prisma.nativeOAuthGrant.findUnique({ where: { id: grantId } })).toMatchObject({
       userId: userIds[1],
       spaceId: spaceB,
@@ -130,6 +132,6 @@ describePostgres("native deployment configuration lifecycle (PostgreSQL)", () =>
     // Account grants keep their own Space lifecycle; only the global app config is detached.
     await prisma.space.delete({ where: { id: spaceB } });
     expect(await prisma.nativeOAuthGrant.findUnique({ where: { id: grantId } })).toBeNull();
-    expect((await store.require(configId)).secretId).toBe(appSecret.id);
+    expect((await store.require(configId)).ciphertext).toBe(configured.ciphertext);
   });
 });

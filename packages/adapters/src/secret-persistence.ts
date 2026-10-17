@@ -19,6 +19,9 @@ async function cleanupUnreferenced(
         (await prisma.botSecret.count({ where: { ciphertext: row.ciphertext } })) ||
         (await prisma.integrationProviderConfig.count({
           where: { ciphertext: row.ciphertext },
+        })) ||
+        (await prisma.nativeAppConfig.count({
+          where: { ciphertext: row.ciphertext },
         }))
       )
         continue;
@@ -60,6 +63,7 @@ const secretTables = {
   Secret: "secrets",
   BotSecret: "bot_secrets",
   IntegrationProviderConfig: "integration_provider_configs",
+  NativeAppConfig: "native_app_configs",
 };
 const parentTables = { User: "user", Space: "spaces", Bot: "bots", Organization: "organization" };
 
@@ -93,10 +97,20 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
       parentTables[model as keyof typeof parentTables];
     // Static table allowlist; values remain bound parameters. Locks capture the actual
     // replaced ref even if another writer committed between selection and the lock.
-    const fields = model in secretTables ? Prisma.raw("id, ciphertext") : Prisma.raw("id");
-    return client.$queryRaw<Candidate[]>(
+    const fields =
+      model === "NativeAppConfig"
+        ? Prisma.raw('id, ciphertext, "secretRecordId"')
+        : model in secretTables
+          ? Prisma.raw("id, ciphertext")
+          : Prisma.raw("id");
+    const locked = await client.$queryRaw<Array<Candidate & { secretRecordId?: string | null }>>(
       Prisma.sql`SELECT ${fields} FROM ${Prisma.raw(`"${table}"`)} WHERE id IN (${Prisma.join(rows.map((row) => row.id))}) ORDER BY id FOR UPDATE`,
     );
+    return model === "NativeAppConfig"
+      ? locked
+          .filter((row) => row.ciphertext && row.secretRecordId)
+          .map((row) => ({ id: row.secretRecordId!, ciphertext: row.ciphertext }))
+      : locked;
   }
   function trackWrites(state: Cleanup, model: string, input: Mutation): void {
     if (!(model in secretTables)) return;
@@ -110,7 +124,12 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
       if (typeof value?.ciphertext === "string") {
         const id = String(value.id ?? input.where?.id ?? "secret");
         state.written.push({
-          id: model === "IntegrationProviderConfig" ? `integration-provider:${id}` : id,
+          id:
+            model === "IntegrationProviderConfig"
+              ? `integration-provider:${id}`
+              : model === "NativeAppConfig"
+                ? String(value.secretRecordId ?? "")
+                : id,
           ciphertext: value.ciphertext,
         });
       }

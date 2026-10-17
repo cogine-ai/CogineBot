@@ -1,7 +1,7 @@
 import type { SecretMigrationRepository, SecretMigrationRow } from "@rakazo/adapters";
 import type { PrismaClient } from "@rakazo/db";
 
-const tables = ["secret", "botSecret", "integrationProviderConfig"] as const;
+const tables = ["secret", "botSecret", "integrationProviderConfig", "nativeAppConfig"] as const;
 
 export function createSecretMigrationRepository(prisma: PrismaClient): SecretMigrationRepository {
   return {
@@ -16,16 +16,29 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
               take: 100,
               ...(cursor ? { where: { id: { gt: cursor } } } : {}),
             },
-          ])) as Array<{ id: string; ciphertext: string; kind?: string }>;
-          for (const row of batch)
+          ])) as Array<{
+            id: string;
+            ciphertext: string | null;
+            kind?: string;
+            secretRecordId?: string | null;
+          }>;
+          for (const row of batch) {
+            if (!row.ciphertext) continue;
+            if (label === "nativeAppConfig" && !row.secretRecordId)
+              throw new Error("Native application material has no SecretStore identity");
             yield {
               id: row.id,
               label,
               ref: row.ciphertext,
               recordId:
-                label === "integrationProviderConfig" ? `integration-provider:${row.id}` : row.id,
+                label === "integrationProviderConfig"
+                  ? `integration-provider:${row.id}`
+                  : label === "nativeAppConfig"
+                    ? row.secretRecordId!
+                    : row.id,
               ephemeral: row.kind?.startsWith("run-secret:"),
             };
+          }
           if (batch.length < 100) break;
           cursor = batch.at(-1)?.id;
         }
@@ -42,7 +55,8 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
       return Boolean(
         (await prisma.secret.count({ where: { ciphertext: ref } })) ||
           (await prisma.botSecret.count({ where: { ciphertext: ref } })) ||
-          (await prisma.integrationProviderConfig.count({ where: { ciphertext: ref } })),
+          (await prisma.integrationProviderConfig.count({ where: { ciphertext: ref } })) ||
+          (await prisma.nativeAppConfig.count({ where: { ciphertext: ref } })),
       );
     },
   };

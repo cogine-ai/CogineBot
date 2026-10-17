@@ -32,13 +32,20 @@ function database() {
       return row;
     }),
     findMany: vi.fn(async () => (row ? [row] : [])),
+    count: vi.fn(async ({ where }) => Number(row?.ciphertext === where.ciphertext)),
     create: vi.fn(async ({ data }) => {
       row = { id: "config-1", revision: 1, createdAt: new Date(), updatedAt: new Date(), ...data };
+      if (row?.ciphertext && row.secretRecordId)
+        stored.set(row.secretRecordId, { id: row.secretRecordId, ciphertext: row.ciphertext });
       return row;
     }),
     updateMany: vi.fn(async ({ where, data }) => {
       if (!row || row.id !== where.id || row.revision !== where.revision) return { count: 0 };
-      row = { ...row, ...data, revision: row.revision + 1 };
+      const next: NativeAppConfig = { ...row, ...data, revision: row.revision + 1 };
+      row = next;
+      stored.clear();
+      if (next.ciphertext && next.secretRecordId)
+        stored.set(next.secretRecordId, { id: next.secretRecordId, ciphertext: next.ciphertext });
       return { count: 1 };
     }),
   };
@@ -48,10 +55,7 @@ function database() {
       return data;
     }),
     deleteMany: vi.fn(async ({ where }) => ({ count: Number(stored.delete(where.id)) })),
-    count: vi.fn(
-      async ({ where }) =>
-        [...stored.values()].filter((item) => item.ciphertext === where.ciphertext).length,
-    ),
+    count: vi.fn(async () => 0),
   };
   const db = {
     nativeAppConfig,
@@ -114,11 +118,7 @@ describe("native application configuration boundary", () => {
     expect(JSON.stringify(result)).not.toMatch(/fake-client|ciphertext|secretId|endpoint/);
     const material = [...stored.values()][0];
     expect(material?.ciphertext).not.toContain("fake-client-secret");
-    expect(secret.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ userId: context.userId, spaceId: null }),
-      }),
-    );
+    expect(secret.create).not.toHaveBeenCalled();
     expect(await secrets.load(material!.ciphertext, material!.id)).toBe("fake-client-secret");
     await expect(secrets.load(material!.ciphertext, "another-owner-record")).rejects.toThrow();
   });

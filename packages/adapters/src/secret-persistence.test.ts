@@ -32,6 +32,7 @@ type Row = {
   allowAllTools?: boolean;
   allowedTools?: string[];
   revision?: number;
+  secretRecordId?: string;
   organizationId?: string;
 };
 type Args = { where?: Record<string, unknown>; data?: Row; create?: Row; update?: Row };
@@ -46,6 +47,7 @@ function database() {
     ["secret", []],
     ["botSecret", []],
     ["integrationProviderConfig", []],
+    ["nativeAppConfig", []],
     ["user", [{ id: "user" }]],
     ["space", [{ id: "space", organizationId: "organization" }]],
     ["organization", [{ id: "organization" }]],
@@ -131,6 +133,7 @@ function database() {
       secrets: "secret",
       bot_secrets: "botSecret",
       integration_provider_configs: "integrationProviderConfig",
+      native_app_configs: "nativeAppConfig",
       user: "user",
       spaces: "space",
       bots: "bot",
@@ -291,6 +294,50 @@ describe("secret persistence cleanup", () => {
       await store.close();
     }
   });
+  it("keeps native application material through User/Space deletion and retires it with its configuration", async () => {
+    const fake = infisicalFake();
+    const store = new InfisicalSecretStore(fake.options);
+    await store.start();
+    const db = database();
+    const prisma = withSecretPersistence(db.prisma, store);
+    const first = await store.put("first-app-secret", context, { recordId: "app-material-1" });
+    try {
+      await prisma.nativeAppConfig.create({
+        data: {
+          id: "app-config",
+          appId: "notion",
+          label: "Synthetic application",
+          ownership: "byo",
+          credentialKind: "oauth",
+          callbackUri: "https://api.example.test/api/connectors/oauth/callback",
+          ciphertext: first.ciphertext,
+          secretRecordId: "app-material-1",
+        },
+      });
+      await prisma.space.deleteMany({ where: { id: "space" } });
+      await prisma.user.deleteMany({ where: { id: "user" } });
+      await expect(store.load(first.ciphertext, "app-material-1")).resolves.toBe(
+        "first-app-secret",
+      );
+      expect(fake.values.size).toBe(1);
+      const next = await store.put("next-app-secret", context, { recordId: "app-material-2" });
+      await prisma.nativeAppConfig.update({
+        where: { id: "app-config" },
+        data: {
+          ciphertext: next.ciphertext,
+          secretRecordId: "app-material-2",
+        },
+      });
+      expect(fake.values.size).toBe(1);
+      await expect(store.load(first.ciphertext, "app-material-1")).rejects.toThrow();
+      await expect(store.load(next.ciphertext, "app-material-2")).resolves.toBe("next-app-secret");
+      await prisma.nativeAppConfig.deleteMany({ where: { id: "app-config" } });
+      expect(fake.values.size).toBe(0);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("captures organization cascades and cleans only after the enclosing transaction commits", async () => {
     const fake = infisicalFake();
     const store = new InfisicalSecretStore(fake.options);

@@ -87,7 +87,9 @@ export function nativeConfigStatus(row: NativeAppConfig): NativeConfigStatus {
     ownership: row.ownership === "official" ? "official" : "byo",
     credentialKind: NativeConfigInputSchema.shape.credentialKind.parse(row.credentialKind),
     enabled: row.enabled,
-    configured: row.credentialKind !== "oauth" || Boolean(row.secretId && settings.clientId),
+    configured:
+      row.credentialKind !== "oauth" ||
+      Boolean(row.ciphertext && row.secretRecordId && settings.clientId),
     revision: row.revision,
     callbackUri: row.callbackUri,
     executionLocation: "instance",
@@ -170,18 +172,6 @@ export class NativeConfigStore {
       : undefined;
     return persistPreparedSecret(this.prisma, this.secrets, material, async () => {
       const row = await this.prisma.$transaction(async (tx) => {
-        if (material)
-          await tx.secret.create({
-            data: {
-              id: material.id,
-              userId: context.userId,
-              // Application configuration is deployment-wide. Deleting the Space
-              // where its administrator opened settings must not delete this secret.
-              spaceId: null,
-              kind: "native_application",
-              ciphertext: material.ciphertext,
-            },
-          });
         const data = {
           appId: input.appId,
           label: input.label,
@@ -190,7 +180,8 @@ export class NativeConfigStore {
           enabled: input.enabled,
           config,
           callbackUri: this.callbackUri,
-          secretId: material?.id ?? previous?.secretId ?? null,
+          ciphertext: material?.ciphertext ?? previous?.ciphertext ?? null,
+          secretRecordId: material?.id ?? previous?.secretRecordId ?? null,
         };
         if (!previous) return tx.nativeAppConfig.create({ data });
         const changed = await tx.nativeAppConfig.updateMany({
@@ -199,8 +190,6 @@ export class NativeConfigStore {
         });
         if (!changed.count)
           throw new Error("Application configuration changed; refresh before saving");
-        if (material && previous.secretId)
-          await tx.secret.deleteMany({ where: { id: previous.secretId } });
         return tx.nativeAppConfig.findUniqueOrThrow({ where: { id: previous.id } });
       });
       return nativeConfigStatus(row);

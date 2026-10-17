@@ -1160,7 +1160,6 @@ model Secret {
   mcpServers        McpServer[]
   spaceMemoryConfig SpaceMemoryConfig?
   agentSecret       AgentSecret?
-  nativeAppConfigs NativeAppConfig[]
   nativeOAuthSessions NativeOAuthSession[]
   nativeOAuthGrants NativeOAuthGrant[]
 
@@ -1511,8 +1510,9 @@ model NativeAppConfig {
   credentialKind String
   enabled Boolean @default(true)
   config Json @default("{}")
-  secretId String?
-  secret Secret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  ciphertext String?
+  // SecretStore AAD identity; unlike a Secret row this has no User/Space lifecycle.
+  secretRecordId String?
   callbackUri String
   revision Int @default(1)
   createdAt DateTime @default(now())

@@ -11,6 +11,10 @@ function fixture() {
     })),
     botSecret: [{ id: "bot-row", ciphertext: "fake-bot-ref" }],
     integrationProviderConfig: [{ id: "composio", ciphertext: "fake-config-ref" }],
+    nativeAppConfig: [
+      { id: "native-app", ciphertext: "fake-native-ref", secretRecordId: "native-app-material" },
+      { id: "native-without-secret", ciphertext: null, secretRecordId: null },
+    ],
   };
   const client = Object.fromEntries(
     Object.entries(tables).map(([name, rows]) => [
@@ -55,12 +59,17 @@ describe("migration persistence", () => {
     const f = fixture();
     const rows = [];
     for await (const row of f.repository.rows()) rows.push(row);
-    expect(rows).toHaveLength(103);
+    expect(rows).toHaveLength(104);
     expect(rows[0]).toMatchObject({ ephemeral: true, id: "row-000", label: "secret" });
-    expect(rows.at(-1)).toMatchObject({
+    expect(rows.find((row) => row.id === "composio")).toMatchObject({
       id: "composio",
       recordId: "integration-provider:composio",
       ref: "fake-config-ref",
+    });
+    expect(rows.at(-1)).toMatchObject({
+      id: "native-app",
+      ref: "fake-native-ref",
+      recordId: "native-app-material",
     });
     expect(rows.find((row) => row.id === "bot-row")?.recordId).toBe("bot-row");
   });
@@ -73,6 +82,7 @@ describe("migration persistence", () => {
     expect(await f.repository.replace(row, "fake-deleted")).toBe(false);
     expect(await f.repository.referenced("fake-bot-ref")).toBe(true);
     expect(await f.repository.referenced("fake-config-ref")).toBe(true);
+    expect(await f.repository.referenced("fake-native-ref")).toBe(true);
     expect(await f.repository.referenced("fake-missing")).toBe(false);
   });
 });
