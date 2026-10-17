@@ -864,4 +864,6 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Open web settings": "打开网页版设置",
   "Back to application": "返回应用",
   "Connect {name}": "连接 {name}",
+  "Official application": "官方应用",
+  "Your application": "自有应用",
 };

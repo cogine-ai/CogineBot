@@ -170,7 +170,7 @@ export function NativeAccountConnect({
                 : []),
               ...configurations.map((entry) => ({
                 key: entry.id,
-                label: `${entry.label} · ${kindLabel(entry)}`,
+                label: `${entry.label} · ${entry.ownership === "official" ? t("Official application") : t("Your application")} · ${kindLabel(entry)}`,
               })),
             ]}
             onChange={(value) => {
