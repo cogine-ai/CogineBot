@@ -22,7 +22,12 @@ async function cleanupUnreferenced(
         })) ||
         (await prisma.nativeAppConfig.count({
           where: { ciphertext: row.ciphertext },
-        }))
+        })) ||
+        (
+          await prisma.$queryRaw<Array<{ referenced: boolean }>>(
+            Prisma.sql`/*native-hook:credential-reference*/ SELECT EXISTS(SELECT 1 FROM native_notion_hooks WHERE ciphertext=${row.ciphertext}) AS referenced`,
+          )
+        )[0]?.referenced
       )
         continue;
       await deleteSecretBestEffort(store, row.ciphertext, row.id);
@@ -64,6 +69,7 @@ const secretTables = {
   BotSecret: "bot_secrets",
   IntegrationProviderConfig: "integration_provider_configs",
   NativeAppConfig: "native_app_configs",
+  NativeNotionHook: "native_notion_hooks",
 };
 const parentTables = { User: "user", Space: "spaces", Bot: "bots", Organization: "organization" };
 
@@ -98,7 +104,7 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
     // Static table allowlist; values remain bound parameters. Locks capture the actual
     // replaced ref even if another writer committed between selection and the lock.
     const fields =
-      model === "NativeAppConfig"
+      model === "NativeAppConfig" || model === "NativeNotionHook"
         ? Prisma.raw('id, ciphertext, "secretRecordId"')
         : model in secretTables
           ? Prisma.raw("id, ciphertext")
@@ -106,7 +112,7 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
     const locked = await client.$queryRaw<Array<Candidate & { secretRecordId?: string | null }>>(
       Prisma.sql`SELECT ${fields} FROM ${Prisma.raw(`"${table}"`)} WHERE id IN (${Prisma.join(rows.map((row) => row.id))}) ORDER BY id FOR UPDATE`,
     );
-    return model === "NativeAppConfig"
+    return model === "NativeAppConfig" || model === "NativeNotionHook"
       ? locked
           .filter((row) => row.ciphertext && row.secretRecordId)
           .map((row) => ({ id: row.secretRecordId!, ciphertext: row.ciphertext }))
@@ -127,7 +133,7 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
           id:
             model === "IntegrationProviderConfig"
               ? `integration-provider:${id}`
-              : model === "NativeAppConfig"
+              : model === "NativeAppConfig" || model === "NativeNotionHook"
                 ? String(value.secretRecordId ?? "")
                 : id,
           ciphertext: value.ciphertext,
@@ -143,6 +149,11 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
     if (model in secretTables) {
       trackWrites(state, model, input);
       if (!operation.startsWith("create")) {
+        if (model === "NativeAppConfig" && operation.startsWith("delete")) {
+          state.old.push(
+            ...(await lockedRows(state, "NativeNotionHook", { config: { is: input.where ?? {} } })),
+          );
+        }
         const old = await lockedRows(state, model, input.where);
         state.old.push(
           ...old.map((row) =>

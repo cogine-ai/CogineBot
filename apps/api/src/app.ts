@@ -54,6 +54,7 @@ import {
   McpOAuthBroker,
   messagingPlatformsFromEnv,
   NativeConnectorProvider,
+  NativeRoutineEventService,
   PiAgentRuntime,
   PiOAuthLogins,
   PipedreamConnector,
@@ -111,6 +112,7 @@ import {
   wakeMessageRoutines,
 } from "./messaging-inbound.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
+import { registerNativeEventWebhooks } from "./native-event-webhooks.js";
 import { mountApiRequestBodyLimits } from "./request-body-limit.js";
 import { createRouter } from "./router.js";
 import { mountScreenTarget } from "./screen-proxy.js";
@@ -505,7 +507,17 @@ export async function createApp(
     shutdownSignal: shutdown.signal,
   });
 
+  const nativeEvents = new NativeRoutineEventService(
+    prisma,
+    native.oauth,
+    native.eventHooks,
+    jobs,
+    events,
+    env.apiUrl,
+    remoteConnectors,
+  );
   const jobHandlers = createBackgroundJobHandlers({
+    nativeEvents,
     executor,
     prisma,
     sandbox,
@@ -532,6 +544,7 @@ export async function createApp(
         notifications,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+        reconcileNativeEvents: () => nativeEvents.reconcile(),
       })
     : undefined;
   reconciler?.start();
@@ -608,6 +621,7 @@ export async function createApp(
       c.header("cache-control", "no-store");
     });
   }
+  registerNativeEventWebhooks(app, nativeEvents);
   app.get("/api/connectors/oauth/start", async (c) => {
     c.header("referrer-policy", "no-referrer");
     c.header(

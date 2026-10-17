@@ -632,12 +632,13 @@ export default function Integrations() {
       }
       for (let attempt = 0; attempt < 45; attempt += 1) {
         if (controller.signal.aborted || !isCurrent()) return;
-        const row = await rpc<Connection>(
-          "connections/complete",
-          {
-            connectionId: started.connectionId,
-          },
-          native ? { requestContext: native.requestContext, skipSpaceAuthRecovery: true } : {},
+        const row = await (native
+          ? rpc<Connection>(
+              "connections/complete",
+              { connectionId: started.connectionId },
+              { requestContext: native.requestContext, skipSpaceAuthRecovery: true },
+            )
+          : rpc<Connection>("connections/complete", { connectionId: started.connectionId })
         ).catch(() => undefined);
         if (native && (controller.signal.aborted || !isCurrent())) return;
         if (row?.status === "connected") {

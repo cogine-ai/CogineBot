@@ -221,6 +221,10 @@ msgstr "1 account disconnected locally"
 msgid "A bit of everything"
 msgstr "A bit of everything"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "A public HTTPS address is required to receive Notion webhooks."
+msgstr "A public HTTPS address is required to receive Notion webhooks."
+
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -249,6 +253,7 @@ msgid "Access token (optional)"
 msgstr "Access token (optional)"
 
 #: src/pages/AccountSettingsOverlay.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Account"
 msgstr "Account"
 
@@ -335,12 +340,12 @@ msgid "Add a run time for this one-shot."
 msgstr "Add a run time for this one-shot."
 
 #: src/pages/Shell.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger"
-msgstr "Add a schedule, webhook, GitHub, or message trigger"
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger"
+msgstr "Add a schedule, application event, webhook, GitHub, or message trigger"
 
 #: src/pages/RoutineEditor.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger to run this routine."
-msgstr "Add a schedule, webhook, GitHub, or message trigger to run this routine."
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger to run this routine."
+msgstr "Add a schedule, application event, webhook, GitHub, or message trigger to run this routine."
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Add a server name."
@@ -422,6 +427,10 @@ msgstr "Add server URL"
 #: src/pages/shell/chat-recipients.tsx
 msgid "Add someone…"
 msgstr "Add someone…"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Add this URL in your Notion integration’s Webhooks tab."
+msgstr "Add this URL in your Notion integration’s Webhooks tab."
 
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
@@ -544,6 +553,10 @@ msgstr "Always allowed"
 msgid "An API key is stored for this provider, not a subscription sign-in."
 msgstr "An API key is stored for this provider, not a subscription sign-in."
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Anchor block ID"
+msgstr "Anchor block ID"
+
 #: src/components/AskCard.tsx
 msgid "Answer"
 msgstr "Answer"
@@ -602,6 +615,15 @@ msgstr "Application"
 msgid "Application credentials"
 msgstr "Application credentials"
 
+#: src/pages/RoutineEditor.tsx
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application event"
+msgstr "Application event"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application events"
+msgstr "Application events"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Application filter"
 msgstr "Application filter"
@@ -613,6 +635,10 @@ msgstr "Application owner"
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Application saved"
 msgstr "Application saved"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Application settings changed"
+msgstr "Application settings changed"
 
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
@@ -781,6 +807,10 @@ msgstr "Avatar image"
 msgid "Back"
 msgstr "Back"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Back to applications"
+msgstr "Back to applications"
+
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
 msgstr "Back to sign in"
@@ -815,9 +845,21 @@ msgstr "Basic auth ({username})"
 msgid "Bearer token"
 msgstr "Bearer token"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Before a Calendar event"
+msgstr "Before a Calendar event"
+
 #: src/pages/SettingsOverlay.tsx
 msgid "Billing"
 msgstr "Billing"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block"
+msgstr "Block"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block ID"
+msgstr "Block ID"
 
 #: src/lib/ticket-status.ts
 msgid "Blocked"
@@ -896,6 +938,22 @@ msgstr "Built-in"
 msgid "By Cogine"
 msgstr "By Cogine"
 
+#: src/pages/RoutineEditor.tsx
+msgid "Calendar event"
+msgstr "Calendar event"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar event changed"
+msgstr "Calendar event changed"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar ID"
+msgstr "Calendar ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar target"
+msgstr "Calendar target"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Callback URL"
 msgstr "Callback URL"
@@ -908,6 +966,7 @@ msgstr "Can't reach the server."
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/integrations/NativeApplicationSetup.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -1016,9 +1075,17 @@ msgstr "Check status"
 msgid "Check the API key or sign-in, then test again."
 msgstr "Check the API key or sign-in, then test again."
 
+#: src/pages/Shell.tsx
+msgid "Check the application event accounts and fields."
+msgstr "Check the application event accounts and fields."
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "Check the server URL and network, then test again."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Check this ID against your Notion integration before enabling events."
+msgstr "Check this ID against your Notion integration before enabling events."
 
 #: src/pages/Auth.tsx
 msgid "Check your email"
@@ -1043,6 +1110,10 @@ msgstr "Checkout has local changes. Clean it before updating."
 msgid "Choose a bot…"
 msgstr "Choose a bot…"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose a connected account to change this event."
+msgstr "Choose a connected account to change this event."
+
 #: src/components/integrations/NativeAccountConnect.tsx
 msgid "Choose a connection method"
 msgstr "Choose a connection method"
@@ -1051,9 +1122,17 @@ msgstr "Choose a connection method"
 msgid "Choose a new password"
 msgstr "Choose a new password"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose account"
+msgstr "Choose account"
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose an image file"
 msgstr "Choose an image file"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose event"
+msgstr "Choose event"
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose image"
@@ -1293,6 +1372,10 @@ msgstr "Connect a provider to add backups."
 #: src/components/integrations/NativeAccountConnect.tsx
 msgid "Connect account"
 msgstr "Connect account"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect an account"
+msgstr "Connect an account"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Connect API key"
@@ -1625,6 +1708,10 @@ msgstr "Could not list files"
 msgid "Could not load"
 msgstr "Could not load"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Could not load accounts"
+msgstr "Could not load accounts"
+
 #: src/pages/ActivityList.tsx
 msgid "Could not load activity"
 msgstr "Could not load activity"
@@ -1664,6 +1751,10 @@ msgstr "Could not load connection methods"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Could not load credentials."
 msgstr "Could not load credentials."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not load event subscriptions"
+msgstr "Could not load event subscriptions"
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -1895,6 +1986,10 @@ msgstr "Could not update"
 msgid "Could not update computer"
 msgstr "Could not update computer"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not update event subscription"
+msgstr "Could not update event subscription"
+
 #: src/pages/Shell.tsx
 msgid "Could not update reaction"
 msgstr "Could not update reaction"
@@ -2032,6 +2127,14 @@ msgstr "Customize bot avatar"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Dark"
 msgstr "Dark"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source"
+msgstr "Data source"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source ID"
+msgstr "Data source ID"
 
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
@@ -2221,6 +2324,14 @@ msgstr "Disconnected accounts ({0})"
 msgid "Disconnecting…"
 msgstr "Disconnecting…"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion"
+msgstr "Discussion"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion ID"
+msgstr "Discussion ID"
+
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/shell/message-cards.tsx
@@ -2345,6 +2456,10 @@ msgstr "Email verification required"
 msgid "Enable {0}"
 msgstr "Enable {0}"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enable events"
+msgstr "Enable events"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Enabled"
 msgstr "Enabled"
@@ -2392,9 +2507,25 @@ msgstr "Enter a whole number from 1 to 1000 for the image limit."
 msgid "Enter an API key before testing."
 msgstr "Enter an API key before testing."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter the integration ID and verify the subscription in Notion first."
+msgstr "Enter the integration ID and verify the subscription in Notion first."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter your integration ID, or make a change in Notion to receive it."
+msgstr "Enter your integration ID, or make a change in Notion to receive it."
+
 #: src/lib/roster-status.ts
 msgid "Error"
 msgstr "Error"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event"
+msgstr "Event"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event ID"
+msgstr "Event ID"
 
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/RoutineSchedule.tsx
@@ -2662,6 +2793,10 @@ msgstr "Hi, this is how I'll sound when I read replies out loud."
 msgid "Hide password"
 msgstr "Hide password"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Hide token"
+msgstr "Hide token"
+
 #: src/components/call/VoiceChatCard.tsx
 msgid "Hide transcript"
 msgstr "Hide transcript"
@@ -2693,6 +2828,10 @@ msgstr "How often"
 #: src/components/teach/SkillDraftCard.tsx
 msgid "How to check"
 msgstr "How to check"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "I verified this subscription in Notion"
+msgstr "I verified this subscription in Notion"
 
 #: src/pages/Shell.tsx
 msgid "I’m done"
@@ -2746,9 +2885,17 @@ msgstr "Instance API key"
 msgid "Instruction"
 msgstr "Instruction"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration"
+msgstr "Integration"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Integration domain"
 msgstr "Integration domain"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration ID in Notion"
+msgstr "Integration ID in Notion"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Integration options"
@@ -2888,6 +3035,10 @@ msgstr "Load older runs"
 msgid "Load web images automatically"
 msgstr "Load web images automatically"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Loading accounts…"
+msgstr "Loading accounts…"
+
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "Loading activity…"
@@ -2919,6 +3070,10 @@ msgstr "Loading preview…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Loading rules…"
 msgstr "Loading rules…"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Loading subscriptions…"
+msgstr "Loading subscriptions…"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading tools…"
@@ -2980,6 +3135,10 @@ msgstr "Lowercase letters, numbers, hyphens and underscores, starting with a let
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Machine API key"
 msgstr "Machine API key"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Make a change in Notion to confirm event delivery."
+msgstr "Make a change in Notion to confirm event delivery."
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Make sure nothing is still running on this computer."
@@ -3174,6 +3333,10 @@ msgstr "minute"
 #: src/pages/RoutineSchedule.tsx
 msgid "minutes"
 msgstr "minutes"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Minutes before"
+msgstr "Minutes before"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3379,6 +3542,10 @@ msgstr "No chat apps linked yet."
 msgid "No connected apps."
 msgstr "No connected apps."
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "No connected Calendar or Notion accounts"
+msgstr "No connected Calendar or Notion accounts"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "No connected or pending accounts remain for this source."
 msgstr "No connected or pending accounts remain for this source."
@@ -3500,6 +3667,34 @@ msgstr "Nothing remembered yet"
 #: src/pages/shell/bot-panel.tsx
 msgid "Notifications"
 msgstr "Notifications"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion comments changed"
+msgstr "Notion comments changed"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Notion event"
+msgstr "Notion event"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion page content changed"
+msgstr "Notion page content changed"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion properties or data source changed"
+msgstr "Notion properties or data source changed"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion setup instructions"
+msgstr "Notion setup instructions"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion target"
+msgstr "Notion target"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion webhooks"
+msgstr "Notion webhooks"
 
 #: src/pages/ActivityList.tsx
 msgid "Now"
@@ -3655,6 +3850,14 @@ msgstr "Other sources stay connected. Operations already sent may still finish."
 msgid "Owner"
 msgstr "Owner"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page"
+msgstr "Page"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page ID"
+msgstr "Page ID"
+
 #: src/pages/RoutineEditor.tsx
 msgid "PagerDuty incident"
 msgstr "PagerDuty incident"
@@ -3696,6 +3899,10 @@ msgstr "Paste a replacement key"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Paste the OpenAI-compatible address from your server. CogineBot adds /v1 if needed."
 msgstr "Paste the OpenAI-compatible address from your server. CogineBot adds /v1 if needed."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Paste the verification token into Notion and verify the subscription."
+msgstr "Paste the verification token into Notion and verify the subscription."
 
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Paste your API key"
@@ -3760,6 +3967,10 @@ msgstr "Preview {0}"
 msgid "Preview isn't available for this file type — download it to view it."
 msgstr "Preview isn't available for this file type — download it to view it."
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Previous account"
+msgstr "Previous account"
+
 #: src/pages/Board.tsx
 msgid "Priority"
 msgstr "Priority"
@@ -3775,6 +3986,10 @@ msgstr "Private workspace with its own bots and groups."
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Project ID"
 msgstr "Project ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Property IDs (optional, one per line)"
+msgstr "Property IDs (optional, one per line)"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Protected input"
@@ -3842,6 +4057,10 @@ msgstr "Recall and write"
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Recall only"
 msgstr "Recall only"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Receiving events"
+msgstr "Receiving events"
 
 #: src/pages/ActivityList.tsx
 msgid "Recent"
@@ -3920,8 +4139,17 @@ msgstr "Recreate a computer that is not working."
 msgid "Recreating the computer"
 msgstr "Recreating the computer"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring instance"
+msgstr "Recurring instance"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring series"
+msgstr "Recurring series"
+
 #: src/App.tsx
 #: src/components/ErrorBoundary.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/pages/RoutineRunHistory.tsx
 msgid "Refresh"
 msgstr "Refresh"
@@ -3934,6 +4162,7 @@ msgstr "Refresh status"
 msgid "Refresh view"
 msgstr "Refresh view"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr "Refreshing…"
@@ -3976,6 +4205,10 @@ msgstr "Remove {full}"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Remove {secretName}? This bot will no longer be able to use it."
 msgstr "Remove {secretName}? This bot will no longer be able to use it."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Remove application event"
+msgstr "Remove application event"
 
 #: src/pages/RoutineEditor.tsx
 msgid "Remove Git event"
@@ -4235,6 +4468,10 @@ msgstr "Save backups"
 msgid "Save credential"
 msgstr "Save credential"
 
+#: src/pages/RoutineEditor.tsx
+msgid "Save event changes"
+msgstr "Save event changes"
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Save limits"
 msgstr "Save limits"
@@ -4433,6 +4670,10 @@ msgstr "Set up an application here. Members connect their accounts from Apps."
 msgid "Set up application"
 msgstr "Set up application"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Set up subscription"
+msgstr "Set up subscription"
+
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -4447,6 +4688,10 @@ msgstr "Settings: General"
 #: src/pages/Shell.tsx
 msgid "Settings: Usage"
 msgstr "Settings: Usage"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Setup expired"
+msgstr "Setup expired"
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4527,6 +4772,10 @@ msgstr "Show tool activity"
 msgid "Show transcript"
 msgstr "Show transcript"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Show verification token"
+msgstr "Show verification token"
+
 #: src/lib/localized-provider-hint.ts
 #: src/pages/Auth.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4557,6 +4806,10 @@ msgstr "Sign in with the subscription, or test the API key instead."
 #: src/pages/Welcome.tsx
 msgid "Sign up"
 msgstr "Sign up"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Single event"
+msgstr "Single event"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Site"
@@ -4682,9 +4935,25 @@ msgstr "Stop"
 msgid "Stop speaking"
 msgstr "Stop speaking"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop subscription"
+msgstr "Stop subscription"
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Stop teaching"
 msgstr "Stop teaching"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop the existing subscription here before enabling this one."
+msgstr "Stop the existing subscription here before enabling this one."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop this subscription?"
+msgstr "Stop this subscription?"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stopped"
+msgstr "Stopped"
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -4911,6 +5180,10 @@ msgstr "This server did not request browser authorization."
 msgid "This server is already connected. Disconnect it first to authorize again."
 msgstr "This server is already connected. Disconnect it first to authorize again."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "This setup has expired. Refresh to check its status."
+msgstr "This setup has expired. Refresh to check its status."
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "This subscription sign-in is not available in CogineBot yet. Use a deployment credential or choose another provider."
 msgstr "This subscription sign-in is not available in CogineBot yet. Use a deployment credential or choose another provider."
@@ -4991,6 +5264,7 @@ msgstr "Trial ends {day}"
 #: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Try again"
 msgstr "Try again"
 
@@ -5015,6 +5289,7 @@ msgid "Unassigned"
 msgstr "Unassigned"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Unavailable"
 msgstr "Unavailable"
 
@@ -5139,6 +5414,10 @@ msgstr "Use Connect to verify the key."
 msgid "Use default guidance"
 msgstr "Use default guidance"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Use ID from received event"
+msgstr "Use ID from received event"
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."
 msgstr "Use Protected input for passwords."
@@ -5172,9 +5451,17 @@ msgstr "Value"
 msgid "Values are encrypted and never shown again."
 msgstr "Values are encrypted and never shown again."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verification token"
+msgstr "Verification token"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "Verify and add"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verify in Notion"
+msgstr "Verify in Notion"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Verifying…"
@@ -5203,6 +5490,14 @@ msgstr "Voice chat"
 msgid "Wait a moment and test again."
 msgstr "Wait a moment and test again."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for first signed event"
+msgstr "Waiting for first signed event"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for Notion"
+msgstr "Waiting for Notion"
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Waiting for the API to come back…"
 msgstr "Waiting for the API to come back…"
@@ -5226,6 +5521,22 @@ msgstr "Web, desktop and mobile apps"
 #: src/pages/RoutineEditor.tsx
 msgid "Webhook"
 msgstr "Webhook"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook deliveries will be ignored. Routines continue checking Notion for changes."
+msgstr "Webhook deliveries will be ignored. Routines continue checking Notion for changes."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook stopped here. Remove the subscription in Notion separately."
+msgstr "Webhook stopped here. Remove the subscription in Notion separately."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook URL"
+msgstr "Webhook URL"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Webhooks"
+msgstr "Webhooks"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Website login"
@@ -5279,6 +5590,10 @@ msgstr "When to use"
 #: src/pages/HostComputerPrompt.tsx
 msgid "Where should bots run?"
 msgstr "Where should bots run?"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Whole calendar"
+msgstr "Whole calendar"
 
 #: src/lib/ticket-status.ts
 msgid "Won't do"

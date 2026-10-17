@@ -1,3 +1,4 @@
+import { NativeNotionSignalJobSchema, NativeSourceJobPayloadSchema } from "@rakazo/contracts";
 import { z } from "zod";
 import type {
   BackgroundJob,
@@ -7,6 +8,8 @@ import type {
 } from "./types.js";
 
 const payloadSchemas = {
+  "native.source.poll": NativeSourceJobPayloadSchema,
+  "native.notion.signal": NativeNotionSignalJobSchema,
   "run.continue": z.object({ runId: z.string().min(1) }),
   "routine.wakeup": z.object({
     routineId: z.string().min(1),

@@ -4,6 +4,7 @@ import { TASK_CATALOG_GUIDANCE, taskCatalogFromTool } from "./task-catalog.js";
 describe("task catalog", () => {
   it("returns the bot's real work records and exposed tool roster", async () => {
     const prisma = {
+      $queryRaw: vi.fn(async () => [{ ownedRoutineId: "routine-1", id: null }]),
       scratchpadItem: {
         findMany: vi.fn(async () => [
           {
@@ -67,6 +68,8 @@ describe("task catalog", () => {
     expect(result.routines).toEqual([
       expect.objectContaining({ routineId: "routine-1", name: "Morning report", active: true }),
     ]);
+    expect(result.routines[0]?.nativeTriggers).toEqual([]);
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
     expect(result.taughtSkills).toEqual([
       {
         id: "taught-1",

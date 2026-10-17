@@ -268,6 +268,7 @@ import {
   RoutineListRow,
   routineNeedsOneShotArm,
 } from "./RoutineEditor";
+import { nativeRoutineTriggerInputs } from "./routine-native-events";
 import type { SettingsSection } from "./SettingsOverlay";
 import { SpaceSearchResults } from "./SpaceSearch";
 import { BotSettings, CreateBotForm } from "./shell/bot-panel";
@@ -4436,6 +4437,9 @@ export function ShellPage() {
                     : `/api/v1/bots/${active.id}/github`
                 }
                 messageProviders={messagingProviders}
+                connectionsRevision={connectionsRevision}
+                scopeKey={active.id}
+                onOpenApplications={() => setPluginsOpen(true)}
                 saving={savingRoutine}
                 running={runningRoutine}
                 error={routineError}
@@ -4453,9 +4457,12 @@ export function ShellPage() {
                     !routineDraft.schedules.length &&
                     !routineDraft.webhookEnabled &&
                     !routineDraft.githubEnabled &&
-                    !routineDraft.messageProvider
+                    !routineDraft.messageProvider &&
+                    !routineDraft.nativeTriggers.length
                   ) {
-                    setRoutineError(t`Add a schedule, webhook, GitHub, or message trigger`);
+                    setRoutineError(
+                      t`Add a schedule, application event, webhook, GitHub, or message trigger`,
+                    );
                     return;
                   }
                   const saveRequest = ++routineSaveRequest.current;
@@ -4463,6 +4470,13 @@ export function ShellPage() {
                   setSavingRoutine(true);
                   setRoutineError(null);
                   try {
+                    const nativeResult = routineDraft.nativeTriggersDirty
+                      ? nativeRoutineTriggerInputs(routineDraft.nativeTriggers)
+                      : undefined;
+                    if (nativeResult && !nativeResult.success) {
+                      setRoutineError(t`Check the application event accounts and fields.`);
+                      return;
+                    }
                     if (
                       (routineDraft.webhookEnabled || routineDraft.githubEnabled) &&
                       !active.webhookConfigured &&
@@ -4489,6 +4503,7 @@ export function ShellPage() {
                       }
                       saved = await rpc.routines.update({
                         routineId: targetRoutine.id,
+                        ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
@@ -4501,6 +4516,7 @@ export function ShellPage() {
                     } else {
                       saved = await rpc.routines.create({
                         botId: targetBotId,
+                        ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,

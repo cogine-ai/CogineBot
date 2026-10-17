@@ -3,6 +3,7 @@ import {
   ComposioConnector,
   IntegrationProviderSettings,
   NativeConnectorProvider,
+  NativeRoutineEventService,
 } from "@rakazo/adapters";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import { createWorkerSecretStore } from "./secret-store.js";
@@ -239,7 +240,16 @@ async function main() {
     cloudAgent,
   });
 
+  const nativeEvents = new NativeRoutineEventService(
+    prisma,
+    native.oauth,
+    native.eventHooks,
+    jobs,
+    events,
+    process.env.API_URL ?? "http://127.0.0.1:3100",
+  );
   const jobHandlers = createBackgroundJobHandlers({
+    nativeEvents,
     executor,
     prisma,
     sandbox,
@@ -282,6 +292,7 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+    reconcileNativeEvents: () => nativeEvents.reconcile(),
   });
   reconciler.start();
 

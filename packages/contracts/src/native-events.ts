@@ -1,0 +1,186 @@
+import { z } from "zod";
+
+const Id = z.string().min(1).max(1024);
+const Revision = z.string().min(1).max(512);
+const IsoDate = z.iso.datetime({ offset: true });
+const CalendarTarget = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("calendar") }).strict(),
+  z.object({ kind: z.enum(["single", "series", "instance"]), eventId: Id }).strict(),
+]);
+const CalendarFields = { calendarId: Id, target: CalendarTarget.default({ kind: "calendar" }) };
+const NotionPageTarget = z.object({ type: z.literal("page"), pageId: z.uuid() }).strict();
+const NotionDataSourceTarget = z
+  .object({ type: z.literal("data_source"), dataSourceId: z.uuid() })
+  .strict();
+const NotionCommentTarget = z.discriminatedUnion("type", [
+  NotionPageTarget,
+  z.object({ type: z.literal("block"), blockId: z.uuid(), pageId: z.uuid() }).strict(),
+  z
+    .object({
+      type: z.literal("discussion"),
+      discussionId: z.uuid(),
+      anchorBlockId: z.uuid(),
+      pageId: z.uuid(),
+    })
+    .strict(),
+]);
+
+/** User intent only. Owner, source generation, cursor, secrets and execution options are server-owned. */
+export const NativeRoutineEventSpecSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("calendar.event_changed"), ...CalendarFields }).strict(),
+  z
+    .object({
+      kind: z.literal("calendar.event_starting"),
+      ...CalendarFields,
+      leadMinutes: z.number().int().min(1).max(40_320),
+    })
+    .strict(),
+  z.object({ kind: z.literal("notion.page_content_changed"), target: NotionPageTarget }).strict(),
+  z
+    .object({
+      kind: z.literal("notion.page_properties_or_data_source_changed"),
+      target: z.union([NotionPageTarget, NotionDataSourceTarget]),
+      propertyIds: z.array(Id).min(1).max(100).optional(),
+    })
+    .strict(),
+  z.object({ kind: z.literal("notion.comment_changed"), target: NotionCommentTarget }).strict(),
+]);
+export type NativeRoutineEventSpec = z.infer<typeof NativeRoutineEventSpecSchema>;
+export const NativeRoutineEventKindSchema = z.enum([
+  "calendar.event_changed",
+  "calendar.event_starting",
+  "notion.page_content_changed",
+  "notion.page_properties_or_data_source_changed",
+  "notion.comment_changed",
+]);
+export type NativeRoutineEventKind = z.infer<typeof NativeRoutineEventKindSchema>;
+
+export const NativeRoutineTriggerInputSchema = z
+  .object({
+    id: Id.optional(),
+    expectedVersion: z.number().int().positive().optional(),
+    connectionId: Id,
+    spec: NativeRoutineEventSpecSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (Boolean(value.id) !== (value.expectedVersion !== undefined))
+      context.addIssue({
+        code: "custom",
+        path: ["expectedVersion"],
+        message: "An existing trigger requires its current version.",
+      });
+  });
+export type NativeRoutineTriggerInput = z.infer<typeof NativeRoutineTriggerInputSchema>;
+export const NativeRoutineTriggersInputSchema = z
+  .array(NativeRoutineTriggerInputSchema)
+  .max(20)
+  .superRefine((values, context) => {
+    const ids = values.flatMap((value) => (value.id ? [value.id] : []));
+    if (new Set(ids).size !== ids.length)
+      context.addIssue({ code: "custom", message: "A trigger can only be updated once." });
+    const keys = values.map((value) => JSON.stringify([value.connectionId, value.spec]));
+    if (new Set(keys).size !== keys.length)
+      context.addIssue({ code: "custom", message: "Duplicate native event triggers." });
+  });
+
+/** Safe UI DTO; no cursor, channel verifier, webhook secret or raw provider payload. */
+export const NativeRoutineTriggerSchema = z.object({
+  id: Id,
+  version: z.number().int().positive(),
+  routineId: Id,
+  connectionId: Id,
+  spec: NativeRoutineEventSpecSchema,
+  armedAt: IsoDate,
+});
+export type NativeRoutineTrigger = z.infer<typeof NativeRoutineTriggerSchema>;
+
+export const SaveNativeRoutineTriggerInputSchema = NativeRoutineTriggerInputSchema.safeExtend({
+  routineId: Id,
+});
+export const RemoveNativeRoutineTriggerInputSchema = z
+  .object({ routineId: Id, triggerId: Id, expectedVersion: z.number().int().positive() })
+  .strict();
+
+export interface NativeEventScope {
+  userId: string;
+  spaceId: string;
+}
+export interface NativeEventResource {
+  type: "calendar" | "page" | "data_source" | "block" | "discussion";
+  id: string;
+}
+export function nativeEventResource(spec: NativeRoutineEventSpec): NativeEventResource {
+  if (spec.kind.startsWith("calendar."))
+    return {
+      type: "calendar",
+      id: (spec as Extract<NativeRoutineEventSpec, { calendarId: string }>).calendarId,
+    };
+  const target = (spec as Exclude<NativeRoutineEventSpec, { calendarId: string }>).target;
+  if (target.type === "page") return { type: "page", id: target.pageId.toLowerCase() };
+  if (target.type === "data_source")
+    return { type: "data_source", id: target.dataSourceId.toLowerCase() };
+  if (target.type === "block") return { type: "block", id: target.blockId.toLowerCase() };
+  return { type: "discussion", id: target.discussionId.toLowerCase() };
+}
+export function nativeEventApp(spec: NativeRoutineEventSpec): "google-calendar" | "notion" {
+  return spec.kind.startsWith("calendar.") ? "google-calendar" : "notion";
+}
+
+/** Only a trusted verifier can construct this; it is not a public API parameter. */
+export interface NativeEventAuthorizationProof extends NativeEventScope {
+  connectionId: string;
+  authorizationRevision: string;
+  grantId: string;
+  authGeneration: number;
+  configId: string;
+  configRevision: number;
+  appId: "google-calendar" | "notion";
+  resource: NativeEventResource;
+  spec: NativeRoutineEventSpec;
+}
+export interface PreparedNativeRoutineTrigger {
+  input: NativeRoutineTriggerInput;
+  proof: NativeEventAuthorizationProof;
+}
+
+/** Server-produced observation. This is never exposed as a model-callable fire RPC. */
+export const NativeEventObservationSchema = z
+  .object({
+    triggerId: Id,
+    triggerVersion: z.number().int().positive(),
+    connectionId: Id,
+    authorizationRevision: Revision,
+    kind: NativeRoutineEventKindSchema,
+    resource: z
+      .object({ type: z.enum(["calendar", "page", "data_source", "block", "discussion"]), id: Id })
+      .strict(),
+    eventIdentity: Id,
+    observedVersion: z.string().min(1).max(2048),
+    occurredAt: IsoDate,
+    evidence: z
+      .enum(["calendar_sync", "calendar_clock", "notion_webhook", "visible_state_change"])
+      .default("visible_state_change"),
+    eventId: Id.optional(),
+    recurringEventId: Id.optional(),
+    originalStartTime: z.string().max(128).optional(),
+    scheduledStart: IsoDate.optional(),
+    responseStatus: z.string().max(32).optional(),
+    propertyIds: z.array(Id).min(1).max(100).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.kind.startsWith("calendar.") && !value.eventId)
+      context.addIssue({
+        code: "custom",
+        path: ["eventId"],
+        message: "A Calendar observation requires the actual event ID.",
+      });
+    if (value.kind === "calendar.event_starting" && !value.scheduledStart)
+      context.addIssue({
+        code: "custom",
+        path: ["scheduledStart"],
+        message: "A reminder requires the current authoritative start instant.",
+      });
+  });
+export type NativeEventObservation = z.infer<typeof NativeEventObservationSchema>;

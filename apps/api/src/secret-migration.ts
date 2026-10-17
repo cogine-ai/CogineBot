@@ -1,7 +1,13 @@
 import type { SecretMigrationRepository, SecretMigrationRow } from "@rakazo/adapters";
 import type { PrismaClient } from "@rakazo/db";
 
-const tables = ["secret", "botSecret", "integrationProviderConfig", "nativeAppConfig"] as const;
+const tables = [
+  "secret",
+  "botSecret",
+  "integrationProviderConfig",
+  "nativeAppConfig",
+  "nativeNotionHook",
+] as const;
 
 export function createSecretMigrationRepository(prisma: PrismaClient): SecretMigrationRepository {
   return {
@@ -24,8 +30,15 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
           }>;
           for (const row of batch) {
             if (!row.ciphertext) continue;
-            if (label === "nativeAppConfig" && !row.secretRecordId)
-              throw new Error("Native application material has no SecretStore identity");
+            if (
+              (label === "nativeAppConfig" || label === "nativeNotionHook") &&
+              !row.secretRecordId
+            )
+              throw new Error(
+                label === "nativeNotionHook"
+                  ? "Native webhook material has no SecretStore identity"
+                  : "Native application material has no SecretStore identity",
+              );
             yield {
               id: row.id,
               label,
@@ -33,7 +46,7 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
               recordId:
                 label === "integrationProviderConfig"
                   ? `integration-provider:${row.id}`
-                  : label === "nativeAppConfig"
+                  : label === "nativeAppConfig" || label === "nativeNotionHook"
                     ? row.secretRecordId!
                     : row.id,
               ephemeral: row.kind?.startsWith("run-secret:"),
@@ -47,7 +60,16 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
     async replace(row: SecretMigrationRow, ref: string) {
       const delegate = prisma[row.label as (typeof tables)[number]];
       const result = (await Reflect.apply(delegate.updateMany, delegate, [
-        { where: { id: row.id, ciphertext: row.ref }, data: { ciphertext: ref } },
+        {
+          where: {
+            id: row.id,
+            ciphertext: row.ref,
+            ...(row.label === "nativeAppConfig" || row.label === "nativeNotionHook"
+              ? { secretRecordId: row.recordId }
+              : {}),
+          },
+          data: { ciphertext: ref },
+        },
       ])) as { count: number };
       return result.count === 1;
     },
@@ -55,9 +77,21 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
       return Boolean(
         (await prisma.secret.count({ where: { ciphertext: ref } })) ||
           (await prisma.botSecret.count({ where: { ciphertext: ref } })) ||
-          (await prisma.integrationProviderConfig.count({ where: { ciphertext: ref } })) ||
-          (await prisma.nativeAppConfig.count({ where: { ciphertext: ref } })),
+          (await prisma.integrationProviderConfig.count({
+            where: { ciphertext: ref },
+          })) ||
+          (await prisma.nativeAppConfig.count({
+            where: { ciphertext: ref },
+          })) ||
+          (await prisma.nativeNotionHook.count({ where: { ciphertext: ref } })),
       );
     },
   };
+}
+
+/** A webhook row id is also its owner-only setup URL capability. */
+export function secretMigrationReportIdentity(
+  row: Pick<SecretMigrationRow, "id" | "label">,
+): string {
+  return `${row.label} ${row.label === "nativeNotionHook" ? "[redacted]" : row.id}`;
 }

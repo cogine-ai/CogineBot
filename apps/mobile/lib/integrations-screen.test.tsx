@@ -17,9 +17,11 @@ const state = vi.hoisted(() => ({
   persisted: vi.fn(),
   focused: true,
   alert: vi.fn(),
+  params: {} as { app?: string | string[]; botId?: string | string[] },
 }));
 vi.mock("expo-router", () => ({
   router: { push: vi.fn() },
+  useLocalSearchParams: () => state.params,
   Stack: { Screen: () => null },
   useFocusEffect: (callback: () => undefined | (() => void)) => {
     useEffect(() => {
@@ -182,6 +184,7 @@ let rejectCatalog: (error: Error) => void;
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   state.current = true;
+  state.params = {};
   state.focused = true;
   state.scope.mockReset().mockResolvedValue({ userId: "user-a", spaceId: "space-a" });
   state.persisted.mockReset().mockResolvedValue(null);
@@ -655,3 +658,55 @@ it("keeps the selected MCP server visible while saving the exact reviewed revisi
   await act(async () => finish({ ...server, revision: 3 }));
   expect(container.textContent).toContain("Tool access saved.");
 });
+
+it("a Native route hint selects the exact live Native app without starting account authorization", async () => {
+  state.params = { app: "google-calendar", botId: "card-bot" };
+  await render();
+  const native = {
+    ...item,
+    connectorId: "native",
+    slug: "google-calendar",
+    name: "Google Calendar",
+    connected: false,
+  };
+  await act(async () => resolveCatalog([{ ...native, connectorId: "composio" }, native]));
+  expect(state.rpc).toHaveBeenCalledWith("connections/tools", {
+    connectorId: "native",
+    provider: "google-calendar",
+  });
+  expect(container.querySelector('input[placeholder="Search apps"]')).toBeNull();
+  expect(container.textContent).toContain("Google Calendar");
+  expect(
+    state.rpc.mock.calls.some(
+      ([proc]) => proc === "connections/begin" || proc === "nativeConnectors/begin",
+    ),
+  ).toBe(false);
+});
+
+it.each([{ app: "notion" }, { app: "unknown-app" }, { app: ["google-calendar"] }])(
+  "ignores an unavailable or invalid app route hint: $app",
+  async ({ app }) => {
+    state.params = { app, botId: "card-bot" };
+    await render();
+    await act(async () =>
+      resolveCatalog([
+        {
+          ...item,
+          connectorId: "native",
+          slug: "google-calendar",
+          name: "Google Calendar",
+          connected: false,
+        },
+      ]),
+    );
+    expect(container.querySelector('input[placeholder="Search apps"]')).not.toBeNull();
+    expect(
+      state.rpc.mock.calls.some(
+        ([proc]) =>
+          proc === "connections/tools" ||
+          proc === "connections/begin" ||
+          proc === "nativeConnectors/begin",
+      ),
+    ).toBe(false);
+  },
+);

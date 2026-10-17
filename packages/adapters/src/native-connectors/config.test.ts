@@ -68,6 +68,7 @@ function database() {
     secret,
     botSecret: { count: async () => 0 },
     integrationProviderConfig: { count: async () => 0 },
+    $queryRaw: vi.fn(async () => [{ referenced: false }]),
     $transaction: async (run: (tx: unknown) => Promise<unknown>) => run(db),
   };
   return { db: db as unknown as PrismaClient, nativeAppConfig, secret, stored };

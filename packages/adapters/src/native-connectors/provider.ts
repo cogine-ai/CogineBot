@@ -37,6 +37,9 @@ import { calendarActions } from "./calendar.js";
 import { coginexActions } from "./coginex.js";
 import { NativeConfigSettingsSchema, NativeConfigStore } from "./config.js";
 import { nativeEffectCheckpoint } from "./effect.js";
+import { NativeRoutineEventApi } from "./events/api.js";
+import { NativeNotionHookStore } from "./events/notion-hooks.js";
+import { NativeEventResourceVerifier } from "./events/resource-verifier.js";
 import { NativeHttpClient } from "./http.js";
 import { knowaiActions } from "./knowai.js";
 import { notionActions } from "./notion.js";
@@ -58,6 +61,8 @@ const APPS = [
 export class NativeConnectorProvider implements ManagedConnectorProvider {
   readonly configurations: NativeConfigStore;
   readonly oauth: NativeOAuthStore;
+  readonly routineEvents: NativeRoutineEventApi;
+  readonly eventHooks: NativeNotionHookStore;
   private readonly authorities: NativeOAuthAuthorities;
   constructor(
     private readonly prisma: PrismaClient,
@@ -83,6 +88,11 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
       this.configurations,
       this.authorities,
       options.allowPrivateEndpoint,
+    );
+    this.eventHooks = new NativeNotionHookStore(prisma, secrets, apiUrl);
+    this.routineEvents = new NativeRoutineEventApi(
+      prisma,
+      new NativeEventResourceVerifier(this.oauth, { network: options.network }),
     );
   }
   describe() {

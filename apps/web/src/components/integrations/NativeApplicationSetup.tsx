@@ -19,6 +19,7 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 import { rpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
+import { NativeNotionWebhookSetup } from "./NativeNotionWebhookSetup";
 
 type CredentialKind = NativeConfigInput["credentialKind"];
 type Draft = Omit<NativeConfigInput, "knowledgeBaseIds"> & {
@@ -111,6 +112,7 @@ export function NativeApplicationSetup({
   const id = useId();
   const [state, setState] = useState<NativeSetupState | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [webhookConfig, setWebhookConfig] = useState<NativeConfigStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -260,6 +262,10 @@ export function NativeApplicationSetup({
       </div>
     );
   if (!state.canConfigure) return null;
+  if (webhookConfig)
+    return (
+      <NativeNotionWebhookSetup config={webhookConfig} onBack={() => setWebhookConfig(null)} />
+    );
   return (
     <section
       className="space-y-4 border-t border-border pt-6"
@@ -307,6 +313,17 @@ export function NativeApplicationSetup({
                         : t`Setup incomplete`}
                   </p>
                 </div>
+                {entry.appId === "notion" && entry.credentialKind === "oauth" ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy || loading}
+                    onClick={() => setWebhookConfig(entry)}
+                  >
+                    <Trans>Webhooks</Trans>
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="ghost"

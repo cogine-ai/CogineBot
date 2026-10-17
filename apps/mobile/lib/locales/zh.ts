@@ -866,4 +866,11 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Connect {name}": "连接 {name}",
   "Official application": "官方应用",
   "Your application": "自有应用",
+  "Calendar event": "日历事件",
+  "Notion event": "Notion 事件",
+  "Could not confirm cancellation. Check the pending account.":
+    "无法确认取消结果，请检查待授权账号。",
+  "This application is not available for direct connection.": "此应用暂不支持直接连接。",
+  "This app is not available.": "此应用不可用。",
+  "Try again": "重试",
 };

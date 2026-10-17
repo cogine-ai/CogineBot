@@ -22,10 +22,26 @@ import {
   Input,
   Textarea,
 } from "@rakazo/ui-web";
-import { ChevronLeft, Clock, GitBranch, Globe, MessageSquare, Pause, Plus, X } from "lucide-react";
+import {
+  ChevronLeft,
+  Clock,
+  GitBranch,
+  Globe,
+  MessageSquare,
+  Pause,
+  Plus,
+  Puzzle,
+  X,
+} from "lucide-react";
 import { useId } from "react";
+import { RoutineNativeEvents } from "./RoutineNativeEvents";
 import { RoutineRunHistory } from "./RoutineRunHistory";
 import { RoutineSchedule } from "./RoutineSchedule";
+import type { NativeRoutineTriggerDraft } from "./routine-native-events";
+import {
+  draftFromNativeRoutineTrigger,
+  emptyNativeRoutineTriggerDraft,
+} from "./routine-native-events";
 
 function toDatetimeLocalValue(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -61,6 +77,8 @@ const COMING_SOON = [
 ] as const;
 
 export type RoutineDraftState = {
+  nativeTriggers: NativeRoutineTriggerDraft[];
+  nativeTriggersDirty: boolean;
   name: string;
   prompt: string;
   schedules: CronPreset[];
@@ -73,6 +91,8 @@ export type RoutineDraftState = {
 
 export function emptyRoutineDraft(): RoutineDraftState {
   return {
+    nativeTriggers: [],
+    nativeTriggersDirty: false,
     name: "",
     prompt: "",
     schedules: [],
@@ -86,6 +106,8 @@ export function emptyRoutineDraft(): RoutineDraftState {
 
 export function draftFromRoutine(routine: Routine): RoutineDraftState {
   return {
+    nativeTriggers: (routine.nativeTriggers ?? []).map(draftFromNativeRoutineTrigger),
+    nativeTriggersDirty: false,
     name: routine.name,
     prompt: routine.prompt,
     schedules: routine.crons.map(presetFromCron),
@@ -97,9 +119,20 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
   };
 }
 
+export function nativeRoutineTriggerSummary(routine: Pick<Routine, "nativeTriggers">): string {
+  const parts: string[] = [];
+  if (routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("calendar.")))
+    parts.push(t`Calendar event`);
+  if (routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("notion.")))
+    parts.push(t`Notion event`);
+  return parts.join(" · ");
+}
+
 export function routineTriggerSummary(routine: Routine): string {
   if (!routine.active) return t`Paused`;
   const parts: string[] = [];
+  const nativeSummary = nativeRoutineTriggerSummary(routine);
+  if (nativeSummary) parts.push(nativeSummary);
   if (routine.webhookEnabled) parts.push(t`When a webhook fires`);
   if (routine.githubEnabled) parts.push(t`Git event`);
   if (routine.messageProvider === "slack") parts.push(t`Slack message`);
@@ -185,6 +218,9 @@ export function RoutineEditor({
   webhook,
   githubPath,
   messageProviders,
+  connectionsRevision,
+  scopeKey,
+  onOpenApplications,
   saving,
   running,
   error,
@@ -202,6 +238,9 @@ export function RoutineEditor({
   webhook: { path: string; secret: string | null; configured: boolean };
   githubPath: string;
   messageProviders: string[];
+  connectionsRevision: number;
+  scopeKey: string;
+  onOpenApplications: () => void;
   saving: boolean;
   running: boolean;
   error: string | null;
@@ -220,7 +259,8 @@ export function RoutineEditor({
     draft.schedules.length > 0 ||
     draft.webhookEnabled ||
     draft.githubEnabled ||
-    Boolean(draft.messageProvider);
+    Boolean(draft.messageProvider) ||
+    draft.nativeTriggers.length > 0;
   const canTest = Boolean(editing) && !saving && !running;
   const needsOneShotArm =
     editing != null && routineNeedsOneShotArm(editing, draft.schedules.map(cronFromPreset));
@@ -337,6 +377,17 @@ export function RoutineEditor({
         </div>
 
         <div className="mt-2 space-y-2">
+          {draft.nativeTriggers.length > 0 ? (
+            <RoutineNativeEvents
+              value={draft.nativeTriggers}
+              onChange={(nativeTriggers) =>
+                onChange({ ...draft, nativeTriggers, nativeTriggersDirty: true })
+              }
+              connectionsRevision={connectionsRevision}
+              scopeKey={scopeKey}
+              onOpenApplications={onOpenApplications}
+            />
+          ) : null}
           {draft.schedules.map((preset, index) => (
             <div key={index} className="relative">
               <RoutineSchedule
@@ -419,6 +470,19 @@ export function RoutineEditor({
             <Trans>Add trigger</Trans>
           </DropdownMenuTrigger>
           <DropdownMenuContent side="top">
+            <DropdownMenuItem
+              disabled={draft.nativeTriggers.length >= 20}
+              onClick={() =>
+                onChange({
+                  ...draft,
+                  nativeTriggers: [...draft.nativeTriggers, emptyNativeRoutineTriggerDraft()],
+                  nativeTriggersDirty: true,
+                })
+              }
+            >
+              <Puzzle />
+              <Trans>Application event</Trans>
+            </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <Clock />
@@ -480,14 +544,17 @@ export function RoutineEditor({
 
         {!hasTriggers ? (
           <p className="mt-2 text-xs text-muted-foreground/70">
-            <Trans>Add a schedule, webhook, GitHub, or message trigger to run this routine.</Trans>
+            <Trans>
+              Add a schedule, application event, webhook, GitHub, or message trigger to run this
+              routine.
+            </Trans>
           </p>
         ) : null}
       </div>
 
       <div className="mt-5">
         <Button disabled={saving || running || !hasTriggers} onClick={onSave}>
-          {saving ? t`Saving…` : t`Save`}
+          {saving ? t`Saving…` : draft.nativeTriggersDirty ? t`Save event changes` : t`Save`}
         </Button>
       </div>
       {error ? (

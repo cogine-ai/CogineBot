@@ -76,12 +76,15 @@ import {
   kickModelCredentialRefresh,
   listAvailablePiCatalog,
   listBotSecretMetadata,
+  listNativeRoutineTriggers,
+  listNativeRoutineTriggersBatch,
   listPiCatalog,
   listScratchpadItems,
   McpOAuthBroker,
   mapScratchpadItem,
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
+  nativeSourceJob,
   normalizeSecretDestination,
   PushSessionEndedError,
   parseModelSecret,
@@ -97,6 +100,8 @@ import {
   queueComputerUpdate,
   releaseComputerExecutionLease,
   replaceComputer,
+  replaceNativeRoutineTriggersTx,
+  requireRoutineTrigger,
   resolveAutoReviewChecker,
   resolveBotUploadPath,
   resolveBotWorkspaceCwd,
@@ -133,6 +138,7 @@ import type {
   ExportManifest,
   McpServer,
   Me,
+  NativeRoutineTrigger,
   ProductEvent,
   Routine,
   SpaceNavigation,
@@ -252,6 +258,7 @@ import {
   serializeSpaceMemoryConfig,
   updateMemoryProviderDefaultScope,
 } from "./memory-provider-config.js";
+import { rethrowNativeRoutineError } from "./native-routine-errors.js";
 import {
   chooseFocus,
   dismissFocus,
@@ -3334,23 +3341,40 @@ export function createRouter(deps: RouterDeps) {
           const computedNextRunAt = nextRoutineDate(input.crons, input.timezone);
           nextRunAt = input.active ? computedNextRunAt : null;
         }
-        const row = await deps.prisma.routine.create({
-          data: {
-            spaceId: context.actor.spaceId,
-            botId: input.botId,
-            userId: context.actor.userId,
-            name: input.name,
-            prompt: input.prompt,
-            crons: input.crons,
-            timezone: input.timezone,
-            notify: input.notify,
-            active: input.active,
-            webhookEnabled: input.webhookEnabled,
-            githubEnabled: input.githubEnabled,
-            messageProvider: input.messageProvider,
-            nextRunAt,
-          },
-        });
+        const preparedNative = await prepareNativeRoutineInputs(
+          deps,
+          context.actor,
+          input.nativeTriggers,
+          context.signal ?? new AbortController().signal,
+        );
+        const { row, nativeTriggers } = await deps.prisma
+          .$transaction(async (tx) => {
+            const row = await tx.routine.create({
+              data: {
+                spaceId: context.actor.spaceId,
+                botId: input.botId,
+                userId: context.actor.userId,
+                name: input.name,
+                prompt: input.prompt,
+                crons: input.crons,
+                timezone: input.timezone,
+                notify: input.notify,
+                active: input.active,
+                webhookEnabled: input.webhookEnabled,
+                githubEnabled: input.githubEnabled,
+                messageProvider: input.messageProvider,
+                nextRunAt,
+              },
+            });
+            const nativeTriggers = await replaceNativeRoutineTriggersTx(
+              tx,
+              context.actor,
+              row.id,
+              preparedNative ?? [],
+            );
+            return { row, nativeTriggers };
+          })
+          .catch(rethrowNativeRoutineError);
         if (bot.thread) {
           await deps.events.append({
             spaceId: context.actor.spaceId,
@@ -3363,7 +3387,12 @@ export function createRouter(deps: RouterDeps) {
         if (row.active && row.nextRunAt) {
           await deps.jobs.enqueue(routineWakeupJob(row.id, row.nextRunAt));
         }
-        return mapRoutine(row);
+        if (row.active)
+          for (const trigger of nativeTriggers)
+            await deps.jobs
+              .enqueue(nativeSourceJob(trigger.id, trigger.version))
+              .catch(() => undefined);
+        return mapRoutine(row, nativeTriggers);
       }),
       update: authed.routines.update.handler(async ({ context, input }) => {
         // Archived bots keep their routines paused, so resolve an active parent before any write.
@@ -3384,9 +3413,28 @@ export function createRouter(deps: RouterDeps) {
         const githubEnabled = input.githubEnabled ?? existing.githubEnabled;
         const messageProvider =
           input.messageProvider === undefined ? existing.messageProvider : input.messageProvider;
-        if (crons.length === 0 && !webhookEnabled && !githubEnabled && !messageProvider) {
+        const preparedNative = await prepareNativeRoutineInputs(
+          deps,
+          context.actor,
+          input.nativeTriggers,
+          context.signal ?? new AbortController().signal,
+        );
+        const existingNative = await listNativeRoutineTriggers(
+          deps.prisma,
+          context.actor,
+          existing.id,
+        ).catch(rethrowNativeRoutineError);
+        const hasNative =
+          preparedNative === undefined ? existingNative.length > 0 : preparedNative.length > 0;
+        if (
+          crons.length === 0 &&
+          !webhookEnabled &&
+          !githubEnabled &&
+          !messageProvider &&
+          !hasNative
+        ) {
           throw new ORPCError("BAD_REQUEST", {
-            message: "Add a schedule, webhook, GitHub, or message trigger",
+            message: "Add a schedule, webhook, GitHub, message, or native event trigger",
           });
         }
         if (hasMixedOneShotSchedule(crons)) {
@@ -3444,26 +3492,42 @@ export function createRouter(deps: RouterDeps) {
               ? (armedOneShotAt ?? existing.nextRunAt)
               : (recalculatedNextRunAt ?? existing.nextRunAt);
         // Re-check the parent in the write itself so an archive that lands after the read wins.
-        const row = await deps.prisma.routine
-          .update({
-            where: { id: existing.id, bot: { archivedAt: null } },
-            data: {
-              name: input.name,
-              prompt: input.prompt,
-              crons: input.crons,
-              timezone: input.timezone,
-              active: input.active,
-              notify: input.notify,
-              webhookEnabled: input.webhookEnabled,
-              githubEnabled: input.githubEnabled,
-              messageProvider: input.messageProvider,
-              nextRunAt,
-            },
+        const { row, nativeTriggers } = await deps.prisma
+          .$transaction(async (tx) => {
+            const row = await tx.routine
+              .update({
+                where: { id: existing.id, bot: { archivedAt: null } },
+                data: {
+                  name: input.name,
+                  prompt: input.prompt,
+                  crons: input.crons,
+                  timezone: input.timezone,
+                  active: input.active,
+                  notify: input.notify,
+                  webhookEnabled: input.webhookEnabled,
+                  githubEnabled: input.githubEnabled,
+                  messageProvider: input.messageProvider,
+                  nextRunAt,
+                },
+              })
+              .catch((error: unknown) => {
+                if (isRecordNotFound(error)) throw new ORPCError("NOT_FOUND");
+                throw error;
+              });
+            if (preparedNative !== undefined)
+              await replaceNativeRoutineTriggersTx(tx, context.actor, row.id, preparedNative);
+            else await requireRoutineTrigger(tx, context.actor, row.id);
+            return {
+              row,
+              nativeTriggers: preparedNative === undefined ? existingNative : preparedNative,
+            };
           })
-          .catch((error: unknown) => {
-            if (isRecordNotFound(error)) throw new ORPCError("NOT_FOUND");
-            throw error;
-          });
+          .catch(rethrowNativeRoutineError);
+        const savedNative = await listNativeRoutineTriggers(
+          deps.prisma,
+          context.actor,
+          row.id,
+        ).catch(rethrowNativeRoutineError);
         if (bot.thread) {
           await deps.events.append({
             spaceId: context.actor.spaceId,
@@ -3484,7 +3548,12 @@ export function createRouter(deps: RouterDeps) {
             await deps.jobs.cancel(routineJobKey(row.id));
           }
         }
-        return mapRoutine(row);
+        if (row.active && (preparedNative !== undefined || !existing.active))
+          for (const trigger of savedNative)
+            await deps.jobs
+              .enqueue(nativeSourceJob(trigger.id, trigger.version))
+              .catch(() => undefined);
+        return mapRoutine(row, savedNative);
       }),
       remove: authed.routines.remove.handler(async ({ context, input }) => {
         const existing = await deps.prisma.routine.findFirst({
@@ -3507,6 +3576,12 @@ export function createRouter(deps: RouterDeps) {
         const bot = await repos.getBot(context.actor, routine.botId);
         if (!bot.thread) throw new IsolationError();
         const threadId = bot.thread.id;
+        const nativeTriggers = await listNativeRoutineTriggers(
+          deps.prisma,
+          context.actor,
+          routine.id,
+        );
+        const connectionIds = [...new Set(nativeTriggers.map((trigger) => trigger.connectionId))];
         const nonce = input.clientNonce ? `routine-test:${input.clientNonce}` : undefined;
         if (nonce) {
           const existing = await deps.prisma.run.findFirst({
@@ -3536,6 +3611,7 @@ export function createRouter(deps: RouterDeps) {
                 userId: context.actor.userId,
                 prompt,
                 status: "queued",
+                connectionIds,
               },
             });
             const currentModel = await tx.routine.findUnique({
@@ -4574,6 +4650,91 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     nativeConnectors: {
+      notionWebhookStatus: authed.nativeConnectors.notionWebhookStatus.handler(
+        async ({ context, input }) => {
+          if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+          if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+          return deps.nativeConnectors.eventHooks
+            .status(
+              input,
+              connectionContext(
+                context.actor,
+                "nativeConnectors.notionWebhookStatus",
+                context.signal,
+              ),
+              true,
+            )
+            .catch(rethrowNativeRoutineError);
+        },
+      ),
+      beginNotionWebhookSetup: authed.nativeConnectors.beginNotionWebhookSetup.handler(
+        async ({ context, input }) => {
+          if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+          if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+          return deps.nativeConnectors.eventHooks
+            .begin(
+              input,
+              connectionContext(
+                context.actor,
+                "nativeConnectors.beginNotionWebhookSetup",
+                context.signal,
+              ),
+              true,
+            )
+            .catch(rethrowNativeRoutineError);
+        },
+      ),
+      revealNotionWebhookToken: authed.nativeConnectors.revealNotionWebhookToken.handler(
+        async ({ context, input }) => {
+          if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+          if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+          return deps.nativeConnectors.eventHooks
+            .reveal(
+              input,
+              connectionContext(
+                context.actor,
+                "nativeConnectors.revealNotionWebhookToken",
+                context.signal,
+              ),
+              true,
+            )
+            .catch(rethrowNativeRoutineError);
+        },
+      ),
+      confirmNotionWebhookSetup: authed.nativeConnectors.confirmNotionWebhookSetup.handler(
+        async ({ context, input }) => {
+          if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+          if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+          return deps.nativeConnectors.eventHooks
+            .confirm(
+              input,
+              connectionContext(
+                context.actor,
+                "nativeConnectors.confirmNotionWebhookSetup",
+                context.signal,
+              ),
+              true,
+            )
+            .catch(rethrowNativeRoutineError);
+        },
+      ),
+      disableNotionWebhook: authed.nativeConnectors.disableNotionWebhook.handler(
+        async ({ context, input }) => {
+          if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+          if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+          return deps.nativeConnectors.eventHooks
+            .disable(
+              input,
+              connectionContext(
+                context.actor,
+                "nativeConnectors.disableNotionWebhook",
+                context.signal,
+              ),
+              true,
+            )
+            .catch(rethrowNativeRoutineError);
+        },
+      ),
       status: authed.nativeConnectors.status.handler(async ({ context }) => {
         if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
         return {
@@ -6891,26 +7052,30 @@ function nextRoutineDate(crons: string[], timezone: string): Date {
   return next;
 }
 
-function mapRoutine(row: {
-  id: string;
-  botId: string;
-  name: string;
-  prompt: string;
-  crons: string[];
-  timezone: string;
-  active: boolean;
-  notify: boolean;
-  webhookEnabled: boolean;
-  githubEnabled: boolean;
-  messageProvider: string | null;
-  modelProvider: string | null;
-  modelId: string | null;
-  thinkingLevel: string | null;
-  lastRunAt: Date | null;
-  nextRunAt: Date | null;
-  createdAt: Date;
-}): Routine {
+function mapRoutine(
+  row: {
+    id: string;
+    botId: string;
+    name: string;
+    prompt: string;
+    crons: string[];
+    timezone: string;
+    active: boolean;
+    notify: boolean;
+    webhookEnabled: boolean;
+    githubEnabled: boolean;
+    messageProvider: string | null;
+    modelProvider: string | null;
+    modelId: string | null;
+    thinkingLevel: string | null;
+    lastRunAt: Date | null;
+    nextRunAt: Date | null;
+    createdAt: Date;
+  },
+  nativeTriggers: NativeRoutineTrigger[] = [],
+): Routine {
   return {
+    nativeTriggers,
     id: row.id,
     botId: row.botId,
     name: row.name,
@@ -6935,7 +7100,12 @@ async function listRoutinesDto(deps: RouterDeps, actor: Actor, botId: string) {
   const rows = await deps.prisma.routine.findMany({
     where: { botId, spaceId: actor.spaceId },
   });
-  return rows.map(mapRoutine);
+  const nativeByRoutine = await listNativeRoutineTriggersBatch(
+    deps.prisma,
+    actor,
+    rows.map((row) => row.id),
+  );
+  return rows.map((row) => mapRoutine(row, nativeByRoutine.get(row.id) ?? []));
 }
 
 /**
@@ -7103,4 +7273,18 @@ async function messagingConnectionDto(
     status: connection.status as "pending" | "approved" | "declined" | "revoked",
     incoming,
   };
+}
+
+async function prepareNativeRoutineInputs(
+  deps: RouterDeps,
+  actor: Actor,
+  input: unknown,
+  signal: AbortSignal,
+) {
+  if (input === undefined) return undefined;
+  if (Array.isArray(input) && input.length === 0) return [];
+  if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+  return deps.nativeConnectors.routineEvents
+    .prepareForRoutineMutation(actor, input, signal)
+    .catch(rethrowNativeRoutineError);
 }

@@ -137,3 +137,18 @@ describe("outgoing correlation headers", () => {
     expect(headers["x-request-id"]).not.toBe("origin");
   });
 });
+
+it("never logs a pending Notion callback capability on matched or wrong-method requests", async () => {
+  const sink = createTestSink(),
+    logger = createLogger({ service: "rakazo-api", sinks: [sink] }),
+    app = appWith(logger);
+  app.post("/api/connectors/events/notion/:hookId", (c) => c.body(null, 204));
+  const nonce = "synthetic-owner-only-random-callback";
+  await app.request(`/api/connectors/events/notion/${nonce}`, { method: "POST" });
+  await app.request(`/api/connectors/events/notion/${nonce}`, { method: "GET" });
+  expect(sink.events).toHaveLength(2);
+  expect(
+    sink.events.every((event) => event["http.route"] === "/api/connectors/events/notion/:hookId"),
+  ).toBe(true);
+  expect(JSON.stringify(sink.events)).not.toContain(nonce);
+});

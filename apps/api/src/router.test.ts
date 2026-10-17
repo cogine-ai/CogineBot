@@ -3744,6 +3744,27 @@ describe("routines.update", () => {
     );
     const enqueue = vi.fn(async () => undefined);
     const prisma = {
+      // Native trigger listing checks membership and reads the owned trigger rows.
+      spaceMember: {
+        findUnique: vi.fn(async (args: { where: { spaceId_userId: unknown } }) => {
+          expect(args.where.spaceId_userId).toEqual({
+            userId: actor.userId,
+            spaceId: actor.spaceId,
+          });
+          return { id: "membership-1" };
+        }),
+      },
+      $queryRaw: vi.fn(async (query: { sql: string }) => {
+        if (query.sql.includes("/*native-event:list*/")) return [];
+        // This fixture keeps its existing @once schedule when native intent is omitted.
+        if (query.sql.includes("/*native-event:has-any-trigger*/")) return [{ allowed: true }];
+        throw new Error("Unexpected native event SQL in Routine update fixture");
+      }),
+      // The ordinary write and final trigger check now commit in the same transaction.
+      $transaction: vi.fn(
+        async <T>(work: (tx: PrismaClient) => Promise<T>): Promise<T> =>
+          work(prisma as unknown as PrismaClient),
+      ),
       spaceModelPreference: {
         findMany: vi.fn(async () => []),
         findFirst: vi.fn(async () => ({ id: "preference-1" })),
@@ -4393,5 +4414,53 @@ describe("link favicons", () => {
       code: "UNAUTHORIZED",
     });
     expect(favicon).not.toHaveBeenCalled();
+  });
+});
+
+describe("Routine list Native query batching", () => {
+  it("reads all Native metadata once for an existing list with no Native triggers", async () => {
+    const actor = {
+      userId: "owner",
+      spaceId: "space",
+      email: "synthetic@example.test",
+      isDeploymentOwner: true,
+    } satisfies Actor;
+    const rows = Array.from({ length: 20 }, (_, index) => ({
+      id: `routine-${index}`,
+      botId: "bot",
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+      name: "Synthetic",
+      prompt: "Synthetic prompt",
+      crons: ["0 9 * * *"],
+      timezone: "UTC",
+      active: true,
+      notify: false,
+      webhookEnabled: false,
+      githubEnabled: false,
+      messageProvider: null,
+      modelProvider: null,
+      modelId: null,
+      thinkingLevel: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      createdAt: new Date(),
+    }));
+    const findMany = vi.fn(async () => rows);
+    const query = vi.fn(async () => rows.map((row) => ({ ownedRoutineId: row.id, id: null })));
+    const prisma = {
+      bot: { findFirst: vi.fn(async () => ({ id: "bot", thread: null, computer: null })) },
+      routine: { findMany },
+      $queryRaw: query,
+    };
+    const client = createRouterClient(
+      createRouter({ prisma, env: { sandboxProvider: "fake" } } as unknown as RouterDeps),
+      { context: { actor } as never },
+    );
+    const routines = await client.routines.list({ botId: "bot" });
+    expect(findMany).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledOnce();
+    expect(routines).toHaveLength(20);
+    expect(routines.every((routine) => routine.nativeTriggers?.length === 0)).toBe(true);
   });
 });

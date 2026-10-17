@@ -48,6 +48,7 @@ function database() {
     ["botSecret", []],
     ["integrationProviderConfig", []],
     ["nativeAppConfig", []],
+    ["nativeNotionHook", []],
     ["user", [{ id: "user" }]],
     ["space", [{ id: "space", organizationId: "organization" }]],
     ["organization", [{ id: "organization" }]],
@@ -128,12 +129,21 @@ function database() {
   }
   client.$queryRaw = async (query: { sql: string; values: unknown[] }) => {
     if (!query.sql) return [];
+    if (query.sql.includes("native-hook:credential-reference"))
+      return [
+        {
+          referenced: tables
+            .get("nativeNotionHook")!
+            .some((row) => row.ciphertext === query.values[0]),
+        },
+      ];
     const table = query.sql.match(/FROM "([^"]+)"/)?.[1];
     const names: Record<string, string> = {
       secrets: "secret",
       bot_secrets: "botSecret",
       integration_provider_configs: "integrationProviderConfig",
       native_app_configs: "nativeAppConfig",
+      native_notion_hooks: "nativeNotionHook",
       user: "user",
       spaces: "space",
       bots: "bot",
@@ -332,6 +342,49 @@ describe("secret persistence cleanup", () => {
       await expect(store.load(first.ciphertext, "app-material-1")).rejects.toThrow();
       await expect(store.load(next.ciphertext, "app-material-2")).resolves.toBe("next-app-secret");
       await prisma.nativeAppConfig.deleteMany({ where: { id: "app-config" } });
+      expect(fake.values.size).toBe(0);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("keeps global Notion hook material through User/Space deletion, rotates by AAD and cleans deletion", async () => {
+    const fake = infisicalFake(),
+      store = new InfisicalSecretStore(fake.options);
+    await store.start();
+    const db = database(),
+      prisma = withSecretPersistence(db.prisma, store);
+    const hook = Reflect.get(prisma, "nativeNotionHook") as {
+      create(args: Args): Promise<unknown>;
+      update(args: Args): Promise<unknown>;
+      deleteMany(args: Args): Promise<unknown>;
+    };
+    const first = await store.put("synthetic-first-hook-token", context, {
+      recordId: "hook-material-1",
+    });
+    try {
+      await hook.create({
+        data: { id: "hook-row", ciphertext: first.ciphertext, secretRecordId: "hook-material-1" },
+      });
+      await prisma.space.deleteMany({ where: { id: "space" } });
+      await prisma.user.deleteMany({ where: { id: "user" } });
+      await expect(store.load(first.ciphertext, { recordId: "hook-material-1" })).resolves.toBe(
+        "synthetic-first-hook-token",
+      );
+      expect(fake.values.size).toBe(1);
+      const next = await store.put("synthetic-next-hook-token", context, {
+        recordId: "hook-material-2",
+      });
+      await hook.update({
+        where: { id: "hook-row" },
+        data: { id: "hook-row", ciphertext: next.ciphertext, secretRecordId: "hook-material-2" },
+      });
+      expect(fake.values.size).toBe(1);
+      await expect(store.load(first.ciphertext, { recordId: "hook-material-1" })).rejects.toThrow();
+      await expect(store.load(next.ciphertext, { recordId: "hook-material-2" })).resolves.toBe(
+        "synthetic-next-hook-token",
+      );
+      await hook.deleteMany({ where: { id: "hook-row" } });
       expect(fake.values.size).toBe(0);
     } finally {
       await store.close();

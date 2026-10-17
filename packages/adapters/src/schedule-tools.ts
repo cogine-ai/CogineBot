@@ -8,6 +8,7 @@ import {
   ONCE_ROUTINE_CRON,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { listNativeRoutineTriggersBatch } from "./native-connectors/events/store.js";
 
 export { isOneShotRoutineCron, ONCE_ROUTINE_CRON };
 
@@ -289,8 +290,14 @@ export async function listSchedulesFromTool(
     },
     orderBy: { createdAt: "desc" },
   });
+  const nativeByRoutine = await listNativeRoutineTriggersBatch(
+    deps.prisma,
+    input,
+    rows.map((row) => row.id),
+  );
   return {
     routines: rows.map((row) => ({
+      nativeTriggers: nativeByRoutine.get(row.id) ?? [],
       routineId: row.id,
       name: row.name,
       prompt: row.prompt,

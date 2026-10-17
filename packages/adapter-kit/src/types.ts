@@ -1,6 +1,8 @@
 import type {
   CacheCapabilities as ConnectionCacheCapabilities,
   ConnectionCatalogItem,
+  NativeNotionSignalJobPayload,
+  NativeSourceJobPayload,
   SandboxKind,
 } from "@rakazo/contracts";
 
@@ -636,6 +638,8 @@ export interface VoiceTranscribeRequest {
 }
 
 export interface BackgroundJobPayloads {
+  "native.source.poll": NativeSourceJobPayload;
+  "native.notion.signal": NativeNotionSignalJobPayload;
   "run.continue": { runId: string };
   "routine.wakeup": { routineId: string; scheduledFor: string };
   "computer.sleep": { computerId: string };

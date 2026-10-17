@@ -221,6 +221,10 @@ msgstr "1 个账号已在本地断开"
 msgid "A bit of everything"
 msgstr "什么都做一点"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "A public HTTPS address is required to receive Notion webhooks."
+msgstr "接收 Notion Webhook 需要可公开访问的 HTTPS 地址。"
+
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -249,6 +253,7 @@ msgid "Access token (optional)"
 msgstr "访问令牌（可选）"
 
 #: src/pages/AccountSettingsOverlay.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Account"
 msgstr "账户"
 
@@ -335,12 +340,12 @@ msgid "Add a run time for this one-shot."
 msgstr "为此一次性任务添加运行时间。"
 
 #: src/pages/Shell.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger"
-msgstr ""
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger"
+msgstr "请添加定时、应用事件、Webhook、GitHub 或消息触发器"
 
 #: src/pages/RoutineEditor.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger to run this routine."
-msgstr ""
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger to run this routine."
+msgstr "添加定时、应用事件、Webhook、GitHub 或消息触发器，即可运行此例行任务。"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Add a server name."
@@ -422,6 +427,10 @@ msgstr "添加服务地址"
 #: src/pages/shell/chat-recipients.tsx
 msgid "Add someone…"
 msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Add this URL in your Notion integration’s Webhooks tab."
+msgstr "在 Notion 集成的 Webhooks 标签页中添加此地址。"
 
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
@@ -544,6 +553,10 @@ msgstr "始终允许"
 msgid "An API key is stored for this provider, not a subscription sign-in."
 msgstr "此提供方存储的是 API 密钥，不是订阅登录。"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Anchor block ID"
+msgstr "锚点区块 ID"
+
 #: src/components/AskCard.tsx
 msgid "Answer"
 msgstr "回答"
@@ -602,6 +615,15 @@ msgstr "应用"
 msgid "Application credentials"
 msgstr "应用凭据"
 
+#: src/pages/RoutineEditor.tsx
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application event"
+msgstr "应用事件"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application events"
+msgstr "应用事件"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Application filter"
 msgstr "筛选应用"
@@ -613,6 +635,10 @@ msgstr "应用归属"
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Application saved"
 msgstr "应用已保存"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Application settings changed"
+msgstr "应用配置已变更"
 
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
@@ -781,6 +807,10 @@ msgstr ""
 msgid "Back"
 msgstr "返回"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Back to applications"
+msgstr "返回应用列表"
+
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
 msgstr "返回登录"
@@ -815,9 +845,21 @@ msgstr ""
 msgid "Bearer token"
 msgstr "Bearer token"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Before a Calendar event"
+msgstr "日程开始前"
+
 #: src/pages/SettingsOverlay.tsx
 msgid "Billing"
 msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block"
+msgstr "区块"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block ID"
+msgstr "区块 ID"
 
 #: src/lib/ticket-status.ts
 msgid "Blocked"
@@ -896,6 +938,22 @@ msgstr "内置"
 msgid "By Cogine"
 msgstr "Cogine 出品"
 
+#: src/pages/RoutineEditor.tsx
+msgid "Calendar event"
+msgstr "日历事件"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar event changed"
+msgstr "日程变更"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar ID"
+msgstr "日历 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar target"
+msgstr "日历范围"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Callback URL"
 msgstr "回调地址"
@@ -908,6 +966,7 @@ msgstr "无法连接服务器。"
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/integrations/NativeApplicationSetup.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -1016,9 +1075,17 @@ msgstr "检查状态"
 msgid "Check the API key or sign-in, then test again."
 msgstr "请检查 API 密钥或登录，然后重新测试。"
 
+#: src/pages/Shell.tsx
+msgid "Check the application event accounts and fields."
+msgstr "请检查应用事件的账号和填写内容。"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "请检查服务器 URL 和网络，然后重新测试。"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Check this ID against your Notion integration before enabling events."
+msgstr "启用前，请核对该 ID 与 Notion 集成中的 ID 一致。"
 
 #: src/pages/Auth.tsx
 msgid "Check your email"
@@ -1043,6 +1110,10 @@ msgstr "工作副本有本地更改。请先清理再更新。"
 msgid "Choose a bot…"
 msgstr "选择 Bot…"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose a connected account to change this event."
+msgstr "请选择已连接的账号，再修改此事件。"
+
 #: src/components/integrations/NativeAccountConnect.tsx
 msgid "Choose a connection method"
 msgstr "选择连接方式"
@@ -1051,9 +1122,17 @@ msgstr "选择连接方式"
 msgid "Choose a new password"
 msgstr "设置新密码"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose account"
+msgstr "选择账号"
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose an image file"
 msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose event"
+msgstr "选择事件"
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose image"
@@ -1292,6 +1371,10 @@ msgstr "连接提供商后即可添加备用模型。"
 
 #: src/components/integrations/NativeAccountConnect.tsx
 msgid "Connect account"
+msgstr "连接账号"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect an account"
 msgstr "连接账号"
 
 #: src/pages/ModelSettingsOverlay.tsx
@@ -1625,6 +1708,10 @@ msgstr ""
 msgid "Could not load"
 msgstr "无法加载"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Could not load accounts"
+msgstr "无法加载账号"
+
 #: src/pages/ActivityList.tsx
 msgid "Could not load activity"
 msgstr ""
@@ -1664,6 +1751,10 @@ msgstr "无法加载连接方式"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Could not load credentials."
 msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not load event subscriptions"
+msgstr "无法加载事件订阅"
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -1895,6 +1986,10 @@ msgstr "无法更新"
 msgid "Could not update computer"
 msgstr "无法更新电脑"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not update event subscription"
+msgstr "无法更新事件订阅"
+
 #: src/pages/Shell.tsx
 msgid "Could not update reaction"
 msgstr "无法更新反应"
@@ -2032,6 +2127,14 @@ msgstr "自定义机器人头像"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Dark"
 msgstr "深色"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source"
+msgstr "数据源"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source ID"
+msgstr "数据源 ID"
 
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
@@ -2221,6 +2324,14 @@ msgstr "已断开的账号（{0}）"
 msgid "Disconnecting…"
 msgstr "正在断开…"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion"
+msgstr "讨论"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion ID"
+msgstr "讨论 ID"
+
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/shell/message-cards.tsx
@@ -2345,6 +2456,10 @@ msgstr "需要验证邮箱"
 msgid "Enable {0}"
 msgstr "启用 {0}"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enable events"
+msgstr "启用事件"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Enabled"
 msgstr "已启用"
@@ -2392,9 +2507,25 @@ msgstr "请输入 1 到 1000 之间的整数作为图像限制。"
 msgid "Enter an API key before testing."
 msgstr "测试前请输入 API 密钥。"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter the integration ID and verify the subscription in Notion first."
+msgstr "请先填写集成 ID，并在 Notion 中验证此订阅。"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter your integration ID, or make a change in Notion to receive it."
+msgstr "输入集成 ID，或在 Notion 中做一次更改以获取 ID。"
+
 #: src/lib/roster-status.ts
 msgid "Error"
 msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event"
+msgstr "事件"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event ID"
+msgstr "日程 ID"
 
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/RoutineSchedule.tsx
@@ -2662,6 +2793,10 @@ msgstr "你好，这是我朗读回复时的声音。"
 msgid "Hide password"
 msgstr "隐藏密码"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Hide token"
+msgstr "隐藏令牌"
+
 #: src/components/call/VoiceChatCard.tsx
 msgid "Hide transcript"
 msgstr "隐藏文字记录"
@@ -2693,6 +2828,10 @@ msgstr "频率"
 #: src/components/teach/SkillDraftCard.tsx
 msgid "How to check"
 msgstr "如何检查"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "I verified this subscription in Notion"
+msgstr "我已在 Notion 中验证此订阅"
 
 #: src/pages/Shell.tsx
 msgid "I’m done"
@@ -2746,9 +2885,17 @@ msgstr "实例 API 密钥"
 msgid "Instruction"
 msgstr "指令"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration"
+msgstr "集成"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Integration domain"
 msgstr "服务域名"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration ID in Notion"
+msgstr "Notion 集成 ID"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Integration options"
@@ -2888,6 +3035,10 @@ msgstr "加载更早的运行记录"
 msgid "Load web images automatically"
 msgstr "自动加载网络图片"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Loading accounts…"
+msgstr "正在加载账号…"
+
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "正在加载动态…"
@@ -2919,6 +3070,10 @@ msgstr "正在加载预览…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Loading rules…"
 msgstr "正在加载规则…"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Loading subscriptions…"
+msgstr "正在加载订阅…"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading tools…"
@@ -2980,6 +3135,10 @@ msgstr ""
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Machine API key"
 msgstr "机器 API 密钥"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Make a change in Notion to confirm event delivery."
+msgstr "在 Notion 中做一次更改，确认能收到事件。"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Make sure nothing is still running on this computer."
@@ -3174,6 +3333,10 @@ msgstr "分钟"
 #: src/pages/RoutineSchedule.tsx
 msgid "minutes"
 msgstr "分钟"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Minutes before"
+msgstr "提前分钟数"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3379,6 +3542,10 @@ msgstr "还没有关联聊天应用。"
 msgid "No connected apps."
 msgstr "暂无已连接应用。"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "No connected Calendar or Notion accounts"
+msgstr "暂无已连接的日历或 Notion 账号"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "No connected or pending accounts remain for this source."
 msgstr "此来源已无已连接或待授权账号。"
@@ -3500,6 +3667,34 @@ msgstr "暂无记忆"
 #: src/pages/shell/bot-panel.tsx
 msgid "Notifications"
 msgstr "通知"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion comments changed"
+msgstr "Notion 评论变更"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Notion event"
+msgstr "Notion 事件"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion page content changed"
+msgstr "Notion 页面内容变更"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion properties or data source changed"
+msgstr "Notion 属性或数据源变更"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion setup instructions"
+msgstr "Notion 配置说明"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion target"
+msgstr "Notion 对象"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion webhooks"
+msgstr "Notion Webhook"
 
 #: src/pages/ActivityList.tsx
 msgid "Now"
@@ -3655,6 +3850,14 @@ msgstr "其他来源保持连接，已发出的操作仍可能完成。"
 msgid "Owner"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page"
+msgstr "页面"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page ID"
+msgstr "页面 ID"
+
 #: src/pages/RoutineEditor.tsx
 msgid "PagerDuty incident"
 msgstr "PagerDuty 事件"
@@ -3696,6 +3899,10 @@ msgstr "粘贴替换密钥"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Paste the OpenAI-compatible address from your server. CogineBot adds /v1 if needed."
 msgstr "粘贴服务器的 OpenAI 兼容地址。需要时 CogineBot 会补上 /v1。"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Paste the verification token into Notion and verify the subscription."
+msgstr "将验证令牌粘贴到 Notion，完成订阅验证。"
 
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Paste your API key"
@@ -3760,6 +3967,10 @@ msgstr "预览 {0}"
 msgid "Preview isn't available for this file type — download it to view it."
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Previous account"
+msgstr "原账号"
+
 #: src/pages/Board.tsx
 msgid "Priority"
 msgstr ""
@@ -3775,6 +3986,10 @@ msgstr ""
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Project ID"
 msgstr "项目 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Property IDs (optional, one per line)"
+msgstr "属性 ID（可选，每行一个）"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Protected input"
@@ -3842,6 +4057,10 @@ msgstr ""
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Recall only"
 msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Receiving events"
+msgstr "正在接收事件"
 
 #: src/pages/ActivityList.tsx
 msgid "Recent"
@@ -3920,8 +4139,17 @@ msgstr "重建无法正常工作的电脑。"
 msgid "Recreating the computer"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring instance"
+msgstr "某次重复日程"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring series"
+msgstr "整组重复日程"
+
 #: src/App.tsx
 #: src/components/ErrorBoundary.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/pages/RoutineRunHistory.tsx
 msgid "Refresh"
 msgstr "刷新"
@@ -3934,9 +4162,10 @@ msgstr "刷新状态"
 msgid "Refresh view"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
-msgstr ""
+msgstr "正在刷新…"
 
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Register this exact URL in the application’s OAuth settings."
@@ -3976,6 +4205,10 @@ msgstr "移除 {full}"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Remove {secretName}? This bot will no longer be able to use it."
 msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Remove application event"
+msgstr "移除应用事件"
 
 #: src/pages/RoutineEditor.tsx
 msgid "Remove Git event"
@@ -4235,6 +4468,10 @@ msgstr "保存备用模型"
 msgid "Save credential"
 msgstr ""
 
+#: src/pages/RoutineEditor.tsx
+msgid "Save event changes"
+msgstr "保存事件更改"
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Save limits"
 msgstr ""
@@ -4433,6 +4670,10 @@ msgstr "在此配置应用，成员可在应用目录中连接账号。"
 msgid "Set up application"
 msgstr "配置应用"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Set up subscription"
+msgstr "配置订阅"
+
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -4447,6 +4688,10 @@ msgstr "设置：通用"
 #: src/pages/Shell.tsx
 msgid "Settings: Usage"
 msgstr "设置：用量"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Setup expired"
+msgstr "验证已过期"
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4527,6 +4772,10 @@ msgstr ""
 msgid "Show transcript"
 msgstr "显示文字记录"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Show verification token"
+msgstr "显示验证令牌"
+
 #: src/lib/localized-provider-hint.ts
 #: src/pages/Auth.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4557,6 +4806,10 @@ msgstr "请使用订阅登录，或改为测试 API 密钥。"
 #: src/pages/Welcome.tsx
 msgid "Sign up"
 msgstr "注册"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Single event"
+msgstr "单个日程"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Site"
@@ -4682,9 +4935,25 @@ msgstr "停止"
 msgid "Stop speaking"
 msgstr "停止朗读"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop subscription"
+msgstr "停止订阅"
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Stop teaching"
 msgstr "停止示范"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop the existing subscription here before enabling this one."
+msgstr "请先在此停止现有订阅，再启用此订阅。"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop this subscription?"
+msgstr "停止此订阅？"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stopped"
+msgstr "已停止"
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -4911,6 +5180,10 @@ msgstr "此服务器未请求浏览器授权。"
 msgid "This server is already connected. Disconnect it first to authorize again."
 msgstr "此服务器已连接。请先断开再重新授权。"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "This setup has expired. Refresh to check its status."
+msgstr "本次验证已过期，请刷新查看状态。"
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "This subscription sign-in is not available in CogineBot yet. Use a deployment credential or choose another provider."
 msgstr "此订阅登录在 CogineBot 中尚不可用。请使用部署凭据或选择其他提供方。"
@@ -4991,6 +5264,7 @@ msgstr ""
 #: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Try again"
 msgstr "重试"
 
@@ -5015,6 +5289,7 @@ msgid "Unassigned"
 msgstr "未分配"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Unavailable"
 msgstr "不可用"
 
@@ -5139,6 +5414,10 @@ msgstr "请使用“连接”验证密钥。"
 msgid "Use default guidance"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Use ID from received event"
+msgstr "使用事件中的集成 ID"
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."
 msgstr ""
@@ -5172,9 +5451,17 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "值会加密保存，之后不再显示。"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verification token"
+msgstr "验证令牌"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "校验并添加"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verify in Notion"
+msgstr "在 Notion 中验证"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Verifying…"
@@ -5203,6 +5490,14 @@ msgstr "语音聊天"
 msgid "Wait a moment and test again."
 msgstr "请稍候并重新测试。"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for first signed event"
+msgstr "等待首条签名事件"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for Notion"
+msgstr "等待 Notion"
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Waiting for the API to come back…"
 msgstr "正在等待 API 恢复…"
@@ -5225,6 +5520,22 @@ msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Webhook"
+msgstr "Webhook"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook deliveries will be ignored. Routines continue checking Notion for changes."
+msgstr "将忽略 Webhook 推送。例行任务仍会继续检查 Notion 的变化。"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook stopped here. Remove the subscription in Notion separately."
+msgstr "本实例已停用 Webhook。请另行在 Notion 中删除订阅。"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook URL"
+msgstr "Webhook 地址"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Webhooks"
 msgstr "Webhook"
 
 #: src/pages/shell/bot-credentials.tsx
@@ -5279,6 +5590,10 @@ msgstr "何时使用"
 #: src/pages/HostComputerPrompt.tsx
 msgid "Where should bots run?"
 msgstr "Bot 应在哪里运行？"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Whole calendar"
+msgstr "整个日历"
 
 #: src/lib/ticket-status.ts
 msgid "Won't do"

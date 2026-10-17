@@ -221,6 +221,10 @@ msgstr "계정 1개 로컬 연결 해제"
 msgid "A bit of everything"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "A public HTTPS address is required to receive Notion webhooks."
+msgstr ""
+
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -249,6 +253,7 @@ msgid "Access token (optional)"
 msgstr "액세스 토큰(선택 사항)"
 
 #: src/pages/AccountSettingsOverlay.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Account"
 msgstr "계정"
 
@@ -335,11 +340,11 @@ msgid "Add a run time for this one-shot."
 msgstr "이 일회성 실행의 시간을 추가하세요."
 
 #: src/pages/Shell.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger"
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger to run this routine."
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger to run this routine."
 msgstr ""
 
 #: src/pages/McpServersOverlay.tsx
@@ -421,6 +426,10 @@ msgstr ""
 
 #: src/pages/shell/chat-recipients.tsx
 msgid "Add someone…"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Add this URL in your Notion integration’s Webhooks tab."
 msgstr ""
 
 #: src/components/teach/SkillDraftCard.tsx
@@ -544,6 +553,10 @@ msgstr "항상 허용됨"
 msgid "An API key is stored for this provider, not a subscription sign-in."
 msgstr "이 서비스에는 구독 로그인이 아니라 API 키가 저장되어 있습니다."
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Anchor block ID"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Answer"
 msgstr "답변"
@@ -602,6 +615,15 @@ msgstr ""
 msgid "Application credentials"
 msgstr ""
 
+#: src/pages/RoutineEditor.tsx
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application events"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Application filter"
 msgstr "앱 필터"
@@ -612,6 +634,10 @@ msgstr ""
 
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Application saved"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Application settings changed"
 msgstr ""
 
 #: src/components/teach/SkillDraftCard.tsx
@@ -781,6 +807,10 @@ msgstr ""
 msgid "Back"
 msgstr "뒤로"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Back to applications"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
 msgstr "로그인으로 돌아가기"
@@ -815,8 +845,20 @@ msgstr ""
 msgid "Bearer token"
 msgstr "Bearer 토큰"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Before a Calendar event"
+msgstr ""
+
 #: src/pages/SettingsOverlay.tsx
 msgid "Billing"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block ID"
 msgstr ""
 
 #: src/lib/ticket-status.ts
@@ -896,6 +938,22 @@ msgstr "기본 제공"
 msgid "By Cogine"
 msgstr "Cogine 제공"
 
+#: src/pages/RoutineEditor.tsx
+msgid "Calendar event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar event changed"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar ID"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar target"
+msgstr ""
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Callback URL"
 msgstr ""
@@ -908,6 +966,7 @@ msgstr "서버에 연결할 수 없습니다."
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/integrations/NativeApplicationSetup.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -1016,9 +1075,17 @@ msgstr "상태 확인"
 msgid "Check the API key or sign-in, then test again."
 msgstr "API 키 또는 로그인을 확인한 뒤 다시 테스트하세요."
 
+#: src/pages/Shell.tsx
+msgid "Check the application event accounts and fields."
+msgstr ""
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "서버 URL과 네트워크를 확인한 뒤 다시 테스트하세요."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Check this ID against your Notion integration before enabling events."
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Check your email"
@@ -1043,6 +1110,10 @@ msgstr "체크아웃에 로컬 변경 사항이 있습니다. 업데이트하기
 msgid "Choose a bot…"
 msgstr "Bot 선택…"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose a connected account to change this event."
+msgstr ""
+
 #: src/components/integrations/NativeAccountConnect.tsx
 msgid "Choose a connection method"
 msgstr ""
@@ -1051,8 +1122,16 @@ msgstr ""
 msgid "Choose a new password"
 msgstr "새 비밀번호 선택"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose account"
+msgstr ""
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose an image file"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose event"
 msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
@@ -1292,6 +1371,10 @@ msgstr "백업을 추가하려면 제공업체를 연결하세요."
 
 #: src/components/integrations/NativeAccountConnect.tsx
 msgid "Connect account"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect an account"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
@@ -1625,6 +1708,10 @@ msgstr ""
 msgid "Could not load"
 msgstr "불러올 수 없음"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Could not load accounts"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Could not load activity"
 msgstr ""
@@ -1663,6 +1750,10 @@ msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Could not load credentials."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not load event subscriptions"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -1895,6 +1986,10 @@ msgstr "업데이트하지 못했습니다."
 msgid "Could not update computer"
 msgstr "컴퓨터를 업데이트할 수 없습니다"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not update event subscription"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Could not update reaction"
 msgstr "반응을 업데이트할 수 없습니다"
@@ -2032,6 +2127,14 @@ msgstr "봇 아바타 맞춤설정"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Dark"
 msgstr "다크"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source ID"
+msgstr ""
 
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
@@ -2221,6 +2324,14 @@ msgstr "연결 해제된 계정 ({0})"
 msgid "Disconnecting…"
 msgstr "연결 해제 중…"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion ID"
+msgstr ""
+
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/shell/message-cards.tsx
@@ -2345,6 +2456,10 @@ msgstr "이메일 인증이 필요합니다"
 msgid "Enable {0}"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enable events"
+msgstr ""
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Enabled"
 msgstr ""
@@ -2392,8 +2507,24 @@ msgstr "이미지 한도는 1에서 1000 사이의 정수로 입력하세요."
 msgid "Enter an API key before testing."
 msgstr "테스트하기 전에 API 키를 입력하세요."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter the integration ID and verify the subscription in Notion first."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter your integration ID, or make a change in Notion to receive it."
+msgstr ""
+
 #: src/lib/roster-status.ts
 msgid "Error"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event ID"
 msgstr ""
 
 #: src/pages/ExternalConversationSettings.tsx
@@ -2662,6 +2793,10 @@ msgstr "안녕하세요. 답변을 소리 내어 읽을 때 이런 목소리로 
 msgid "Hide password"
 msgstr "비밀번호 숨기기"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Hide token"
+msgstr ""
+
 #: src/components/call/VoiceChatCard.tsx
 msgid "Hide transcript"
 msgstr "대화 기록 숨기기"
@@ -2693,6 +2828,10 @@ msgstr "실행 주기"
 #: src/components/teach/SkillDraftCard.tsx
 msgid "How to check"
 msgstr "완료 확인 방법"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "I verified this subscription in Notion"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "I’m done"
@@ -2746,8 +2885,16 @@ msgstr "인스턴스 API 키"
 msgid "Instruction"
 msgstr "실행할 내용"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Integration domain"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration ID in Notion"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -2888,6 +3035,10 @@ msgstr "이전 실행 불러오기"
 msgid "Load web images automatically"
 msgstr "웹 이미지 자동으로 불러오기"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Loading accounts…"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "활동을 불러오는 중…"
@@ -2919,6 +3070,10 @@ msgstr "미리보기를 불러오는 중…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Loading rules…"
 msgstr "확인 규칙을 불러오는 중…"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Loading subscriptions…"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading tools…"
@@ -2979,6 +3134,10 @@ msgstr ""
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Machine API key"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Make a change in Notion to confirm event delivery."
 msgstr ""
 
 #: src/components/ComputerUpdateProgress.tsx
@@ -3174,6 +3333,10 @@ msgstr "분"
 #: src/pages/RoutineSchedule.tsx
 msgid "minutes"
 msgstr "분"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Minutes before"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3379,6 +3542,10 @@ msgstr "아직 연결된 채팅 앱이 없습니다."
 msgid "No connected apps."
 msgstr "연결된 앱이 없습니다."
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "No connected Calendar or Notion accounts"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "No connected or pending accounts remain for this source."
 msgstr "이 소스에 연결되었거나 승인 대기 중인 계정이 없습니다."
@@ -3500,6 +3667,34 @@ msgstr "아직 기억한 내용이 없습니다"
 #: src/pages/shell/bot-panel.tsx
 msgid "Notifications"
 msgstr "알림"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion comments changed"
+msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+msgid "Notion event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion page content changed"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion properties or data source changed"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion setup instructions"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion target"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion webhooks"
+msgstr ""
 
 #: src/pages/ActivityList.tsx
 msgid "Now"
@@ -3655,6 +3850,14 @@ msgstr "다른 소스는 연결을 유지합니다. 이미 전송된 작업은 �
 msgid "Owner"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page ID"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "PagerDuty incident"
 msgstr "PagerDuty 인시던트"
@@ -3696,6 +3899,10 @@ msgstr "새 API 키를 붙여넣으세요"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Paste the OpenAI-compatible address from your server. CogineBot adds /v1 if needed."
 msgstr "서버의 OpenAI 호환 주소를 붙여넣으세요. 필요하면 CogineBot가 /v1을 추가합니다."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Paste the verification token into Notion and verify the subscription."
+msgstr ""
 
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Paste your API key"
@@ -3760,6 +3967,10 @@ msgstr "{0} 미리보기"
 msgid "Preview isn't available for this file type — download it to view it."
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Previous account"
+msgstr ""
+
 #: src/pages/Board.tsx
 msgid "Priority"
 msgstr ""
@@ -3774,6 +3985,10 @@ msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Project ID"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Property IDs (optional, one per line)"
 msgstr ""
 
 #: src/components/teach/TeachRecordingChrome.tsx
@@ -3841,6 +4056,10 @@ msgstr ""
 
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Recall only"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Receiving events"
 msgstr ""
 
 #: src/pages/ActivityList.tsx
@@ -3920,8 +4139,17 @@ msgstr "작동하지 않는 컴퓨터를 다시 만듭니다."
 msgid "Recreating the computer"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring instance"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring series"
+msgstr ""
+
 #: src/App.tsx
 #: src/components/ErrorBoundary.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/pages/RoutineRunHistory.tsx
 msgid "Refresh"
 msgstr "새로고침"
@@ -3934,6 +4162,7 @@ msgstr "상태 새로고침"
 msgid "Refresh view"
 msgstr "화면 새로고침"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr "새로고침 중…"
@@ -3975,6 +4204,10 @@ msgstr "{full} 삭제"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Remove {secretName}? This bot will no longer be able to use it."
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Remove application event"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
@@ -4235,6 +4468,10 @@ msgstr "백업 모델 저장"
 msgid "Save credential"
 msgstr ""
 
+#: src/pages/RoutineEditor.tsx
+msgid "Save event changes"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Save limits"
 msgstr ""
@@ -4433,6 +4670,10 @@ msgstr ""
 msgid "Set up application"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Set up subscription"
+msgstr ""
+
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -4447,6 +4688,10 @@ msgstr "설정: 일반"
 #: src/pages/Shell.tsx
 msgid "Settings: Usage"
 msgstr "설정: 사용량"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Setup expired"
+msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4527,6 +4772,10 @@ msgstr ""
 msgid "Show transcript"
 msgstr "대화 기록 표시"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Show verification token"
+msgstr ""
+
 #: src/lib/localized-provider-hint.ts
 #: src/pages/Auth.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4557,6 +4806,10 @@ msgstr "구독으로 로그인하거나 대신 API 키를 테스트하세요."
 #: src/pages/Welcome.tsx
 msgid "Sign up"
 msgstr "가입하기"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Single event"
+msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Site"
@@ -4682,9 +4935,25 @@ msgstr "중지"
 msgid "Stop speaking"
 msgstr "읽기 중지"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop subscription"
+msgstr ""
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Stop teaching"
 msgstr "가르치기 종료"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop the existing subscription here before enabling this one."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop this subscription?"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stopped"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -4911,6 +5180,10 @@ msgstr "이 서버는 브라우저 인증을 요청하지 않았습니다."
 msgid "This server is already connected. Disconnect it first to authorize again."
 msgstr "이 서버는 이미 연결되어 있습니다. 다시 인증하려면 먼저 연결을 해제하세요."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "This setup has expired. Refresh to check its status."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "This subscription sign-in is not available in CogineBot yet. Use a deployment credential or choose another provider."
 msgstr "이 구독 로그인 방식은 아직 CogineBot에서 지원되지 않습니다. 서버에 설정된 인증 정보를 사용하거나 다른 서비스를 선택하세요."
@@ -4991,6 +5264,7 @@ msgstr ""
 #: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Try again"
 msgstr "다시 시도"
 
@@ -5015,6 +5289,7 @@ msgid "Unassigned"
 msgstr "섹션 없음"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Unavailable"
 msgstr "사용할 수 없음"
 
@@ -5139,6 +5414,10 @@ msgstr "키를 확인하려면 연결을 사용하세요."
 msgid "Use default guidance"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Use ID from received event"
+msgstr ""
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."
 msgstr ""
@@ -5172,9 +5451,17 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "값은 암호화되며 다시 표시되지 않습니다."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verification token"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "확인 후 추가"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verify in Notion"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Verifying…"
@@ -5203,6 +5490,14 @@ msgstr "음성 대화"
 msgid "Wait a moment and test again."
 msgstr "잠시 기다린 뒤 다시 테스트하세요."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for first signed event"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for Notion"
+msgstr ""
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Waiting for the API to come back…"
 msgstr "API가 다시 작동하기를 기다리는 중…"
@@ -5226,6 +5521,22 @@ msgstr ""
 #: src/pages/RoutineEditor.tsx
 msgid "Webhook"
 msgstr "웹훅"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook deliveries will be ignored. Routines continue checking Notion for changes."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook stopped here. Remove the subscription in Notion separately."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook URL"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Webhooks"
+msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Website login"
@@ -5279,6 +5590,10 @@ msgstr "언제 사용할지"
 #: src/pages/HostComputerPrompt.tsx
 msgid "Where should bots run?"
 msgstr "Bot을 어디에서 실행할까요?"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Whole calendar"
+msgstr ""
 
 #: src/lib/ticket-status.ts
 msgid "Won't do"

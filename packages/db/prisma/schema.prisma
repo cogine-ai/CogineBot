@@ -773,6 +773,7 @@ model ExternalEffect {
 }
 
 model Routine {
+  nativeEventTriggers NativeRoutineTrigger[]
   id             String    @id @default(cuid())
   spaceId        String
   space          Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -869,6 +870,7 @@ model AgentSkill {
 }
 
 model Connection {
+  nativeEventTriggers NativeRoutineTrigger[]
   id          String   @id @default(cuid())
   spaceId     String
   space       Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -1503,6 +1505,7 @@ model TicketComment {
 
 // Application configuration belongs to this deployment, not to a model or Bot.
 model NativeAppConfig {
+  nativeNotionHooks NativeNotionHook[]
   id String @id @default(cuid())
   appId String
   label String
@@ -1550,6 +1553,7 @@ model NativeOAuthSession {
 }
 
 model NativeOAuthGrant {
+  nativeEventTriggers NativeRoutineTrigger[]
   id String @id
   userId String
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1577,4 +1581,63 @@ model NativeOAuthGrant {
 
   @@index([userId, spaceId, authority])
   @@map("native_oauth_grants")
+}
+
+model NativeRoutineTrigger {
+  id String @id @default(cuid())
+  routineId String
+  routine Routine @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  connectionId String
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  authorizationRevision String
+  grantId String
+  grant NativeOAuthGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  authGeneration Int
+  configId String
+  configRevision Int
+  kind String
+  resourceType String
+  resourceId String
+  spec Json
+  version Int @default(1)
+  armedAt DateTime @default(now())
+  state Json @default("{}")
+  nextPollAt DateTime?
+  leaseId String?
+  leaseUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([routineId])
+  @@index([connectionId, authorizationRevision])
+  @@index([nextPollAt])
+  @@map("native_routine_triggers")
+}
+
+model NativeNotionHook {
+  id String @id
+  configId String
+  config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  configRevision Int
+  revision Int @default(1)
+  integrationId String?
+  candidateIntegrationId String?
+  subscriptionId String?
+  // Deployment-level SecretStore AAD; independent of the setup owner's User/Space lifecycle.
+  secretRecordId String? @unique
+  ciphertext String?
+  enabled Boolean @default(false)
+  disabledAt DateTime?
+  // Pending-setup provenance only; deliberately no User or Space FK/authority inheritance.
+  setupOwnerUserId String
+  setupSpaceId String
+  setupExpiresAt DateTime
+  ownerConfirmedAt DateTime?
+  lastVerifiedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([integrationId, subscriptionId])
+  @@index([configId])
+  // SQL enforces one enabled hook per config with a partial unique index.
+  @@map("native_notion_hooks")
 }
