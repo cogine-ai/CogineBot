@@ -225,7 +225,21 @@ describe("personal sidebar groups", () => {
 
   it("reserves system names on creation and ordinary renames", async () => {
     const db = database({ sections: [section("own")], bots: [member("bot")] });
-    for (const name of ["Unassigned", " unASSIGNED ", "未分组", " "]) {
+    for (const name of [
+      "Unassigned",
+      " unASSIGNED ",
+      "未分组",
+      "Nicht zugewiesen",
+      " NICHT ZUGEWIESEN ",
+      "Sin asignar",
+      "Без раздела",
+      "섹션 없음",
+      "Atanmamış",
+      "असाइन नहीं किया गया",
+      "Não atribuído",
+      "Non assigné",
+      " ",
+    ]) {
       await expect(db.repos.createBotSection(actor, { botId: "bot", name })).rejects.toThrow();
       await expect(db.repos.updateBotSection(actor, { sectionId: "own", name })).rejects.toThrow();
     }
@@ -314,7 +328,7 @@ describe("personal sidebar groups", () => {
     ]);
   });
 
-  it.each(["Unassigned", "未分组"])(
+  it.each(["Unassigned", "未分组", "Nicht zugewiesen", "Sin asignar", "Без раздела"])(
     "can undo removal of a historical group named %s",
     async (name) => {
       const db = database({ sections: [section("legacy", name)], bots: [member("bot", "legacy")] });
@@ -328,7 +342,7 @@ describe("personal sidebar groups", () => {
     },
   );
 
-  it.each(["Unassigned", "未分组"])(
+  it.each(["Unassigned", "未分组", "Nicht zugewiesen", "Sin asignar", "Без раздела"])(
     "can undo renaming a historical group named %s",
     async (name) => {
       const db = database({ sections: [section("legacy", name)] });

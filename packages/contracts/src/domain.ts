@@ -160,8 +160,24 @@ export const GroupDetailSchema = GroupSchema.extend({
 export type GroupDetail = z.infer<typeof GroupDetailSchema>;
 
 export const BotSectionStoredNameSchema = z.string().trim().min(1).max(60);
+// System headings shipped in the web and mobile locale catalogs. Keep these
+// values aligned with those translations without importing application code.
+const RESERVED_BOT_SECTION_NAMES = new Set(
+  [
+    "Unassigned",
+    "Nicht zugewiesen",
+    "섹션 없음",
+    "Atanmamış",
+    "असाइन नहीं किया गया",
+    "Não atribuído",
+    "未分组",
+    "Sin asignar",
+    "Без раздела",
+    "Non assigné",
+  ].map((name) => name.toUpperCase()),
+);
 export const BotSectionNameSchema = BotSectionStoredNameSchema.refine(
-  (name) => !["unassigned", "未分组"].includes(name.toLowerCase()),
+  (name) => !RESERVED_BOT_SECTION_NAMES.has(name.toUpperCase()),
   {
     message: "Choose another group name",
   },

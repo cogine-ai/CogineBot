@@ -18,7 +18,14 @@ beforeEach(() => activateUiLocale("en"));
 describe("native inbox organization", () => {
   it("validates changed names with the shared rules while accepting unchanged historical names", () => {
     expect(sectionNameValidationError(" Product ", "Projects")).toBeNull();
-    for (const name of ["Unassigned", " unASSIGNED ", "未分组"]) {
+    for (const name of [
+      "Unassigned",
+      " unASSIGNED ",
+      "未分组",
+      "Nicht zugewiesen",
+      "Sin asignar",
+      "Без раздела",
+    ]) {
       expect(sectionNameValidationError(name, "Product")).toBe("Choose another group name");
       expect(sectionNameValidationError(name, name.trim())).toBeNull();
     }

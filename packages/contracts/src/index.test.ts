@@ -32,16 +32,35 @@ import {
   usableModelId,
 } from "./index.js";
 
+const localizedUnassignedNames = [
+  "Unassigned",
+  "Nicht zugewiesen",
+  "섹션 없음",
+  "Atanmamış",
+  "असाइन नहीं किया गया",
+  "Não atribuído",
+  "未分组",
+  "Sin asignar",
+  "Без раздела",
+  "Non assigné",
+];
+
 describe("contracts", () => {
   it("trims sidebar group names and reserves the system unassigned name", () => {
     expect(BotSectionNameSchema.parse("  Product  ")).toBe("Product");
-    for (const name of ["", " ", "Unassigned", " unassigned ", "UNASSIGNED", "未分组"]) {
+    for (const name of [
+      "",
+      " ",
+      ...localizedUnassignedNames,
+      ...localizedUnassignedNames.map((name) => ` ${name.toUpperCase()} `),
+    ]) {
       expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
+      expect(UpdateBotSectionInput.safeParse({ sectionId: "work", name }).success).toBe(false);
     }
   });
 
   it("accepts historical reserved group names only through explicit restore contracts", () => {
-    for (const name of ["Unassigned", "未分组"]) {
+    for (const name of localizedUnassignedNames) {
       expect(
         RemovedBotSectionSchema.parse({
           section: {
