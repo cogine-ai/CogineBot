@@ -126,6 +126,20 @@ describe("messaging another bot", () => {
     expect(harness.notify).toHaveBeenCalledWith("thread-target", 7);
     expect(harness.notify).toHaveBeenCalledWith("thread-sender", 7);
     expect(harness.tx.message.create).toHaveBeenCalledTimes(2);
+    expect(harness.tx.event.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        threadId: "thread-target",
+        type: "thread.message.created",
+        payload: expect.objectContaining({ messageId: "message-1", messageSeq: 1 }),
+      }),
+    });
+    expect(harness.tx.event.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        threadId: "thread-sender",
+        type: "thread.message.created",
+        payload: expect.objectContaining({ messageId: "message-1", messageSeq: 1 }),
+      }),
+    });
     expect(
       harness.tx.thread.update.mock.calls.filter(
         ([call]) => (call as { data?: { unread?: boolean } }).data?.unread,

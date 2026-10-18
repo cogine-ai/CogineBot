@@ -5731,7 +5731,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               nonce
                 ? await deps.prisma.message.findUnique({
                     where: { threadId_clientNonce: { threadId: thread.id, clientNonce: nonce } },
-                    select: { id: true, blocks: true },
+                    select: { id: true, seq: true, blocks: true },
                   })
                 : null;
             let existing = await findMarker();
@@ -5774,7 +5774,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   botId: bot.id,
                   runId: run.id,
                   type: "thread.message.updated",
-                  payload: { messageId: existing.id, role: "bot", blocks, callId },
+                  payload: {
+                    messageId: existing.id,
+                    messageSeq: existing.seq,
+                    role: "bot",
+                    blocks,
+                    callId,
+                  },
                 });
               }
               markerId = existing.id;
@@ -8267,6 +8273,7 @@ async function persistMessageInTransaction(
     runId: run.id,
     payload: {
       messageId: message.id,
+      messageSeq: message.seq,
       role,
       blocks,
       callId: callIdFromClientNonce(clientNonce),

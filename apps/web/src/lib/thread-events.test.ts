@@ -25,6 +25,111 @@ import {
 } from "./thread-events.js";
 
 describe("thread event reduction", () => {
+  it("does not substitute an event position for missing durable message metadata", () => {
+    const initial = snapshot([message("existing", [{ kind: "text", text: "Earlier" }], 0)]);
+    const malformed = event({
+      seq: 80,
+      type: "thread.message.created",
+      payload: { messageId: "invalid", role: "bot", blocks: [{ kind: "text", text: "Invalid" }] },
+    });
+    delete malformed.payload.messageSeq;
+
+    expect(reduceThreadSnapshot(initial, malformed)).toBe(initial);
+  });
+
+  it("keeps replayed messages across a later refresh when event positions differ from message order", () => {
+    let current = snapshot([
+      message("old-0", [{ kind: "text", text: "Earlier" }], 0),
+      message("old-1", [{ kind: "text", text: "Still reading" }], 1),
+      message("new-3", [{ kind: "text", text: "New reply" }], 3),
+      message("new-4", [{ kind: "text", text: "New reply" }], 4),
+    ]);
+    for (const [messageSeq, eventSeq] of [
+      [2, 22],
+      [3, 23],
+      [4, 24],
+    ]) {
+      current = reduceThreadSnapshot(
+        current,
+        event({
+          type: "thread.message.created",
+          seq: eventSeq,
+          payload: {
+            messageId: `new-${messageSeq}`,
+            messageSeq,
+            role: "bot",
+            blocks: [{ kind: "text", text: "New reply" }],
+          },
+        }),
+      )!;
+    }
+    expect(current.messages.map((item) => item.id)).toEqual([
+      "old-0",
+      "old-1",
+      "new-2",
+      "new-3",
+      "new-4",
+    ]);
+    const fresh = {
+      ...snapshot(
+        [
+          message("new-3", [{ kind: "text", text: "New reply" }], 3),
+          message("new-4", [{ kind: "text", text: "New reply" }], 4),
+        ],
+        3,
+      ),
+      cursor: 24,
+    };
+
+    const refreshed = mergeThreadSnapshot(current, fresh, true);
+
+    expect(refreshed.messages.map((item) => item.id)).toEqual([
+      "old-0",
+      "old-1",
+      "new-2",
+      "new-3",
+      "new-4",
+    ]);
+    expect(refreshed.messages.map((item) => item.seq)).toEqual([0, 1, 2, 3, 4]);
+    expect(refreshed.cursor).toBe(24);
+    expect(refreshed.olderCursor).toBeNull();
+  });
+
+  it("keeps an updated historical card in its message position after a refresh", () => {
+    const initial = snapshot([
+      message("card", [{ kind: "text", text: "Waiting" }], 0),
+      message("recent", [{ kind: "text", text: "Later" }], 1),
+    ]);
+    const updated = reduceThreadSnapshot(
+      initial,
+      event({
+        type: "thread.message.updated",
+        seq: 80,
+        payload: {
+          messageId: "card",
+          messageSeq: 0,
+          role: "bot",
+          blocks: [{ kind: "text", text: "Answered" }],
+        },
+      }),
+    );
+    const refreshed = mergeThreadSnapshot(
+      updated,
+      {
+        ...snapshot([message("recent", [{ kind: "text", text: "Later" }], 1)], 1),
+        cursor: 80,
+      },
+      true,
+    );
+
+    expect(refreshed.messages.map((item) => item.id)).toEqual(["card", "recent"]);
+    expect(refreshed.messages[0]).toMatchObject({
+      seq: 0,
+      blocks: [{ kind: "text", text: "Answered" }],
+    });
+    expect(refreshed.cursor).toBe(80);
+  });
+
   it("shows a committed direct send as queued before its snapshot refresh returns", () => {
     const initial = snapshot([message("user-1", [{ kind: "text", text: "Continue" }], 4)]);
 
@@ -1748,7 +1853,7 @@ function message(id: string, blocks: ThreadMessage["blocks"], seq = 3): ThreadMe
 }
 
 function event(overrides: Partial<ProductEvent>): ProductEvent {
-  return {
+  const next: ProductEvent = {
     id: "event-1",
     spaceId: "workspace-1",
     threadId: "thread-1",
@@ -1760,4 +1865,8 @@ function event(overrides: Partial<ProductEvent>): ProductEvent {
     payload: {},
     ...overrides,
   };
+  if (next.type === "thread.message.created" || next.type === "thread.message.updated") {
+    next.payload = { messageSeq: next.seq, ...next.payload };
+  }
+  return next;
 }

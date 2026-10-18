@@ -87,7 +87,7 @@ export async function executeCloudAgentTool(
         botId: context.botId,
         runId: run.id,
         type: "thread.message.created",
-        payload: { messageId: message.id, role: "bot", blocks },
+        payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
       });
       return { agent: saved, seq: event.seq };
     });

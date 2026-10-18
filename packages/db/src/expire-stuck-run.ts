@@ -96,7 +96,7 @@ export async function expireStuckRun(
     threadId: run.threadId,
     botId: run.botId,
     type: "thread.message.created",
-    payload: { messageId: message.id, role: "system", blocks },
+    payload: { messageId: message.id, messageSeq: message.seq, role: "system", blocks },
   });
   const cancelledEvent = await appendEventInTransaction(tx, {
     spaceId: run.spaceId,

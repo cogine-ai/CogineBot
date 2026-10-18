@@ -2400,7 +2400,7 @@ export function createRouter(deps: RouterDeps) {
             botId,
             type: "thread.message.created",
             runId: run?.id ?? active?.id,
-            payload: { messageId: message.id, role: "user", blocks },
+            payload: { messageId: message.id, messageSeq: message.seq, role: "user", blocks },
           });
           await touchGroupUpdatedAt(tx, target.groupId);
           return { runId: run?.id, eventSeq: event.seq };
@@ -2452,7 +2452,13 @@ export function createRouter(deps: RouterDeps) {
               threadId,
               botId,
               type: "thread.message.created",
-              payload: { messageId: message.id, role: "bot", blocks, callId: input.callId },
+              payload: {
+                messageId: message.id,
+                messageSeq: message.seq,
+                role: "bot",
+                blocks,
+                callId: input.callId,
+              },
             });
             const task = await tx.task.create({
               data: {

@@ -245,7 +245,12 @@ async function mirrorChannelRun(
           threadId: peerThread.id,
           botId: peerIdentity.botId,
           type: "thread.message.created",
-          payload: { messageId: created.id, role: "user", blocks: [block] },
+          payload: {
+            messageId: created.id,
+            messageSeq: created.seq,
+            role: "user",
+            blocks: [block],
+          },
         });
       });
       await deps.events.notify(peerThread.id, event.seq).catch(() => undefined);

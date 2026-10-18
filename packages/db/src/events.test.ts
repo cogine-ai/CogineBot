@@ -1042,9 +1042,10 @@ describe("answerRunInput", () => {
       message: {
         findFirst: vi.fn().mockResolvedValue({
           id: "message-1",
+          seq: 1,
           blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
         }),
-        create: vi.fn().mockResolvedValue({ id: "user-answer" }),
+        create: vi.fn().mockResolvedValue({ id: "user-answer", seq: 2 }),
         update: vi.fn().mockResolvedValue({ id: "message-1" }),
       },
       run: {
@@ -1104,9 +1105,18 @@ describe("answerRunInput", () => {
           type: "thread.message.created",
           payload: expect.objectContaining({
             messageId: "user-answer",
+            messageSeq: 2,
             role: "user",
             callId: "call-1",
           }),
+        }),
+      }),
+    );
+    expect(tx.event.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          type: "thread.message.updated",
+          payload: expect.objectContaining({ messageId: "message-1", messageSeq: 1 }),
         }),
       }),
     );

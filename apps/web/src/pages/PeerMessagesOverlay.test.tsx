@@ -340,6 +340,7 @@ describe("inline peer chat", () => {
       type: "thread.message.created",
       payload: {
         messageId: "live-reply",
+        messageSeq: 3,
         role: "user",
         blocks: [
           {
@@ -423,7 +424,12 @@ describe("inline peer chat", () => {
         id: "live-after-clear",
         seq: 101,
         type: "thread.message.created",
-        payload: { messageId: nextReply.id, role: "bot", blocks: nextReply.blocks },
+        payload: {
+          messageId: nextReply.id,
+          messageSeq: nextReply.seq,
+          role: "bot",
+          blocks: nextReply.blocks,
+        },
       }),
     );
     expect(container.textContent).toContain("Newer reply");

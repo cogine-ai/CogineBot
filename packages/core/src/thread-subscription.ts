@@ -18,6 +18,10 @@ export async function runThreadSubscription(options: {
   applyEvent: (event: ProductEvent) => void;
   onEvent: (event: ProductEvent, initial: ThreadHead) => void;
   onStatus?: (status: "loading" | "recovering" | "ready", error?: unknown) => void;
+  /** An explicit reader retry keeps its consumed event cursor, even after a newer GET. */
+  resume?: ThreadHead;
+  /** Successfully consumed events, or the first trusted snapshot when there is no resume. */
+  onCursor?: (checkpoint: ThreadHead) => void;
 }): Promise<void> {
   const { signal } = options;
   let lastStatus: "loading" | "recovering" | "ready" | undefined;
@@ -56,17 +60,41 @@ export async function runThreadSubscription(options: {
   if (!initial || signal.aborted) return;
   const head = initial;
   const initialSnapshot = options.currentSnapshot();
+  const resume = options.resume?.threadId === head.threadId ? options.resume : undefined;
   // Another refresh may have committed beyond the head while its request was pending.
   let cursor =
-    initialSnapshot?.threadId === head.threadId
+    resume?.cursor ??
+    (initialSnapshot?.threadId === head.threadId
       ? Math.max(head.cursor, initialSnapshot.cursor)
-      : head.cursor;
+      : head.cursor);
   // A retained reader can be older than a successful head fallback. Until a snapshot
   // covers that cursor, keep recovering rather than skip the gap and trust a heartbeat.
   const coversHead = (snapshot: ThreadHead | null) =>
     snapshot?.threadId === head.threadId && snapshot.cursor >= head.cursor;
+  const tracksCursor = Boolean(resume || options.onCursor);
+  let consumedCursor = resume?.cursor;
+  let receivedEvent = false;
+  const consume = (next: number) => {
+    if (signal.aborted || !tracksCursor || (consumedCursor !== undefined && next <= consumedCursor))
+      return;
+    options.onCursor?.({ threadId: head.threadId, cursor: next });
+    consumedCursor = next;
+  };
+  const seedSnapshot = (snapshot: ThreadHead | null) => {
+    if (
+      !resume &&
+      !receivedEvent &&
+      consumedCursor === undefined &&
+      snapshot &&
+      coversHead(snapshot)
+    ) {
+      consume(snapshot.cursor);
+    }
+  };
   let snapshotReady = coversHead(initialSnapshot);
   let snapshotHealthy = snapshotReady;
+  seedSnapshot(initialSnapshot);
+  if (signal.aborted) return;
   let streamReady = false;
   const reportReady = () => {
     if (snapshotHealthy && streamReady && coversHead(options.currentSnapshot())) {
@@ -106,9 +134,24 @@ export async function runThreadSubscription(options: {
           if (signal.aborted) return;
           const committed = options.currentSnapshot();
           if (!snapshotReady && committed && coversHead(committed)) {
-            snapshotReady = true;
-            for (const event of pendingSnapshotEvents.splice(0)) {
-              if (event.seq > committed.cursor) options.applyEvent(event);
+            let consumedEvents = 0;
+            try {
+              seedSnapshot(committed);
+              for (const event of pendingSnapshotEvents) {
+                if (signal.aborted) return;
+                if (resume || event.seq > committed.cursor) options.applyEvent(event);
+                if (signal.aborted) return;
+                // onEvent already succeeded before the event entered this buffer.
+                consume(event.seq);
+                consumedEvents += 1;
+              }
+              if (signal.aborted) return;
+              snapshotReady = true;
+            } catch (error) {
+              snapshotHealthy = false;
+              notify("recovering", error);
+            } finally {
+              pendingSnapshotEvents.splice(0, consumedEvents);
             }
           }
           snapshotRetryMs = Math.min(snapshotRetryMs * 2, 5_000);
@@ -150,14 +193,27 @@ export async function runThreadSubscription(options: {
           if (signal.aborted) return;
           // Heartbeats only prove the socket is alive; they carry no state and no cursor.
           if (event.type === "heartbeat") continue;
-          cursor = Math.max(cursor, event.seq);
+          if (
+            tracksCursor &&
+            (event.threadId !== head.threadId ||
+              (consumedCursor !== undefined && event.seq <= consumedCursor) ||
+              pendingSnapshotEvents.some((pendingEvent) => pendingEvent.seq === event.seq))
+          )
+            continue;
+          receivedEvent = true;
           options.beforeEvent?.(event);
+          if (signal.aborted) return;
+          let applied = false;
           if (snapshotReady && options.currentSnapshot()?.threadId === event.threadId) {
             options.applyEvent(event);
-          } else if (!snapshotReady) {
-            pendingSnapshotEvents.push(event);
+            if (signal.aborted) return;
+            applied = true;
           }
           options.onEvent(event, head);
+          if (signal.aborted) return;
+          cursor = Math.max(cursor, event.seq);
+          if (applied) consume(event.seq);
+          else if (!snapshotReady) pendingSnapshotEvents.push(event);
         }
       } finally {
         // Not awaited: a half-open iterator can take as long to close as it took to go quiet.

@@ -755,6 +755,7 @@ export async function sendThreadMessage(
             runId: primary.id,
             payload: {
               messageId: message.id,
+              messageSeq: message.seq,
               role: "user",
               blocks,
               callId,
@@ -797,6 +798,7 @@ export async function sendThreadMessage(
             runId: active.id,
             payload: {
               messageId: message.id,
+              messageSeq: message.seq,
               role: "user",
               blocks,
               callId,
@@ -847,6 +849,7 @@ export async function sendThreadMessage(
           runId: run.id,
           payload: {
             messageId: message.id,
+            messageSeq: message.seq,
             role: "user",
             blocks,
             callId,
@@ -1017,6 +1020,7 @@ export async function sendThreadMessage(
         runId: firstRun?.id ?? activeRuns[0]?.id,
         payload: {
           messageId: message.id,
+          messageSeq: message.seq,
           role: "user",
           blocks,
           callId,
@@ -1087,7 +1091,13 @@ export async function reactToThreadMessage(
       threadId: target.threadId,
       botId,
       type: "thread.message.created",
-      payload: { messageId: message.id, role: "user", blocks, replyToMessageId: parent.id },
+      payload: {
+        messageId: message.id,
+        messageSeq: message.seq,
+        role: "user",
+        blocks,
+        replyToMessageId: parent.id,
+      },
     });
     return { eventSeq: event.seq };
   });

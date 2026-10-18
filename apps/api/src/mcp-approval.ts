@@ -114,7 +114,7 @@ async function rewriteCards(
         thread: { spaceId: actor.spaceId, userId: actor.userId },
         blocks: { array_contains: [{ kind: "mcp_approval", serverId: input.serverId }] },
       },
-      select: { id: true, botId: true, blocks: true },
+      select: { id: true, seq: true, botId: true, blocks: true },
       orderBy: { createdAt: "desc" },
     });
     for (const message of messages) {
@@ -147,7 +147,7 @@ async function rewriteCards(
         threadId: thread.id,
         botId: eventBotId,
         type: "thread.message.updated",
-        payload: { messageId: message.id, role: "bot", blocks: next },
+        payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks: next },
       });
       seqs.push({ threadId: thread.id, seq: event.seq });
     }
@@ -269,6 +269,7 @@ async function paintServerCards(
     },
     select: {
       id: true,
+      seq: true,
       botId: true,
       blocks: true,
       threadId: true,
@@ -292,7 +293,7 @@ async function paintServerCards(
       threadId: message.threadId,
       botId: eventBotId,
       type: "thread.message.updated",
-      payload: { messageId: message.id, role: "bot", blocks: next },
+      payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks: next },
     });
     seqs.push({ threadId: message.threadId, seq: event.seq });
   }
