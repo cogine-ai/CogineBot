@@ -383,7 +383,7 @@ describeIsolated("remaining native lifecycle and binding fences (isolated Postgr
     };
   }
 
-  function feishuUserFixture(offlineAccess: boolean) {
+  function feishuUserFixture(offlineAccess: boolean, replacement?: string) {
     const f = fixture();
     const tokenRequests: Array<Record<string, unknown>> = [];
     const scopes = ["contact:user.base:readonly", "offline_access"];
@@ -400,7 +400,11 @@ describeIsolated("remaining native lifecycle and binding fences (isolated Postgr
               code: 0,
               token_type: "Bearer",
               access_token: refresh ? "synthetic-next-user-access" : "synthetic-user-access",
-              ...(!refresh ? { refresh_token: "synthetic-one-time-user-refresh" } : {}),
+              ...(refresh
+                ? replacement === undefined
+                  ? {}
+                  : { refresh_token: replacement }
+                : { refresh_token: "synthetic-one-time-user-refresh" }),
               expires_in: refresh && !offlineAccess ? 45 : 3600,
               scope: refresh && !offlineAccess ? scopes[0] : scopes.join(" "),
             }),
@@ -425,43 +429,75 @@ describeIsolated("remaining native lifecycle and binding fences (isolated Postgr
     return { ...f, store, authorities, tokenRequests, save };
   }
 
-  it("Feishu user missing replacement retires only its consumed grant through the actual authority and Store", async () => {
-    const f = feishuUserFixture(true);
+  for (const [name, replacement] of [
+    ["missing", undefined],
+    ["spaces", "   "],
+    ["line-break", "\n"],
+  ] as const)
+    it(`Feishu user ${name} replacement retires only its consumed grant through the actual authority and Store`, async () => {
+      const f = feishuUserFixture(true, replacement);
+      try {
+        const { saved } = await f.save();
+        const connected = await f.browser(saved.id, context(), "synthetic-code", f.store);
+        const peerContext = context(spaces[1]);
+        const peer = await f.browser(saved.id, peerContext, "synthetic-peer-code", f.store);
+        const originalSecretId = connected.oauthGrant!.secretId!;
+        await expect(f.store.authorization(connected.id, context(), true)).rejects.toMatchObject({
+          kind: "result_unknown",
+          options: { uncertain: true },
+        });
+        const retired = await first.prisma.nativeOAuthGrant.findUniqueOrThrow({
+          where: { id: connected.oauthGrantId! },
+        });
+        expect(retired).toMatchObject({
+          secretId: null,
+          revokedAt: expect.any(Date),
+          refreshLeaseId: null,
+          refreshLeaseUntil: null,
+        });
+        expect(
+          await first.prisma.secret.findUnique({ where: { id: originalSecretId } }),
+        ).toBeNull();
+        expect(
+          await first.prisma.connection.findUnique({ where: { id: connected.id } }),
+        ).toMatchObject({
+          status: "error",
+        });
+        await expect(f.store.authorization(connected.id, context(), true)).rejects.toBeInstanceOf(
+          NativeActionError,
+        );
+        expect(
+          f.tokenRequests.filter((request) => request.grant_type === "refresh_token"),
+        ).toHaveLength(1);
+        expect(
+          f.tokenRequests.find((request) => request.grant_type === "refresh_token"),
+        ).toMatchObject({
+          refresh_token: "synthetic-one-time-user-refresh",
+        });
+        const peerAuthorization = await f.store.authorization(peer.id, peerContext);
+        expect(peerAuthorization.connection.status).toBe("connected");
+        expect(peerAuthorization.grant.revokedAt).toBeNull();
+        expect(peerAuthorization.grant.secretId).toBe(peer.oauthGrant!.secretId);
+      } finally {
+        await f.authorities.close();
+      }
+    });
+
+  it("Feishu Store retains valid opaque replacement bytes without an extra refresh", async () => {
+    const replacement = "  synthetic-valid-user-refresh \n";
+    const f = feishuUserFixture(true, replacement);
     try {
       const { saved } = await f.save();
       const connected = await f.browser(saved.id, context(), "synthetic-code", f.store);
-      const peerContext = context(spaces[1]);
-      const peer = await f.browser(saved.id, peerContext, "synthetic-peer-code", f.store);
-      const originalSecretId = connected.oauthGrant!.secretId!;
-      await expect(f.store.authorization(connected.id, context(), true)).rejects.toMatchObject({
-        kind: "result_unknown",
-        options: { uncertain: true },
-      });
-      const retired = await first.prisma.nativeOAuthGrant.findUniqueOrThrow({
-        where: { id: connected.oauthGrantId! },
-      });
-      expect(retired).toMatchObject({
-        secretId: null,
-        revokedAt: expect.any(Date),
-        refreshLeaseId: null,
-        refreshLeaseUntil: null,
-      });
-      expect(await first.prisma.secret.findUnique({ where: { id: originalSecretId } })).toBeNull();
-      expect(
-        await first.prisma.connection.findUnique({ where: { id: connected.id } }),
-      ).toMatchObject({
-        status: "error",
-      });
-      await expect(f.store.authorization(connected.id, context(), true)).rejects.toBeInstanceOf(
-        NativeActionError,
-      );
+      const refreshed = await f.store.authorization(connected.id, context(), true);
+      expect(refreshed.auth.tokens.refreshToken).toBe(replacement);
+      expect(refreshed.grant.revokedAt).toBeNull();
+      expect(refreshed.grant.tokenVersion).toBe(connected.oauthGrant!.tokenVersion + 1);
+      const cached = await f.store.authorization(connected.id, context());
+      expect(cached.auth.tokens.refreshToken).toBe(replacement);
       expect(
         f.tokenRequests.filter((request) => request.grant_type === "refresh_token"),
       ).toHaveLength(1);
-      const peerAuthorization = await f.store.authorization(peer.id, peerContext);
-      expect(peerAuthorization.connection.status).toBe("connected");
-      expect(peerAuthorization.grant.revokedAt).toBeNull();
-      expect(peerAuthorization.grant.secretId).toBe(peer.oauthGrant!.secretId);
     } finally {
       await f.authorities.close();
     }

@@ -221,6 +221,59 @@ describe("Enterprise native authorization", () => {
         );
       },
     );
+  for (const region of ["feishu", "lark"]) {
+    it.each([
+      { name: "spaces", refreshToken: "   " },
+      { name: "line break", refreshToken: "\n" },
+    ])(`${region} refuses a blank rotated refresh token ($name)`, async ({ refreshToken }) => {
+      const { authority, calls } = setup([
+        feishuToken,
+        feishuUser,
+        { ...feishuToken, access_token: "new-access", refresh_token: refreshToken },
+        feishuUser,
+      ]);
+      const cfg = config("feishu-lark", { region });
+      const previous = await authority.exchange(cfg, owner, "code", verifier, signal());
+      await assert.rejects(
+        authority.refresh(cfg, owner, previous, signal()),
+        (error: unknown) =>
+          error instanceof NativeActionError &&
+          error.kind === "result_unknown" &&
+          error.options.uncertain === true,
+      );
+      assert.equal(
+        calls.filter(
+          (call) => JSON.parse(String(call.init?.body ?? "{}")).grant_type === "refresh_token",
+        ).length,
+        1,
+      );
+    });
+    it(`${region} preserves the original bytes of a nonblank rotated refresh token`, async () => {
+      const replacement = " \tfixture-rotated \r\n";
+      const { authority } = setup([
+        feishuToken,
+        feishuUser,
+        { ...feishuToken, access_token: "new-access", refresh_token: replacement },
+        feishuUser,
+      ]);
+      const cfg = config("feishu-lark", { region });
+      const previous = await authority.exchange(cfg, owner, "code", verifier, signal());
+      const next = await authority.refresh(cfg, owner, previous, signal());
+      assert.equal(next.tokens.refreshToken, replacement);
+    });
+    it(`${region} leaves initial exchange refresh token handling unchanged`, async () => {
+      const initialRefresh = " \t\n";
+      const { authority } = setup([{ ...feishuToken, refresh_token: initialRefresh }, feishuUser]);
+      const grant = await authority.exchange(
+        config("feishu-lark", { region }),
+        owner,
+        "code",
+        verifier,
+        signal(),
+      );
+      assert.equal(grant.tokens.refreshToken, initialRefresh);
+    });
+  }
   for (const region of ["feishu", "lark"])
     it(`${region} keeps an access-only refresh grant when actual scopes remove offline access`, async () => {
       const { authority, calls } = setup([

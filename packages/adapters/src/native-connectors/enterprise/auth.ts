@@ -432,7 +432,11 @@ export class EnterpriseAuthorities {
         token,
         previous
           ? scope.includes("offline_access")
-            ? required(body.refresh_token)
+            ? required(
+                typeof body.refresh_token === "string" && body.refresh_token.trim()
+                  ? body.refresh_token
+                  : undefined,
+              )
             : null
           : typeof body.refresh_token === "string" && body.refresh_token
             ? body.refresh_token
