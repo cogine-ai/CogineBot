@@ -105,9 +105,14 @@ test("group conversation keeps member avatars, settings and messages in one tran
   await page.unroute("**/rpc/threads/get");
   await page.reload();
 
+  await expect(page).toHaveURL(groupUrl);
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(page.getByRole("combobox", { name: "Message Draft team" })).toBeVisible();
   await page.getByTestId("bot-settings-trigger").click();
   const desktopSettings = page.getByTestId("side-panel");
+  await expect(desktopSettings).toHaveAttribute("data-panel", "group-settings");
   const groupName = desktopSettings.locator("label:has-text('Name') input");
+  await expect(groupName).toHaveValue("Draft team");
   await groupName.fill("Unsaved Draft team name");
   const sidebar = page.locator("aside").first();
   await sidebar.getByRole("button", { name: /^Review team/ }).click();

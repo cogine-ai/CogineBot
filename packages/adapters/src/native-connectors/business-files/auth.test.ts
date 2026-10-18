@@ -218,6 +218,69 @@ test("Airtable: official Bearer trailing-space success requires actual whoami sc
     uncertain,
   );
 });
+const basicHeaderVectors = [
+  {
+    name: "padding",
+    secret: "secretx",
+    airtable: "Basic Zml4dHVyZS1jbGllbnQ6c2VjcmV0eA",
+    figma: "Basic Zml4dHVyZS1jbGllbnQ6c2VjcmV0eA==",
+  },
+  {
+    name: "plus versus minus",
+    secret: "~~~",
+    airtable: "Basic Zml4dHVyZS1jbGllbnQ6fn5-",
+    figma: "Basic Zml4dHVyZS1jbGllbnQ6fn5+",
+  },
+  {
+    name: "slash versus underscore",
+    secret: "???",
+    airtable: "Basic Zml4dHVyZS1jbGllbnQ6Pz8_",
+    figma: "Basic Zml4dHVyZS1jbGllbnQ6Pz8/",
+  },
+] as const;
+for (const app of ["airtable", "figma"] as const) {
+  test.each(basicHeaderVectors)(
+    `${app}: exchange and refresh use the provider's Basic encoding ($name)`,
+    async (vector) => {
+      const me = app === "airtable" ? airMe : figMe;
+      const token = {
+        ...baseToken,
+        scope: airMe.scopes.join(" "),
+        ...(app === "figma" ? { user_id_string: figMe.id } : {}),
+      };
+      const { authority, fetch } = setup([
+        token,
+        me,
+        {
+          ...token,
+          access_token: "fixture-refreshed-access",
+          refresh_token: "fixture-refreshed-refresh",
+        },
+        me,
+      ]);
+      const first = await authority.exchange(
+        config(app),
+        vector.secret,
+        "code",
+        "verifier",
+        signal(),
+      );
+      const refreshed = await authority.refresh(config(app), vector.secret, first, signal());
+      assert.equal(fetch.mock.calls.length, 4);
+      for (const [index, grantType] of [
+        [0, "authorization_code"],
+        [2, "refresh_token"],
+      ] as const) {
+        const request = fetch.mock.calls[index]![1];
+        assert.equal(new Headers(request?.headers).get("authorization"), vector[app]);
+        assert.equal(new URLSearchParams(request?.body as string).get("grant_type"), grantType);
+      }
+      assert.equal(refreshed.identity.subject, me.id);
+      assert.equal(refreshed.tokens.accessToken, "fixture-refreshed-access");
+      assert.equal(refreshed.tokens.refreshToken, "fixture-refreshed-refresh");
+    },
+  );
+}
 test("Airtable: PAT whoami without scope stays provider-enforced and does not gain declared grant scopes", async () => {
   const { authority } = setup([{ id: "usrFixture" }]);
   const result = await authority.verifyStatic(
