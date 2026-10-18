@@ -193,6 +193,8 @@ export function createSafeRemoteFetch(
   baseFetch?: typeof globalThis.fetch,
   resolve: ResolveHostname = resolveHostname,
   policy: RemoteUrlPolicy = {},
+  /** Backend-only protocol acknowledgement; requests remain redirect:manual and never follow Location. */
+  acceptManualStatus?: (url: URL, method: string, status: number) => boolean,
 ): SafeRemoteFetch {
   const dispatcher = new Agent({ connect: { lookup: createSafeLookup(resolve, policy) } });
   // Injected fetches are not given this Agent; they keep the original hostname
@@ -220,7 +222,11 @@ export function createSafeRemoteFetch(
         cause: error,
       });
     }
-    if (response.status >= 300 && response.status < 400) {
+    if (
+      response.status >= 300 &&
+      response.status < 400 &&
+      !acceptManualStatus?.(url, init?.method ?? "GET", response.status)
+    ) {
       throw new Error("Connector redirects are not allowed");
     }
     return response;

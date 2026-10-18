@@ -35,6 +35,7 @@ export function createNativeFetch(
   network: RemoteTransportDependencies = {},
   policy: RemoteUrlPolicy = {},
   timeoutMs = 30_000,
+  protocol?: "google-drive-resumable",
 ): SafeRemoteFetch {
   const transports = new Map<SafeRemoteFetch, Promise<void> | undefined>();
   const drain = (transport: SafeRemoteFetch): Promise<void> => {
@@ -59,6 +60,13 @@ export function createNativeFetch(
         network.fetch,
         (hostname) => nativeAbortable(resolve(hostname), signal),
         policy,
+        protocol === "google-drive-resumable"
+          ? (url, method, status) =>
+              status === 308 &&
+              ["POST", "PUT"].includes(method) &&
+              url.origin === "https://www.googleapis.com" &&
+              /^\/upload\/drive\/v3\/files(?:\/[^/]+)?$/.test(url.pathname)
+          : undefined,
       );
       transports.set(transport, undefined);
       try {

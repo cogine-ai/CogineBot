@@ -34,8 +34,10 @@ describe("native HTTP execution", () => {
         .catch((error: unknown) => error);
       expect(error).toMatchObject({ kind: "resource_unavailable" });
       expect(JSON.stringify(error)).not.toContain("not retained");
-      expect(error).toMatchObject({ options: status === 410 ? { recovery: { status: 410 } } : {} });
-      if (status !== 410) expect(error).not.toHaveProperty("options.recovery.status");
+      expect(error).toMatchObject({
+        kind: "resource_unavailable",
+        options: { recovery: { status } },
+      });
       expect(fetch).toHaveBeenCalledTimes(1);
     },
   );

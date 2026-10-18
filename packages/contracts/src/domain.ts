@@ -615,6 +615,8 @@ export const ConnectionCatalogItemSchema = z.object({
   name: z.string(),
   logo: z.string().nullable(),
   connected: z.boolean(),
+  /** False keeps setup discoverable without choosing an unavailable source by default. */
+  connectable: z.boolean().optional(),
   noAuth: z.boolean(),
 });
 export type ConnectionCatalogItem = z.infer<typeof ConnectionCatalogItemSchema>;

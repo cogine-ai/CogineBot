@@ -17,6 +17,8 @@ import { NativeActionError } from "../action.js";
 import { NativeConfigSettingsSchema } from "../config.js";
 import { NativeHttpClient } from "../http.js";
 import type { NativeOAuthStore } from "../oauth.js";
+import { nativeServiceBase } from "../service-bases.js";
+import { nativeEventReadPermitted, onlyDriveFileScope } from "./authorization.js";
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown): RecordValue => {
@@ -30,12 +32,6 @@ const sameId = (a: unknown, b: unknown) =>
   typeof a === "string" &&
   typeof b === "string" &&
   a.replaceAll("-", "").toLowerCase() === b.replaceAll("-", "").toLowerCase();
-const READ_SCOPES = [
-  "calendar.events.readonly",
-  "calendar.events",
-  "calendar.readonly",
-  "calendar",
-].map((scope) => `https://www.googleapis.com/auth/${scope}`);
 const enc = encodeURIComponent;
 /** Fixed API authorities and NativeOAuthStore are reused; this performs reads only and returns no credentials. */
 export class NativeEventResourceVerifier {
@@ -74,11 +70,12 @@ export class NativeEventResourceVerifier {
     const settings = NativeConfigSettingsSchema.parse(initial.config.config);
     const permitted = (live: typeof initial) => {
       const scopes = live.grant.scopes.filter((scope) => settings.scopes.includes(scope));
-      return appId === "google-calendar"
-        ? READ_SCOPES.some((scope) => scopes.includes(scope))
-        : settings.capabilities.includes("read_content") &&
-            (input.spec.kind !== "notion.comment_changed" ||
-              settings.capabilities.includes("read_comments"));
+      return nativeEventReadPermitted(
+        input.spec,
+        scopes,
+        settings.capabilities,
+        optionalObject(live.grant.principal) ?? {},
+      );
     };
     if (!permitted(initial))
       throw new NativeActionError(
@@ -106,9 +103,7 @@ export class NativeEventResourceVerifier {
       return live;
     };
     const http = new NativeHttpClient(
-      appId === "google-calendar"
-        ? "https://www.googleapis.com/calendar/v3"
-        : "https://api.notion.com",
+      nativeServiceBase(appId),
       async () => ({ kind: "bearer", value: (await revalidate()).auth.tokens.accessToken }),
       {
         network: this.options.network,
@@ -122,7 +117,91 @@ export class NativeEventResourceVerifier {
       query?: Record<string, string | number | boolean | undefined>,
     ) => object((await http.request({ method: "GET", path, query })).body);
     try {
-      if (input.spec.kind.startsWith("calendar.")) {
+      if (
+        input.spec.kind === "gmail.message_received" ||
+        input.spec.kind === "gmail.thread_or_label_changed"
+      ) {
+        const profile = await get("/users/me/profile");
+        if (typeof profile.historyId !== "string" || typeof profile.emailAddress !== "string")
+          throw new NativeActionError(
+            "incomplete_response",
+            "The mailbox identity was not verified.",
+          );
+        for (const labelId of input.spec.labelIds ?? []) {
+          const label = await get(`/users/me/labels/${enc(labelId)}`);
+          if (label.id !== labelId)
+            throw new NativeActionError(
+              "resource_unavailable",
+              "The exact mailbox label is unavailable.",
+            );
+        }
+        if (input.spec.threadId) {
+          const thread = await get(`/users/me/threads/${enc(input.spec.threadId)}`, {
+            format: "metadata",
+          });
+          if (thread.id !== input.spec.threadId)
+            throw new NativeActionError("resource_unavailable", "The exact thread is unavailable.");
+        }
+      } else if (
+        input.spec.kind === "drive.file_changed" ||
+        input.spec.kind === "drive.file_trashed"
+      ) {
+        const file = await get(`/files/${enc(input.spec.fileId)}`, {
+          fields: "id,version,trashed,isAppAuthorized",
+          supportsAllDrives: true,
+        });
+        const effective = initial.grant.scopes.filter((scope) => settings.scopes.includes(scope));
+        if (
+          file.id !== input.spec.fileId ||
+          (onlyDriveFileScope(effective) && file.isAppAuthorized !== true)
+        )
+          throw new NativeActionError(
+            "resource_unavailable",
+            "This file has not been authorized to the application.",
+          );
+      } else if (
+        input.spec.kind === "slack.app_mention" ||
+        input.spec.kind === "slack.app_dm" ||
+        input.spec.kind === "slack.channel_message"
+      ) {
+        const result = await get("/conversations.info", { channel: input.spec.channelId });
+        const channel = optionalObject(result.channel);
+        if (
+          result.ok !== true ||
+          channel?.id !== input.spec.channelId ||
+          channel.is_archived === true ||
+          (input.spec.kind === "slack.app_dm" ? channel.is_im !== true : channel.is_member !== true)
+        )
+          throw new NativeActionError(
+            "resource_unavailable",
+            "The selected bot cannot access this exact conversation.",
+          );
+        const effective = initial.grant.scopes.filter((scope) => settings.scopes.includes(scope));
+        const historyScope =
+          channel.is_im === true
+            ? "im:history"
+            : channel.is_private === true
+              ? "groups:history"
+              : "channels:history";
+        if (input.spec.kind !== "slack.app_mention" && !effective.includes(historyScope))
+          throw new NativeActionError(
+            "insufficient_scope",
+            "The exact conversation requires its own bot history scope.",
+          );
+        if (input.spec.kind === "slack.channel_message" && input.spec.threadTs) {
+          const replies = await get("/conversations.replies", {
+            channel: input.spec.channelId,
+            ts: input.spec.threadTs,
+            limit: 1,
+          });
+          if (
+            replies.ok !== true ||
+            !Array.isArray(replies.messages) ||
+            optionalObject(replies.messages[0])?.ts !== input.spec.threadTs
+          )
+            throw new NativeActionError("resource_unavailable", "The exact thread is unavailable.");
+        }
+      } else if (input.spec.kind.startsWith("calendar.")) {
         const spec = input.spec as Extract<typeof input.spec, { calendarId: string }>;
         const page = await get(`/calendars/${enc(spec.calendarId)}/events`, {
           maxResults: 1,

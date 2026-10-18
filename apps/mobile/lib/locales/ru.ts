@@ -903,4 +903,23 @@ export const RU_MESSAGES: Record<string, string> = {
   "Connect integration": "Подключить интеграцию",
   "Calendar event": "Событие календаря",
   "Notion event": "Событие Notion",
+  Application: "Приложение",
+  User: "Пользователь",
+  "Bot token": "Токен бота",
+  "User token": "Токен пользователя",
+  "Personal API key": "Личный API-ключ",
+  "Linear API key": "API-ключ Linear",
+  "Slack bot token": "Токен бота Slack",
+  "Slack user token": "Токен пользователя Slack",
+  "GitHub App installation": "Установка GitHub App",
+  "Connect this GitHub App installation in the web app.":
+    "Подключите эту установку GitHub App в веб-приложении.",
+  "Connect with access to the files and folders you choose in Google.":
+    "Подключитесь с доступом к файлам и папкам, которые вы выберете в Google.",
+  "Choose accessible files": "Выбрать доступные файлы",
+  "Ask an administrator to enable access to selected files.":
+    "Попросите администратора разрешить доступ к выбранным файлам.",
+  "Gmail event": "Событие Gmail",
+  "Drive event": "Событие Drive",
+  "Slack bot event": "Событие бота Slack",
 };

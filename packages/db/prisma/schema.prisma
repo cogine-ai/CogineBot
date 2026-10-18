@@ -1505,6 +1505,7 @@ model TicketComment {
 
 // Application configuration belongs to this deployment, not to a model or Bot.
 model NativeAppConfig {
+  nativeSlackHooks NativeSlackHook[]
   nativeNotionHooks NativeNotionHook[]
   id String @id @default(cuid())
   appId String
@@ -1575,6 +1576,8 @@ model NativeOAuthGrant {
   revokedAt DateTime?
   refreshLeaseId String?
   refreshLeaseUntil DateTime?
+  // Linear rotation recovery is bounded from the first request, never from a later retry.
+  refreshRecoveryUntil DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   connections Connection[]
@@ -1640,4 +1643,46 @@ model NativeNotionHook {
   @@index([configId])
   // SQL enforces one enabled hook per config with a partial unique index.
   @@map("native_notion_hooks")
+}
+
+
+model NativeSlackHook {
+  id String @id
+  configId String
+  config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  configRevision Int
+  revision Int @default(1)
+  deliveryRevision Int @default(1)
+  appId String
+  teamId String?
+  botEvents String[]
+  secretRecordId String? @unique
+  ciphertext String?
+  enabled Boolean @default(true)
+  disabledAt DateTime?
+  ownerConfirmedAt DateTime
+  lastVerifiedAt DateTime?
+  setupOwnerUserId String
+  setupSpaceId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  inbox NativeSlackEventInbox[]
+  @@index([configId])
+  // SQL also enforces one enabled hook per app and per config (Slack has one Request URL).
+  @@map("native_slack_hooks")
+}
+
+model NativeSlackEventInbox {
+  id String @id
+  hookId String
+  hook NativeSlackHook @relation(fields: [hookId], references: [id], onDelete: Cascade)
+  hookRevision Int
+  configRevision Int
+  eventId String
+  signal Json
+  receivedAt DateTime @default(now())
+  dispatchedAt DateTime?
+  @@unique([hookId, eventId])
+  @@index([dispatchedAt, receivedAt])
+  @@map("native_slack_event_inbox")
 }

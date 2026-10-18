@@ -5,7 +5,6 @@ import type { NativeEventObservation, NativeEventScope } from "@rakazo/contracts
 import { NativeSourceJobPayloadSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { Prisma } from "@rakazo/db";
-import { z } from "zod";
 import { NativeActionError } from "../action.js";
 import type { NativeRoutineTriggerRow } from "./store.js";
 import {
@@ -43,10 +42,13 @@ export interface NativeSourceReadResult {
   state: Record<string, unknown>;
   nextPollAt: Date;
 }
-/** These are the two real provider boundaries, not user-selectable executors or arbitrary jobs. */
+/** Fixed provider boundaries for explicitly enabled Routine sources. */
 export interface NativeEventReaders {
   calendar(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
   notion(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  gmail?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  drive?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  slack?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
 }
 export class NativeSourceLeaseLost extends Error {
   constructor() {
@@ -134,7 +136,10 @@ export async function handleNativeSourceJob(
       throw new NativeSourceLeaseLost();
   };
   try {
-    const read = row.kind.startsWith("calendar.") ? readers.calendar : readers.notion;
+    const family = row.kind.split(".")[0] as keyof NativeEventReaders;
+    const read = readers[family];
+    if (!read)
+      throw new NativeActionError("not_configured", "This event source has no configured reader.");
     const result = await read({
       scope,
       row,

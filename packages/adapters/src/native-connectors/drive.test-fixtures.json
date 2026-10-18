@@ -1,0 +1,1572 @@
+{
+  "frozenAt": "2026-10-18",
+  "file": {
+    "id": "f1",
+    "name": "fixture.txt",
+    "mimeType": "text/plain",
+    "description": "fixture",
+    "parents": ["p1"],
+    "trashed": false,
+    "version": "7",
+    "size": "5",
+    "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+    "isAppAuthorized": true,
+    "ownedByMe": true,
+    "capabilities": {
+      "canDownload": true,
+      "canEdit": true,
+      "canCopy": true,
+      "canShare": true,
+      "canTrash": true,
+      "canUntrash": true,
+      "canMoveItemWithinDrive": true
+    }
+  },
+  "parent": {
+    "id": "p1",
+    "name": "Fixture folder",
+    "mimeType": "application/vnd.google-apps.folder",
+    "description": "fixture",
+    "parents": ["p1"],
+    "trashed": false,
+    "version": "7",
+    "size": "5",
+    "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+    "isAppAuthorized": true,
+    "ownedByMe": true,
+    "capabilities": {
+      "canAddChildren": true
+    }
+  },
+  "actions": [
+    {
+      "id": "drive.files.search",
+      "input": {
+        "pageSize": 1,
+        "q": "trashed = false"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "files": [
+              {
+                "id": "f1",
+                "name": "fixture.txt",
+                "mimeType": "text/plain",
+                "description": "fixture",
+                "parents": ["p1"],
+                "trashed": false,
+                "version": "7",
+                "size": "5",
+                "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+                "isAppAuthorized": true,
+                "ownedByMe": true,
+                "capabilities": {
+                  "canDownload": true,
+                  "canEdit": true,
+                  "canCopy": true,
+                  "canShare": true,
+                  "canTrash": true,
+                  "canUntrash": true,
+                  "canMoveItemWithinDrive": true
+                }
+              }
+            ],
+            "nextPageToken": "next",
+            "incompleteSearch": false
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": true,
+        "allPagesRead": false
+      },
+      "rejectedInput": {
+        "pageSize": 1,
+        "q": "trashed = false",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files",
+          "query": {
+            "spaces": "drive",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission)",
+            "supportsAllDrives": true,
+            "includeItemsFromAllDrives": true,
+            "corpora": "user",
+            "pageSize": 1,
+            "q": "trashed = false"
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.files.get",
+      "input": {
+        "fileId": "f1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "id": "f1",
+        "version": "7"
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.files.download",
+      "input": {
+        "fileId": "f1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "bodyBase64": "SGVsbG8="
+        }
+      ],
+      "expectedOutput": {
+        "artifact": {
+          "id": "artifact-fixture",
+          "size": 5
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "alt": "media",
+            "supportsAllDrives": true
+          },
+          "responseType": "bytes"
+        }
+      ]
+    },
+    {
+      "id": "drive.files.export",
+      "input": {
+        "fileId": "f1",
+        "mimeType": "application/pdf"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "application/vnd.google-apps.document",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "exportFormats": {
+              "application/vnd.google-apps.document": ["application/pdf"]
+            }
+          }
+        },
+        {
+          "status": 200,
+          "bodyBase64": "SGVsbG8="
+        }
+      ],
+      "expectedOutput": {
+        "artifact": {
+          "id": "artifact-fixture",
+          "size": 5
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "mimeType": "application/pdf",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/about",
+          "query": {
+            "fields": "exportFormats"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/export",
+          "query": {
+            "mimeType": "application/pdf"
+          },
+          "responseType": "bytes"
+        }
+      ]
+    },
+    {
+      "id": "drive.files.upload",
+      "input": {
+        "artifactId": "artifact-source",
+        "name": "fixture.txt"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "ids": ["new-file"]
+          }
+        },
+        {
+          "status": 200,
+          "body": {},
+          "headers": {
+            "location": "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=fixture-session"
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "new-file",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "id": "new-file"
+        }
+      },
+      "rejectedInput": {
+        "artifactId": "artifact-source",
+        "name": "fixture.txt",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/generateIds",
+          "query": {
+            "count": 1,
+            "space": "drive",
+            "type": "files"
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "POST",
+          "path": "/files",
+          "query": {
+            "uploadType": "resumable",
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "id": "new-file",
+            "name": "fixture.txt",
+            "mimeType": "text/plain"
+          },
+          "headers": {
+            "X-Upload-Content-Type": "text/plain",
+            "X-Upload-Content-Length": "5"
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "PUT",
+          "path": "/files",
+          "query": {
+            "uploadType": "resumable",
+            "upload_id": "fixture-session"
+          },
+          "headers": {
+            "Content-Type": "text/plain",
+            "Content-Range": "bytes 0-4/5"
+          },
+          "bodyBase64": "SGVsbG8="
+        }
+      ]
+    },
+    {
+      "id": "drive.files.update_content",
+      "input": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "artifactId": "artifact-source"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {},
+          "headers": {
+            "location": "https://www.googleapis.com/upload/drive/v3/files/f1?uploadType=resumable&upload_id=fixture-session"
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "8",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "id": "f1"
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "artifactId": "artifact-source",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "uploadType": "resumable",
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "mimeType": "text/plain"
+          },
+          "headers": {
+            "X-Upload-Content-Type": "text/plain",
+            "X-Upload-Content-Length": "5"
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "PUT",
+          "path": "/files/f1",
+          "query": {
+            "uploadType": "resumable",
+            "upload_id": "fixture-session"
+          },
+          "headers": {
+            "Content-Type": "text/plain",
+            "Content-Range": "bytes 0-4/5"
+          },
+          "bodyBase64": "SGVsbG8="
+        }
+      ]
+    },
+    {
+      "id": "drive.folders.create",
+      "input": {
+        "name": "New folder"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "ids": ["new-file"]
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "new-file",
+            "name": "New folder",
+            "mimeType": "application/vnd.google-apps.folder",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canAddChildren": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "id": "new-file"
+        }
+      },
+      "rejectedInput": {
+        "name": "New folder",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/generateIds",
+          "query": {
+            "count": 1,
+            "space": "drive",
+            "type": "files"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "POST",
+          "path": "/files",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          },
+          "body": {
+            "id": "new-file",
+            "name": "New folder",
+            "mimeType": "application/vnd.google-apps.folder"
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.files.update_metadata",
+      "input": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "metadata": {
+          "name": "Renamed.txt"
+        }
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "Renamed.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "8",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "name": "Renamed.txt"
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "metadata": {
+          "name": "Renamed.txt"
+        },
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "name": "Renamed.txt"
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.files.move",
+      "input": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "expectedParentIds": ["p1"],
+        "destinationParentId": "p2"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "p2",
+            "name": "Fixture folder",
+            "mimeType": "application/vnd.google-apps.folder",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canAddChildren": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p2"],
+            "trashed": false,
+            "version": "8",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "parents": ["p2"]
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "expectedParentIds": ["p1"],
+        "destinationParentId": "p2",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/p2",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "addParents": "p2",
+            "removeParents": "p1"
+          },
+          "body": {}
+        }
+      ]
+    },
+    {
+      "id": "drive.files.copy",
+      "input": {
+        "fileId": "f1",
+        "name": "Copy.txt"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "copy1",
+            "name": "Copy.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "id": "copy1"
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "name": "Copy.txt",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "POST",
+          "path": "/files/f1/copy",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          },
+          "body": {
+            "name": "Copy.txt"
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.files.trash",
+      "input": {
+        "fileId": "f1",
+        "expectedVersion": "7"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": true,
+            "version": "8",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "trashed": true
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "trashed": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.files.restore",
+      "input": {
+        "fileId": "f1",
+        "expectedVersion": "7"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": true,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "8",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "file": {
+          "trashed": false
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "trashed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.permissions.list",
+      "input": {
+        "fileId": "f1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "permissions": [
+              {
+                "id": "permission1",
+                "type": "user",
+                "role": "reader",
+                "emailAddress": "target@example.test",
+                "permissionDetails": [
+                  {
+                    "inherited": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/permissions",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "nextPageToken,permissions(id,type,role,emailAddress,domain,allowFileDiscovery,deleted,expirationTime,pendingOwner,permissionDetails)",
+            "pageSize": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.permissions.create",
+      "input": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "permission": {
+          "type": "user",
+          "role": "reader",
+          "emailAddress": "target@example.test"
+        },
+        "sendNotificationEmail": false
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "permission1",
+            "type": "user",
+            "role": "reader",
+            "emailAddress": "target@example.test"
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "permission": {
+          "id": "permission1"
+        }
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "permission": {
+          "type": "user",
+          "role": "reader",
+          "emailAddress": "target@example.test"
+        },
+        "sendNotificationEmail": false,
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "POST",
+          "path": "/files/f1/permissions",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,type,role,emailAddress,domain,allowFileDiscovery,deleted,expirationTime,pendingOwner,permissionDetails",
+            "sendNotificationEmail": false
+          },
+          "body": {
+            "type": "user",
+            "role": "reader",
+            "emailAddress": "target@example.test"
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.permissions.delete",
+      "input": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "permissionId": "permission1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "permission1",
+            "type": "user",
+            "role": "reader",
+            "permissionDetails": [
+              {
+                "inherited": false
+              }
+            ]
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "user": {
+              "permissionId": "self-permission"
+            }
+          }
+        },
+        {
+          "status": 204,
+          "body": null
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded",
+        "deleted": true
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "expectedVersion": "7",
+        "permissionId": "permission1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/permissions/permission1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,type,role,emailAddress,domain,allowFileDiscovery,deleted,expirationTime,pendingOwner,permissionDetails"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/about",
+          "query": {
+            "fields": "user(permissionId)"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "DELETE",
+          "path": "/files/f1/permissions/permission1",
+          "query": {
+            "supportsAllDrives": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "drive.revisions.list",
+      "input": {
+        "fileId": "f1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "f1",
+            "name": "fixture.txt",
+            "mimeType": "text/plain",
+            "description": "fixture",
+            "parents": ["p1"],
+            "trashed": false,
+            "version": "7",
+            "size": "5",
+            "md5Checksum": "8b1a9953c4611296a827abf8c47804d7",
+            "isAppAuthorized": true,
+            "ownedByMe": true,
+            "capabilities": {
+              "canDownload": true,
+              "canEdit": true,
+              "canCopy": true,
+              "canShare": true,
+              "canTrash": true,
+              "canUntrash": true,
+              "canMoveItemWithinDrive": true
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "revisions": [
+              {
+                "id": "rev1",
+                "mimeType": "text/plain",
+                "modifiedTime": "2026-10-17T00:00:00Z",
+                "size": "5",
+                "keepForever": false
+              }
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      },
+      "rejectedInput": {
+        "fileId": "f1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/revisions",
+          "query": {
+            "fields": "nextPageToken,revisions(id,mimeType,modifiedTime,keepForever,published,publishAuto,publishedOutsideDomain,originalFilename,md5Checksum,size)",
+            "pageSize": 100
+          }
+        }
+      ]
+    }
+  ]
+}

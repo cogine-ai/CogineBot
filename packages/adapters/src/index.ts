@@ -95,6 +95,8 @@ export * from "./native-connectors/events/readers.js";
 export * from "./native-connectors/events/resource-verifier.js";
 export * from "./native-connectors/events/service.js";
 export * from "./native-connectors/events/signals.js";
+export * from "./native-connectors/events/slack-hooks.js";
+export * from "./native-connectors/events/slack-signals.js";
 export * from "./native-connectors/events/store.js";
 export * from "./native-connectors/events/transport.js";
 export * from "./native-connectors/events/worker.js";

@@ -1,7 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type {
   NativeAppId,
-  NativeConfigEditable,
   NativeConfigInput,
   NativeConfigStatus,
   NativeSetupState,
@@ -20,86 +19,21 @@ import { useEffect, useId, useRef, useState } from "react";
 import { rpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
 import { NativeNotionWebhookSetup } from "./NativeNotionWebhookSetup";
+import { NativeSlackEventSetup } from "./NativeSlackEventSetup";
+import type { NativeApplicationDraft } from "./native-application-options";
+import {
+  NATIVE_APPLICATIONS as APPS,
+  changeNativeCredential,
+  freshNativeApplication as fresh,
+  draftNativeApplication as fromConfiguration,
+  GOOGLE_SCOPE_PREFIX as GOOGLE,
+  GOOGLE_DEFAULT_SCOPES,
+  nativeApplicationInput as input,
+  nativeGmailCallbackAudience,
+} from "./native-application-options";
 
 type CredentialKind = NativeConfigInput["credentialKind"];
-type Draft = Omit<NativeConfigInput, "knowledgeBaseIds"> & {
-  hasClientSecret: boolean;
-  knowledgeBaseIdsText: string;
-};
-const APPS: readonly { id: NativeAppId; name: string }[] = [
-  { id: "coginex", name: "CogineX" },
-  { id: "knowai", name: "Knowai" },
-  { id: "google-calendar", name: "Google Calendar" },
-  { id: "notion", name: "Notion" },
-];
-const GOOGLE = "https://www.googleapis.com/auth/";
-function fresh(appId: NativeAppId): Draft {
-  return {
-    appId,
-    label: "",
-    ownership: "byo",
-    enabled: true,
-    credentialKind:
-      appId === "coginex" ? "mcp_oauth" : appId === "knowai" ? "machine_key" : "oauth",
-    scopes:
-      appId === "google-calendar"
-        ? [
-            "openid",
-            "email",
-            `${GOOGLE}calendar.calendarlist.readonly`,
-            `${GOOGLE}calendar.events.readonly`,
-            `${GOOGLE}calendar.freebusy`,
-          ]
-        : [],
-    capabilities: appId === "knowai" ? ["retrieve"] : appId === "notion" ? ["read_content"] : [],
-    knowledgeBaseIdsText: "",
-    hasClientSecret: false,
-  };
-}
-function fromConfiguration(value: NativeConfigEditable): Draft {
-  // Explicitly omit callbackUri, hasClientSecret and revision from the write payload.
-  return {
-    id: value.id,
-    expectedRevision: value.revision,
-    appId: value.appId,
-    label: value.label,
-    ownership: value.ownership,
-    enabled: value.enabled,
-    credentialKind: value.credentialKind,
-    endpoint: value.endpoint,
-    clientId: value.clientId,
-    scopes: [...value.scopes],
-    capabilities: [...value.capabilities],
-    tenantId: value.tenantId,
-    knowledgeBaseIdsText: value.knowledgeBaseIds.join(", "),
-    hasClientSecret: value.hasClientSecret,
-  };
-}
-function input(draft: Draft): NativeConfigInput {
-  return {
-    ...(draft.id ? { id: draft.id, expectedRevision: draft.expectedRevision } : {}),
-    appId: draft.appId,
-    label: draft.label.trim(),
-    ownership: draft.ownership,
-    enabled: draft.enabled,
-    credentialKind: draft.credentialKind,
-    ...(draft.endpoint?.trim() ? { endpoint: draft.endpoint.trim() } : {}),
-    ...(draft.clientId?.trim() ? { clientId: draft.clientId.trim() } : {}),
-    ...(draft.clientSecret ? { clientSecret: draft.clientSecret } : {}),
-    scopes: [...draft.scopes],
-    capabilities: [...draft.capabilities],
-    knowledgeBaseIds: [
-      ...new Set(
-        draft.knowledgeBaseIdsText
-          .split(/[,\n]/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
-    ],
-    ...(draft.tenantId?.trim() ? { tenantId: draft.tenantId.trim() } : {}),
-  };
-}
-
+type Draft = NativeApplicationDraft;
 /** A section inside deployment settings, separate from individual account authorization. */
 export function NativeApplicationSetup({
   onDone,
@@ -144,9 +78,13 @@ export function NativeApplicationSetup({
       ? t`Account authorization`
       : kind === "machine_key"
         ? t`Machine API key`
-        : kind === "internal_token"
-          ? t`Internal integration`
-          : t`Personal access token`;
+        : kind === "bot_token"
+          ? t`Bot token`
+          : kind === "github_app_installation"
+            ? t`GitHub App installation`
+            : kind === "internal_token"
+              ? t`Internal integration`
+              : t`Personal access token`;
   }
   function update(value: Partial<Draft>) {
     setDraft((current) => (current ? { ...current, ...value } : current));
@@ -201,7 +139,17 @@ export function NativeApplicationSetup({
   }
   async function save() {
     if (!draft) return;
-    const parsed = NativeConfigInputSchema.safeParse(input(draft));
+    const prepared =
+      draft.googleWatch && state
+        ? {
+            ...draft,
+            googleWatch: {
+              ...draft.googleWatch,
+              callbackAudience: nativeGmailCallbackAudience(state.callbackUri),
+            },
+          }
+        : draft;
+    const parsed = NativeConfigInputSchema.safeParse(input(prepared));
     if (!parsed.success) {
       setError(t`Complete the required application settings`);
       return;
@@ -222,14 +170,80 @@ export function NativeApplicationSetup({
         : draft[key].filter((entry) => entry !== value),
     });
   }
-  const calendarPermissions = [
-    { value: "email", label: t`Show account email` },
-    { value: `${GOOGLE}calendar.calendarlist.readonly`, label: t`List calendars` },
-    { value: `${GOOGLE}calendar.events.readonly`, label: t`Read events` },
-    { value: `${GOOGLE}calendar.events`, label: t`Create and change events` },
-    { value: `${GOOGLE}calendar.freebusy`, label: t`Check calendar availability` },
-    { value: `${GOOGLE}calendar.events.freebusy`, label: t`Check event availability` },
-  ];
+  const googlePermissions: Partial<Record<NativeAppId, { value: string; label: string }[]>> = {
+    "google-calendar": [
+      { value: "calendar.calendarlist.readonly", label: t`List calendars` },
+      { value: "calendar.events.readonly", label: t`Read events` },
+      { value: "calendar.events", label: t`Create and change events` },
+      { value: "calendar.freebusy", label: t`Check calendar availability` },
+      { value: "calendar.events.freebusy", label: t`Check event availability` },
+    ],
+    gmail: [
+      { value: "gmail.readonly", label: t`Read mail` },
+      { value: "gmail.send", label: t`Send mail` },
+      { value: "gmail.compose", label: t`Create drafts and send mail` },
+      { value: "gmail.modify", label: t`Change messages and labels` },
+      { value: "gmail.labels", label: t`Manage labels` },
+    ],
+    "google-drive": [
+      { value: "drive.metadata.readonly", label: t`Find files and read metadata` },
+      { value: "drive.file", label: t`Create and use app files` },
+      { value: "drive.readonly", label: t`Read all accessible Drive files` },
+      { value: "drive", label: t`Manage all accessible Drive files` },
+    ],
+    "google-docs": [
+      { value: "documents.readonly", label: t`Read accessible documents` },
+      { value: "documents", label: t`Create and edit accessible documents` },
+      { value: "drive.file", label: t`Create and copy app files` },
+      { value: "drive.readonly", label: t`Read all accessible Drive files` },
+      { value: "drive", label: t`Manage all accessible Drive files` },
+    ],
+    "google-sheets": [
+      { value: "spreadsheets.readonly", label: t`Read accessible spreadsheets` },
+      { value: "spreadsheets", label: t`Create and edit accessible spreadsheets` },
+      { value: "drive.file", label: t`Create and use app files` },
+      { value: "drive.readonly", label: t`Read all accessible Drive files` },
+      { value: "drive", label: t`Manage all accessible Drive files` },
+    ],
+    "google-slides": [
+      { value: "presentations.readonly", label: t`Read accessible presentations` },
+      { value: "presentations", label: t`Create and edit accessible presentations` },
+      { value: "drive.file", label: t`Create and copy app files` },
+      { value: "drive.readonly", label: t`Read all accessible Drive files` },
+      { value: "drive", label: t`Manage all accessible Drive files` },
+    ],
+    "google-tasks": [
+      { value: "tasks.readonly", label: t`Read task lists and tasks` },
+      { value: "tasks", label: t`Create and change task lists and tasks` },
+    ],
+  };
+  const collaborationPermissions =
+    draft?.appId === "linear" && draft.credentialKind === "oauth"
+      ? ["read", "write", "issues:create", "comments:create"]
+      : draft?.appId === "slack"
+        ? [
+            "app_mentions:read",
+            "users:read",
+            "users:read.email",
+            "channels:read",
+            "groups:read",
+            "im:read",
+            "mpim:read",
+            "channels:history",
+            "groups:history",
+            "im:history",
+            "mpim:history",
+            "chat:write",
+            "chat:write.public",
+            "im:write",
+            "mpim:write",
+            "reactions:write",
+            "files:write",
+            "files:read",
+            ...(draft.actor === "user" ? ["search:read"] : []),
+          ]
+        : [];
+  const googleApp = Boolean(draft && GOOGLE_DEFAULT_SCOPES[draft.appId]);
   const capabilities =
     draft?.appId === "knowai"
       ? [
@@ -244,6 +258,20 @@ export function NativeApplicationSetup({
           { value: "read_comments", label: t`Read comments` },
           { value: "insert_comments", label: t`Add comments` },
         ];
+  const permissions = draft
+    ? googleApp
+      ? (googlePermissions[draft.appId] ?? []).map((permission) => ({
+          ...permission,
+          value: GOOGLE + permission.value,
+        }))
+      : capabilities
+    : [];
+  const credentialOptions: Partial<Record<NativeAppId, CredentialKind[]>> = {
+    notion: ["oauth", "internal_token", "personal_token"],
+    github: ["personal_token", "github_app_installation", "oauth"],
+    linear: ["personal_token", "oauth"],
+    slack: ["bot_token", "personal_token", "oauth"],
+  };
   if (loading && !state)
     return (
       <p className="text-sm text-muted-foreground">
@@ -263,7 +291,9 @@ export function NativeApplicationSetup({
     );
   if (!state.canConfigure) return null;
   if (webhookConfig)
-    return (
+    return webhookConfig.appId === "slack" ? (
+      <NativeSlackEventSetup config={webhookConfig} onBack={() => setWebhookConfig(null)} />
+    ) : (
       <NativeNotionWebhookSetup config={webhookConfig} onBack={() => setWebhookConfig(null)} />
     );
   return (
@@ -324,6 +354,18 @@ export function NativeApplicationSetup({
                     <Trans>Webhooks</Trans>
                   </Button>
                 ) : null}
+                {entry.appId === "slack" &&
+                (entry.actor === "bot" || entry.credentialKind === "bot_token") ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy || loading}
+                    onClick={() => setWebhookConfig(entry)}
+                  >
+                    <Trans>Events</Trans>
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="ghost"
@@ -377,7 +419,11 @@ export function NativeApplicationSetup({
                   disabled={busy}
                   onChange={(event) => {
                     const app = APPS.find((entry) => entry.id === event.target.value);
-                    if (app) setDraft(fresh(app.id));
+                    if (app) {
+                      setDraft(fresh(app.id));
+                      setError(null);
+                      setNotice(null);
+                    }
                   }}
                 >
                   {APPS.map((app) => (
@@ -424,7 +470,7 @@ export function NativeApplicationSetup({
               onChange={(event) => update({ label: event.target.value })}
             />
           </Field>
-          {!draft.id && draft.appId === "notion" ? (
+          {!draft.id && credentialOptions[draft.appId] ? (
             <Field>
               <FieldLabel htmlFor={`${id}-kind`}>
                 <Trans>Authorization</Trans>
@@ -436,21 +482,99 @@ export function NativeApplicationSetup({
                 disabled={busy}
                 onChange={(event) => {
                   const kind = event.target.value;
-                  if (kind === "oauth" || kind === "internal_token" || kind === "personal_token")
-                    update({ credentialKind: kind, clientId: undefined, clientSecret: undefined });
+                  if (credentialOptions[draft.appId]?.includes(kind as CredentialKind))
+                    update(changeNativeCredential(draft, kind as CredentialKind));
                 }}
               >
-                <NativeSelectOption value="oauth">
-                  <Trans>Account authorization</Trans>
-                </NativeSelectOption>
-                <NativeSelectOption value="internal_token">
-                  <Trans>Internal integration token</Trans>
-                </NativeSelectOption>
-                <NativeSelectOption value="personal_token">
-                  <Trans>Personal access token</Trans>
-                </NativeSelectOption>
+                {credentialOptions[draft.appId]!.map((kind) => (
+                  <NativeSelectOption key={kind} value={kind}>
+                    {kind === "personal_token" && draft.appId === "linear"
+                      ? t`Personal API key`
+                      : kind === "personal_token" && draft.appId === "slack"
+                        ? t`User token`
+                        : kindLabel(kind)}
+                  </NativeSelectOption>
+                ))}
               </NativeSelect>
             </Field>
+          ) : null}
+          {["github", "linear", "slack"].includes(draft.appId) ? (
+            <Field>
+              <FieldLabel htmlFor={`${id}-actor`}>
+                <Trans>Acts as</Trans>
+              </FieldLabel>
+              <NativeSelect
+                id={`${id}-actor`}
+                value={draft.actor ?? "user"}
+                disabled={busy || draft.credentialKind !== "oauth" || draft.appId === "github"}
+                onChange={(event) => {
+                  const actor = event.target.value;
+                  if (actor === "user" || actor === "app" || actor === "bot")
+                    update({
+                      actor,
+                      ...(draft.appId === "slack" && actor === "bot"
+                        ? {
+                            scopes: draft.scopes.filter((scope) => scope !== "search:read"),
+                            capabilities: [],
+                          }
+                        : {}),
+                    });
+                }}
+              >
+                {draft.actor === "installation" ? (
+                  <NativeSelectOption value="installation">
+                    <Trans>App installation</Trans>
+                  </NativeSelectOption>
+                ) : null}
+                {draft.appId !== "slack" || draft.credentialKind !== "bot_token" ? (
+                  <NativeSelectOption value="user">
+                    <Trans>User</Trans>
+                  </NativeSelectOption>
+                ) : null}
+                {draft.appId === "linear" && draft.credentialKind === "oauth" ? (
+                  <NativeSelectOption value="app">
+                    <Trans>Application</Trans>
+                  </NativeSelectOption>
+                ) : null}
+                {draft.appId === "slack" && draft.credentialKind !== "personal_token" ? (
+                  <NativeSelectOption value="bot">
+                    <Trans>Bot</Trans>
+                  </NativeSelectOption>
+                ) : null}
+              </NativeSelect>
+            </Field>
+          ) : null}
+          {draft.credentialKind === "github_app_installation" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor={`${id}-github-app`}>
+                  <Trans>GitHub App ID</Trans>
+                </FieldLabel>
+                <Input
+                  id={`${id}-github-app`}
+                  inputMode="numeric"
+                  pattern="[0-9]+"
+                  required
+                  disabled={busy}
+                  value={draft.githubAppId ?? ""}
+                  onChange={(event) => update({ githubAppId: event.target.value })}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`${id}-github-installation`}>
+                  <Trans>Installation ID</Trans>
+                </FieldLabel>
+                <Input
+                  id={`${id}-github-installation`}
+                  inputMode="numeric"
+                  pattern="[0-9]+"
+                  required
+                  disabled={busy}
+                  value={draft.githubInstallationId ?? ""}
+                  onChange={(event) => update({ githubInstallationId: event.target.value })}
+                />
+              </Field>
+            </div>
           ) : null}
           {draft.appId === "coginex" || draft.appId === "knowai" ? (
             <Field>
@@ -520,9 +644,102 @@ export function NativeApplicationSetup({
               </Field>
             </>
           ) : null}
+          {draft.appId === "gmail" ? (
+            <details>
+              <summary className="cursor-pointer text-sm font-medium">
+                <Trans>Gmail push notifications</Trans>
+              </summary>
+              <div className="mt-3 space-y-3">
+                <Field orientation="horizontal">
+                  <Switch
+                    id={`${id}-gmail-watch-enabled`}
+                    disabled={busy || !state.callbackUri.startsWith("https://")}
+                    checked={Boolean(draft.googleWatch)}
+                    onCheckedChange={(enabled) =>
+                      update({
+                        googleWatch: enabled
+                          ? {
+                              projectId: "",
+                              topicName: "",
+                              subscriptionName: "",
+                              pushServiceAccountEmail: "",
+                              callbackAudience: nativeGmailCallbackAudience(state.callbackUri),
+                            }
+                          : undefined,
+                      })
+                    }
+                  />
+                  <FieldLabel htmlFor={`${id}-gmail-watch-enabled`}>
+                    <Trans>Use Google Pub/Sub</Trans>
+                  </FieldLabel>
+                </Field>
+                {!state.callbackUri.startsWith("https://") ? (
+                  <p className="text-xs text-muted-foreground">
+                    <Trans>A public HTTPS API URL is required.</Trans>
+                  </p>
+                ) : null}
+                {draft.googleWatch ? (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      <Trans>
+                        Configure the Pub/Sub topic, push subscription and service account in Google
+                        Cloud first. Saving these fields does not verify delivery.
+                      </Trans>
+                    </p>
+                    {(
+                      [
+                        { key: "projectId", label: t`Google Cloud project ID` },
+                        { key: "topicName", label: t`Topic resource name` },
+                        { key: "subscriptionName", label: t`Subscription resource name` },
+                        { key: "pushServiceAccountEmail", label: t`Push service account email` },
+                      ] as const
+                    ).map((field) => (
+                      <Field key={field.key}>
+                        <FieldLabel htmlFor={`${id}-watch-${field.key}`}>{field.label}</FieldLabel>
+                        <Input
+                          id={`${id}-watch-${field.key}`}
+                          type={field.key === "pushServiceAccountEmail" ? "email" : "text"}
+                          value={draft.googleWatch![field.key]}
+                          required
+                          disabled={busy}
+                          onChange={(event) =>
+                            update({
+                              googleWatch: {
+                                ...draft.googleWatch!,
+                                [field.key]: event.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </Field>
+                    ))}
+                    <Field>
+                      <FieldLabel htmlFor={`${id}-watch-audience`}>
+                        <Trans>Push callback audience</Trans>
+                      </FieldLabel>
+                      <Input
+                        id={`${id}-watch-audience`}
+                        readOnly
+                        value={nativeGmailCallbackAudience(state.callbackUri)}
+                        onFocus={(event) => event.target.select()}
+                      />
+                    </Field>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    <Trans>
+                      Without Pub/Sub, enabled Gmail routines use periodic change checks.
+                    </Trans>
+                  </p>
+                )}
+              </div>
+            </details>
+          ) : null}
           {draft.credentialKind === "machine_key" ||
           draft.credentialKind === "internal_token" ||
-          draft.credentialKind === "personal_token" ? (
+          draft.credentialKind === "personal_token" ||
+          draft.credentialKind === "bot_token" ||
+          draft.credentialKind === "github_app_installation" ? (
             <p className="text-xs text-muted-foreground">
               <Trans>Members enter their credentials when connecting from Apps.</Trans>
             </p>
@@ -556,42 +773,89 @@ export function NativeApplicationSetup({
               </Field>
             </>
           ) : null}
-          {draft.appId === "google-calendar" ||
-          draft.appId === "notion" ||
-          draft.appId === "knowai" ? (
+          {googleApp || draft.appId === "notion" || draft.appId === "knowai" ? (
             <fieldset className="space-y-2" disabled={busy}>
               <legend className="mb-2 text-sm font-medium">
                 <Trans>Permissions</Trans>
               </legend>
-              {(draft.appId === "google-calendar" ? calendarPermissions : capabilities).map(
-                (permission) => (
-                  <Field key={permission.value} orientation="horizontal">
-                    <Switch
-                      id={`${id}-${permission.value}`}
-                      checked={(draft.appId === "google-calendar"
-                        ? draft.scopes
-                        : draft.capabilities
-                      ).includes(permission.value)}
-                      onCheckedChange={(value) =>
-                        checked(
-                          draft.appId === "google-calendar" ? "scopes" : "capabilities",
-                          permission.value,
-                          value,
-                        )
-                      }
-                    />
-                    <FieldLabel htmlFor={`${id}-${permission.value}`}>
-                      {permission.label}
-                    </FieldLabel>
-                  </Field>
-                ),
-              )}
+              {permissions.map((permission) => (
+                <Field key={permission.value} orientation="horizontal">
+                  <Switch
+                    id={`${id}-${permission.value}`}
+                    checked={(googleApp ? draft.scopes : draft.capabilities).includes(
+                      permission.value,
+                    )}
+                    onCheckedChange={(value) =>
+                      checked(googleApp ? "scopes" : "capabilities", permission.value, value)
+                    }
+                  />
+                  <FieldLabel htmlFor={`${id}-${permission.value}`}>{permission.label}</FieldLabel>
+                </Field>
+              ))}
               {draft.appId === "notion" ? (
                 <p className="text-xs text-muted-foreground">
                   <Trans>Match the capabilities enabled in your Notion integration.</Trans>
                 </p>
               ) : null}
             </fieldset>
+          ) : null}
+          {collaborationPermissions.length ? (
+            <fieldset className="space-y-2" disabled={busy}>
+              <legend className="mb-2 text-sm font-medium">
+                <Trans>Application scopes</Trans>
+              </legend>
+              {collaborationPermissions.map((scope) => (
+                <Field key={scope} orientation="horizontal">
+                  <Switch
+                    id={`${id}-scope-${scope}`}
+                    checked={draft.scopes.includes(scope)}
+                    onCheckedChange={(value) => checked("scopes", scope, value)}
+                  />
+                  <FieldLabel htmlFor={`${id}-scope-${scope}`}>{scope}</FieldLabel>
+                </Field>
+              ))}
+            </fieldset>
+          ) : null}
+          {draft.appId === "slack" && draft.actor === "user" ? (
+            <details>
+              <summary className="cursor-pointer text-sm font-medium">
+                <Trans>Advanced Slack data access</Trans>
+              </summary>
+              <fieldset className="mt-3 space-y-2" disabled={busy}>
+                <legend className="mb-2 text-sm font-medium">
+                  <Trans>Slack data access</Trans>
+                </legend>
+                <p className="text-xs text-muted-foreground">
+                  <Trans>Requires Slack platform eligibility and approved data handling.</Trans>
+                </p>
+                <Field orientation="horizontal">
+                  <Switch
+                    id={`${id}-slack-user-data`}
+                    checked={draft.capabilities.includes("slack_user_data_allowed")}
+                    onCheckedChange={(value) =>
+                      checked("capabilities", "slack_user_data_allowed", value)
+                    }
+                  />
+                  <FieldLabel htmlFor={`${id}-slack-user-data`}>
+                    <Trans>Allow user data processing</Trans>
+                  </FieldLabel>
+                </Field>
+                {draft.scopes.includes("search:read") ? (
+                  <Field orientation="horizontal">
+                    <Switch
+                      id={`${id}-slack-legacy-search`}
+                      checked={draft.capabilities.includes("slack_legacy_search_allowed")}
+                      onCheckedChange={(value) =>
+                        checked("capabilities", "slack_legacy_search_allowed", value)
+                      }
+                    />
+                    <FieldLabel htmlFor={`${id}-slack-legacy-search`}>
+                      <Trans>Allow legacy search for an eligible Slack app</Trans>
+                    </FieldLabel>
+                  </Field>
+                ) : null}
+              </fieldset>
+            </details>
           ) : null}
           <Field orientation="horizontal">
             <Switch

@@ -247,6 +247,8 @@ async function main() {
     jobs,
     events,
     process.env.API_URL ?? "http://127.0.0.1:3100",
+    undefined,
+    native.slackEventHooks,
   );
   const jobHandlers = createBackgroundJobHandlers({
     nativeEvents,
@@ -308,6 +310,7 @@ async function main() {
       await realtime.close();
       await connector.stop();
       await mcp.close();
+      await nativeEvents.close();
       await native.close();
       await prisma.$disconnect().catch(() => undefined);
       await pool.end().catch(() => undefined);

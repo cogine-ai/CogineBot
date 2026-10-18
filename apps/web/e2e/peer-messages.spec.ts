@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { ThreadMessagePage, ThreadSnapshot } from "@rakazo/contracts";
+import type { RunsListOutput, ThreadMessagePage, ThreadSnapshot } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 test("peer sources open a live exchange inside the same chat shell", async ({ page }, testInfo) => {
@@ -80,6 +80,50 @@ test("peer sources open a live exchange inside the same chat shell", async ({ pa
   await assertChipLeftAligned();
   await expect(composer).toBeVisible();
   await captureScreenshot(page, testInfo, "peer-chip-desktop");
+
+  // The automatic alpha return creates another Chief run. The scripted test
+  // executor does not claim steering, so finish that exact exchange before
+  // sending the tail/stop/beta sequence used to exercise the live peer view.
+  await expect
+    .poll(
+      async () => {
+        const history = await rpc<ThreadMessagePage>(page, "threads/messages", {
+          botId: chiefId,
+          includePeerRuns: true,
+        });
+        const outbound = history.messages.find((message) =>
+          message.blocks.some(
+            (block) =>
+              block.kind === "bot_message_sent" &&
+              block.toBotName === "Researcher" &&
+              block.text === "peer-exchange-alpha",
+          ),
+        );
+        const returned =
+          outbound &&
+          history.messages.find(
+            (message) =>
+              message.replyToMessageId === outbound.id &&
+              message.blocks.some(
+                (block) =>
+                  block.kind === "bot_message_received" &&
+                  block.fromBotName === "Researcher" &&
+                  block.intent === "result",
+              ),
+          );
+        if (!returned?.runId) return false;
+        const [runs, snapshot] = await Promise.all([
+          rpc<RunsListOutput>(page, "runs/list", { filter: "recent" }),
+          rpc<ThreadSnapshot>(page, "threads/get", { botId: chiefId }),
+        ]);
+        return (
+          runs.runs.some((run) => run.runId === returned.runId && run.status === "completed") &&
+          !(snapshot.activeRuns ?? []).some((run) => run.botId === chiefId)
+        );
+      },
+      { timeout: 60_000, message: "the exact alpha return must finish before another Chief input" },
+    )
+    .toBe(true);
 
   // Put the source event above a real stored tail so returning from peer chat
   // must restore a reading position, rather than trivially restoring scroll 0.

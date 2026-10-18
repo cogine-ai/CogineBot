@@ -43,8 +43,144 @@ export class ThirdPartyConnectorEmulator {
     if (url.hostname === "api.example.test") return this.openapi(url, init);
     if (url.hostname === "graphql.example.test") return this.graphql(url, init);
     if (url.hostname === "catalog.example.test") return this.catalog(url);
+    const native = this.nativeReadOnly(url, init);
+    if (native) return native;
     throw new Error(`Third-party connector emulator received unexpected URL ${url}`);
   };
+
+  /** Native browser journeys use synthetic identities and fixed read-only resources only. */
+  private nativeReadOnly(url: URL, init?: RequestInit): Response | undefined {
+    const method = init?.method ?? "GET";
+    const bearer = new Headers(init?.headers).get("authorization") ?? "";
+    if (
+      url.hostname === "oauth2.googleapis.com" &&
+      url.pathname === "/token" &&
+      method === "POST"
+    ) {
+      const form = new URLSearchParams(String(init?.body ?? ""));
+      const app = form.get("client_id")?.replace("e2e-native-", "");
+      const scopes: Record<string, string> = {
+        gmail: "gmail.readonly",
+        "google-drive": "drive.metadata.readonly",
+        "google-docs": "documents.readonly",
+        "google-sheets": "spreadsheets.readonly",
+        "google-slides": "presentations.readonly",
+        "google-tasks": "tasks.readonly",
+      };
+      if (!form.get("client_id")?.startsWith("e2e-native-") || !app || !scopes[app])
+        return Response.json({ error: "invalid_client" }, { status: 401 });
+      const picker = app === "google-drive" && form.get("code") === "e2e-drive-picker";
+      return Response.json({
+        token_type: "Bearer",
+        access_token: `fake-e2e-native-${app}`,
+        refresh_token: `fake-e2e-refresh-${app}`,
+        expires_in: 3600,
+        scope: `${picker ? "" : "openid email "}https://www.googleapis.com/auth/${picker ? "drive.file" : scopes[app]}`,
+      });
+    }
+    if (url.hostname === "openidconnect.googleapis.com" && url.pathname === "/v1/userinfo") {
+      if (method !== "GET" || !bearer.startsWith("Bearer fake-e2e-native-"))
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      return Response.json({
+        sub: "e2e-native-google-user",
+        email: "native-fixture@example.test",
+        email_verified: true,
+      });
+    }
+    if (url.hostname === "gmail.googleapis.com") {
+      if (method !== "GET" || bearer !== "Bearer fake-e2e-native-gmail")
+        return Response.json({ error: "read_only_fixture" }, { status: 403 });
+      if (url.pathname === "/gmail/v1/users/me/profile")
+        return Response.json({
+          emailAddress: "native-fixture@example.test",
+          historyId: "100",
+          messagesTotal: 1,
+          threadsTotal: 1,
+        });
+      if (url.pathname === "/gmail/v1/users/me/labels/INBOX")
+        return Response.json({ id: "INBOX", name: "INBOX", type: "system" });
+      if (url.pathname === "/gmail/v1/users/me/threads/e2e-gmail-thread")
+        return Response.json({ id: "e2e-gmail-thread", historyId: "100", messages: [] });
+      if (url.pathname === "/gmail/v1/users/me/history")
+        return Response.json({ historyId: "100", history: [] });
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
+    if (url.hostname === "www.googleapis.com" && url.pathname.startsWith("/drive/v3/")) {
+      if (method !== "GET" || bearer !== "Bearer fake-e2e-native-google-drive")
+        return Response.json({ error: "read_only_fixture" }, { status: 403 });
+      if (url.pathname === "/drive/v3/about")
+        return Response.json({
+          user: {
+            permissionId: "e2e-drive-permission",
+            me: true,
+            displayName: "Drive fixture",
+            emailAddress: "native-fixture@example.test",
+          },
+        });
+      if (url.pathname === "/drive/v3/files/e2e-drive-file")
+        return Response.json({
+          id: "e2e-drive-file",
+          name: "Read-only fixture",
+          mimeType: "text/plain",
+          version: "1",
+          trashed: false,
+          isAppAuthorized: true,
+        });
+      if (url.pathname === "/drive/v3/changes/startPageToken")
+        return Response.json({ startPageToken: "100" });
+      if (url.pathname === "/drive/v3/changes")
+        return Response.json({ changes: [], newStartPageToken: "100" });
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
+    if (url.hostname === "slack.com" && url.pathname.startsWith("/api/")) {
+      if (bearer !== "Bearer xoxb-e2e-native-batch2")
+        return Response.json({ ok: false, error: "invalid_auth" });
+      if (url.pathname === "/api/auth.test" && method === "POST")
+        return Response.json(
+          {
+            ok: true,
+            team_id: "TE2ENATIVE",
+            user_id: "UE2EBOT",
+            bot_id: "BE2ENATIVE",
+            user: "Native fixture bot",
+          },
+          {
+            headers: {
+              "x-oauth-scopes":
+                "channels:read,app_mentions:read,channels:history,im:read,im:history",
+            },
+          },
+        );
+      if (method === "GET" && url.pathname === "/api/conversations.info") {
+        const channel = url.searchParams.get("channel");
+        if (channel === "CE2ENATIVE" || channel === "DE2ENATIVE")
+          return Response.json({
+            ok: true,
+            channel: {
+              id: channel,
+              is_member: true,
+              is_im: channel.startsWith("D"),
+              is_private: false,
+              is_archived: false,
+            },
+          });
+        return Response.json({ ok: false, error: "channel_not_found" });
+      }
+      if (
+        method === "GET" &&
+        url.pathname === "/api/conversations.replies" &&
+        url.searchParams.get("channel") === "CE2ENATIVE" &&
+        url.searchParams.get("ts") === "100.001"
+      )
+        return Response.json({
+          ok: true,
+          messages: [{ ts: "100.001", text: "Read-only fixture", user: "UE2EBOT" }],
+          has_more: false,
+        });
+      return Response.json({ ok: false, error: "read_only_fixture" });
+    }
+    return undefined;
+  }
 
   private async catalog(url: URL): Promise<Response> {
     if (url.pathname !== "/api/search") return new Response(null, { status: 404 });

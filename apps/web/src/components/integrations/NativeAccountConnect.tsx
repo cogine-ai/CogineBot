@@ -71,6 +71,11 @@ export function NativeAccountConnect({
     ) ?? [];
   const selected = configurations.find((entry) => entry.id === selectedId);
   const oauth = selected?.credentialKind === "oauth" || selected?.credentialKind === "mcp_oauth";
+  const canChooseDriveFiles =
+    appId === "google-drive" &&
+    selected?.credentialKind === "oauth" &&
+    !previousConnectionId &&
+    selected.driveFilePickerAvailable === true;
   function methodLabel(entry: NativeConfigStatus): string {
     const kind =
       entry.credentialKind === "machine_key"
@@ -78,18 +83,42 @@ export function NativeAccountConnect({
         : entry.credentialKind === "internal_token"
           ? t`Internal integration`
           : entry.credentialKind === "personal_token"
-            ? t`Personal access token`
-            : t`Account authorization`;
+            ? appId === "linear"
+              ? t`Personal API key`
+              : appId === "slack"
+                ? t`User token`
+                : t`Personal access token`
+            : entry.credentialKind === "bot_token"
+              ? t`Bot token`
+              : entry.credentialKind === "github_app_installation"
+                ? t`GitHub App installation`
+                : t`Account authorization`;
     const ownership =
       entry.ownership === "official" ? t`Official application` : t`Your application`;
-    return `${entry.label} · ${ownership} · ${kind}`;
+    const actor =
+      entry.credentialKind === "oauth" && entry.actor
+        ? entry.actor === "bot"
+          ? t`Bot`
+          : entry.actor === "app"
+            ? t`Application`
+            : t`User`
+        : null;
+    return `${entry.label} · ${ownership} · ${kind}${actor ? ` · ${actor}` : ""}`;
   }
   const credentialLabel =
     selected?.credentialKind === "machine_key"
       ? t`Machine API key`
       : selected?.credentialKind === "internal_token"
         ? t`Internal integration token`
-        : t`Personal access token`;
+        : selected?.credentialKind === "bot_token"
+          ? t`Slack bot token`
+          : selected?.credentialKind === "github_app_installation"
+            ? t`GitHub App private key JSON`
+            : appId === "linear"
+              ? t`Linear API key`
+              : appId === "slack"
+                ? t`Slack user token`
+                : t`Personal access token`;
   const submitLabel = oauth
     ? t`Authorize account`
     : selected?.credentialKind === "machine_key"
@@ -98,10 +127,12 @@ export function NativeAccountConnect({
         ? t`Connect integration`
         : t`Connect account`;
 
-  async function submit() {
+  async function submit(authorizationFlow?: "drive_picker") {
     if (!selected || submitting.current) return;
+    if (authorizationFlow && !canChooseDriveFiles) return;
     const parsed = NativeBeginInputSchema.safeParse({
       configId: selected.id,
+      ...(authorizationFlow ? { authorizationFlow } : {}),
       ...(previousConnectionId ? { previousConnectionId } : {}),
       ...(!oauth ? { credential: credential.trim() } : {}),
     });
@@ -219,7 +250,38 @@ export function NativeAccountConnect({
               <Trans>Only pages shared with this integration are available.</Trans>
             </p>
           ) : null}
+          {selected.credentialKind === "github_app_installation" ? (
+            <p className="text-sm text-muted-foreground">
+              <Trans>
+                Enter JSON with appId, installationId and privateKeyPem for the configured
+                installation.
+              </Trans>
+            </p>
+          ) : null}
         </Field>
+      ) : null}
+      {canChooseDriveFiles ? (
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <p className="text-sm text-muted-foreground">
+            <Trans>Connect with access to the files and folders you choose in Google.</Trans>
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void submit("drive_picker")}
+          >
+            <Trans>Choose accessible files</Trans>
+          </Button>
+        </div>
+      ) : null}
+      {appId === "google-drive" &&
+      selected?.credentialKind === "oauth" &&
+      !previousConnectionId &&
+      selected.driveFilePickerAvailable === false ? (
+        <p className="text-sm text-muted-foreground">
+          <Trans>Ask an administrator to enable access to selected files.</Trans>
+        </p>
       ) : null}
       {busy && authorizationUrl ? (
         <a

@@ -49,6 +49,7 @@ function database() {
     ["integrationProviderConfig", []],
     ["nativeAppConfig", []],
     ["nativeNotionHook", []],
+    ["nativeSlackHook", []],
     ["user", [{ id: "user" }]],
     ["space", [{ id: "space", organizationId: "organization" }]],
     ["organization", [{ id: "organization" }]],
@@ -132,9 +133,9 @@ function database() {
     if (query.sql.includes("native-hook:credential-reference"))
       return [
         {
-          referenced: tables
-            .get("nativeNotionHook")!
-            .some((row) => row.ciphertext === query.values[0]),
+          referenced: [...tables.get("nativeNotionHook")!, ...tables.get("nativeSlackHook")!].some(
+            (row) => row.ciphertext === query.values[0],
+          ),
         },
       ];
     const table = query.sql.match(/FROM "([^"]+)"/)?.[1];
@@ -144,6 +145,7 @@ function database() {
       integration_provider_configs: "integrationProviderConfig",
       native_app_configs: "nativeAppConfig",
       native_notion_hooks: "nativeNotionHook",
+      native_slack_hooks: "nativeSlackHook",
       user: "user",
       spaces: "space",
       bots: "bot",

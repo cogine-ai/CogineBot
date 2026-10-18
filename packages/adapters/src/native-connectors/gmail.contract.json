@@ -1,0 +1,1098 @@
+{
+  "frozenAt": "2026-10-18",
+  "contractVersion": "batch2-2026-10-18.1",
+  "validation": "Strict offline developer-owned schemas; no coerce/default auth arguments.",
+  "evidence": "Deterministic synthetic fixtures only. Not real OAuth, account, platform verification or distribution proof.",
+  "appId": "gmail",
+  "actions": [
+    {
+      "id": "gmail.messages.search",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "GET",
+        "path": "/users/me/messages"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "labelIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "minItems": 0,
+            "maxItems": 20,
+            "uniqueItems": true
+          },
+          "includeSpamTrash": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Bounded page; metadata-only grants cannot search q; missing messages may mean empty page. Preserve opaque nextPageToken and resultSizeEstimate.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes"
+      ]
+    },
+    {
+      "id": "gmail.messages.get",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "GET",
+        "path": "/users/me/messages/{messageId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "maxTextChars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "required": ["messageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "format=full; recurse MIME tree, decode declared charset, HTML becomes inert text, attachment metadata only, explicit truncation/unsupported charset reasons.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/get",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes"
+      ]
+    },
+    {
+      "id": "gmail.threads.get",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "GET",
+        "path": "/users/me/threads/{threadId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "threadId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "maxTextChars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "required": ["threadId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Every returned message has exact thread identity; sort by internalDate with stable provider order for ties; preserve actual From headers.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.threads/get",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes"
+      ]
+    },
+    {
+      "id": "gmail.attachments.download",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "GET",
+        "path": "/users/me/messages/{messageId}/attachments/{attachmentId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "partId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": ["messageId", "partId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Resolve part from authorized full message first; never trust caller attachmentId, filename or MIME; inline data and detached attachment supported; maximum raw 6 MiB; output artifact reference, never base64.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages.attachments/get",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes"
+      ]
+    },
+    {
+      "id": "gmail.labels.list",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "GET",
+        "path": "/users/me/labels"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.labels",
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.labels"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "System/user stable label IDs and visibility; labels grant does not permit message.modify.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.labels/list",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes"
+      ]
+    },
+    {
+      "id": "gmail.drafts.list",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "GET",
+        "path": "/users/me/drafts"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "includeSpamTrash": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Draft id and message id remain distinct. Paging is never complete while next cursor exists.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/list",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes"
+      ]
+    },
+    {
+      "id": "gmail.drafts.get",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "GET",
+        "path": "/users/me/drafts/{draftId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "draftId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "maxTextChars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "required": ["draftId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "format=full, stable draft id and replaceable message.id both returned.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/get",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes"
+      ]
+    },
+    {
+      "id": "gmail.drafts.create",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "POST",
+        "path": "/users/me/drafts"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 1,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 0,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "bcc": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 0,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "replyTo": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 254,
+                "format": "email",
+                "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "^[^\\r\\n]*$"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 1000000
+              },
+              "html": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000000
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "artifactId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "pattern": "^[A-Za-z0-9_-]+$"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240,
+                      "pattern": "^[^\\r\\n/\\\\]+$"
+                    }
+                  },
+                  "required": ["artifactId"],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 10,
+                "uniqueItems": true
+              }
+            },
+            "required": ["to", "subject", "text"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "Draft expectedMessageId is checked immediately before write; Google exposes no documented draft CAS, leaving a race window."
+      },
+      "notes": "Construct RFC 5322 MIME with UTF-8 headers, text/HTML alternative and artifact-only attachments; verified grant email is From; preserve Bcc; maximum composed MIME 35 MiB.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/create",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.drafts.update",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "PUT",
+        "path": "/users/me/drafts/{draftId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "draftId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedMessageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "message": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 1,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 0,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "bcc": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 0,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "replyTo": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 254,
+                "format": "email",
+                "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "^[^\\r\\n]*$"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 1000000
+              },
+              "html": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000000
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "artifactId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "pattern": "^[A-Za-z0-9_-]+$"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240,
+                      "pattern": "^[^\\r\\n/\\\\]+$"
+                    }
+                  },
+                  "required": ["artifactId"],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 10,
+                "uniqueItems": true
+              }
+            },
+            "required": ["to", "subject", "text"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["draftId", "expectedMessageId", "message"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "Draft expectedMessageId is checked immediately before write; Google exposes no documented draft CAS, leaving a race window."
+      },
+      "notes": "Read draft first; replacing MIME creates a new message.id inside the existing draft. No documented atomic CAS; cannot advertise atomic conflict safety.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/update",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.drafts.delete",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "DELETE",
+        "path": "/users/me/drafts/{draftId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "draftId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedMessageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["draftId", "expectedMessageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "Draft expectedMessageId is checked immediately before write; Google exposes no documented draft CAS, leaving a race window."
+      },
+      "notes": "Permanently deletes only this unsent draft, not trashing a received message; Successful empty 2xx response required; no received-message delete endpoint.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/delete",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.messages.send",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "POST",
+        "path": "/users/me/messages/send"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 1,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 0,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "bcc": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 254,
+                  "format": "email",
+                  "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+                },
+                "minItems": 0,
+                "maxItems": 100,
+                "uniqueItems": true
+              },
+              "replyTo": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 254,
+                "format": "email",
+                "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 300,
+                "pattern": "^[^\\r\\n]*$"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 1000000
+              },
+              "html": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000000
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "artifactId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "pattern": "^[A-Za-z0-9_-]+$"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240,
+                      "pattern": "^[^\\r\\n/\\\\]+$"
+                    }
+                  },
+                  "required": ["artifactId"],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 10,
+                "uniqueItems": true
+              }
+            },
+            "required": ["to", "subject", "text"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.send",
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.send"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Recipient headers include Bcc/Reply-To. Delivery unobserved even after API acknowledgement. Lost ACK never automatically re-sends.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.messages.reply",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "POST",
+        "path": "/users/me/messages/send"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedThreadId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "replyAll": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 1000000
+          },
+          "html": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000000
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "artifactId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024,
+                  "pattern": "^[A-Za-z0-9_-]+$"
+                },
+                "filename": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240,
+                  "pattern": "^[^\\r\\n/\\\\]+$"
+                }
+              },
+              "required": ["artifactId"],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 10,
+            "uniqueItems": true
+          }
+        },
+        "required": ["messageId", "expectedThreadId", "replyAll", "text"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.send",
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.send"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": [
+          "Original message requires gmail.readonly or gmail.modify in addition to sending scope."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Server reads original under read grant; builds To/Cc excluding exact sender account, Message-ID/In-Reply-To/References and matching subject + threadId; never copies Bcc or accepts invented reply headers.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.drafts.send",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "POST",
+        "path": "/users/me/drafts/send"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "draftId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedMessageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["draftId", "expectedMessageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "Draft expectedMessageId is checked immediately before write; Google exposes no documented draft CAS, leaving a race window."
+      },
+      "notes": "Read original draft and expected message identity; sends without replacement MIME; draft disappears and returned sent message has new id. gmail.send alone is insufficient.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/send",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.messages.modify",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "POST",
+        "path": "/users/me/messages/{messageId}/modify"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "addLabelIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "minItems": 0,
+            "maxItems": 100,
+            "uniqueItems": true
+          },
+          "removeLabelIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "minItems": 0,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": ["messageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "At least one label change, disjoint sets. DRAFT/SENT are not caller-settable. Trash must use explicit trash action.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/modify",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.messages.trash",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "POST",
+        "path": "/users/me/messages/{messageId}/trash"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["messageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Recoverable trash only, no permanent-delete endpoint.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/trash",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    },
+    {
+      "id": "gmail.messages.untrash",
+      "upstream": {
+        "baseUrl": "https://gmail.googleapis.com/gmail/v1",
+        "method": "POST",
+        "path": "/users/me/messages/{messageId}/untrash"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["messageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
+        "conditionalGuards": []
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
+        "concurrency": "No provider idempotency guarantee."
+      },
+      "notes": "Return actual provider label state; do not assume INBOX was restored.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/untrash",
+        "https://developers.google.com/workspace/gmail/api/auth/scopes",
+        "https://developers.google.com/workspace/gmail/api/guides/sending"
+      ]
+    }
+  ],
+  "sourcesVerifiedOn": "2026-10-18",
+  "runtimeRequirements": [
+    "Backend exact bound credential; effective scopes checked per action.",
+    "ExternalEffect checkpoint and approval provided by existing executor.",
+    "Owner/space artifact read/write for binary actions."
+  ],
+  "notClaimed": [
+    "Official hosted OAuth deployment",
+    "Real account end-to-end proof",
+    "App review / restricted-scope security assessment completion",
+    "Atomic Gmail draft CAS"
+  ]
+}

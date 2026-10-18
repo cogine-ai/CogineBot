@@ -1,0 +1,837 @@
+{
+  "contractSha256": "6d5eaa2cca03296e092749ee12f9e8bc3a48a80df76f6c80ef40d38a8e167509",
+  "subjectFixture": {
+    "subject": "U123FIXTURE",
+    "tenant": "T123FIXTURE"
+  },
+  "fixtures": [
+    {
+      "id": "slack.users.resolve",
+      "input": {
+        "userId": "U123FIXTURE"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users.info",
+            "query": {
+              "user": "U123FIXTURE"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "user": {
+                "id": "U123FIXTURE",
+                "name": "fixture"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "users": [
+          {
+            "id": "U123FIXTURE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack.conversations.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/conversations.list",
+            "query": {
+              "limit": 100,
+              "types": "public_channel",
+              "exclude_archived": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channels": [
+                {
+                  "id": "C123FIXTURE",
+                  "name": "fixture"
+                }
+              ],
+              "response_metadata": {
+                "next_cursor": ""
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "slack.conversations.get",
+      "input": {
+        "channel": "C123FIXTURE"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/conversations.info",
+            "query": {
+              "channel": "C123FIXTURE"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channel": {
+                "id": "C123FIXTURE",
+                "name": "fixture",
+                "is_private": false
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "channel": {
+          "id": "C123FIXTURE"
+        }
+      }
+    },
+    {
+      "id": "slack.conversations.history",
+      "input": {
+        "channel": "C123FIXTURE"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/conversations.history",
+            "query": {
+              "channel": "C123FIXTURE",
+              "limit": 15
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "messages": [
+                {
+                  "user": "U123FIXTURE",
+                  "ts": "1792281600.000001",
+                  "text": "Fixture message"
+                }
+              ],
+              "has_more": false,
+              "response_metadata": {
+                "next_cursor": ""
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "slack.conversations.replies",
+      "input": {
+        "channel": "C123FIXTURE",
+        "ts": "1792281600.000001"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/conversations.replies",
+            "query": {
+              "channel": "C123FIXTURE",
+              "ts": "1792281600.000001",
+              "limit": 15
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "messages": [
+                {
+                  "user": "U123FIXTURE",
+                  "ts": "1792281600.000001",
+                  "text": "Fixture message"
+                }
+              ],
+              "has_more": false,
+              "response_metadata": {
+                "next_cursor": ""
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "slack.search.messages",
+      "input": {
+        "query": "fixture"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/search.messages",
+            "query": {
+              "query": "fixture",
+              "page": 1,
+              "count": 20
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "messages": {
+                "matches": [
+                  {
+                    "ts": "1792281600.000001",
+                    "text": "Fixture message",
+                    "channel": {
+                      "id": "C123FIXTURE"
+                    }
+                  }
+                ],
+                "paging": {
+                  "page": 1,
+                  "pages": 1,
+                  "total": 1
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "slack.search.files",
+      "input": {
+        "query": "fixture"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/search.files",
+            "query": {
+              "query": "fixture",
+              "page": 1,
+              "count": 20
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "files": {
+                "matches": [
+                  {
+                    "id": "F123FIXTURE",
+                    "title": "Fixture"
+                  }
+                ],
+                "paging": {
+                  "page": 1,
+                  "pages": 1,
+                  "total": 1
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "slack.messages.send",
+      "input": {
+        "channel": "C123FIXTURE",
+        "text": "Fixture message"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/chat.postMessage",
+            "body": {
+              "channel": "C123FIXTURE",
+              "text": "Fixture message",
+              "unfurl_links": false,
+              "unfurl_media": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channel": "C123FIXTURE",
+              "ts": "1792281600.000001",
+              "message": {
+                "user": "U123FIXTURE",
+                "ts": "1792281600.000001",
+                "text": "Fixture message"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "channel": "C123FIXTURE",
+        "ts": "1792281600.000001",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.messages.reply",
+      "input": {
+        "channel": "C123FIXTURE",
+        "thread_ts": "1792281600.000001",
+        "text": "Fixture reply"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/chat.postMessage",
+            "body": {
+              "channel": "C123FIXTURE",
+              "thread_ts": "1792281600.000001",
+              "text": "Fixture reply",
+              "reply_broadcast": false,
+              "unfurl_links": false,
+              "unfurl_media": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channel": "C123FIXTURE",
+              "ts": "1792281600.000001",
+              "message": {
+                "user": "U123FIXTURE",
+                "ts": "1792281600.000001",
+                "text": "Fixture reply"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "channel": "C123FIXTURE",
+        "ts": "1792281600.000001",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.messages.update",
+      "input": {
+        "channel": "C123FIXTURE",
+        "ts": "1792281600.000001",
+        "text": "Revised"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/conversations.history",
+            "query": {
+              "channel": "C123FIXTURE",
+              "oldest": "1792281600.000001",
+              "latest": "1792281600.000001",
+              "inclusive": true,
+              "limit": 1
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "messages": [
+                {
+                  "user": "U123FIXTURE",
+                  "ts": "1792281600.000001",
+                  "text": "Fixture message"
+                }
+              ],
+              "has_more": false
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/chat.update",
+            "body": {
+              "channel": "C123FIXTURE",
+              "ts": "1792281600.000001",
+              "text": "Revised"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channel": "C123FIXTURE",
+              "ts": "1792281600.000001",
+              "text": "Revised"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "channel": "C123FIXTURE",
+        "ts": "1792281600.000001",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.messages.delete",
+      "input": {
+        "channel": "C123FIXTURE",
+        "ts": "1792281600.000001"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/conversations.history",
+            "query": {
+              "channel": "C123FIXTURE",
+              "oldest": "1792281600.000001",
+              "latest": "1792281600.000001",
+              "inclusive": true,
+              "limit": 1
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "messages": [
+                {
+                  "user": "U123FIXTURE",
+                  "ts": "1792281600.000001",
+                  "text": "Fixture message"
+                }
+              ],
+              "has_more": false
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/chat.delete",
+            "body": {
+              "channel": "C123FIXTURE",
+              "ts": "1792281600.000001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channel": "C123FIXTURE",
+              "ts": "1792281600.000001"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "channel": "C123FIXTURE",
+        "ts": "1792281600.000001",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.messages.schedule",
+      "input": {
+        "channel": "C123FIXTURE",
+        "text": "Fixture message",
+        "post_at": 1792285200
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/chat.scheduleMessage",
+            "body": {
+              "channel": "C123FIXTURE",
+              "text": "Fixture message",
+              "post_at": 1792285200
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channel": "C123FIXTURE",
+              "scheduled_message_id": "Q123FIXTURE",
+              "post_at": 1792285200
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "scheduled_message_id": "Q123FIXTURE",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.scheduled.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/chat.scheduledMessages.list",
+            "body": {
+              "limit": 100
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "scheduled_messages": [
+                {
+                  "id": "Q123FIXTURE",
+                  "channel_id": "C123FIXTURE",
+                  "post_at": 1792285200
+                }
+              ],
+              "response_metadata": {
+                "next_cursor": ""
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "slack.scheduled.cancel",
+      "input": {
+        "channel": "C123FIXTURE",
+        "scheduled_message_id": "Q123FIXTURE"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/chat.deleteScheduledMessage",
+            "body": {
+              "channel": "C123FIXTURE",
+              "scheduled_message_id": "Q123FIXTURE"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "scheduled_message_id": "Q123FIXTURE",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.conversations.open",
+      "input": {
+        "users": ["U123FIXTURE"]
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/conversations.open",
+            "body": {
+              "users": "U123FIXTURE",
+              "return_im": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "channel": {
+                "id": "D123FIXTURE"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "channel": {
+          "id": "D123FIXTURE"
+        },
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.reactions.add",
+      "input": {
+        "channel": "C123FIXTURE",
+        "timestamp": "1792281600.000001",
+        "name": "eyes"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/reactions.add",
+            "body": {
+              "channel": "C123FIXTURE",
+              "timestamp": "1792281600.000001",
+              "name": "eyes"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "slack.files.upload",
+      "input": {
+        "artifactId": "fixture-artifact",
+        "filename": "fixture.txt",
+        "channel_id": "C123FIXTURE"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/files.getUploadURLExternal",
+            "body": {
+              "filename": "fixture.txt",
+              "length": 7
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "upload_url": "https://files.slack.com/upload/v1/FIXTURE",
+              "file_id": "F123FIXTURE"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/files.completeUploadExternal",
+            "body": {
+              "files": [
+                {
+                  "id": "F123FIXTURE",
+                  "title": "fixture.txt"
+                }
+              ],
+              "channel_id": "C123FIXTURE"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "files": [
+                {
+                  "id": "F123FIXTURE",
+                  "title": "fixture.txt"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "file_id": "F123FIXTURE",
+        "write_outcome": "confirmed"
+      },
+      "binaryUpload": {
+        "url": "https://files.slack.com/upload/v1/FIXTURE",
+        "bytes": "fixture",
+        "contentType": "application/octet-stream"
+      }
+    },
+    {
+      "id": "slack.files.download",
+      "input": {
+        "file": "F123FIXTURE"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/files.info",
+            "query": {
+              "file": "F123FIXTURE"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "file": {
+                "id": "F123FIXTURE",
+                "name": "fixture.txt",
+                "mimetype": "text/plain",
+                "size": 7,
+                "url_private_download": "https://files.slack.com/files-pri/T123FIXTURE-F123FIXTURE/fixture.txt"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "file_id": "F123FIXTURE",
+        "artifact": {
+          "id": "fixture-downloaded-artifact"
+        }
+      }
+    },
+    {
+      "id": "slack.users.resolve",
+      "fixtureId": "email-with-required-scope",
+      "input": {
+        "email": "fixture@example.test"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users.lookupByEmail",
+            "query": {
+              "email": "fixture@example.test"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "user": {
+                "id": "U123FIXTURE",
+                "name": "fixture",
+                "profile": {
+                  "email": "fixture@example.test"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "users": [
+          {
+            "id": "U123FIXTURE",
+            "profile": {
+              "email": "fixture@example.test"
+            }
+          }
+        ],
+        "ambiguous": false
+      }
+    },
+    {
+      "id": "slack.users.resolve",
+      "fixtureId": "email-without-required-scope",
+      "input": {
+        "email": "fixture@example.test"
+      },
+      "scopes": ["users:read"],
+      "upstream": [],
+      "expectedError": {
+        "kind": "insufficient_scope"
+      }
+    },
+    {
+      "id": "slack.users.resolve",
+      "fixtureId": "name-cursor-page-not-unique",
+      "input": {
+        "query": "fixture",
+        "limit": 15,
+        "cursor": "fixture-cursor"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users.list",
+            "query": {
+              "limit": 15,
+              "cursor": "fixture-cursor"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "members": [
+                {
+                  "id": "U123FIXTURE",
+                  "name": "fixture"
+                }
+              ],
+              "response_metadata": {
+                "next_cursor": "fixture-next-page"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "users": [
+          {
+            "id": "U123FIXTURE"
+          }
+        ],
+        "ambiguous": true,
+        "hasMore": true,
+        "nextCursor": "fixture-next-page",
+        "searchedSinglePage": true
+      }
+    }
+  ]
+}

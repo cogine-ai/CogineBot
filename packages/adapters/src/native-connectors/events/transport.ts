@@ -1,23 +1,24 @@
 import type { AdapterContext } from "@rakazo/adapter-kit";
+import { NativeRoutineEventSpecSchema, nativeEventApp } from "@rakazo/contracts";
 import { connectionAuthorizationRevision } from "../../connector-account-binding.js";
 import type { RemoteTransportDependencies } from "../../remote-mcp.js";
 import { NativeActionError } from "../action.js";
 import { NativeConfigSettingsSchema } from "../config.js";
 import { NativeHttpClient } from "../http.js";
 import type { NativeOAuthStore } from "../oauth.js";
+import { nativeServiceBase } from "../service-bases.js";
+import { nativeEventReadPermitted, onlyDriveFileScope } from "./authorization.js";
 import type { NativeEventReadApi } from "./readers.js";
 import type { NotionEventPrincipal } from "./signals.js";
+import type { SlackEventPrincipal } from "./slack-signals.js";
 import type { NativeSourceReadContext } from "./worker.js";
 
-const READ = ["calendar.events.readonly", "calendar.events", "calendar.readonly", "calendar"].map(
-  (scope) => `https://www.googleapis.com/auth/${scope}`,
-);
 function pinnedEventAuthorization(
   oauth: Pick<NativeOAuthStore, "authorization">,
   context: NativeSourceReadContext,
 ) {
   const row = context.row,
-    app = row.kind.startsWith("calendar.") ? "google-calendar" : "notion";
+    app = nativeEventApp(NativeRoutineEventSpecSchema.parse(row.spec));
   const actor: AdapterContext = {
     ...context.scope,
     operationId: `native-source:${row.id}:${row.version}`,
@@ -44,11 +45,12 @@ function pinnedEventAuthorization(
     const settings = NativeConfigSettingsSchema.parse(live.config.config),
       scopes = live.grant.scopes.filter((scope) => settings.scopes.includes(scope));
     if (
-      app === "google-calendar"
-        ? !READ.some((scope) => scopes.includes(scope))
-        : !settings.capabilities.includes("read_content") ||
-          (row.kind === "notion.comment_changed" &&
-            !settings.capabilities.includes("read_comments"))
+      !nativeEventReadPermitted(
+        NativeRoutineEventSpecSchema.parse(row.spec),
+        scopes,
+        settings.capabilities,
+        live.auth.identity.context,
+      )
     )
       throw new NativeActionError(
         "insufficient_scope",
@@ -62,11 +64,15 @@ function pinnedEventAuthorization(
 export async function withNativeEventReadApi<T>(
   oauth: Pick<NativeOAuthStore, "authorization">,
   context: NativeSourceReadContext,
-  read: (api: NativeEventReadApi, principal: NotionEventPrincipal | undefined) => Promise<T>,
+  read: (
+    api: NativeEventReadApi,
+    principal: NotionEventPrincipal | undefined,
+    slackPrincipal?: SlackEventPrincipal,
+  ) => Promise<T>,
   network?: RemoteTransportDependencies,
 ): Promise<T> {
   const row = context.row,
-    app = row.kind.startsWith("calendar.") ? "google-calendar" : "notion";
+    app = nativeEventApp(NativeRoutineEventSpecSchema.parse(row.spec));
   const revalidate = pinnedEventAuthorization(oauth, context);
   const bound = await revalidate(),
     identity = bound.auth.identity,
@@ -84,8 +90,25 @@ export async function withNativeEventReadApi<T>(
           ownerUserId: principalContext.ownerUserId,
         }
       : undefined;
+  const slackPrincipal: SlackEventPrincipal | undefined =
+    app === "slack" &&
+    principalContext.tokenType === "bot" &&
+    typeof principalContext.teamId === "string"
+      ? {
+          tokenType: "bot",
+          subject: identity.subject,
+          teamId: principalContext.teamId,
+          enterpriseId:
+            typeof principalContext.enterpriseId === "string"
+              ? principalContext.enterpriseId
+              : null,
+          scopes: bound.grant.scopes.filter((scope) =>
+            NativeConfigSettingsSchema.parse(bound.config.config).scopes.includes(scope),
+          ),
+        }
+      : undefined;
   const http = new NativeHttpClient(
-    app === "google-calendar" ? "https://www.googleapis.com/calendar/v3" : "https://api.notion.com",
+    nativeServiceBase(app),
     async () => ({ kind: "bearer", value: (await revalidate()).auth.tokens.accessToken }),
     {
       network,
@@ -100,6 +123,13 @@ export async function withNativeEventReadApi<T>(
   try {
     const result = await read(
       {
+        driveFileOnly:
+          app === "google-drive" &&
+          onlyDriveFileScope(
+            bound.grant.scopes.filter((scope) =>
+              NativeConfigSettingsSchema.parse(bound.config.config).scopes.includes(scope),
+            ),
+          ),
         get: async (path, query) => (await http.request({ method: "GET", path, query })).body,
         // POST is a documented read operation. Only the fixed Data Source query shape is allowed here.
         queryNotionDataSource: async (id, cursor) => {
@@ -118,6 +148,7 @@ export async function withNativeEventReadApi<T>(
         },
       },
       principal,
+      slackPrincipal,
     );
     await revalidate();
     return result;
@@ -182,6 +213,83 @@ export async function withNativeCalendarChannelApi<T>(
         await http.request({ method: "POST", path: "/channels/stop", body: input });
       },
     });
+  } finally {
+    await http.close();
+  }
+}
+
+/** Stable server-owned authorization generation for watch receipts; never a model argument. */
+export function nativeGoogleWatchBinding(
+  context: Pick<NativeSourceReadContext, "scope" | "row">,
+): string {
+  const { row, scope } = context;
+  return JSON.stringify([
+    scope.userId,
+    scope.spaceId,
+    row.id,
+    row.version,
+    row.connectionId,
+    row.authorizationRevision,
+    row.grantId,
+    row.authGeneration,
+    row.configId,
+    row.configRevision,
+  ]);
+}
+
+/** Only the fixed provider subscription operations are writable in the event transport. */
+export async function withNativeGoogleWatchApi<T>(
+  oauth: Pick<NativeOAuthStore, "authorization">,
+  context: NativeSourceReadContext,
+  manage: (
+    request: (
+      input: import("../action.js").NativeRequest,
+    ) => Promise<import("../action.js").NativeResponse>,
+    settings: import("../config.js").NativeConfigSettings,
+    subject: string,
+  ) => Promise<T>,
+  network?: RemoteTransportDependencies,
+): Promise<T> {
+  const app = nativeEventApp(NativeRoutineEventSpecSchema.parse(context.row.spec));
+  if (app !== "gmail" && app !== "google-drive")
+    throw new NativeActionError(
+      "invalid_input",
+      "Only Gmail or Drive can manage this subscription.",
+    );
+  const revalidate = pinnedEventAuthorization(oauth, context),
+    bound = await revalidate();
+  const http = new NativeHttpClient(
+    nativeServiceBase(app),
+    async () => ({ kind: "bearer", value: (await revalidate()).auth.tokens.accessToken }),
+    {
+      network,
+      readOnly: false,
+      signal: context.signal,
+      onUnauthorized: async () => {
+        await revalidate(true);
+      },
+    },
+  );
+  try {
+    const result = await manage(
+      async (input) => {
+        const allowed =
+          app === "gmail"
+            ? input.path === "/users/me/watch"
+            : input.path === "/changes/watch" || input.path === "/channels/stop";
+        if (!allowed || input.method !== "POST" || input.service)
+          throw new NativeActionError(
+            "invalid_input",
+            "Unsupported provider subscription operation.",
+          );
+        await revalidate();
+        return http.request(input);
+      },
+      NativeConfigSettingsSchema.parse(bound.config.config),
+      bound.auth.identity.subject,
+    );
+    await revalidate();
+    return result;
   } finally {
     await http.close();
   }

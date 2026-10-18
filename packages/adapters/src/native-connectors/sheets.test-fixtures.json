@@ -1,0 +1,1065 @@
+{
+  "frozenAt": "2026-10-18",
+  "actions": [
+    {
+      "id": "sheets.spreadsheets.get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["spreadsheetId"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "spreadsheetId": "sheet_fixture"
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/spreadsheets/sheet_fixture",
+                "query": {
+                  "includeGridData": false
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "sheet_fixture",
+                  "properties": {
+                    "title": "Fixture"
+                  },
+                  "sheets": [
+                    {
+                      "properties": {
+                        "sheetId": 0,
+                        "title": "Data",
+                        "gridProperties": {
+                          "rowCount": 100,
+                          "columnCount": 10
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "spreadsheet": {
+              "spreadsheetId": "sheet_fixture",
+              "properties": {
+                "title": "Fixture"
+              },
+              "sheets": [
+                {
+                  "properties": {
+                    "sheetId": 0,
+                    "title": "Data",
+                    "gridProperties": {
+                      "rowCount": 100,
+                      "columnCount": 10
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sheets.spreadsheets.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "title": "Fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "title": "Fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "title": "Fixture"
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/spreadsheets",
+                "body": {
+                  "properties": {
+                    "title": "Fixture"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "new_sheet",
+                  "properties": {
+                    "title": "Fixture"
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "spreadsheet": {
+              "spreadsheetId": "new_sheet",
+              "properties": {
+                "title": "Fixture"
+              }
+            },
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "sheets.values.get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "range": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_ ]*)![A-Z]{1,3}[1-9][0-9]*(?::[A-Z]{1,3}[1-9][0-9]*)?$"
+          },
+          "valueRenderOption": {
+            "type": "string",
+            "enum": ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"]
+          }
+        },
+        "required": ["spreadsheetId", "range"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1"
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/spreadsheets/sheet_fixture/values/Data!A1%3AB1",
+                "query": {
+                  "valueRenderOption": "FORMULA",
+                  "dateTimeRenderOption": "SERIAL_NUMBER",
+                  "majorDimension": "ROWS"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "range": "Data!A1:B1",
+                  "majorDimension": "ROWS",
+                  "values": [["old", 1]]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "valueRange": {
+              "range": "Data!A1:B1",
+              "majorDimension": "ROWS",
+              "values": [["old", 1]]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sheets.values.update",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "range": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_ ]*)![A-Z]{1,3}[1-9][0-9]*(?::[A-Z]{1,3}[1-9][0-9]*)?$"
+          },
+          "expectedValues": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": ["string", "number", "boolean"],
+                "maxLength": 10000
+              },
+              "maxItems": 100
+            },
+            "maxItems": 1000
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": ["string", "number", "boolean"],
+                "maxLength": 10000
+              },
+              "maxItems": 100
+            },
+            "maxItems": 1000
+          },
+          "valueInputOption": {
+            "type": "string",
+            "enum": ["RAW", "USER_ENTERED"]
+          }
+        },
+        "required": ["spreadsheetId", "range", "expectedValues", "values", "valueInputOption"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "expectedValues": [["old", 1]],
+            "values": [["new", 2]],
+            "valueInputOption": "RAW",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "expectedValues": [["old", 1]],
+            "values": [["new", 2]],
+            "valueInputOption": "RAW",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "expectedValues": [["old", 1]],
+            "values": [["new", 2]],
+            "valueInputOption": "RAW"
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/spreadsheets/sheet_fixture/values/Data!A1%3AB1",
+                "query": {
+                  "valueRenderOption": "FORMULA",
+                  "dateTimeRenderOption": "SERIAL_NUMBER",
+                  "majorDimension": "ROWS"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "range": "Data!A1:B1",
+                  "majorDimension": "ROWS",
+                  "values": [["old", 1]]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "PUT",
+                "path": "/spreadsheets/sheet_fixture/values/Data!A1%3AB1",
+                "body": {
+                  "range": "Data!A1:B1",
+                  "majorDimension": "ROWS",
+                  "values": [["new", 2]]
+                },
+                "query": {
+                  "valueInputOption": "RAW",
+                  "includeValuesInResponse": true,
+                  "responseValueRenderOption": "FORMULA"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "sheet_fixture",
+                  "updatedRange": "Data!A1:B1",
+                  "updatedRows": 1,
+                  "updatedColumns": 2,
+                  "updatedCells": 2
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "result": {
+              "spreadsheetId": "sheet_fixture",
+              "updatedRange": "Data!A1:B1",
+              "updatedRows": 1,
+              "updatedColumns": 2,
+              "updatedCells": 2
+            },
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "sheets.values.append",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "range": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_ ]*)![A-Z]{1,3}[1-9][0-9]*(?::[A-Z]{1,3}[1-9][0-9]*)?$"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": ["string", "number", "boolean"],
+                "maxLength": 10000
+              },
+              "maxItems": 100
+            },
+            "maxItems": 1000
+          },
+          "valueInputOption": {
+            "type": "string",
+            "enum": ["RAW", "USER_ENTERED"]
+          },
+          "insertDataOption": {
+            "type": "string",
+            "enum": ["INSERT_ROWS", "OVERWRITE"]
+          }
+        },
+        "required": ["spreadsheetId", "range", "values", "valueInputOption", "insertDataOption"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "values": [["new", 2]],
+            "valueInputOption": "RAW",
+            "insertDataOption": "INSERT_ROWS",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "values": [["new", 2]],
+            "valueInputOption": "RAW",
+            "insertDataOption": "INSERT_ROWS",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "values": [["new", 2]],
+            "valueInputOption": "RAW",
+            "insertDataOption": "INSERT_ROWS"
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/spreadsheets/sheet_fixture/values/Data!A1%3AB1:append",
+                "body": {
+                  "range": "Data!A1:B1",
+                  "majorDimension": "ROWS",
+                  "values": [["new", 2]]
+                },
+                "query": {
+                  "valueInputOption": "RAW",
+                  "insertDataOption": "INSERT_ROWS",
+                  "includeValuesInResponse": true,
+                  "responseValueRenderOption": "FORMULA"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "sheet_fixture",
+                  "tableRange": "Data!A1:B1",
+                  "updates": {
+                    "spreadsheetId": "sheet_fixture",
+                    "updatedRange": "Data!A2:B2",
+                    "updatedRows": 1,
+                    "updatedColumns": 2,
+                    "updatedCells": 2,
+                    "updatedData": {
+                      "range": "Data!A2:B2",
+                      "majorDimension": "ROWS",
+                      "values": [["new", 2]]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "result": {
+              "spreadsheetId": "sheet_fixture",
+              "tableRange": "Data!A1:B1",
+              "updates": {
+                "spreadsheetId": "sheet_fixture",
+                "updatedRange": "Data!A2:B2",
+                "updatedRows": 1,
+                "updatedColumns": 2,
+                "updatedCells": 2,
+                "updatedData": {
+                  "range": "Data!A2:B2",
+                  "majorDimension": "ROWS",
+                  "values": [["new", 2]]
+                }
+              }
+            },
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false,
+            "actualUpdatedRange": "Data!A2:B2"
+          }
+        }
+      ]
+    },
+    {
+      "id": "sheets.values.clear",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "range": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_ ]*)![A-Z]{1,3}[1-9][0-9]*(?::[A-Z]{1,3}[1-9][0-9]*)?$"
+          },
+          "expectedValues": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": ["string", "number", "boolean"],
+                "maxLength": 10000
+              },
+              "maxItems": 100
+            },
+            "maxItems": 1000
+          }
+        },
+        "required": ["spreadsheetId", "range", "expectedValues"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "expectedValues": [["old", 1]],
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "expectedValues": [["old", 1]],
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "range": "Data!A1:B1",
+            "expectedValues": [["old", 1]]
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/spreadsheets/sheet_fixture/values/Data!A1%3AB1",
+                "query": {
+                  "valueRenderOption": "FORMULA",
+                  "dateTimeRenderOption": "SERIAL_NUMBER",
+                  "majorDimension": "ROWS"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "range": "Data!A1:B1",
+                  "majorDimension": "ROWS",
+                  "values": [["old", 1]]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/spreadsheets/sheet_fixture/values/Data!A1%3AB1:clear",
+                "body": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "sheet_fixture",
+                  "clearedRange": "Data!A1:B1"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "result": {
+              "spreadsheetId": "sheet_fixture",
+              "clearedRange": "Data!A1:B1"
+            },
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "sheets.worksheets.add",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "rowCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "columnCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 18278
+          }
+        },
+        "required": ["spreadsheetId", "title", "rowCount", "columnCount"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "title": "New",
+            "rowCount": 100,
+            "columnCount": 10,
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "title": "New",
+            "rowCount": 100,
+            "columnCount": 10,
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "title": "New",
+            "rowCount": 100,
+            "columnCount": 10
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/spreadsheets/sheet_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "addSheet": {
+                        "properties": {
+                          "title": "New",
+                          "gridProperties": {
+                            "rowCount": 100,
+                            "columnCount": 10
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "sheet_fixture",
+                  "replies": [
+                    {
+                      "addSheet": {
+                        "properties": {
+                          "sheetId": 1,
+                          "title": "New"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "sheets.worksheets.update",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "sheetId": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "expectedTitle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": ["spreadsheetId", "sheetId", "expectedTitle", "title"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "sheetId": 0,
+            "expectedTitle": "Data",
+            "title": "Renamed",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "sheetId": 0,
+            "expectedTitle": "Data",
+            "title": "Renamed",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "spreadsheetId": "sheet_fixture",
+            "sheetId": 0,
+            "expectedTitle": "Data",
+            "title": "Renamed"
+          },
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/spreadsheets/sheet_fixture",
+                "query": {
+                  "includeGridData": false
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "sheet_fixture",
+                  "properties": {
+                    "title": "Fixture"
+                  },
+                  "sheets": [
+                    {
+                      "properties": {
+                        "sheetId": 0,
+                        "title": "Data",
+                        "gridProperties": {
+                          "rowCount": 100,
+                          "columnCount": 10
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/spreadsheets/sheet_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "updateSheetProperties": {
+                        "properties": {
+                          "sheetId": 0,
+                          "title": "Renamed"
+                        },
+                        "fields": "title"
+                      }
+                    }
+                  ]
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "spreadsheetId": "sheet_fixture",
+                  "replies": [{}]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false
+          }
+        }
+      ]
+    }
+  ]
+}

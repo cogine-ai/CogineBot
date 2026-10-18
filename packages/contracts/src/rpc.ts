@@ -123,6 +123,13 @@ import {
   RevealNativeNotionHookTokenSchema,
 } from "./native-event-hooks.js";
 import { NativeRoutineTriggersInputSchema } from "./native-events.js";
+import {
+  DisableNativeSlackHookInputSchema,
+  NativeSlackHookSchema,
+  NativeSlackHookStatusInputSchema,
+  NativeSlackHookStatusSchema,
+  SaveNativeSlackHookInputSchema,
+} from "./native-slack-events.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { RoutineHistorySchema, RoutineRunCursorSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -783,6 +790,11 @@ export const appContract = {
     save: oc.input(IntegrationProviderConfigSchema).output(z.object({ ok: z.literal(true) })),
   },
   nativeConnectors: {
+    slackWebhookStatus: oc
+      .input(NativeSlackHookStatusInputSchema)
+      .output(NativeSlackHookStatusSchema),
+    saveSlackWebhook: oc.input(SaveNativeSlackHookInputSchema).output(NativeSlackHookSchema),
+    disableSlackWebhook: oc.input(DisableNativeSlackHookInputSchema).output(NativeSlackHookSchema),
     notionWebhookStatus: oc
       .input(NativeNotionHookStatusInputSchema)
       .output(NativeNotionHookStatusSchema),

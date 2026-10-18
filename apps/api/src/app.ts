@@ -515,6 +515,7 @@ export async function createApp(
     events,
     env.apiUrl,
     remoteConnectors,
+    native.slackEventHooks,
   );
   const jobHandlers = createBackgroundJobHandlers({
     nativeEvents,
@@ -663,6 +664,7 @@ export async function createApp(
           state: c.req.query("state") ?? "",
           code: c.req.query("code"),
           denied: Boolean(c.req.query("error")),
+          pickedFileIds: c.req.query("picked_file_ids"),
         },
         c.req.raw.signal,
         session.user.id,
@@ -1083,6 +1085,7 @@ export async function createApp(
       await realtime.close();
       await connector.stop();
       await mcp.close();
+      await nativeEvents.close();
       await native.close();
       await prisma.$disconnect().catch(() => undefined);
       await created.pool?.end().catch(() => undefined);

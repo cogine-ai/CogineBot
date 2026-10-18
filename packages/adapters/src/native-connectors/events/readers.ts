@@ -11,6 +11,8 @@ import type { NativeSourceReadContext, NativeSourceReadResult } from "./worker.j
 type Obj = Record<string, unknown>;
 /** Supplied only by the fenced NativeOAuthStore/NativeHttpClient composition; never a model URL/body. */
 export interface NativeEventReadApi {
+  /** Trusted effective scope projection supplied by the bound backend transport. */
+  driveFileOnly?: boolean;
   get(
     path: string,
     query?: Record<string, string | number | boolean | undefined>,
@@ -498,7 +500,7 @@ export async function readNotionSnapshot(
   context: NativeSourceReadContext,
   api: NativeEventReadApi,
 ): Promise<NotionSnapshot> {
-  const spec = context.row.spec as Exclude<NativeRoutineEventSpec, { calendarId: string }>;
+  const spec = context.row.spec as Extract<NativeRoutineEventSpec, { target: { type: string } }>;
   const page = async (pageId: string) => {
     const value = obj(await api.get(`/v1/pages/${enc(pageId)}`));
     if (value.object !== "page" || !sameId(value.id, pageId))
@@ -683,7 +685,7 @@ export async function readNotionChanges(
   const previous = optional(context.row.state),
     old = optional(previous.notion),
     current = await readNotionSnapshot(context, api),
-    spec = context.row.spec as Exclude<NativeRoutineEventSpec, { calendarId: string }>;
+    spec = context.row.spec as Extract<NativeRoutineEventSpec, { target: { type: string } }>;
   const changedProperties = Object.keys({
     ...optional(old.propertyHashes),
     ...current.propertyHashes,

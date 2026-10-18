@@ -1,0 +1,386 @@
+{
+  "contractSha256": "11bc89736a2a4852d08acf857ceeef1bc2d3249286686a938216d17ea0d3897f",
+  "subjectFixture": {
+    "subject": "fixture-actor",
+    "tenant": "fixture-tenant"
+  },
+  "fixtures": [
+    {
+      "id": "linear.issues.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "query ConnectorIssues($first: Int!, $after: String, $filter: IssueFilter) { issues(first: $first, after: $after, filter: $filter) { nodes { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } pageInfo { hasNextPage endCursor } } }",
+              "variables": {
+                "first": 25,
+                "after": null,
+                "filter": {}
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "issues": {
+                  "nodes": [
+                    {
+                      "id": "11111111-1111-4111-8111-111111111111",
+                      "identifier": "FIX-1",
+                      "title": "Fixture issue",
+                      "updatedAt": "2026-10-18T00:00:00.000Z"
+                    }
+                  ],
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "linear.issues.get",
+      "input": {
+        "id": "FIX-1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "query ConnectorIssue($id: String!) { issue(id: $id) { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } }",
+              "variables": {
+                "id": "FIX-1"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "issue": {
+                  "id": "11111111-1111-4111-8111-111111111111",
+                  "identifier": "FIX-1",
+                  "title": "Fixture issue",
+                  "updatedAt": "2026-10-18T00:00:00.000Z"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "issue": {
+          "id": "11111111-1111-4111-8111-111111111111"
+        }
+      }
+    },
+    {
+      "id": "linear.issues.create",
+      "input": {
+        "teamId": "22222222-2222-4222-8222-222222222222",
+        "title": "Fixture issue"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "mutation ConnectorIssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } } }",
+              "variables": {
+                "input": {
+                  "teamId": "22222222-2222-4222-8222-222222222222",
+                  "title": "Fixture issue"
+                }
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "issueCreate": {
+                  "success": true,
+                  "issue": {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "identifier": "FIX-1",
+                    "title": "Fixture issue",
+                    "updatedAt": "2026-10-18T00:00:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "issue": {
+          "id": "11111111-1111-4111-8111-111111111111"
+        },
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "linear.issues.update",
+      "input": {
+        "id": "FIX-1",
+        "expectedUpdatedAt": "2026-10-18T00:00:00.000Z",
+        "changes": {
+          "title": "Revised"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "query ConnectorIssue($id: String!) { issue(id: $id) { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } }",
+              "variables": {
+                "id": "FIX-1"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "issue": {
+                  "id": "11111111-1111-4111-8111-111111111111",
+                  "identifier": "FIX-1",
+                  "title": "Fixture issue",
+                  "updatedAt": "2026-10-18T00:00:00.000Z"
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "mutation ConnectorIssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } } }",
+              "variables": {
+                "id": "FIX-1",
+                "input": {
+                  "title": "Revised"
+                }
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "issueUpdate": {
+                  "success": true,
+                  "issue": {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "identifier": "FIX-1",
+                    "title": "Revised",
+                    "updatedAt": "2026-10-18T00:00:00.000Z"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "issue": {
+          "id": "11111111-1111-4111-8111-111111111111"
+        },
+        "concurrency_guarantee": "best_effort_precheck",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "linear.projects.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "query ConnectorProjects($first: Int!, $after: String) { projects(first: $first, after: $after) { nodes { id name description url updatedAt } pageInfo { hasNextPage endCursor } } }",
+              "variables": {
+                "first": 25,
+                "after": null
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "projects": {
+                  "nodes": [
+                    {
+                      "id": "22222222-2222-4222-8222-222222222222",
+                      "name": "Fixture project"
+                    }
+                  ],
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "linear.teams.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "query ConnectorTeams($first: Int!, $after: String) { teams(first: $first, after: $after) { nodes { id key name description } pageInfo { hasNextPage endCursor } } }",
+              "variables": {
+                "first": 25,
+                "after": null
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "teams": {
+                  "nodes": [
+                    {
+                      "id": "22222222-2222-4222-8222-222222222222",
+                      "key": "FIX",
+                      "name": "Fixture team"
+                    }
+                  ],
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "items": [
+          {
+            "key": "FIX"
+          }
+        ],
+        "hasMore": false
+      }
+    },
+    {
+      "id": "linear.users.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "query ConnectorUsers($first: Int!, $after: String) { users(first: $first, after: $after) { nodes { id name displayName active } pageInfo { hasNextPage endCursor } } }",
+              "variables": {
+                "first": 25,
+                "after": null
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "users": {
+                  "nodes": [
+                    {
+                      "id": "22222222-2222-4222-8222-222222222222",
+                      "name": "Fixture member",
+                      "active": true
+                    }
+                  ],
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "linear.comments.create",
+      "input": {
+        "issueId": "FIX-1",
+        "body": "Fixture comment"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/graphql",
+            "body": {
+              "query": "mutation ConnectorCommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id body url updatedAt user { id name } issue { id identifier } } } }",
+              "variables": {
+                "input": {
+                  "issueId": "FIX-1",
+                  "body": "Fixture comment"
+                }
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "commentCreate": {
+                  "success": true,
+                  "comment": {
+                    "id": "22222222-2222-4222-8222-222222222222",
+                    "body": "Fixture comment"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "comment": {
+          "id": "22222222-2222-4222-8222-222222222222"
+        },
+        "write_outcome": "confirmed"
+      }
+    }
+  ]
+}
