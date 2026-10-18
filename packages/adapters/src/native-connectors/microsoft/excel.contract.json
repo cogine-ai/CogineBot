@@ -21,6 +21,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
           }
         },
         "required": ["driveId", "itemId"],
@@ -207,6 +212,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
           }
         },
         "required": ["driveId", "itemId"],
@@ -474,5 +484,5 @@
       }
     }
   ],
-  "contractRevision": 2
+  "contractRevision": 3
 }

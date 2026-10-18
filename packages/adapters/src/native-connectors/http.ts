@@ -30,8 +30,54 @@ function httpError(
   body: unknown,
   retry: number | undefined,
   readOnly: boolean,
+  target: URL,
+  headers: Headers,
 ): NativeActionError {
   const record = asRecord(body) ?? {};
+  // These nonstandard statuses are meaningful only at the fixed provider API.
+  // Never classify another authority by an arbitrary error message or header.
+  if (
+    status === 400 &&
+    target.origin === "https://api.linear.app" &&
+    target.pathname === "/graphql" &&
+    Array.isArray(record.errors) &&
+    record.errors.some((error) => asRecord(asRecord(error)?.extensions)?.code === "RATELIMITED")
+  )
+    return new NativeActionError("rate_limited", "The service rate limit was reached.", {
+      retryAfterSeconds: retry,
+    });
+  if (status === 403 && target.origin === "https://api.github.com") {
+    const primary = headers.get("x-ratelimit-remaining") === "0";
+    const retryHeader = headers.get("retry-after");
+    const githubRetry =
+      retry !== undefined &&
+      Number.isSafeInteger(retry) &&
+      (/^\d+$/.test(retryHeader ?? "") || Number.isNaN(Number(retryHeader)))
+        ? retry
+        : undefined;
+    const secondary =
+      githubRetry !== undefined ||
+      (typeof record.message === "string" &&
+        /^You have exceeded a secondary rate limit\.(?: |$)/.test(record.message));
+    if (primary || secondary) {
+      // GitHub's reset is epoch seconds (Linear's similarly named header is ms).
+      const reset = headers.get("x-ratelimit-reset");
+      const epoch = reset && /^\d+$/.test(reset) ? Number(reset) : NaN;
+      const resetWait =
+        primary && Number.isSafeInteger(epoch) && epoch >= 0
+          ? Math.max(0, Math.ceil(epoch - Date.now() / 1000))
+          : undefined;
+      return new NativeActionError("rate_limited", "The service rate limit was reached.", {
+        retryAfterSeconds:
+          githubRetry !== undefined || resetWait !== undefined
+            ? Math.max(githubRetry ?? 0, resetWait ?? 0)
+            : secondary
+              ? 60
+              : undefined,
+        recovery: { status },
+      });
+    }
+  }
   const google = asRecord(record.error) ?? {};
   const reasons = Array.isArray(google.errors) ? google.errors : [];
   const reason = reasons
@@ -263,7 +309,7 @@ export class NativeHttpClient {
           });
         continue;
       }
-      if (telegramLimited) throw httpError(429, {}, retry, readOnly);
+      if (telegramLimited) throw httpError(429, {}, retry, readOnly, target, response.headers);
       let text: string;
       if (response.ok && request.responseType === "bytes") {
         return {
@@ -277,7 +323,8 @@ export class NativeHttpClient {
         if (read.truncated) throw new Error("incomplete");
         text = read.text;
       } catch {
-        if (!response.ok) throw httpError(response.status, {}, retry, readOnly);
+        if (!response.ok)
+          throw httpError(response.status, {}, retry, readOnly, target, response.headers);
         throw new NativeActionError("incomplete_response", "The service response was incomplete.", {
           uncertain: !readOnly,
         });
@@ -287,7 +334,8 @@ export class NativeHttpClient {
         try {
           parsed = JSON.parse(text);
         } catch {
-          if (!response.ok) throw httpError(response.status, {}, retry, readOnly);
+          if (!response.ok)
+            throw httpError(response.status, {}, retry, readOnly, target, response.headers);
           throw new NativeActionError(
             "incomplete_response",
             "The service did not return a valid response.",
@@ -295,7 +343,8 @@ export class NativeHttpClient {
           );
         }
       }
-      if (!response.ok) throw httpError(response.status, parsed, retry, readOnly);
+      if (!response.ok)
+        throw httpError(response.status, parsed, retry, readOnly, target, response.headers);
       const data = asRecord(parsed);
       const expired =
         this.options.enterpriseAuthorization === "feishu"

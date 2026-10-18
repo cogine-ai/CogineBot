@@ -98,8 +98,9 @@ export function createExcelActions(): NativeAction[] {
     try {
       if (id === "excel.worksheets.list" || id === "excel.tables.list") {
         const path = `${base}/${id === "excel.worksheets.list" ? "worksheets" : "tables"}`;
-        // These collection APIs may return a server cursor but do not expose arbitrary model query expressions.
-        return run.finish(page((await run.request({ method: "GET", path })).body, path));
+        const request =
+          args.cursor === undefined ? { method: "GET" as const, path } : pageRequest(path, args);
+        return run.finish(page((await run.request(request)).body, path));
       }
       if (id === "excel.ranges.get") {
         const range = await get(run, `${sheet}/range(address=${odataString(args.address)})`);

@@ -78,6 +78,246 @@ const ok = (body: unknown, status = 200): NativeResponse => ({
   headers: new Headers(),
 });
 const args = { driveId: "drive-fixture", itemId: "book-fixture" };
+function workbookHttp(responses: NativeResponse[]) {
+  const calls: Array<{
+    method: string;
+    url: string;
+    session: string | null;
+    body: unknown;
+    authorization: string | null;
+  }> = [];
+  const client = new NativeHttpClient(
+    "https://graph.microsoft.com/v1.0",
+    async () => ({ kind: "bearer", value: "fixture-opaque-token" }),
+    {
+      signal: AbortSignal.timeout(10000),
+      readOnly: true,
+      network: {
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        fetch: async (url, init) => {
+          const headers = new Headers(init?.headers);
+          calls.push({
+            method: init?.method ?? "GET",
+            url: String(url),
+            session: headers.get("workbook-session-id"),
+            body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+            authorization: headers.get("authorization"),
+          });
+          assert.ok(responses.length, "No unplanned workbook HTTP request");
+          const response = responses.shift()!;
+          return new Response(response.status === 204 ? null : JSON.stringify(response.body), {
+            status: response.status,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      },
+    },
+  );
+  return {
+    ...setup([], { request: (request) => client.request(request) }),
+    calls,
+    responses,
+    close: () => client.close(),
+  };
+}
+
+describe("Excel collection cursor regression", () => {
+  it("continues worksheets with the returned server cursor and closes each page's session", async () => {
+    const s = workbookHttp([
+      ok({ id: "session-first" }, 201),
+      ok({
+        value: [{ id: "sheet-first", name: "First" }],
+        "@odata.nextLink":
+          "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/worksheets?$skiptoken=worksheet-page-two&$top=2",
+      }),
+      ok(null, 204),
+      ok({ id: "session-second" }, 201),
+      ok({ value: [{ id: "sheet-last", name: "Last" }] }),
+      ok(null, 204),
+    ]);
+    try {
+      const first = (await action("excel.worksheets.list").execute(args, s.context)) as {
+        items: unknown[];
+        nextCursor: string;
+      };
+      assert.deepEqual(first.items, [{ id: "sheet-first", name: "First" }]);
+      assert.ok(first.nextCursor);
+      assert.equal(s.calls.length, 3, "One collection dispatch, without automatic page traversal");
+      const last = (await action("excel.worksheets.list").execute(
+        { ...args, cursor: first.nextCursor },
+        s.context,
+      )) as { items: unknown[]; nextCursor: null };
+      assert.deepEqual(last, { items: [{ id: "sheet-last", name: "Last" }], nextCursor: null });
+      assert.deepEqual(
+        s.calls.map(({ method, url, session, body }) => [method, url, session, body]),
+        [
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/createSession",
+            null,
+            { persistChanges: false },
+          ],
+          [
+            "GET",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/worksheets",
+            "session-first",
+            undefined,
+          ],
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/closeSession",
+            "session-first",
+            undefined,
+          ],
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/createSession",
+            null,
+            { persistChanges: false },
+          ],
+          [
+            "GET",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/worksheets?%24skiptoken=worksheet-page-two&%24top=2",
+            "session-second",
+            undefined,
+          ],
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/closeSession",
+            "session-second",
+            undefined,
+          ],
+        ],
+      );
+      assert.ok(s.calls.every((call) => call.authorization === "Bearer fixture-opaque-token"));
+      assert.equal(s.responses.length, 0);
+    } finally {
+      await s.close();
+    }
+  });
+  it("continues tables with the returned server cursor and terminates on the last page", async () => {
+    const s = workbookHttp([
+      ok({ id: "tables-first" }, 201),
+      ok({
+        value: [{ id: "table-first" }],
+        "@odata.nextLink":
+          "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/tables?$skip=2&$top=2",
+      }),
+      ok(null, 204),
+      ok({ id: "tables-second" }, 201),
+      ok({ value: [{ id: "table-last" }] }),
+      ok(null, 204),
+    ]);
+    try {
+      const first = (await action("excel.tables.list").execute(args, s.context)) as {
+        items: unknown[];
+        nextCursor: string;
+      };
+      assert.deepEqual(first.items, [{ id: "table-first" }]);
+      assert.ok(first.nextCursor);
+      assert.equal(s.calls.length, 3, "One collection dispatch, without automatic page traversal");
+      const last = (await action("excel.tables.list").execute(
+        { ...args, cursor: first.nextCursor },
+        s.context,
+      )) as { items: unknown[]; nextCursor: null };
+      assert.deepEqual(last, { items: [{ id: "table-last" }], nextCursor: null });
+      assert.deepEqual(
+        s.calls.map(({ method, url, session }) => [method, url, session]),
+        [
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/createSession",
+            null,
+          ],
+          [
+            "GET",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/tables",
+            "tables-first",
+          ],
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/closeSession",
+            "tables-first",
+          ],
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/createSession",
+            null,
+          ],
+          [
+            "GET",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/tables?%24skip=2&%24top=2",
+            "tables-second",
+          ],
+          [
+            "POST",
+            "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/closeSession",
+            "tables-second",
+          ],
+        ],
+      );
+      assert.deepEqual(s.calls[0]?.body, { persistChanges: false });
+      assert.deepEqual(s.calls[3]?.body, { persistChanges: false });
+      assert.ok(s.calls.every((call) => call.authorization === "Bearer fixture-opaque-token"));
+      assert.equal(s.responses.length, 0);
+    } finally {
+      await s.close();
+    }
+  });
+  for (const [id, collection, otherCollection] of [
+    ["excel.worksheets.list", "worksheets", "tables"],
+    ["excel.tables.list", "tables", "worksheets"],
+  ]) {
+    for (const [boundary, url] of [
+      [
+        "another authority",
+        `https://other.example.test/v1.0/drives/drive-fixture/items/book-fixture/workbook/${collection}?$skip=2`,
+      ],
+      [
+        "another collection",
+        `https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/${otherCollection}?$skip=2`,
+      ],
+      [
+        "another workbook",
+        `https://graph.microsoft.com/v1.0/drives/drive-fixture/items/other-book/workbook/${collection}?$skip=2`,
+      ],
+    ]) {
+      it(`${id} rejects a cursor for ${boundary} before collection dispatch and still closes its session`, async () => {
+        const s = workbookHttp([ok({ id: "rejected-session" }, 201), ok(null, 204)]);
+        try {
+          await assert.rejects(
+            action(id!).execute(
+              { ...args, cursor: Buffer.from(url!).toString("base64url") },
+              s.context,
+            ),
+            { kind: "invalid_input" },
+          );
+          assert.deepEqual(
+            s.calls.map(({ method, url, session, body }) => [method, url, session, body]),
+            [
+              [
+                "POST",
+                "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/createSession",
+                null,
+                { persistChanges: false },
+              ],
+              [
+                "POST",
+                "https://graph.microsoft.com/v1.0/drives/drive-fixture/items/book-fixture/workbook/closeSession",
+                "rejected-session",
+                undefined,
+              ],
+            ],
+          );
+          assert.equal(s.responses.length, 0);
+        } finally {
+          await s.close();
+        }
+      });
+    }
+  }
+});
+
 describe("Microsoft protocol regression", () => {
   it("executes workbook GET and closes the same session without recursive request wrapping", async () => {
     const s = setup([

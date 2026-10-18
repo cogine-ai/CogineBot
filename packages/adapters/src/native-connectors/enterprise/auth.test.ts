@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { NativeAppConfig } from "@rakazo/db";
 import { afterEach, describe, it } from "vitest";
+import { NativeActionError } from "../action.js";
 import { EnterpriseAuthorities } from "./auth.js";
 
 const instances: EnterpriseAuthorities[] = [];
@@ -193,6 +194,62 @@ describe("Enterprise native authorization", () => {
     assert.equal(next.tokens.refreshToken, "rotated");
     assert.equal(JSON.parse(String(calls[2]?.init?.body)).grant_type, "refresh_token");
   });
+  for (const region of ["feishu", "lark"])
+    it.each([undefined, null, "", 123])(
+      `${region} refresh without a replacement token is uncertain while offline access remains granted (%s)`,
+      async (refreshToken) => {
+        const { authority, calls } = setup([
+          feishuToken,
+          feishuUser,
+          { ...feishuToken, access_token: "new-access", refresh_token: refreshToken },
+          feishuUser,
+        ]);
+        const cfg = config("feishu-lark", { region });
+        const previous = await authority.exchange(cfg, owner, "code", verifier, signal());
+        await assert.rejects(
+          authority.refresh(cfg, owner, previous, signal()),
+          (error: unknown) =>
+            error instanceof NativeActionError &&
+            error.kind === "result_unknown" &&
+            error.options.uncertain === true,
+        );
+        assert.equal(
+          calls.filter(
+            (call) => JSON.parse(String(call.init?.body ?? "{}")).grant_type === "refresh_token",
+          ).length,
+          1,
+        );
+      },
+    );
+  for (const region of ["feishu", "lark"])
+    it(`${region} keeps an access-only refresh grant when actual scopes remove offline access`, async () => {
+      const { authority, calls } = setup([
+        feishuToken,
+        feishuUser,
+        {
+          access_token: "access-only",
+          expires_in: 1800,
+          scope: "contact:user.base:readonly",
+        },
+        feishuUser,
+      ]);
+      const cfg = config("feishu-lark", { region });
+      const previous = await authority.exchange(cfg, owner, "code", verifier, signal());
+      const before = Date.now();
+      const next = await authority.refresh(cfg, owner, previous, signal());
+      assert.deepEqual(next.tokens, { accessToken: "access-only", refreshToken: null });
+      assert.deepEqual(next.scopes, ["contact:user.base:readonly"]);
+      assert.equal(next.identity.subject, previous.identity.subject);
+      assert.ok(next.expiresAt && next.expiresAt.getTime() >= before + 1_800_000);
+      assert.ok(next.expiresAt.getTime() <= Date.now() + 1_800_000);
+      const completedRequests = calls.length;
+      await assert.rejects(
+        authority.refresh(cfg, owner, { ...next, expiresAt: new Date(0) }, signal()),
+        (error: unknown) =>
+          error instanceof NativeActionError && error.kind === "authorization_expired",
+      );
+      assert.equal(calls.length, completedRequests);
+    });
   it("refresh identity cannot switch Feishu user", async () => {
     const { authority } = setup([
       feishuToken,

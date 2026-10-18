@@ -430,9 +430,13 @@ export class EnterpriseAuthorities {
       return this.authorization(
         config,
         token,
-        typeof body.refresh_token === "string" && body.refresh_token
-          ? body.refresh_token
-          : (previous?.tokens.refreshToken ?? null),
+        previous
+          ? scope.includes("offline_access")
+            ? required(body.refresh_token)
+            : null
+          : typeof body.refresh_token === "string" && body.refresh_token
+            ? body.refresh_token
+            : null,
         tenant,
         required(user.open_id),
         typeof user.name === "string" ? user.name : "Feishu account",

@@ -12,7 +12,8 @@ import { ComposedSecretStore } from "../secret-store-factory.js";
 import { infisicalFake } from "../secret-store-fake.js";
 import { EncryptedSecretStore } from "../secrets.js";
 import { NativeActionError } from "./action.js";
-import type { NativeAuthorization, NativeOAuthAuthorities } from "./authorities.js";
+import type { NativeAuthorization } from "./authorities.js";
+import { NativeOAuthAuthorities } from "./authorities.js";
 import { NativeConfigSettingsSchema, NativeConfigStore } from "./config.js";
 import { enterpriseConfigSecret } from "./enterprise-config-secret.js";
 import { NativeOAuthStore } from "./oauth.js";
@@ -381,6 +382,177 @@ describeIsolated("remaining native lifecycle and binding fences (isolated Postgr
       upstream,
     };
   }
+
+  function feishuUserFixture(offlineAccess: boolean) {
+    const f = fixture();
+    const tokenRequests: Array<Record<string, unknown>> = [];
+    const scopes = ["contact:user.base:readonly", "offline_access"];
+    const authorities = new NativeOAuthAuthorities({
+      resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+      fetch: async (url, init) => {
+        const target = new URL(String(url));
+        if (target.href === "https://accounts.feishu.cn/oauth/v3/token") {
+          const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          tokenRequests.push(request);
+          const refresh = request.grant_type === "refresh_token";
+          return new Response(
+            JSON.stringify({
+              code: 0,
+              token_type: "Bearer",
+              access_token: refresh ? "synthetic-next-user-access" : "synthetic-user-access",
+              ...(!refresh ? { refresh_token: "synthetic-one-time-user-refresh" } : {}),
+              expires_in: refresh && !offlineAccess ? 45 : 3600,
+              scope: refresh && !offlineAccess ? scopes[0] : scopes.join(" "),
+            }),
+          );
+        }
+        expect(target.href).toBe("https://open.feishu.cn/open-apis/authen/v1/user_info");
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              open_id: "synthetic-feishu-user",
+              tenant_key: "synthetic-feishu-tenant",
+              name: "Synthetic Feishu user",
+            },
+          }),
+        );
+      },
+    });
+    const store = new NativeOAuthStore(first.prisma, f.vaultA, f.configsA, authorities);
+    const save = () =>
+      f.save("feishu-lark", context(), { credentialKind: "oauth", actor: "user", scopes });
+    return { ...f, store, authorities, tokenRequests, save };
+  }
+
+  it("Feishu user missing replacement retires only its consumed grant through the actual authority and Store", async () => {
+    const f = feishuUserFixture(true);
+    try {
+      const { saved } = await f.save();
+      const connected = await f.browser(saved.id, context(), "synthetic-code", f.store);
+      const peerContext = context(spaces[1]);
+      const peer = await f.browser(saved.id, peerContext, "synthetic-peer-code", f.store);
+      const originalSecretId = connected.oauthGrant!.secretId!;
+      await expect(f.store.authorization(connected.id, context(), true)).rejects.toMatchObject({
+        kind: "result_unknown",
+        options: { uncertain: true },
+      });
+      const retired = await first.prisma.nativeOAuthGrant.findUniqueOrThrow({
+        where: { id: connected.oauthGrantId! },
+      });
+      expect(retired).toMatchObject({
+        secretId: null,
+        revokedAt: expect.any(Date),
+        refreshLeaseId: null,
+        refreshLeaseUntil: null,
+      });
+      expect(await first.prisma.secret.findUnique({ where: { id: originalSecretId } })).toBeNull();
+      expect(
+        await first.prisma.connection.findUnique({ where: { id: connected.id } }),
+      ).toMatchObject({
+        status: "error",
+      });
+      await expect(f.store.authorization(connected.id, context(), true)).rejects.toBeInstanceOf(
+        NativeActionError,
+      );
+      expect(
+        f.tokenRequests.filter((request) => request.grant_type === "refresh_token"),
+      ).toHaveLength(1);
+      const peerAuthorization = await f.store.authorization(peer.id, peerContext);
+      expect(peerAuthorization.connection.status).toBe("connected");
+      expect(peerAuthorization.grant.revokedAt).toBeNull();
+      expect(peerAuthorization.grant.secretId).toBe(peer.oauthGrant!.secretId);
+    } finally {
+      await f.authorities.close();
+    }
+  });
+
+  it("Feishu access-only refresh remains usable inside 60 seconds and expires without replaying its consumed token", async () => {
+    const f = feishuUserFixture(false);
+    try {
+      const { saved } = await f.save();
+      const connected = await f.browser(saved.id, context(), "synthetic-code", f.store);
+      const refreshed = await f.store.authorization(connected.id, context(), true);
+      expect(refreshed.auth.tokens).toEqual({
+        accessToken: "synthetic-next-user-access",
+        refreshToken: null,
+      });
+      expect(refreshed.auth.scopes).toEqual(["contact:user.base:readonly"]);
+      expect(refreshed.auth.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+      expect(refreshed.auth.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 45_000);
+      expect(refreshed.connection.status).toBe("connected");
+      expect(refreshed.grant.revokedAt).toBeNull();
+      expect(refreshed.grant.tokenVersion).toBe(connected.oauthGrant!.tokenVersion + 1);
+      const again = await f.store.authorization(connected.id, context());
+      expect(again.auth.tokens).toEqual(refreshed.auth.tokens);
+      expect(again.auth.expiresAt).toEqual(refreshed.auth.expiresAt);
+      expect(
+        f.tokenRequests.filter((request) => request.grant_type === "refresh_token"),
+      ).toHaveLength(1);
+      await first.prisma.nativeOAuthGrant.update({
+        where: { id: connected.oauthGrantId! },
+        data: { accessExpiresAt: new Date(Date.now() - 1) },
+      });
+      await expect(f.store.authorization(connected.id, context())).rejects.toMatchObject({
+        kind: "authorization_expired",
+      });
+      expect(
+        f.tokenRequests.filter((request) => request.grant_type === "refresh_token"),
+      ).toHaveLength(1);
+      expect(
+        await first.prisma.nativeOAuthGrant.findUnique({ where: { id: connected.oauthGrantId! } }),
+      ).toMatchObject({ secretId: null, revokedAt: expect.any(Date) });
+    } finally {
+      await f.authorities.close();
+    }
+  });
+
+  it("Feishu access-only grants still honor explicit rejected-credential refresh", async () => {
+    const f = feishuUserFixture(false);
+    try {
+      const { saved } = await f.save();
+      const connected = await f.browser(saved.id, context(), "synthetic-code", f.store);
+      await f.store.authorization(connected.id, context(), true);
+      await expect(f.store.authorization(connected.id, context(), true)).rejects.toMatchObject({
+        kind: "authorization_expired",
+      });
+      expect(
+        f.tokenRequests.filter((request) => request.grant_type === "refresh_token"),
+      ).toHaveLength(1);
+    } finally {
+      await f.authorities.close();
+    }
+  });
+
+  it("other providers retain their existing early-expiry policy for grants without refresh tokens", async () => {
+    const f = fixture();
+    const { saved } = await f.save("figma");
+    f.control.exchange = async (config) => ({
+      ...f.auth(config),
+      tokens: { accessToken: "synthetic-access-only-control", refreshToken: null },
+      expiresAt: new Date(Date.now() + 45_000),
+    });
+    const connected = await f.browser(saved.id);
+    await expect(f.a.authorization(connected.id, context())).rejects.toMatchObject({
+      kind: "authorization_expired",
+    });
+    expect(f.calls.filter((call) => call.kind === "refresh")).toHaveLength(0);
+  });
+
+  for (const app of ["feishu-lark", "dingtalk"] as const)
+    it(`${app} machine credentials retain their existing 60-second reissue window`, async () => {
+      const f = fixture();
+      const { saved } = await f.save(app);
+      const connected = await f.connect(saved.id);
+      await first.prisma.nativeOAuthGrant.update({
+        where: { id: connected.oauthGrantId! },
+        data: { accessExpiresAt: new Date(Date.now() + 45_000) },
+      });
+      const refreshed = await f.a.authorization(connected.id, context());
+      expect(refreshed.grant.tokenVersion).toBe(connected.oauthGrant!.tokenVersion + 1);
+      expect(refreshed.auth.tokens.accessToken).toContain("access-2");
+      expect(f.calls.filter((call) => call.kind === "refresh")).toHaveLength(1);
+    });
 
   for (const appId of ["telegram-bot", "discord", "feishu-lark", "dingtalk", "wecom"] as const)
     it(`${appId} statuses, owner configuration and connect are bound to the configuring Space`, async () => {

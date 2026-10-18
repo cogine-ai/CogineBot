@@ -646,9 +646,19 @@ export class NativeOAuthStore {
         continue;
       }
       const auth = await this.readGrant(grant);
+      // A Feishu scope reduction can leave valid access without offline renewal.
+      // Preserve its actual lifetime; forceRefresh still handles a rejected token.
+      const refreshAheadMs =
+        config.appId === "feishu-lark" &&
+        config.credentialKind === "oauth" &&
+        auth.identity.context.actorType === "user" &&
+        !auth.scopes.includes("offline_access") &&
+        auth.tokens.refreshToken === null
+          ? 0
+          : 60_000;
       if (
         !forceRefresh &&
-        (!grant.accessExpiresAt || grant.accessExpiresAt.getTime() > Date.now() + 60_000)
+        (!grant.accessExpiresAt || grant.accessExpiresAt.getTime() > Date.now() + refreshAheadMs)
       )
         return { connection, config, grant, auth };
       if (!auth.tokens.refreshToken && !auth.tokens.githubInstallation && !reissuableEnterprise) {
