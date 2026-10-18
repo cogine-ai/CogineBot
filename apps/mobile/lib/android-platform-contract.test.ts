@@ -317,7 +317,7 @@ describe("Android mobile platform contract", () => {
     const index = readFileSync(resolve(mobileRoot, "app/index.tsx"), "utf8");
     const thread = readFileSync(resolve(mobileRoot, "app/thread.tsx"), "utf8");
     const avatar = readFileSync(resolve(mobileRoot, "components/bot-avatar.tsx"), "utf8");
-    const menu = readFileSync(resolve(mobileRoot, "components/bot-organize-modal.tsx"), "utf8");
+    const menu = readFileSync(resolve(mobileRoot, "lib/inbox-organization.ts"), "utf8");
     expect(menu).toContain("Silence notifications");
     expect(menu).toContain("Resume notifications");
     expect(index).toContain("muted={bot.notifyOnFinish === false}");

@@ -4,6 +4,8 @@ import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
+  BotSectionNameSchema,
+  BotSectionStoredNameSchema,
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
   CreateBotInput,
@@ -19,6 +21,7 @@ import {
   parseModelContextWindow,
   parseModelMaxImagesPerPrompt,
   parseModelMaxTokens,
+  RemovedBotSectionSchema,
   ReorderBotsInput,
   RunActivityRowSchema,
   RunSchema,
@@ -28,6 +31,32 @@ import {
 } from "./index.js";
 
 describe("contracts", () => {
+  it("trims sidebar group names and reserves the system unassigned name", () => {
+    expect(BotSectionNameSchema.parse("  Product  ")).toBe("Product");
+    for (const name of ["", " ", "Unassigned", " unassigned ", "UNASSIGNED", "未分组"]) {
+      expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
+    }
+  });
+
+  it("accepts historical reserved group names in stored-name updates and undo snapshots", () => {
+    for (const name of ["Unassigned", "未分组"]) {
+      expect(
+        RemovedBotSectionSchema.parse({
+          section: {
+            id: "legacy",
+            name,
+            position: 0,
+            createdAt: "2026-10-18",
+            updatedAt: "2026-10-18",
+          },
+          botIds: [],
+          groupIds: [],
+        }).section.name,
+      ).toBe(name);
+      expect(BotSectionStoredNameSchema.parse(` ${name} `)).toBe(name);
+      expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
+    }
+  });
   it("accepts structured live activity progress", () => {
     expect(MessageBlock.parse({ kind: "progress", text: "Using browser", activity: true })).toEqual(
       { kind: "progress", text: "Using browser", activity: true },

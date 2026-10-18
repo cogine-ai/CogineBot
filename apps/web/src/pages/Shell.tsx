@@ -14,6 +14,7 @@ import type {
   Group,
   Me,
   ProductEvent,
+  RemovedBotSection,
   Routine,
   SearchHit,
   Space,
@@ -97,7 +98,6 @@ import {
   Gauge,
   Layers,
   LayoutGrid,
-  Lock,
   LogOut,
   Maximize2,
   Menu,
@@ -280,12 +280,11 @@ import {
   ClearConversationDialog,
   DeleteBotDialog,
   DeleteItemDialog,
-  NewBotSectionDialog,
   NewSpaceDialog,
-  RenameBotSectionDialog,
   RenameSpaceDialog,
 } from "./shell/dialogs";
 import { GroupTitle } from "./shell/group-title";
+import { InlineSectionName } from "./shell/inline-section-name";
 import { MentionIdentity, SentMentionText, useBotIdentityTextColor } from "./shell/mention-display";
 import {
   AppConnectCard,
@@ -294,8 +293,19 @@ import {
   ChoiceCard,
   McpApprovalCard,
 } from "./shell/message-cards";
-import { commitSpaceRename, sidebarGroupsForSpaces } from "./shell/space-sidebar";
+import { SidebarSectionHeader } from "./shell/sidebar-section-header";
+import {
+  commitSpaceRename,
+  restoreSidebarSectionOrder,
+  sidebarGroupsForSpaces,
+} from "./shell/space-sidebar";
+import { useContextPress } from "./shell/use-context-press";
 import { WindowChrome } from "./WindowChrome";
+
+type SidebarChatTarget = {
+  kind: "bot" | "group";
+  chat: Pick<Bot, "id" | "spaceId" | "sectionId" | "pinned">;
+};
 
 const BotContextMenu = lazyOverlay(() =>
   import("./BotContextMenu").then((module) => module.BotContextMenu),
@@ -650,6 +660,24 @@ export function ShellPage() {
     spaceId: string;
     position: ContextMenuPosition;
   } | null>(null);
+  const [sidebarError, setSidebarError] = useState<string | null>(null);
+  const [sidebarNotice, setSidebarNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sidebarNotice) return;
+    const timer = window.setTimeout(() => setSidebarNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [sidebarNotice]);
+  const [deletedSection, setDeletedSection] = useState<{
+    snapshot: RemovedBotSection;
+    spaceId: string;
+  } | null>(null);
+  const organizationUndo = useRef<(() => Promise<void>) | null>(null);
+  const deletionUndo = useRef<(() => Promise<void>) | null>(null);
+  const organizationPending = useRef(false);
+  const [draggedSection, setDraggedSection] = useState<{ id: string; spaceId: string } | null>(
+    null,
+  );
+  const [draggedChat, setDraggedChat] = useState<SidebarChatTarget | null>(null);
   const sectionMenuAnchor = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (sectionMenu || !sectionMenuAnchor.current) return;
@@ -1753,6 +1781,316 @@ export function ShellPage() {
     },
     [userId],
   );
+  const organizationState = useRef({ spaceId: bootstrapMe?.spaceId, botSections, spaces });
+  organizationState.current = { spaceId: bootstrapMe?.spaceId, botSections, spaces };
+  const sectionsForSpace = (spaceId: string) =>
+    spaceId === organizationState.current.spaceId
+      ? organizationState.current.botSections
+      : (organizationState.current.spaces.find((space) => space.id === spaceId)?.botSections ?? []);
+  const reportSidebarError = (error: unknown) =>
+    setSidebarError(errorText(error, t`Could not update sidebar`));
+  const applySections = (spaceId: string, sections: BotSection[]) => {
+    botsRefreshEpoch.current += 1;
+    if (spaceId === bootstrapMe?.spaceId) setBotSections(sections);
+    setSpaces((current) =>
+      current.map((space) => (space.id === spaceId ? { ...space, botSections: sections } : space)),
+    );
+  };
+  const patchChatOrganization = (
+    item: SidebarChatTarget,
+    patch: Partial<Pick<Bot, "sectionId" | "pinned">>,
+  ) => {
+    botsRefreshEpoch.current += 1;
+    if (item.chat.spaceId === bootstrapMe?.spaceId) {
+      if (item.kind === "bot")
+        setBots((current) =>
+          current.map((chat) => (chat.id === item.chat.id ? { ...chat, ...patch } : chat)),
+        );
+      else
+        setGroups((current) =>
+          current.map((chat) => (chat.id === item.chat.id ? { ...chat, ...patch } : chat)),
+        );
+    }
+    setSpaces((current) =>
+      current.map((space) =>
+        space.id !== item.chat.spaceId
+          ? space
+          : {
+              ...space,
+              bots:
+                item.kind === "bot"
+                  ? space.bots.map((chat) =>
+                      chat.id === item.chat.id ? { ...chat, ...patch } : chat,
+                    )
+                  : space.bots,
+              groups:
+                item.kind === "group"
+                  ? space.groups.map((chat) =>
+                      chat.id === item.chat.id ? { ...chat, ...patch } : chat,
+                    )
+                  : space.groups,
+            },
+      ),
+    );
+  };
+  const performOrganization = async (action: () => Promise<void>) => {
+    if (organizationPending.current) throw new Error(t`Wait for the current change to finish`);
+    organizationPending.current = true;
+    setSidebarError(null);
+    try {
+      await action();
+      // The confirmed write is already applied locally; a list refresh must not block Undo.
+      void refreshBots(true).catch(() => undefined);
+    } finally {
+      organizationPending.current = false;
+    }
+  };
+  const expandSection = (spaceId: string, sectionId: string | null) => {
+    const key = `space:${spaceId}:${sectionId ? `section:${sectionId}` : "unassigned"}`;
+    setCollapsedSidebarSections((current) =>
+      current.has(key)
+        ? toggleCollapsedIdSet(current, key, collapsedSidebarSectionsStorageKey(userId))
+        : current,
+    );
+  };
+  const saveChatOrganization = async (
+    item: SidebarChatTarget,
+    patch: Partial<Pick<Bot, "sectionId" | "pinned">>,
+    remember = true,
+  ) => {
+    await performOrganization(async () => {
+      const previous: typeof patch = {};
+      if (patch.sectionId !== undefined) previous.sectionId = item.chat.sectionId;
+      if (patch.pinned !== undefined) previous.pinned = item.chat.pinned;
+      const context = { context: { spaceId: item.chat.spaceId } };
+      if (item.kind === "bot") await rpc.bots.update({ botId: item.chat.id, ...patch }, context);
+      else await rpc.groups.update({ groupId: item.chat.id, ...patch }, context);
+      patchChatOrganization(item, patch);
+      if (remember) organizationUndo.current = () => saveChatOrganization(item, previous, false);
+    });
+  };
+  const moveChatToSection = async (item: SidebarChatTarget, sectionId: string | null) => {
+    if (item.chat.sectionId === sectionId && !item.chat.pinned) return;
+    await saveChatOrganization(item, { sectionId, pinned: false });
+    expandSection(item.chat.spaceId, sectionId);
+    setSidebarNotice(item.chat.pinned ? t`Moved and unpinned` : null);
+  };
+  const renameSection = async (
+    section: BotSection,
+    spaceId: string,
+    name: string,
+    remember = true,
+  ) => {
+    await performOrganization(async () => {
+      const updated = await rpc.botSections.update(
+        { sectionId: section.id, name },
+        { context: { spaceId } },
+      );
+      applySections(
+        spaceId,
+        sectionsForSpace(spaceId).map((item) => (item.id === section.id ? updated : item)),
+      );
+      if (remember)
+        organizationUndo.current = () => renameSection(updated, spaceId, section.name, false);
+    });
+  };
+  const saveSectionOrder = async (spaceId: string, sectionIds: string[], remember = true) => {
+    const previousIds = sectionsForSpace(spaceId).map((section) => section.id);
+    await performOrganization(async () => {
+      const updated = await rpc.botSections.reorder({ sectionIds }, { context: { spaceId } });
+      applySections(spaceId, updated);
+      if (remember)
+        organizationUndo.current = () =>
+          saveSectionOrder(
+            spaceId,
+            restoreSidebarSectionOrder(
+              sectionsForSpace(spaceId).map((section) => section.id),
+              previousIds,
+            ),
+            false,
+          );
+    });
+  };
+  const reorderSection = async (sourceId: string, targetId: string, spaceId: string) => {
+    if (sourceId === targetId) return;
+    const ids = sectionsForSpace(spaceId).map((section) => section.id);
+    const from = ids.indexOf(sourceId),
+      to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, sourceId);
+    await saveSectionOrder(spaceId, ids);
+  };
+  const stepSection = async (id: string, spaceId: string, direction: number) => {
+    const ids = sectionsForSpace(spaceId).map((section) => section.id);
+    const targetId = ids[ids.indexOf(id) + direction];
+    if (targetId) await reorderSection(id, targetId, spaceId);
+  };
+  const applyRemovedMemberships = (
+    snapshot: RemovedBotSection,
+    spaceId: string,
+    restoreId: string | null,
+  ) => {
+    const botIds = new Set(snapshot.botIds),
+      groupIds = new Set(snapshot.groupIds);
+    const patchBot = <T extends { id: string; sectionId: string | null }>(chat: T): T =>
+      botIds.has(chat.id) &&
+      (restoreId ? chat.sectionId === null : chat.sectionId === snapshot.section.id)
+        ? { ...chat, sectionId: restoreId }
+        : chat;
+    const patchGroup = <T extends { id: string; sectionId: string | null }>(chat: T): T =>
+      groupIds.has(chat.id) &&
+      (restoreId ? chat.sectionId === null : chat.sectionId === snapshot.section.id)
+        ? { ...chat, sectionId: restoreId }
+        : chat;
+    if (spaceId === bootstrapMe?.spaceId) {
+      setBots((current) => current.map(patchBot));
+      setGroups((current) => current.map(patchGroup));
+      setArchivedBots((current) => current.map(patchBot));
+      setArchivedGroups((current) => current.map(patchGroup));
+    }
+    setSpaces((current) =>
+      current.map((space) =>
+        space.id !== spaceId
+          ? space
+          : { ...space, bots: space.bots.map(patchBot), groups: space.groups.map(patchGroup) },
+      ),
+    );
+  };
+  const restoreSection = async (deletion: { snapshot: RemovedBotSection; spaceId: string }) => {
+    await performOrganization(async () => {
+      const section = await rpc.botSections.restore(deletion.snapshot, {
+        context: { spaceId: deletion.spaceId },
+      });
+      const sections = sectionsForSpace(deletion.spaceId);
+      applySections(
+        deletion.spaceId,
+        sections.some((item) => item.id === section.id)
+          ? sections.map((item) => (item.id === section.id ? section : item))
+          : [
+              ...sections.map((item) =>
+                item.position >= section.position ? { ...item, position: item.position + 1 } : item,
+              ),
+              section,
+            ].sort((a, b) => a.position - b.position),
+      );
+      applyRemovedMemberships(deletion.snapshot, deletion.spaceId, section.id);
+      setDeletedSection((current) => (current === deletion ? null : current));
+      if (organizationUndo.current === deletionUndo.current) organizationUndo.current = null;
+      deletionUndo.current = null;
+    });
+  };
+  const removeSection = async (section: BotSection, spaceId: string) => {
+    await performOrganization(async () => {
+      const snapshot = await rpc.botSections.remove(
+        { sectionId: section.id },
+        { context: { spaceId } },
+      );
+      applySections(
+        spaceId,
+        sectionsForSpace(spaceId).filter((item) => item.id !== section.id),
+      );
+      applyRemovedMemberships(snapshot, spaceId, null);
+      expandSection(spaceId, null);
+      const deletion = { snapshot, spaceId };
+      setDeletedSection(deletion);
+      const undo = () => restoreSection(deletion);
+      deletionUndo.current = undo;
+      organizationUndo.current = undo;
+    });
+  };
+  const openSectionMenu = (
+    sectionId: string,
+    spaceId: string,
+    element: HTMLElement,
+    position: ContextMenuPosition,
+  ) => {
+    const section = sectionsForSpace(spaceId).find((item) => item.id === sectionId);
+    if (!section) return;
+    sectionMenuAnchor.current = element;
+    setSectionMenu({ section, spaceId, position });
+  };
+  const sectionContextPress = useContextPress<HTMLButtonElement>((element, position) => {
+    const { sectionId, sectionSpaceId } = element.dataset;
+    if (sectionId && sectionSpaceId) openSectionMenu(sectionId, sectionSpaceId, element, position);
+  });
+  const rowContextPress = useContextPress<HTMLButtonElement>((element, position) => {
+    if (element.dataset.rosterSpaceId !== bootstrapMe?.spaceId) return;
+    const botId = element.dataset.rosterBotId,
+      groupId = element.dataset.rosterGroupId;
+    if (!botId && !groupId) return;
+    botMenuAnchor.current = element;
+    setBotMenu({ kind: botId ? "bot" : "group", id: botId ?? groupId!, position });
+  });
+  useEffect(() => {
+    const undo = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.closest("input, textarea, [contenteditable=true]") || target.closest("[role=menu]"))
+      )
+        return;
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.shiftKey ||
+        event.altKey ||
+        event.key.toLowerCase() !== "z" ||
+        !organizationUndo.current ||
+        organizationPending.current
+      )
+        return;
+      event.preventDefault();
+      const action = organizationUndo.current;
+      organizationUndo.current = null;
+      void action().catch((error) => {
+        organizationUndo.current = action;
+        setSidebarError(errorText(error, t`Could not update sidebar`));
+      });
+    };
+    window.addEventListener("keydown", undo);
+    return () => window.removeEventListener("keydown", undo);
+  }, []);
+  const renderNewSectionName = () =>
+    newSectionTarget ? (
+      <div className="pt-3 pb-0.5" data-sidebar-section-draft>
+        <InlineSectionName
+          key={`${newSectionTarget.chat.spaceId}:${newSectionTarget.kind}:${newSectionTarget.chat.id}`}
+          existingNames={sectionsForSpace(newSectionTarget.chat.spaceId).map(
+            (section) => section.name,
+          )}
+          onCancel={() => setNewSectionTarget(null)}
+          onConfirm={async (name) => {
+            const target = newSectionTarget;
+            await performOrganization(async () => {
+              const section = await rpc.botSections.create(
+                target.kind === "bot"
+                  ? { botId: target.chat.id, name }
+                  : { groupId: target.chat.id, name },
+                { context: { spaceId: target.chat.spaceId } },
+              );
+              applySections(target.chat.spaceId, [
+                ...sectionsForSpace(target.chat.spaceId).filter((item) => item.id !== section.id),
+                section,
+              ]);
+              patchChatOrganization(target, { sectionId: section.id, pinned: false });
+              expandSection(target.chat.spaceId, section.id);
+              setSidebarNotice(target.chat.pinned ? t`Moved and unpinned` : null);
+              setNewSectionTarget((current) => (current === target ? null : current));
+              organizationUndo.current = async () => {
+                await removeSection(section, target.chat.spaceId);
+                organizationUndo.current = null;
+                setDeletedSection(null);
+                await saveChatOrganization(
+                  target,
+                  { sectionId: target.chat.sectionId, pinned: target.chat.pinned },
+                  false,
+                );
+              };
+            });
+          }}
+        />
+      </div>
+    ) : null;
   const toggleRosterParent = useCallback(
     (botId: string) => {
       setCollapsedRosterParents((previous) =>
@@ -3327,23 +3665,18 @@ export function ShellPage() {
                 />
               ) : null}
               {sidebarGroups.map((group, groupIndex) => {
-                const systemSection =
-                  group.key === "pinned" ||
-                  group.key.endsWith(":pinned") ||
-                  group.key === "unassigned" ||
-                  group.key.endsWith(":unassigned");
+                const pinnedSection = group.kind === "pinned";
                 const firstInSpace =
                   groupIndex === 0 || sidebarGroups[groupIndex - 1]?.spaceId !== group.spaceId;
-                const displayTitle = systemSection
-                  ? spaces.length > 1 && firstInSpace
-                    ? group.spaceName
-                    : null
-                  : group.title;
+                const displayTitle =
+                  group.kind === "unassigned" && group.baseTitle
+                    ? t`Unassigned`
+                    : pinnedSection
+                      ? null
+                      : group.baseTitle;
+                const collapsible = !pinnedSection && Boolean(group.baseTitle);
                 const collapsed =
-                  !compactSidebar &&
-                  !systemSection &&
-                  Boolean(group.title) &&
-                  collapsedSidebarSections.has(group.key);
+                  !compactSidebar && collapsible && collapsedSidebarSections.has(group.collapseKey);
                 const previousGroup = sidebarGroups[groupIndex - 1];
                 const followsPinned =
                   previousGroup?.spaceId === group.spaceId &&
@@ -3366,307 +3699,440 @@ export function ShellPage() {
                   );
                 const hasSpaceActions = group.canRenameSpace || group.canDeleteSpace;
                 return (
-                  <div key={group.key} data-sidebar-group={group.key}>
+                  // biome-ignore lint/a11y/noStaticElementInteractions: Move and reorder menus provide keyboard alternatives to this drop target.
+                  <div
+                    key={group.key}
+                    data-sidebar-group={group.key}
+                    onDragOver={(event) => {
+                      if (
+                        (draggedSection &&
+                          group.sectionId &&
+                          draggedSection.spaceId === group.spaceId) ||
+                        (draggedChat &&
+                          draggedChat.chat.spaceId === group.spaceId &&
+                          group.kind !== "pinned")
+                      ) {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                      }
+                    }}
+                    onDrop={(event) => {
+                      if (
+                        draggedSection &&
+                        group.sectionId &&
+                        draggedSection.spaceId === group.spaceId
+                      ) {
+                        event.preventDefault();
+                        void reorderSection(
+                          draggedSection.id,
+                          group.sectionId,
+                          group.spaceId,
+                        ).catch(reportSidebarError);
+                      } else if (
+                        draggedChat &&
+                        draggedChat.chat.spaceId === group.spaceId &&
+                        group.kind !== "pinned"
+                      ) {
+                        event.preventDefault();
+                        void moveChatToSection(draggedChat, group.sectionId).catch(
+                          reportSidebarError,
+                        );
+                      }
+                      setDraggedChat(null);
+                      setDraggedSection(null);
+                      setDraggedBotId(null);
+                    }}
+                  >
                     {followsPinned ? (
                       <div
                         data-sidebar-pinned-separator
                         className={`my-3 border-t border-sidebar-border ${compactSidebar ? "mx-3" : "mx-2"}`}
                       />
                     ) : null}
-                    {!compactSidebar && (displayTitle || (hasSpaceActions && spaces.length > 1)) ? (
-                      <div
-                        className={
-                          displayTitle && hasSpaceActions
-                            ? "grid pt-3 pb-0.5"
-                            : `flex items-center pt-3 pb-0.5${displayTitle ? "" : " justify-end"}`
-                        }
-                      >
-                        {displayTitle ? (
-                          <button
-                            type="button"
-                            className={`flex min-w-0 items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground/60 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring ${hasSpaceActions ? "col-start-1 row-start-1 w-full pe-8" : "flex-1"}`}
-                            onClick={() => {
-                              if (group.emptySpaceId) {
-                                openSpaceChat(group.emptySpaceId, "/onboarding");
-                                return;
-                              }
-                              toggleSidebarSection(group.key);
-                            }}
-                            onContextMenu={
-                              group.sectionId
-                                ? (event) => {
-                                    event.preventDefault();
-                                    // Prefer section rename over the space menu when both apply;
-                                    // the dedicated space-actions button still opens the space menu.
-                                    const sections =
-                                      group.spaceId === bootstrapMe?.spaceId
-                                        ? botSections
-                                        : (spaces.find((space) => space.id === group.spaceId)
-                                            ?.botSections ?? []);
-                                    const section = sections.find(
-                                      (item) => item.id === group.sectionId,
-                                    );
-                                    if (!section) return;
-                                    sectionMenuAnchor.current = event.currentTarget;
-                                    setSectionMenu({
-                                      section,
-                                      spaceId: group.spaceId,
-                                      position: { x: event.clientX, y: event.clientY },
-                                    });
-                                  }
-                                : hasSpaceActions
-                                  ? (event) => {
-                                      event.preventDefault();
-                                      spaceMenuAnchor.current = event.currentTarget;
-                                      setSpaceMenu({
-                                        id: group.spaceId,
-                                        position: { x: event.clientX, y: event.clientY },
-                                      });
-                                    }
-                                  : undefined
-                            }
-                            aria-expanded={group.emptySpaceId ? undefined : !collapsed}
-                            aria-label={
-                              group.emptySpaceId
-                                ? t`Open ${displayTitle}`
-                                : collapsed
-                                  ? t`Expand ${displayTitle}`
-                                  : t`Collapse ${displayTitle}`
-                            }
-                          >
-                            <span className="flex min-w-0 items-center gap-1.5 truncate">
-                              {group.showLock ? (
-                                <Lock size={11} strokeWidth={2} aria-hidden="true" />
-                              ) : null}
-                              <span className="truncate">{displayTitle}</span>
-                            </span>
-                            {group.emptySpaceId ? null : (
-                              <ChevronDown
-                                size={14}
-                                strokeWidth={1.8}
-                                className={
-                                  collapsed
-                                    ? "-rotate-90 transition-transform"
-                                    : "transition-transform"
-                                }
-                                aria-hidden="true"
-                              />
-                            )}
-                          </button>
-                        ) : null}
-                        {hasSpaceActions ? (
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            className={
-                              displayTitle
-                                ? "col-start-1 row-start-1 justify-self-end self-center"
-                                : undefined
-                            }
-                            aria-label={t`Actions for ${group.spaceName}`}
-                            onClick={(event) => {
-                              const rect = event.currentTarget.getBoundingClientRect();
-                              spaceMenuAnchor.current = event.currentTarget;
-                              setSpaceMenu({
-                                id: group.spaceId,
-                                position: { x: rect.left, y: rect.bottom },
-                              });
-                            }}
-                          >
-                            <MoreHorizontal size={14} aria-hidden="true" />
-                          </Button>
-                        ) : null}
+                    {!compactSidebar && spaces.length > 1 && firstInSpace ? (
+                      <div className="pt-3 pb-0.5">
+                        <SidebarSectionHeader
+                          title={group.spaceName}
+                          count={0}
+                          collapsed={false}
+                          collapsible={false}
+                          onToggle={() => {
+                            if (group.emptySpaceId)
+                              openSpaceChat(group.emptySpaceId, "/onboarding");
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            if (!hasSpaceActions) return;
+                            spaceMenuAnchor.current = event.currentTarget;
+                            setSpaceMenu({
+                              id: group.spaceId,
+                              position: { x: event.clientX, y: event.clientY },
+                            });
+                          }}
+                          onKeyDown={(event) => {
+                            if (
+                              !hasSpaceActions ||
+                              !(
+                                event.key === "ContextMenu" ||
+                                (event.shiftKey && event.key === "F10")
+                              )
+                            )
+                              return;
+                            event.preventDefault();
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            spaceMenuAnchor.current = event.currentTarget;
+                            setSpaceMenu({
+                              id: group.spaceId,
+                              position: { x: rect.left, y: rect.bottom },
+                            });
+                          }}
+                        />
                       </div>
                     ) : null}
-                    {!collapsed &&
-                      nestedRows.map(({ item, depth, hasChildren, parentId }) => {
-                        const parentCollapsed =
-                          hasChildren && collapsedRosterParents.has(item.chat.id);
-                        const selected =
-                          (item.kind === "bot" && !inGroup && active?.id === item.chat.id) ||
-                          (item.kind === "group" && inGroup && activeGroup?.id === item.chat.id);
-                        const rosterLine = item.chat.preview ?? "";
-                        return (
-                          <div
-                            key={`${item.kind}:${item.chat.id}`}
-                            className="group/row relative"
-                            style={{
-                              opacity:
-                                item.kind === "bot" && draggedBotId === item.chat.id ? 0.55 : 1,
+                    {!compactSidebar && displayTitle ? (
+                      <div className="pt-3 pb-0.5">
+                        {renameSectionTarget?.section.id === group.sectionId &&
+                        renameSectionTarget.spaceId === group.spaceId ? (
+                          <InlineSectionName
+                            key={`${group.spaceId}:${group.sectionId}`}
+                            defaultValue={renameSectionTarget.section.name}
+                            existingNames={sectionsForSpace(group.spaceId)
+                              .filter((section) => section.id !== group.sectionId)
+                              .map((section) => section.name)}
+                            onCancel={() => setRenameSectionTarget(null)}
+                            onConfirm={async (name) => {
+                              const target = renameSectionTarget;
+                              await renameSection(target.section, group.spaceId, name);
+                              setRenameSectionTarget((current) =>
+                                current === target ? null : current,
+                              );
                             }}
-                          >
-                            {hasChildren && !compactSidebar ? (
-                              <span
-                                className="absolute inset-y-0 z-10 flex w-3.5 items-center justify-center"
-                                style={{ insetInlineStart: `${10 + depth * 14}px` }}
-                              >
-                                <button
-                                  type="button"
-                                  aria-expanded={!parentCollapsed}
-                                  aria-label={
-                                    parentCollapsed
-                                      ? t`Expand ${item.chat.name}`
-                                      : t`Collapse ${item.chat.name}`
-                                  }
-                                  className="inline-flex size-3.5 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
-                                  onClick={() => toggleRosterParent(item.chat.id)}
-                                >
-                                  <ChevronDown
-                                    size={12}
-                                    strokeWidth={2}
-                                    className={`transition-transform ${
-                                      parentCollapsed ? "-rotate-90" : ""
-                                    }`}
-                                    aria-hidden="true"
-                                  />
-                                </button>
-                              </span>
-                            ) : null}
-                            <ConversationRow
-                              draggable={item.kind === "bot"}
-                              data-roster-bot-id={item.kind === "bot" ? item.chat.id : undefined}
-                              data-roster-group-id={
-                                item.kind === "group" ? item.chat.id : undefined
-                              }
-                              data-roster-depth={
-                                item.kind === "bot" && treeActive ? depth : undefined
-                              }
-                              aria-keyshortcuts={
-                                item.kind === "bot" ? "Alt+ArrowUp Alt+ArrowDown" : undefined
-                              }
-                              onDragStart={(event) => {
-                                if (item.kind !== "bot") return;
-                                setDraggedBotId(item.chat.id);
-                                event.dataTransfer.effectAllowed = "move";
-                                event.dataTransfer.setData("text/plain", item.chat.id);
-                              }}
-                              onDragOver={(event) => {
-                                if (
-                                  item.kind === "bot" &&
-                                  draggedBotId &&
-                                  groupBotIds.includes(draggedBotId) &&
-                                  rosterParent.get(draggedBotId) === parentId
-                                ) {
-                                  event.preventDefault();
-                                  event.dataTransfer.dropEffect = "move";
-                                }
-                              }}
-                              onDrop={(event) => {
-                                if (
-                                  item.kind !== "bot" ||
-                                  !draggedBotId ||
-                                  rosterParent.get(draggedBotId) !== parentId
-                                )
-                                  return;
-                                event.preventDefault();
-                                reorderRosterBot(draggedBotId, item.chat.id, groupBotIds);
-                                setDraggedBotId(null);
-                              }}
-                              onDragEnd={() => setDraggedBotId(null)}
-                              onKeyDown={(event) => {
-                                if (
-                                  item.kind !== "bot" ||
-                                  !event.altKey ||
-                                  (event.key !== "ArrowUp" && event.key !== "ArrowDown")
-                                )
-                                  return;
-                                const siblings = siblingBotIds(parentId);
-                                const index = siblings.indexOf(item.chat.id);
-                                const target = siblings[index + (event.key === "ArrowUp" ? -1 : 1)];
-                                if (!target) return;
-                                event.preventDefault();
-                                reorderRosterBot(item.chat.id, target, groupBotIds);
-                              }}
-                              onClick={() => {
-                                const target =
-                                  item.kind === "bot"
-                                    ? { botId: item.chat.id }
-                                    : { groupId: item.chat.id };
-                                const path =
-                                  item.kind === "bot"
-                                    ? `/app/${item.chat.id}`
-                                    : `/app/g/${item.chat.id}`;
-                                const messageId = item.chat.attentionMessageId;
-                                if (item.chat.spaceId === bootstrapMe?.spaceId) {
-                                  setPeerConversation(null);
-                                  manuallyUnread.current.delete(item.chat.id);
-                                  readVisibleGroups.current.delete(item.chat.id);
-                                  if (selected) {
-                                    void setConversationUnread(target, false).catch(
-                                      () => undefined,
-                                    );
-                                    if (messageId)
-                                      void jumpToMessage({
-                                        ...target,
-                                        messageId,
-                                        attention: true,
-                                      }).catch(() => undefined);
-                                    else openSpaceChat(item.chat.spaceId, path);
-                                    return;
-                                  }
-                                }
-                                openSpaceChat(
-                                  item.chat.spaceId,
-                                  messageId
-                                    ? `${path}?m=${encodeURIComponent(messageId)}&attention=1`
-                                    : path,
+                          />
+                        ) : (
+                          <SidebarSectionHeader
+                            {...sectionContextPress}
+                            data-section-id={group.sectionId ?? undefined}
+                            data-section-space-id={group.spaceId}
+                            title={displayTitle}
+                            count={group.bots.length}
+                            collapsed={collapsed}
+                            collapsible={collapsible}
+                            aria-expanded={collapsible ? !collapsed : undefined}
+                            aria-label={
+                              collapsible
+                                ? collapsed
+                                  ? t`Expand ${displayTitle}, ${group.bots.length}`
+                                  : t`Collapse ${displayTitle}`
+                                : displayTitle
+                            }
+                            aria-controls={`sidebar-members-${group.collapseKey}`}
+                            draggable={Boolean(group.sectionId)}
+                            onDragStart={(event) => {
+                              if (!group.sectionId) return;
+                              event.stopPropagation();
+                              setDraggedSection({ id: group.sectionId, spaceId: group.spaceId });
+                              event.dataTransfer.effectAllowed = "move";
+                              event.dataTransfer.setData(
+                                "application/x-coginebot-section",
+                                group.sectionId,
+                              );
+                            }}
+                            onDragEnd={() => setDraggedSection(null)}
+                            onToggle={() => {
+                              if (group.emptySpaceId)
+                                openSpaceChat(group.emptySpaceId, "/onboarding");
+                              else if (collapsible) toggleSidebarSection(group.collapseKey);
+                            }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              if (group.sectionId)
+                                openSectionMenu(
+                                  group.sectionId,
+                                  group.spaceId,
+                                  event.currentTarget,
+                                  { x: event.clientX, y: event.clientY },
                                 );
-                              }}
-                              onContextMenu={(event) => {
-                                if (item.chat.spaceId !== bootstrapMe?.spaceId) return;
-                                event.preventDefault();
-                                botMenuAnchor.current = event.currentTarget;
-                                setBotMenu({
-                                  kind: item.kind,
-                                  id: item.chat.id,
+                              else if (group.kind !== "unassigned" && hasSpaceActions) {
+                                spaceMenuAnchor.current = event.currentTarget;
+                                setSpaceMenu({
+                                  id: group.spaceId,
                                   position: { x: event.clientX, y: event.clientY },
                                 });
+                              }
+                            }}
+                            onKeyDown={(event) => {
+                              if (
+                                event.key === "ContextMenu" ||
+                                (event.shiftKey && event.key === "F10")
+                              ) {
+                                event.preventDefault();
+                                if (!group.sectionId) return;
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                openSectionMenu(
+                                  group.sectionId,
+                                  group.spaceId,
+                                  event.currentTarget,
+                                  { x: rect.left, y: rect.bottom },
+                                );
+                              } else if (event.key === "F2" && group.sectionId) {
+                                event.preventDefault();
+                                const section = sectionsForSpace(group.spaceId).find(
+                                  (section) => section.id === group.sectionId,
+                                );
+                                if (section)
+                                  setRenameSectionTarget({ section, spaceId: group.spaceId });
+                              }
+                            }}
+                          />
+                        )}
+                      </div>
+                    ) : null}
+                    <div id={`sidebar-members-${group.collapseKey}`} hidden={collapsed}>
+                      {!collapsed &&
+                        nestedRows.map(({ item, depth, hasChildren, parentId }) => {
+                          const parentCollapsed =
+                            hasChildren && collapsedRosterParents.has(item.chat.id);
+                          const selected =
+                            (item.kind === "bot" && !inGroup && active?.id === item.chat.id) ||
+                            (item.kind === "group" && inGroup && activeGroup?.id === item.chat.id);
+                          const rosterLine = item.chat.preview ?? "";
+                          return (
+                            <div
+                              key={`${item.kind}:${item.chat.id}`}
+                              className="group/row relative"
+                              style={{
+                                opacity:
+                                  item.kind === "bot" && draggedBotId === item.chat.id ? 0.55 : 1,
                               }}
-                              name={item.chat.name}
-                              preview={rosterLine}
-                              bot={item.kind === "bot"}
-                              compact={compactSidebar}
-                              selected={selected}
-                              unread={item.chat.unread}
-                              approvalPending={Boolean(item.chat.attentionMessageId)}
-                              className={
-                                item.kind === "bot"
-                                  ? "cursor-grab active:cursor-grabbing"
-                                  : undefined
-                              }
-                              style={
-                                treeActive && !compactSidebar
-                                  ? { paddingInlineStart: `${24 + depth * 14}px` }
-                                  : undefined
-                              }
-                              avatar={
-                                item.kind === "bot" ? (
-                                  <BotAvatar
-                                    color={item.chat.color}
-                                    identity={item.chat.id}
-                                    size={38}
-                                    status={item.chat.status}
-                                  />
-                                ) : (
-                                  <GroupAvatar
-                                    members={
-                                      item.chat.id === activeSnapshot?.groupId
-                                        ? (activeSnapshot.members ?? item.chat.members)
-                                        : item.chat.members
+                            >
+                              {hasChildren && !compactSidebar ? (
+                                <span
+                                  className="absolute inset-y-0 z-10 flex w-3.5 items-center justify-center"
+                                  style={{ insetInlineStart: `${10 + depth * 14}px` }}
+                                >
+                                  <button
+                                    type="button"
+                                    aria-expanded={!parentCollapsed}
+                                    aria-label={
+                                      parentCollapsed
+                                        ? t`Expand ${item.chat.name}`
+                                        : t`Collapse ${item.chat.name}`
                                     }
-                                    size={38}
-                                  />
-                                )
-                              }
-                            />
-                          </div>
-                        );
-                      })}
+                                    className="inline-flex size-3.5 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+                                    onClick={() => toggleRosterParent(item.chat.id)}
+                                  >
+                                    <ChevronDown
+                                      size={12}
+                                      strokeWidth={2}
+                                      className={`transition-transform ${
+                                        parentCollapsed ? "-rotate-90" : ""
+                                      }`}
+                                      aria-hidden="true"
+                                    />
+                                  </button>
+                                </span>
+                              ) : null}
+                              <ConversationRow
+                                {...rowContextPress}
+                                data-roster-space-id={group.spaceId}
+                                draggable
+                                data-roster-bot-id={item.kind === "bot" ? item.chat.id : undefined}
+                                data-roster-group-id={
+                                  item.kind === "group" ? item.chat.id : undefined
+                                }
+                                data-roster-depth={
+                                  item.kind === "bot" && treeActive ? depth : undefined
+                                }
+                                aria-keyshortcuts={
+                                  item.kind === "bot" ? "Alt+ArrowUp Alt+ArrowDown" : undefined
+                                }
+                                onDragStart={(event) => {
+                                  setDraggedChat(item);
+                                  if (item.kind === "bot") setDraggedBotId(item.chat.id);
+                                  event.dataTransfer.effectAllowed = "move";
+                                  event.dataTransfer.setData("text/plain", item.chat.id);
+                                }}
+                                onDragOver={(event) => {
+                                  if (
+                                    item.kind === "bot" &&
+                                    draggedBotId &&
+                                    groupBotIds.includes(draggedBotId) &&
+                                    rosterParent.get(draggedBotId) === parentId
+                                  ) {
+                                    event.preventDefault();
+                                    event.dataTransfer.dropEffect = "move";
+                                  }
+                                }}
+                                onDrop={(event) => {
+                                  if (
+                                    item.kind !== "bot" ||
+                                    !draggedBotId ||
+                                    rosterParent.get(draggedBotId) !== parentId
+                                  )
+                                    return;
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  reorderRosterBot(draggedBotId, item.chat.id, groupBotIds);
+                                  setDraggedBotId(null);
+                                  setDraggedChat(null);
+                                }}
+                                onDragEnd={() => {
+                                  setDraggedBotId(null);
+                                  setDraggedChat(null);
+                                }}
+                                onKeyDown={(event) => {
+                                  if (
+                                    event.key === "ContextMenu" ||
+                                    (event.shiftKey && event.key === "F10")
+                                  ) {
+                                    if (item.chat.spaceId !== bootstrapMe?.spaceId) return;
+                                    event.preventDefault();
+                                    botMenuAnchor.current = event.currentTarget;
+                                    const rect = event.currentTarget.getBoundingClientRect();
+                                    setBotMenu({
+                                      kind: item.kind,
+                                      id: item.chat.id,
+                                      position: { x: rect.left, y: rect.bottom },
+                                    });
+                                    return;
+                                  }
+                                  if (
+                                    item.kind !== "bot" ||
+                                    !event.altKey ||
+                                    (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+                                  )
+                                    return;
+                                  const siblings = siblingBotIds(parentId);
+                                  const index = siblings.indexOf(item.chat.id);
+                                  const target =
+                                    siblings[index + (event.key === "ArrowUp" ? -1 : 1)];
+                                  if (!target) return;
+                                  event.preventDefault();
+                                  reorderRosterBot(item.chat.id, target, groupBotIds);
+                                }}
+                                onClick={() => {
+                                  const target =
+                                    item.kind === "bot"
+                                      ? { botId: item.chat.id }
+                                      : { groupId: item.chat.id };
+                                  const path =
+                                    item.kind === "bot"
+                                      ? `/app/${item.chat.id}`
+                                      : `/app/g/${item.chat.id}`;
+                                  const messageId = item.chat.attentionMessageId;
+                                  if (item.chat.spaceId === bootstrapMe?.spaceId) {
+                                    setPeerConversation(null);
+                                    manuallyUnread.current.delete(item.chat.id);
+                                    readVisibleGroups.current.delete(item.chat.id);
+                                    if (selected) {
+                                      void setConversationUnread(target, false).catch(
+                                        () => undefined,
+                                      );
+                                      if (messageId)
+                                        void jumpToMessage({
+                                          ...target,
+                                          messageId,
+                                          attention: true,
+                                        }).catch(() => undefined);
+                                      else openSpaceChat(item.chat.spaceId, path);
+                                      return;
+                                    }
+                                  }
+                                  openSpaceChat(
+                                    item.chat.spaceId,
+                                    messageId
+                                      ? `${path}?m=${encodeURIComponent(messageId)}&attention=1`
+                                      : path,
+                                  );
+                                }}
+                                onContextMenu={(event) => {
+                                  if (item.chat.spaceId !== bootstrapMe?.spaceId) return;
+                                  event.preventDefault();
+                                  botMenuAnchor.current = event.currentTarget;
+                                  setBotMenu({
+                                    kind: item.kind,
+                                    id: item.chat.id,
+                                    position: { x: event.clientX, y: event.clientY },
+                                  });
+                                }}
+                                name={item.chat.name}
+                                preview={rosterLine}
+                                bot={item.kind === "bot"}
+                                compact={compactSidebar}
+                                selected={selected}
+                                unread={item.chat.unread}
+                                approvalPending={Boolean(item.chat.attentionMessageId)}
+                                className={
+                                  item.kind === "bot"
+                                    ? "cursor-grab active:cursor-grabbing"
+                                    : undefined
+                                }
+                                style={
+                                  treeActive && !compactSidebar
+                                    ? { paddingInlineStart: `${24 + depth * 14}px` }
+                                    : undefined
+                                }
+                                avatar={
+                                  item.kind === "bot" ? (
+                                    <BotAvatar
+                                      color={item.chat.color}
+                                      identity={item.chat.id}
+                                      size={38}
+                                      status={item.chat.status}
+                                    />
+                                  ) : (
+                                    <GroupAvatar
+                                      members={
+                                        item.chat.id === activeSnapshot?.groupId
+                                          ? (activeSnapshot.members ?? item.chat.members)
+                                          : item.chat.members
+                                      }
+                                      size={38}
+                                    />
+                                  )
+                                }
+                              />
+                            </div>
+                          );
+                        })}
+                    </div>
+                    {!compactSidebar &&
+                    newSectionTarget?.chat.spaceId === group.spaceId &&
+                    sidebarGroups[groupIndex + 1]?.spaceId !== group.spaceId
+                      ? renderNewSectionName()
+                      : null}
                   </div>
                 );
               })}
             </>
           )}
+          {sidebarError && !compactSidebar ? (
+            <p role="alert" className="px-2 py-1 text-xs text-destructive">
+              {sidebarError}
+            </p>
+          ) : null}
+          {sidebarNotice && !compactSidebar ? (
+            <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
+              {sidebarNotice}
+            </p>
+          ) : null}
+          {deletedSection && !compactSidebar ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 px-2 py-1 text-xs text-muted-foreground"
+            >
+              <span>
+                <Trans>Section deleted</Trans>
+              </span>
+              <button
+                type="button"
+                className="rounded px-1 py-1 text-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => void restoreSection(deletedSection).catch(reportSidebarError)}
+              >
+                <Trans>Undo</Trans>
+              </button>
+            </div>
+          ) : null}
           {archivedBots.length + archivedGroups.length > 0 &&
           !showSpaceSearch &&
           !compactSidebar ? (
@@ -4598,13 +5064,12 @@ export function ShellPage() {
             sections={botSections}
             onTogglePinned={() => {
               setBotMenu(null);
-              const request = contextBot
-                ? rpc.bots.update({ botId: contextBot.id, pinned: !contextBot.pinned })
-                : rpc.groups.update({
-                    groupId: contextGroup!.id,
-                    pinned: !contextGroup!.pinned,
-                  });
-              void request.then(() => refreshBots());
+              const item = contextBot
+                ? { kind: "bot" as const, chat: contextBot }
+                : { kind: "group" as const, chat: contextGroup! };
+              void saveChatOrganization(item, { pinned: !contextChat.pinned }).catch(
+                reportSidebarError,
+              );
             }}
             onToggleUnread={() => {
               const unread = !contextChat.unread;
@@ -4620,24 +5085,23 @@ export function ShellPage() {
             }}
             onMoveToSection={(sectionId) => {
               setBotMenu(null);
-              if (sectionId === contextChat.sectionId) return;
-              const request = contextBot
-                ? rpc.bots.update({ botId: contextBot.id, sectionId })
-                : rpc.groups.update({ groupId: contextGroup!.id, sectionId });
-              void request.then(() => refreshBots());
+              void moveChatToSection(
+                contextBot
+                  ? { kind: "bot", chat: contextBot }
+                  : { kind: "group", chat: contextGroup! },
+                sectionId,
+              ).catch(reportSidebarError);
             }}
             onCreateSection={() => {
+              botMenuAnchor.current = null;
+              expandSidebar();
+              setQuery("");
+              setRenameSectionTarget(null);
               setNewSectionTarget(
                 contextBot
                   ? { kind: "bot", chat: contextBot }
                   : { kind: "group", chat: contextGroup! },
               );
-              setBotMenu(null);
-            }}
-            onRenameSection={(sectionId) => {
-              const section = botSections.find((item) => item.id === sectionId);
-              const spaceId = bootstrapMe?.spaceId;
-              if (section && spaceId) setRenameSectionTarget({ section, spaceId });
               setBotMenu(null);
             }}
             onEdit={() => {
@@ -4824,40 +5288,6 @@ export function ShellPage() {
           />
         ) : null}
 
-        {newSectionTarget ? (
-          <NewBotSectionDialog
-            bot={newSectionTarget.chat}
-            onCancel={() => setNewSectionTarget(null)}
-            onConfirm={async (name) => {
-              await rpc.botSections.create(
-                newSectionTarget.kind === "bot"
-                  ? { botId: newSectionTarget.chat.id, name }
-                  : { groupId: newSectionTarget.chat.id, name },
-              );
-              setNewSectionTarget(null);
-              await refreshBots();
-            }}
-          />
-        ) : null}
-
-        {renameSectionTarget ? (
-          <RenameBotSectionDialog
-            section={renameSectionTarget.section}
-            onCancel={() => setRenameSectionTarget(null)}
-            onConfirm={async (name) => {
-              await rpc.botSections.update(
-                {
-                  sectionId: renameSectionTarget.section.id,
-                  name,
-                },
-                { context: { spaceId: renameSectionTarget.spaceId } },
-              );
-              setRenameSectionTarget(null);
-              await refreshBots();
-            }}
-          />
-        ) : null}
-
         {sectionMenu ? (
           <DropdownMenu
             open
@@ -4877,6 +5307,7 @@ export function ShellPage() {
               }
             />
             <DropdownMenuContent
+              finalFocus={false}
               aria-label={t`Actions for ${sectionMenu.section.name}`}
               align="start"
               sideOffset={0}
@@ -4884,6 +5315,7 @@ export function ShellPage() {
             >
               <DropdownMenuItem
                 onClick={() => {
+                  sectionMenuAnchor.current = null;
                   setRenameSectionTarget({
                     section: sectionMenu.section,
                     spaceId: sectionMenu.spaceId,
@@ -4893,6 +5325,50 @@ export function ShellPage() {
               >
                 <Pencil />
                 {t`Rename section`}
+              </DropdownMenuItem>
+              {sectionsForSpace(sectionMenu.spaceId).findIndex(
+                (section) => section.id === sectionMenu.section.id,
+              ) > 0 ? (
+                <DropdownMenuItem
+                  onClick={() => {
+                    const target = sectionMenu;
+                    setSectionMenu(null);
+                    void stepSection(target.section.id, target.spaceId, -1).catch(
+                      reportSidebarError,
+                    );
+                  }}
+                >
+                  <ArrowUp />
+                  {t`Move up`}
+                </DropdownMenuItem>
+              ) : null}
+              {sectionsForSpace(sectionMenu.spaceId).findIndex(
+                (section) => section.id === sectionMenu.section.id,
+              ) <
+              sectionsForSpace(sectionMenu.spaceId).length - 1 ? (
+                <DropdownMenuItem
+                  onClick={() => {
+                    const target = sectionMenu;
+                    setSectionMenu(null);
+                    void stepSection(target.section.id, target.spaceId, 1).catch(
+                      reportSidebarError,
+                    );
+                  }}
+                >
+                  <ArrowDown />
+                  {t`Move down`}
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem
+                className="text-destructive"
+                onClick={() => {
+                  const target = sectionMenu;
+                  setSectionMenu(null);
+                  void removeSection(target.section, target.spaceId).catch(reportSidebarError);
+                }}
+              >
+                <Trash2 />
+                {t`Delete section`}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

@@ -159,6 +159,14 @@ export const GroupDetailSchema = GroupSchema.extend({
 });
 export type GroupDetail = z.infer<typeof GroupDetailSchema>;
 
+export const BotSectionStoredNameSchema = z.string().trim().min(1).max(60);
+export const BotSectionNameSchema = BotSectionStoredNameSchema.refine(
+  (name) => !["unassigned", "未分组"].includes(name.toLowerCase()),
+  {
+    message: "Choose another group name",
+  },
+);
+
 export const BotSectionSchema = z.object({
   id: Id,
   name: z.string(),
@@ -167,6 +175,14 @@ export const BotSectionSchema = z.object({
   updatedAt: z.string(),
 });
 export type BotSection = z.infer<typeof BotSectionSchema>;
+
+export const RemovedBotSectionSchema = z.object({
+  // Undo must also accept names created before system names were reserved.
+  section: BotSectionSchema.extend({ name: BotSectionStoredNameSchema }),
+  botIds: z.array(Id),
+  groupIds: z.array(Id),
+});
+export type RemovedBotSection = z.infer<typeof RemovedBotSectionSchema>;
 
 /**
  * A space is a real privacy boundary, not just sidebar organization.

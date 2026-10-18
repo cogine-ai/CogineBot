@@ -1,7 +1,20 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
-test("pinned bots and sidebar sections persist", async ({ page }, testInfo) => {
+const pageErrors = new WeakMap<Page, string[]>();
+test.beforeEach(async ({ page }) => {
+  const errors: string[] = [];
+  pageErrors.set(page, errors);
+  page.on("pageerror", (error) => errors.push(error.message));
+});
+test.afterEach(async ({ page }) => {
+  expect(pageErrors.get(page) ?? []).toEqual([]);
+});
+
+test("right-click grouping preserves the active chat through rename, empty groups and delete undo", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   await signup(page, `bot-organize-${stamp}@rakazo.test`, "password12", "Test User");
   await completeOnboarding(page);
@@ -10,55 +23,223 @@ test("pinned bots and sidebar sections persist", async ({ page }, testInfo) => {
 
   const sidebar = page.locator("aside").first();
   const bot = sidebar.getByRole("button", { name: /^Chief/ });
+  const route = page.url();
+  const composer = page.getByRole("combobox", { name: "Message Chief" });
+  const draft = "Keep this draft while organizing the sidebar";
+  await composer.fill(draft);
+  await expect(sidebar.getByRole("button", { name: /^(Collapse|Expand) Unassigned/ })).toHaveCount(
+    0,
+  );
 
   await bot.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
   await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toContainText("Chief");
+  await expect(sidebar.getByText("Pinned", { exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: /^(Collapse|Expand) Unassigned/ })).toHaveCount(
+    0,
+  );
   await captureScreenshot(page, testInfo, "pinned-bots");
 
+  // The first group starts from the conversation and moves it out of pinned.
   await bot.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Unpin", exact: true }).click();
-  await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toHaveCount(0);
-
-  await bot.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
-  const moveMenu = page.getByRole("menu", { name: "Move to", exact: true });
-  await expect(moveMenu).toBeVisible();
-  await captureScreenshot(page, testInfo, "move-to-section-menu");
-  await moveMenu.getByText("New section").click();
-  const dialog = page.getByRole("dialog", { name: "New section" });
-  await dialog.getByLabel("Name").fill("Projects");
-  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByRole("menuitem", { name: "Move to", exact: true })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Group", exact: true }).click();
+  const sectionName = page.getByRole("textbox", { name: "Section name", exact: true });
+  await sectionName.fill("Projects");
+  await captureScreenshot(page, testInfo, "create-first-section-inline");
+  await sectionName.press("Enter");
 
   const projects = sidebar.locator('[data-sidebar-group^="section:"]');
   await expect(projects).toContainText("Projects");
   await expect(projects).toContainText("Chief");
+  await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toHaveCount(0);
+  await expect(
+    sidebar.getByRole("button", { name: "Collapse Unassigned", exact: true }),
+  ).toBeVisible();
+  await expect(composer).toHaveValue(draft);
+  expect(page.url()).toBe(route);
   await captureScreenshot(page, testInfo, "bot-sections");
 
   await page.reload();
   await expect(projects).toContainText("Projects");
   await expect(projects).toContainText("Chief");
+  await composer.fill(draft);
 
-  await bot.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
-  await page
-    .getByRole("menu", { name: "Move to", exact: true })
-    .getByRole("menuitem", { name: "Rename section", exact: true })
-    .click();
-  const renameDialog = page.getByRole("dialog", { name: "Rename section" });
-  await renameDialog.getByLabel("Name").fill("Delivery");
+  await projects
+    .getByRole("button", { name: "Collapse Projects", exact: true })
+    .click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: /Add (conversation|chat)/ })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Rename section", exact: true }).click();
+  await sectionName.fill("Delivery");
   await captureScreenshot(page, testInfo, "rename-bot-section");
-  await renameDialog.getByRole("button", { name: "Save" }).click();
+  await sectionName.press("Enter");
   await expect(projects).toContainText("Delivery");
   await expect(projects).not.toContainText("Projects");
 
   await bot.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
-  await page
-    .getByRole("menu", { name: "Move to", exact: true })
-    .getByRole("menuitem", { name: "Unassigned", exact: true })
-    .click();
+  await expect(page.getByRole("menuitem", { name: "Delivery", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New section", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Rename section", exact: true })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "move-to-section-menu");
+  await page.getByRole("menuitem", { name: "Unassigned", exact: true }).click();
   await expect(sidebar.locator('[data-sidebar-group="unassigned"]')).toContainText("Chief");
+  await expect(
+    projects.getByRole("button", { name: "Collapse Delivery", exact: true }),
+  ).toBeVisible();
+  await expect(projects.getByRole("button", { name: /^Chief/ })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "empty-section-retained");
+
+  await sidebar
+    .getByRole("button", { name: "Collapse Unassigned", exact: true })
+    .click({ button: "right" });
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(composer).toHaveValue(draft);
+  expect(page.url()).toBe(route);
+
+  await bot.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
+  await page.getByRole("menuitem", { name: "Delivery", exact: true }).click();
+  await expect(projects).toContainText("Chief");
+  await projects
+    .getByRole("button", { name: "Collapse Delivery", exact: true })
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete section", exact: true }).click();
+  await expect(projects).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: /^(Collapse|Expand) Unassigned/ })).toHaveCount(
+    0,
+  );
+  await expect(sidebar.getByRole("button", { name: /^Chief/ })).toBeVisible();
+  await expect(composer).toHaveValue(draft);
+  expect(page.url()).toBe(route);
+  await captureScreenshot(page, testInfo, "deleted-section-undo");
+
+  // Restoring a deleted group must not make the later Pin undo reset membership.
+  await bot.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
+  await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toContainText("Chief");
+  await sidebar.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(projects).toContainText("Delivery");
+  await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toContainText("Chief");
+  await expect(projects.getByRole("button", { name: /^Chief/ })).toHaveCount(0);
+  await projects.getByRole("button", { name: "Collapse Delivery", exact: true }).focus();
+  await page.keyboard.press("Control+z");
+  await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toHaveCount(0);
+  await expect(projects).toContainText("Chief");
+  await expect(
+    sidebar.getByRole("button", { name: "Collapse Unassigned", exact: true }),
+  ).toBeVisible();
+  await expect(composer).toHaveValue(draft);
+  expect(page.url()).toBe(route);
+  await captureScreenshot(page, testInfo, "restored-section-chat-retained");
+
+  await page.reload();
+  await expect(projects).toContainText("Delivery");
+  await expect(projects).toContainText("Chief");
+});
+
+test("custom sections can be created from Move to and reordered without leaving the chat", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `section-reorder-${stamp}@rakazo.test`, "password12", "Section Order");
+  await completeOnboarding(page);
+  const route = page.url();
+  await rpc(page, "bots/create", {
+    name: "Partner",
+    title: "",
+    description: "",
+    instructions: "",
+    notifyOnFinish: true,
+    computerMode: "team",
+  });
+  await page.reload();
+
+  const sidebar = page.locator("aside").first();
+  const sectionName = page.getByRole("textbox", { name: "Section name", exact: true });
+  await sidebar.getByRole("button", { name: /^Chief/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Group", exact: true }).click();
+  await sectionName.fill("Projects");
+  await sectionName.press("Enter");
+
+  await sidebar.getByRole("button", { name: /^Partner/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
+  await page.getByRole("menuitem", { name: "New section", exact: true }).click();
+  await expect(sectionName).toBeFocused();
+  await sectionName.fill("Personal");
+  await sectionName.press("Enter");
+  const sections = sidebar.locator('[data-sidebar-group^="section:"]');
+  const order = () =>
+    sections.evaluateAll((items) =>
+      items.map((item) => item.querySelector("button")?.textContent?.trim()),
+    );
+  await expect.poll(order).toEqual(["Projects", "Personal"]);
+
+  const reorderSaved = page.waitForResponse(
+    (response) => response.url().includes("/rpc/botSections/reorder") && response.ok(),
+  );
+  await sidebar
+    .getByRole("button", { name: "Collapse Personal", exact: true })
+    .dragTo(sidebar.getByRole("button", { name: "Collapse Projects", exact: true }));
+  await reorderSaved;
+  await expect.poll(order).toEqual(["Personal", "Projects"]);
+  expect(page.url()).toBe(route);
+  await captureScreenshot(page, testInfo, "sidebar-sections-reordered");
+  await page.reload();
+  await expect.poll(order).toEqual(["Personal", "Projects"]);
+
+  await sidebar
+    .getByRole("button", { name: "Collapse Personal", exact: true })
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move down", exact: true }).click();
+  await expect.poll(order).toEqual(["Projects", "Personal"]);
+  expect(page.url()).toBe(route);
+});
+
+test("reorder undo preserves a section restored by independent deletion undo", async ({ page }) => {
+  const stamp = Date.now();
+  await signup(page, `section-undo-order-${stamp}@rakazo.test`, "password12", "Section Undo");
+  await completeOnboarding(page);
+  const chiefId = activeBotId(page);
+  const botIds = [chiefId];
+  for (const name of ["Partner B", "Partner C"]) {
+    const bot = await rpc<{ id: string }>(page, "bots/create", {
+      name,
+      title: "",
+      description: "",
+      instructions: "",
+      notifyOnFinish: true,
+      computerMode: "team",
+    });
+    botIds.push(bot.id);
+  }
+  for (const [index, name] of ["A", "B", "C"].entries()) {
+    await rpc(page, "botSections/create", { botId: botIds[index], name });
+  }
+  await page.reload();
+  const sidebar = page.locator("aside").first();
+  const sections = sidebar.locator('[data-sidebar-group^="section:"]');
+  const order = () =>
+    sections.evaluateAll((items) =>
+      items.map((item) => item.querySelector("[data-sidebar-section-header]")?.textContent?.trim()),
+    );
+  const header = (name: string) =>
+    sidebar.getByRole("button", { name: `Collapse ${name}`, exact: true });
+  await expect.poll(order).toEqual(["A", "B", "C"]);
+  await header("A").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete section", exact: true }).click();
+  await expect.poll(order).toEqual(["B", "C"]);
+  await header("C").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move up", exact: true }).click();
+  await expect.poll(order).toEqual(["C", "B"]);
+  await sidebar.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.poll(order).toEqual(["A", "C", "B"]);
+  await header("C").focus();
+  await page.keyboard.press("Control+z");
+  await expect.poll(order).toEqual(["A", "B", "C"]);
+  await expect(sidebar.getByRole("alert")).toHaveCount(0);
+  await page.reload();
+  await expect.poll(order).toEqual(["A", "B", "C"]);
 });
 
 test("bots can be reordered by drag or keyboard and keep that order", async ({ page }) => {
@@ -278,7 +459,7 @@ test("group chats share every context-menu action", async ({ page }, testInfo) =
   await group.click({ button: "right" });
   for (const action of [
     "Pin",
-    "Move to",
+    "Group",
     "Mark as Unread",
     "Edit Profile",
     "Duplicate",
@@ -301,15 +482,19 @@ test("group chats share every context-menu action", async ({ page }, testInfo) =
   await group.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Unpin", exact: true }).click();
   await group.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
-  await page
-    .getByRole("menu", { name: "Move to", exact: true })
-    .getByRole("menuitem", { name: "New section", exact: true })
-    .click();
-  const sectionDialog = page.getByRole("dialog", { name: "New section" });
-  await sectionDialog.getByLabel("Name").fill("Teams");
-  await sectionDialog.getByRole("button", { name: "Create" }).click();
+  await page.getByRole("menuitem", { name: "Group", exact: true }).click();
+  const sectionName = page.getByRole("textbox", { name: "Section name", exact: true });
+  await sectionName.fill("Teams");
+  await sectionName.press("Enter");
   await expect(sidebar.locator('[data-sidebar-group^="section:"]')).toContainText("Group menu");
+
+  await group.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
+  for (const target of ["Teams", "Unassigned", "New section"]) {
+    await expect(page.getByRole("menuitem", { name: target, exact: true })).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
 
   await group.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Clear conversation", exact: true }).click();
@@ -347,4 +532,110 @@ test("group chats share every context-menu action", async ({ page }, testInfo) =
   await group.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Edit Profile", exact: true }).click();
   await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "group-settings");
+});
+
+test("inline grouping retries failures and supports keyboard context menus, rename and undo", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `section-retry-${stamp}@rakazo.test`, "password12", "Section Recovery");
+  await completeOnboarding(page);
+  const route = page.url();
+  const sidebar = page.locator("aside").first();
+  const chief = sidebar.getByRole("button", { name: /^Chief/ });
+  const sectionName = page.getByRole("textbox", { name: "Section name", exact: true });
+  const sections = sidebar.locator('[data-sidebar-group^="section:"]');
+
+  await chief.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
+  await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toContainText("Chief");
+  await page.route(
+    "**/rpc/botSections/create",
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Temporary test failure" }),
+      }),
+    { times: 1 },
+  );
+
+  await chief.focus();
+  await page.keyboard.press("Shift+F10");
+  await page.getByRole("menuitem", { name: "Group", exact: true }).click();
+  await sectionName.fill("Recoverable");
+  const failedCreate = page.waitForResponse(
+    (response) => response.url().includes("/rpc/botSections/create") && response.status() === 503,
+  );
+  await sectionName.press("Enter");
+  await failedCreate;
+  await expect(sectionName).toHaveValue("Recoverable");
+  await expect(sectionName).toHaveAttribute("aria-invalid", "true");
+  await expect(sectionName).toBeFocused();
+  await expect(sections).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "section-create-failure-retains-draft");
+
+  await sectionName.press("Enter");
+  const recoverable = sidebar.getByRole("button", { name: "Collapse Recoverable", exact: true });
+  await expect(recoverable).toBeVisible();
+  await expect(sections).toContainText("Chief");
+  await recoverable.focus();
+  await page.keyboard.press("Control+z");
+  await expect(sections).toHaveCount(0);
+  await expect(sidebar.locator('[data-sidebar-group="pinned"]')).toContainText("Chief");
+  expect(page.url()).toBe(route);
+
+  await chief.focus();
+  await page.keyboard.press("Shift+F10");
+  await page.getByRole("menuitem", { name: "Group", exact: true }).click();
+  await sectionName.fill("Projects");
+  await sectionName.press("Enter");
+  const projects = sidebar.getByRole("button", { name: "Collapse Projects", exact: true });
+  await expect(projects).toBeVisible();
+  await projects.focus();
+  await page.keyboard.press("F2");
+  await expect(sectionName).toHaveValue("Projects");
+  await expect(sectionName).toBeFocused();
+  await page.route(
+    "**/rpc/botSections/update",
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Temporary test failure" }),
+      }),
+    { times: 1 },
+  );
+  await sectionName.fill("Delivery");
+  const failedRename = page.waitForResponse(
+    (response) => response.url().includes("/rpc/botSections/update") && response.status() === 503,
+  );
+  await sectionName.press("Enter");
+  await failedRename;
+  await expect(sectionName).toHaveValue("Delivery");
+  await expect(sectionName).toHaveAttribute("aria-invalid", "true");
+  await expect(sectionName).toBeFocused();
+  await captureScreenshot(page, testInfo, "section-rename-failure-retains-draft");
+  await sectionName.press("Enter");
+  const delivery = sidebar.getByRole("button", { name: "Collapse Delivery", exact: true });
+  await expect(delivery).toBeVisible();
+  await delivery.focus();
+  await page.keyboard.press("Control+z");
+  await expect(projects).toBeVisible();
+
+  await projects.focus();
+  await page.keyboard.press("Shift+F10");
+  await expect(page.getByRole("menuitem", { name: "Rename section", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Delete section", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await chief.focus();
+  await page.keyboard.press("Shift+F10");
+  await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
+  await page.getByRole("menuitem", { name: "Unassigned", exact: true }).click();
+  await expect(sidebar.locator('[data-sidebar-group="unassigned"]')).toContainText("Chief");
+  await expect(sections.getByRole("button", { name: /^Chief/ })).toHaveCount(0);
+  await projects.focus();
+  await page.keyboard.press("Control+z");
+  await expect(sections).toContainText("Chief");
+  expect(page.url()).toBe(route);
 });

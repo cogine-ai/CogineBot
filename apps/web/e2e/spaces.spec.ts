@@ -53,7 +53,7 @@ test("Space menu and chat creation keep the existing approval and switching flow
   const supportSpaceGroup = await supportSpace.getAttribute("data-sidebar-group");
   const supportSpaceId = supportSpaceGroup?.split(":")[1];
   expect(supportSpaceId).toBeTruthy();
-  await supportSpace.getByRole("button", { name: "Open Customer support" }).click();
+  await supportSpace.getByRole("button", { name: "Customer support", exact: true }).click();
   await page.waitForURL(/\/(onboarding|app)/);
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem("rakazo:space-id")))
@@ -112,10 +112,10 @@ test("a new space auto-completes onboarding and can be deleted from its menu", a
   await expect(temporarySpace.getByRole("button", { name: /^Chief/ })).toHaveCount(0);
 
   // The emptied space stays selectable instead of trapping the user.
-  await expect(sidebar.getByRole("button", { name: "Open Temporary" })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Temporary", exact: true })).toBeVisible();
 
-  // Deletion is discoverable through the visible Space actions menu.
-  await sidebar.getByRole("button", { name: "Actions for Temporary" }).click();
+  // Space actions open from the title's context menu.
+  await sidebar.getByRole("button", { name: "Temporary", exact: true }).click({ button: "right" });
   await captureScreenshot(page, testInfo, "space-actions-menu");
   await page.getByRole("menuitem", { name: "Delete space" }).click();
   const deleteSpaceDialog = page.getByRole("alertdialog", { name: "Delete Temporary?" });
@@ -149,7 +149,7 @@ test("an occupied space can be renamed from its menu", async ({ page }, testInfo
     .locator('[data-sidebar-group^="space:"]')
     .filter({ hasText: "Typo space" });
   await expect(occupied.getByRole("button", { name: /^Chief/ })).toBeVisible();
-  await sidebar.getByRole("button", { name: "Actions for Typo space" }).click();
+  await sidebar.getByRole("button", { name: "Typo space", exact: true }).click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Rename space" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Delete space" })).toHaveCount(0);
   await page.getByRole("menuitem", { name: "Rename space" }).click();
@@ -206,12 +206,12 @@ test("deleting the last bot in a space stays in the app after first use", async 
   await expect(page).not.toHaveURL(/\/onboarding/);
   await page.reload();
   await expect(page).not.toHaveURL(/\/onboarding/);
-  await expect(sidebar.getByRole("button", { name: "Open Side" })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Side", exact: true })).toBeVisible();
   await expect(
     page.locator("main").getByRole("button", { name: "Create new Bot", exact: true }),
   ).toBeVisible();
 
-  await sidebar.getByRole("button", { name: "Actions for Side" }).click();
+  await sidebar.getByRole("button", { name: "Side", exact: true }).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Delete space" }).click();
   await page
     .getByRole("alertdialog", { name: "Delete Side?" })

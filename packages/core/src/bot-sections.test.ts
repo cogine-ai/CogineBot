@@ -32,6 +32,8 @@ describe("groupBotsForSidebar", () => {
       sections,
     );
     expect(groups).toEqual([
+      { key: "section:work", title: "Work", bots: [] },
+      { key: "section:home", title: "Home", bots: [] },
       {
         key: "unassigned",
         title: "Unassigned",
@@ -43,6 +45,29 @@ describe("groupBotsForSidebar", () => {
   it("does not add a heading before sections or pins exist", () => {
     const groups = groupBotsForSidebar([{ id: "first", pinned: false, sectionId: null }], []);
     expect(groups[0]?.title).toBeNull();
+  });
+
+  it("keeps empty custom sections and the empty unassigned section visible", () => {
+    expect(groupBotsForSidebar([], sections)).toEqual([
+      { key: "section:work", title: "Work", bots: [] },
+      { key: "section:home", title: "Home", bots: [] },
+      { key: "unassigned", title: "Unassigned", bots: [] },
+    ]);
+  });
+
+  it("does not introduce the unassigned heading just because a bot is pinned", () => {
+    expect(
+      groupBotsForSidebar(
+        [
+          { id: "pin", pinned: true, sectionId: null },
+          { id: "loose", pinned: false, sectionId: null },
+        ],
+        [],
+      ).map((group) => [group.key, group.title]),
+    ).toEqual([
+      ["pinned", "Pinned"],
+      ["unassigned", null],
+    ]);
   });
 });
 

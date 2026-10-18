@@ -1,5 +1,11 @@
 import { MenuView } from "@expo/ui/community/menu";
-import type { RunActivityRow, SearchHit, SpaceBot, SpaceGroup } from "@rakazo/contracts";
+import type {
+  RemovedBotSection,
+  RunActivityRow,
+  SearchHit,
+  SpaceBot,
+  SpaceGroup,
+} from "@rakazo/contracts";
 import { normalizeCreateBotProfile } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import { botColors } from "@rakazo/ui-tokens";
@@ -30,9 +36,11 @@ import {
 import { KeyboardController } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BotAvatar } from "../components/bot-avatar";
-import { BotOrganizeModal } from "../components/bot-organize-modal";
 import { GroupAvatar } from "../components/group-avatar";
+import { InboxContextMenu } from "../components/inbox-context-menu";
+import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
+import { SectionNamePrompt } from "../components/section-name-prompt";
 import { WorkingIndicator } from "../components/WorkingIndicator";
 import {
   activityStatusLabel,
@@ -61,6 +69,11 @@ import { mobileBotAvatarPresentation } from "../lib/bot-avatar";
 import { allowFocusPrompt, scheduleFocusPrompt } from "../lib/focus-prompt";
 import { t, useI18n } from "../lib/i18n";
 import { botTag, filterBots, formatThreadTime, userInitials } from "../lib/inbox";
+import {
+  chatOrganizationActions,
+  reorderedSectionIds,
+  sectionOrganizationActions,
+} from "../lib/inbox-organization";
 import { retainInboxValue } from "../lib/inbox-retention";
 import type { InboxSpace, InboxSpaceItem } from "../lib/inbox-spaces";
 import {
@@ -90,6 +103,13 @@ import { errorText } from "../lib/user-error";
 const FALLBACK_COLOR = botColors[3];
 
 type InboxItem = InboxSpaceItem | { type: "search"; hit: SearchHit };
+type SectionPrompt = {
+  scope: string;
+  spaceId: string;
+} & (
+  | { kind: "create"; targetKind: "bot" | "group"; targetId: string; wasPinned: boolean }
+  | { kind: "rename"; section: MobileBotSection }
+);
 
 async function openMobileSpace(spaceId: string | undefined, open: () => void) {
   if (spaceId && !(await selectSpace(spaceId))) {
@@ -145,10 +165,20 @@ function Home() {
   const [searching, setSearching] = useState(false);
   const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [organizeTarget, setOrganizeTarget] = useState<{
-    kind: "bot" | "group";
-    id: string;
+  const [sectionPrompt, setSectionPrompt] = useState<SectionPrompt | null>(null);
+  const [deletedSection, setDeletedSection] = useState<{
+    scope: string;
+    spaceId: string;
+    snapshot: RemovedBotSection;
   } | null>(null);
+  const organizationBusyRef = useRef(false);
+  const [organizationBusy, setOrganizationBusy] = useState(false);
+  const [organizationNotice, setOrganizationNotice] = useState<string | null>(null);
+  const organizationScope = me
+    ? `${currentApiBase()}:${currentSessionGeneration()}:${me.userId}:${me.spaceId}`
+    : null;
+  const organizationScopeRef = useRef(organizationScope);
+  organizationScopeRef.current = organizationScope;
   const [activityMode, setActivityMode] = useState(false);
   const [activity, setActivity] = useState<{ active: RunActivityRow[]; recent: RunActivityRow[] }>({
     active: [],
@@ -165,6 +195,25 @@ function Home() {
   const [spaceBusy, setSpaceBusy] = useState(false);
   const [spaceRecoveryId, setSpaceRecoveryId] = useState<string | null>(null);
   const [collapsedRosterParents, setCollapsedRosterParents] = useState(() => new Set<string>());
+  const [collapsedSidebarSections, setCollapsedSidebarSections] = useState(() => new Set<string>());
+  useEffect(() => {
+    setSectionPrompt(null);
+    setDeletedSection(null);
+    setOrganizationNotice(null);
+  }, [organizationScope]);
+  useEffect(() => {
+    if (!organizationNotice) return;
+    const timer = setTimeout(() => setOrganizationNotice(null), 4000);
+    return () => clearTimeout(timer);
+  }, [organizationNotice]);
+  const toggleSidebarSection = useCallback((key: string) => {
+    setCollapsedSidebarSections((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
   const toggleRosterParent = useCallback((botId: string) => {
     setCollapsedRosterParents((previous) => {
       const next = new Set(previous);
@@ -402,10 +451,16 @@ function Home() {
               },
             ]
           : [];
-    return spaceInboxItems(sidebarSpaces, collapsedRosterParents);
+    return spaceInboxItems(
+      sidebarSpaces,
+      collapsedRosterParents,
+      collapsedSidebarSections,
+      !!query.trim(),
+    );
   }, [
     botSections,
     collapsedRosterParents,
+    collapsedSidebarSections,
     locale,
     me,
     spaces,
@@ -416,11 +471,6 @@ function Home() {
     visibleGroups,
   ]);
   const initials = userInitials(me?.name ?? "");
-  const organizeChat = organizeTarget
-    ? organizeTarget.kind === "bot"
-      ? bots.find((bot) => bot.id === organizeTarget.id)
-      : groups.find((group) => group.id === organizeTarget.id)
-    : null;
   const insets = useSafeAreaInsets();
   // Liquid Glass uses the native bar: glass bar items, a native menu, and bottom search.
   const nativeHeader = iosAtLeast(26);
@@ -429,7 +479,7 @@ function Home() {
 
   const chooseInboxSpace = useCallback(
     async (spaceId: string) => {
-      if (spaceActionRef.current.busy) return;
+      if (spaceActionRef.current.busy || organizationBusyRef.current) return;
       spaceActionRef.current.busy = true;
       setSpaceBusy(true);
       inboxRequestId.current += 1;
@@ -551,7 +601,12 @@ function Home() {
 
   const runCreateAction = useCallback(
     (action: "bot" | "group" | "space") => {
-      if (spaceActionRef.current.busy || spaceActionRef.current.recoveryId) return;
+      if (
+        spaceActionRef.current.busy ||
+        spaceActionRef.current.recoveryId ||
+        organizationBusyRef.current
+      )
+        return;
       if (action === "bot") void createQuickBot();
       else if (action === "group") router.push("/new-group");
       else router.push("/new-space");
@@ -656,7 +711,12 @@ function Home() {
   );
   const openBot = useCallback(
     (bot: MobileBot | SpaceBot) => {
-      if (spaceActionRef.current.busy || spaceActionRef.current.recoveryId) return;
+      if (
+        spaceActionRef.current.busy ||
+        spaceActionRef.current.recoveryId ||
+        organizationBusyRef.current
+      )
+        return;
       void openMobileSpace(bot.spaceId, () =>
         router.push({ pathname: "/thread", params: { botId: bot.id, name: bot.name } }),
       );
@@ -665,19 +725,131 @@ function Home() {
   );
   const openGroup = useCallback(
     (group: MobileGroup | SpaceGroup) => {
-      if (spaceActionRef.current.busy || spaceActionRef.current.recoveryId) return;
+      if (
+        spaceActionRef.current.busy ||
+        spaceActionRef.current.recoveryId ||
+        organizationBusyRef.current
+      )
+        return;
       void openMobileSpace(group.spaceId, () =>
         router.push({ pathname: "/group-thread", params: { groupId: group.id, name: group.name } }),
       );
     },
     [router],
   );
-  const organizeBot = useCallback((bot: MobileBot | SpaceBot) => {
-    setOrganizeTarget({ kind: "bot", id: bot.id });
-  }, []);
-  const organizeGroup = useCallback((group: MobileGroup | SpaceGroup) => {
-    setOrganizeTarget({ kind: "group", id: group.id });
-  }, []);
+  const saveOrganization = useCallback(
+    async (scope: string, spaceId: string, request: () => Promise<unknown>) => {
+      if (
+        organizationBusyRef.current ||
+        spaceActionRef.current.busy ||
+        spaceActionRef.current.recoveryId ||
+        organizationScopeRef.current !== scope ||
+        scope !==
+          `${currentApiBase()}:${currentSessionGeneration()}:${me?.userId}:${me?.spaceId}` ||
+        (selectedSpaceId() ?? me?.spaceId) !== spaceId
+      )
+        throw new Error(t("Could not update chat"));
+      organizationBusyRef.current = true;
+      setOrganizationBusy(true);
+      try {
+        await request();
+        await loadBots();
+      } finally {
+        organizationBusyRef.current = false;
+        setOrganizationBusy(false);
+      }
+    },
+    [loadBots, me, t],
+  );
+  const reportOrganizationError = useCallback(
+    (cause: unknown) => {
+      Alert.alert(t("Could not update chat"), errorText(cause, t("Try again.")));
+    },
+    [t],
+  );
+  const handleChatAction = useCallback(
+    (
+      kind: "bot" | "group",
+      chat: MobileBot | SpaceBot | MobileGroup | SpaceGroup,
+      action: string,
+    ) => {
+      if (!organizationScope || !me) return;
+      const spaceId = chat.spaceId ?? me.spaceId;
+      if (action === "create-section") {
+        setSectionPrompt({
+          kind: "create",
+          targetKind: kind,
+          targetId: chat.id,
+          wasPinned: chat.pinned,
+          spaceId,
+          scope: organizationScope,
+        });
+        return;
+      }
+      if (action === "unread") {
+        void saveOrganization(organizationScope, spaceId, () =>
+          rpc(`threads/${chat.unread ? "markRead" : "markUnread"}`, { [`${kind}Id`]: chat.id }),
+        ).catch(reportOrganizationError);
+        return;
+      }
+      const update =
+        action === "pin"
+          ? { pinned: !chat.pinned }
+          : action === "notifications" && "notifyOnFinish" in chat
+            ? { notifyOnFinish: !chat.notifyOnFinish }
+            : action === "unassigned" || action.startsWith("section:")
+              ? {
+                  sectionId: action === "unassigned" ? null : action.slice("section:".length),
+                  pinned: false,
+                }
+              : null;
+      if (!update) return;
+      void saveOrganization(organizationScope, spaceId, async () => {
+        await rpc(`${kind}s/update`, { [`${kind}Id`]: chat.id, ...update });
+        if (kind === "bot" && "notifyOnFinish" in update) {
+          await resumeLiveNotifications(
+            currentApiBase(),
+            await loadSessionToken(),
+            selectedSpaceId() ?? "",
+          ).catch(() => undefined);
+          if (!update.notifyOnFinish && "threadId" in chat) {
+            await dismissThreadNotifications({ threadId: chat.threadId }).catch(() => undefined);
+          }
+        }
+      })
+        .then(() => {
+          if (chat.pinned && "sectionId" in update) setOrganizationNotice(t("Unpinned"));
+        })
+        .catch(reportOrganizationError);
+    },
+    [me, organizationScope, reportOrganizationError, saveOrganization, t],
+  );
+  const handleSectionAction = useCallback(
+    (section: MobileBotSection, action: string) => {
+      if (!organizationScope || !me) return;
+      if (action === "rename") {
+        setSectionPrompt({
+          kind: "rename",
+          section,
+          spaceId: me.spaceId,
+          scope: organizationScope,
+        });
+        return;
+      }
+      void saveOrganization(organizationScope, me.spaceId, async () => {
+        if (action === "delete") {
+          const snapshot = await rpc<RemovedBotSection>("botSections/remove", {
+            sectionId: section.id,
+          });
+          setDeletedSection({ scope: organizationScope, spaceId: me.spaceId, snapshot });
+        } else if (action === "up" || action === "down") {
+          const sectionIds = reorderedSectionIds(botSections, section.id, action);
+          if (sectionIds) await rpc("botSections/reorder", { sectionIds });
+        }
+      }).catch(reportOrganizationError);
+    },
+    [botSections, me, organizationScope, reportOrganizationError, saveOrganization],
+  );
 
   const renderItem = useCallback(
     ({ item }: { item: InboxItem }) =>
@@ -685,7 +857,23 @@ function Home() {
         <SearchRow hit={item.hit} onPress={openSearchHit} />
       ) : item.type === "heading" ? (
         item.space ? (
-          <View style={styles.spaceHeading}>
+          <InboxContextMenu
+            enabled={canDeleteInboxSpace(item.space)}
+            actions={[
+              {
+                id: "delete",
+                title: t("Delete space"),
+                image: "trash",
+                attributes: {
+                  destructive: true,
+                  disabled: spaceBusy || !!spaceRecoveryId || organizationBusy,
+                },
+              },
+            ]}
+            onAction={() => {
+              if (item.space) confirmDeleteSpace(item.space);
+            }}
+          >
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={item.title}
@@ -701,70 +889,77 @@ function Home() {
             >
               <Text style={styles.spaceTitle}>{item.title}</Text>
             </Pressable>
-            {canDeleteInboxSpace(item.space) ? (
-              <MenuView
-                actions={[
-                  {
-                    id: "delete",
-                    title: t("Delete space"),
-                    image: "trash",
-                    attributes: { destructive: true, disabled: spaceBusy || !!spaceRecoveryId },
-                  },
-                ]}
-                colorScheme={appearance}
-                onPressAction={() => {
-                  if (item.space) confirmDeleteSpace(item.space);
-                }}
-              >
-                <View
-                  accessibilityLabel={t("Space actions for {name}", { name: item.title })}
-                  accessibilityRole="button"
-                  style={styles.spaceActions}
-                >
-                  <NativeSymbol ios="ellipsis" android="ellipsis-horizontal" size={20} />
-                </View>
-              </MenuView>
-            ) : null}
-          </View>
+          </InboxContextMenu>
         ) : (
-          <Text style={styles.sectionHeading}>{item.title}</Text>
+          <InboxContextMenu
+            enabled={!!item.section && item.spaceId === me?.spaceId && !organizationBusy}
+            actions={item.section ? sectionOrganizationActions(item.section.id, botSections) : []}
+            onAction={(action) => {
+              if (item.section) handleSectionAction(item.section, action);
+            }}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={item.collapsed ? `${item.title}, ${item.count}` : item.title}
+              accessibilityState={{ expanded: !item.collapsed }}
+              disabled={!!query.trim()}
+              onPress={() => toggleSidebarSection(item.key)}
+              style={({ pressed }) => [styles.sectionToggle, pressed && styles.rowPressed]}
+            >
+              <Text style={styles.sectionTitle} numberOfLines={1}>
+                {item.title}
+              </Text>
+              <View style={styles.sectionIndicator}>
+                {item.collapsed ? <Text style={styles.sectionCount}>{item.count}</Text> : null}
+              </View>
+            </Pressable>
+          </InboxContextMenu>
         )
       ) : item.type === "group" ? (
-        <GroupRow
-          group={item.group}
-          day={day}
-          onPress={openGroup}
-          onLongPress={item.group.spaceId === me?.spaceId ? organizeGroup : undefined}
-        />
+        <InboxContextMenu
+          enabled={(item.group.spaceId ?? me?.spaceId) === me?.spaceId && !organizationBusy}
+          actions={chatOrganizationActions(item.group, botSections)}
+          onAction={(action) => handleChatAction("group", item.group, action)}
+        >
+          <GroupRow group={item.group} day={day} onPress={openGroup} />
+        </InboxContextMenu>
       ) : (
-        <BotRow
-          bot={item.bot}
-          day={day}
-          depth={item.depth}
-          hasChildren={item.hasChildren}
-          collapsed={collapsedRosterParents.has(item.bot.id)}
-          onToggleChildren={toggleRosterParent}
-          onPress={openBot}
-          onLongPress={item.bot.spaceId === me?.spaceId ? organizeBot : undefined}
-        />
+        <InboxContextMenu
+          enabled={(item.bot.spaceId ?? me?.spaceId) === me?.spaceId && !organizationBusy}
+          actions={chatOrganizationActions(item.bot, botSections)}
+          onAction={(action) => handleChatAction("bot", item.bot, action)}
+        >
+          <BotRow
+            bot={item.bot}
+            day={day}
+            depth={item.depth}
+            hasChildren={item.hasChildren}
+            collapsed={collapsedRosterParents.has(item.bot.id)}
+            onToggleChildren={toggleRosterParent}
+            onPress={openBot}
+          />
+        </InboxContextMenu>
       ),
     [
-      appearance,
+      botSections,
       chooseInboxSpace,
       collapsedRosterParents,
       confirmDeleteSpace,
       day,
       me?.spaceId,
+      organizationBusy,
+      query,
       openBot,
       openGroup,
       openSearchHit,
-      organizeBot,
-      organizeGroup,
+      handleChatAction,
+      handleSectionAction,
       spaceBusy,
       spaceRecoveryId,
       styles,
       t,
       toggleRosterParent,
+      toggleSidebarSection,
     ],
   );
 
@@ -934,40 +1129,49 @@ function Home() {
         }
         renderItem={renderItem}
       />
-      {organizeChat && organizeTarget ? (
-        <BotOrganizeModal
-          bot={organizeChat}
-          sections={botSections}
-          onClose={() => setOrganizeTarget(null)}
-          onUpdate={async (update) => {
-            await rpc(`${organizeTarget.kind}s/update`, {
-              [`${organizeTarget.kind}Id`]: organizeChat.id,
-              ...update,
-            });
-            if (organizeTarget.kind === "bot" && update.notifyOnFinish !== undefined) {
-              await resumeLiveNotifications(
-                currentApiBase(),
-                await loadSessionToken(),
-                selectedSpaceId() ?? "",
-              ).catch(() => undefined);
-              if (!update.notifyOnFinish && "threadId" in organizeChat) {
-                await dismissThreadNotifications({ threadId: organizeChat.threadId }).catch(
-                  () => undefined,
-                );
-              }
-            }
-            await loadBots();
-          }}
-          onCreateSection={async (name) => {
-            await rpc("botSections/create", {
-              [`${organizeTarget.kind}Id`]: organizeChat.id,
-              name,
-            });
-            await loadBots();
-          }}
-          onRenameSection={async (sectionId, name) => {
-            await rpc("botSections/update", { sectionId, name });
-            await loadBots();
+      {organizationNotice ? (
+        <Text accessibilityLiveRegion="polite" style={styles.organizationNotice}>
+          {organizationNotice}
+        </Text>
+      ) : null}
+      {deletedSection?.scope === organizationScope && deletedSection ? (
+        <View style={[styles.deletionFeedback, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+          <Text accessibilityLiveRegion="polite" style={styles.sectionTitle}>
+            {t("Section deleted")}
+          </Text>
+          <NativeActionButton
+            label={t("Undo")}
+            prominence="quiet"
+            size="compact"
+            disabled={organizationBusy}
+            onPress={() => {
+              const deleted = deletedSection;
+              void saveOrganization(deleted.scope, deleted.spaceId, () =>
+                rpc("botSections/restore", deleted.snapshot),
+              )
+                .then(() => setDeletedSection((current) => (current === deleted ? null : current)))
+                .catch(reportOrganizationError);
+            }}
+          />
+        </View>
+      ) : null}
+      {sectionPrompt ? (
+        <SectionNamePrompt
+          key={sectionPrompt.kind === "rename" ? sectionPrompt.section.id : sectionPrompt.targetId}
+          title={sectionPrompt.kind === "rename" ? t("Rename section") : t("Create section")}
+          initialName={sectionPrompt.kind === "rename" ? sectionPrompt.section.name : undefined}
+          onClose={() => setSectionPrompt(null)}
+          onSave={async (name) => {
+            await saveOrganization(sectionPrompt.scope, sectionPrompt.spaceId, () =>
+              sectionPrompt.kind === "rename"
+                ? rpc("botSections/update", { sectionId: sectionPrompt.section.id, name })
+                : rpc("botSections/create", {
+                    [`${sectionPrompt.targetKind}Id`]: sectionPrompt.targetId,
+                    name,
+                  }),
+            );
+            if (sectionPrompt.kind === "create" && sectionPrompt.wasPinned)
+              setOrganizationNotice(t("Unpinned"));
           }}
         />
       ) : null}
@@ -1483,28 +1687,17 @@ function createHomeStyles() {
       borderRadius: 4,
       backgroundColor: tokens.foreground,
     },
-    spaceHeading: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingHorizontal: 16,
-      paddingTop: 8,
-    },
     spaceSelect: {
-      flex: 1,
       minHeight: 44,
       justifyContent: "center",
+      paddingHorizontal: 16,
+      paddingTop: 8,
     },
     spaceTitle: {
       color: native.label,
       fontSize: 14,
       fontWeight: "600",
       writingDirection: "auto",
-    },
-    spaceActions: {
-      width: 44,
-      height: 44,
-      alignItems: "center",
-      justifyContent: "center",
     },
     recoveryAction: {
       minHeight: 44,
@@ -1518,6 +1711,43 @@ function createHomeStyles() {
       paddingHorizontal: 16,
       paddingTop: 12,
       paddingBottom: 4,
+    },
+    sectionToggle: {
+      minHeight: 44,
+      paddingHorizontal: 16,
+      paddingTop: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+    },
+    sectionTitle: {
+      flex: 1,
+      color: native.secondaryLabel,
+      fontSize: 14,
+      fontWeight: "600",
+      writingDirection: "auto",
+    },
+    sectionIndicator: { width: 28, alignItems: "flex-end" },
+    sectionCount: {
+      color: native.secondaryLabel,
+      fontSize: 13,
+      fontVariant: ["tabular-nums"],
+    },
+    deletionFeedback: {
+      minHeight: 48,
+      paddingHorizontal: 16,
+      paddingTop: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: native.fillPressed,
+    },
+    organizationNotice: {
+      color: native.secondaryLabel,
+      fontSize: 13,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
     },
     activitySection: {
       borderBottomWidth: StyleSheet.hairlineWidth,

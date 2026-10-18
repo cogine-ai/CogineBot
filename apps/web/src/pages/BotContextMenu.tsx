@@ -24,6 +24,8 @@ import {
   Trash2,
 } from "lucide-react";
 
+import { useRef } from "react";
+
 export type ContextMenuPosition = { x: number; y: number };
 
 type ChatMenuTarget = Pick<Bot, "name" | "pinned" | "sectionId" | "unread">;
@@ -36,7 +38,6 @@ export function BotContextMenu({
   sections,
   onMoveToSection,
   onCreateSection,
-  onRenameSection,
   onToggleUnread,
   onEdit,
   onDuplicate,
@@ -51,7 +52,6 @@ export function BotContextMenu({
   sections: BotSection[];
   onMoveToSection: (sectionId: string | null) => void;
   onCreateSection: () => void;
-  onRenameSection?: (sectionId: string) => void;
   onToggleUnread: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
@@ -60,6 +60,11 @@ export function BotContextMenu({
   onDelete: () => void;
 }) {
   const { t } = useLingui();
+  const namingSection = useRef(false);
+  const startSection = () => {
+    namingSection.current = true;
+    onCreateSection();
+  };
 
   return (
     <DropdownMenu
@@ -81,6 +86,7 @@ export function BotContextMenu({
         }
       />
       <DropdownMenuContent
+        finalFocus={false}
         aria-label={t`Actions for ${bot.name}`}
         align="start"
         sideOffset={0}
@@ -90,37 +96,41 @@ export function BotContextMenu({
           <Pin />
           {bot.pinned ? t`Unpin` : t`Pin`}
         </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
+        {sections.length === 0 ? (
+          <DropdownMenuItem onClick={startSection}>
             <Folder />
-            {t`Move to`}
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="max-h-[min(420px,calc(100vh-16px))] min-w-[180px] overflow-y-auto">
-            {sections.map((section) => (
-              <DropdownMenuItem key={section.id} onClick={() => onMoveToSection(section.id)}>
-                <Folder />
-                <span dir="auto">{section.name}</span>
-                {bot.sectionId === section.id ? <Check className="ms-auto" /> : null}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuItem onClick={() => onMoveToSection(null)}>
+            {t({ message: "Group", context: "sidebar grouping" })}
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
               <Folder />
-              {t`Unassigned`}
-              {bot.sectionId === null ? <Check className="ms-auto" /> : null}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onCreateSection}>
-              <FolderPlus />
-              {t`New section`}
-            </DropdownMenuItem>
-            {bot.sectionId && onRenameSection ? (
-              <DropdownMenuItem onClick={() => onRenameSection(bot.sectionId!)}>
-                <Pencil />
-                {t`Rename section`}
+              {t`Move to`}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent
+              finalFocus={() => !namingSection.current}
+              className="max-h-[min(420px,calc(100vh-16px))] min-w-[180px] overflow-y-auto"
+            >
+              {sections.map((section) => (
+                <DropdownMenuItem key={section.id} onClick={() => onMoveToSection(section.id)}>
+                  <Folder />
+                  <span dir="auto">{section.name}</span>
+                  {bot.sectionId === section.id ? <Check className="ms-auto" /> : null}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuItem onClick={() => onMoveToSection(null)}>
+                <Folder />
+                {t`Unassigned`}
+                {bot.sectionId === null ? <Check className="ms-auto" /> : null}
               </DropdownMenuItem>
-            ) : null}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={startSection}>
+                <FolderPlus />
+                {t`New section`}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
         <DropdownMenuItem onClick={onToggleUnread}>
           {bot.unread ? <BellDot /> : <Bell />}
           {bot.unread ? t`Mark as Read` : t`Mark as Unread`}
