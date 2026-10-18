@@ -1,0 +1,1120 @@
+{
+  "frozenAt": "2026-10-18",
+  "actions": [
+    {
+      "id": "gmail.messages.search",
+      "input": {
+        "q": "is:unread",
+        "maxResults": 1
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "messages": [
+              {
+                "id": "m1",
+                "threadId": "t1"
+              }
+            ],
+            "nextPageToken": "next",
+            "resultSizeEstimate": 2
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": true,
+        "allPagesRead": false
+      },
+      "rejectedInput": {
+        "q": "is:unread",
+        "maxResults": 1,
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/messages",
+          "query": {
+            "maxResults": 1,
+            "q": "is:unread"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.messages.get",
+      "input": {
+        "messageId": "m1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "m1",
+            "threadId": "t1",
+            "labelIds": [
+              "INBOX"
+            ],
+            "historyId": "10",
+            "internalDate": "1700000000000",
+            "sizeEstimate": 120,
+            "payload": {
+              "partId": "0",
+              "mimeType": "text/plain",
+              "headers": [
+                {
+                  "name": "From",
+                  "value": "Sender <sender@example.test>"
+                },
+                {
+                  "name": "To",
+                  "value": "owner@example.test"
+                },
+                {
+                  "name": "Subject",
+                  "value": "Fixture subject"
+                },
+                {
+                  "name": "Message-ID",
+                  "value": "<source@example.test>"
+                }
+              ],
+              "body": {
+                "size": 5,
+                "data": "SGVsbG8"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "id": "m1",
+        "text": "Hello",
+        "complete": true
+      },
+      "rejectedInput": {
+        "messageId": "m1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/messages/m1",
+          "query": {
+            "format": "full"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.threads.get",
+      "input": {
+        "threadId": "t1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "t1",
+            "historyId": "10",
+            "messages": [
+              {
+                "id": "m1",
+                "threadId": "t1",
+                "labelIds": [
+                  "INBOX"
+                ],
+                "historyId": "10",
+                "internalDate": "1700000000000",
+                "sizeEstimate": 120,
+                "payload": {
+                  "partId": "0",
+                  "mimeType": "text/plain",
+                  "headers": [
+                    {
+                      "name": "From",
+                      "value": "Sender <sender@example.test>"
+                    },
+                    {
+                      "name": "To",
+                      "value": "owner@example.test"
+                    },
+                    {
+                      "name": "Subject",
+                      "value": "Fixture subject"
+                    },
+                    {
+                      "name": "Message-ID",
+                      "value": "<source@example.test>"
+                    }
+                  ],
+                  "body": {
+                    "size": 5,
+                    "data": "SGVsbG8"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "id": "t1",
+        "complete": true
+      },
+      "rejectedInput": {
+        "threadId": "t1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/threads/t1",
+          "query": {
+            "format": "full"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.attachments.download",
+      "input": {
+        "messageId": "m1",
+        "partId": "1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "m1",
+            "threadId": "t1",
+            "labelIds": [
+              "INBOX"
+            ],
+            "historyId": "10",
+            "internalDate": "1700000000000",
+            "sizeEstimate": 120,
+            "payload": {
+              "partId": "0",
+              "mimeType": "multipart/mixed",
+              "parts": [
+                {
+                  "partId": "1",
+                  "filename": "fixture.txt",
+                  "mimeType": "text/plain",
+                  "body": {
+                    "size": 5,
+                    "attachmentId": "a1"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "size": 5,
+            "data": "SGVsbG8"
+          }
+        }
+      ],
+      "expectedOutput": {
+        "artifact": {
+          "id": "artifact-fixture",
+          "size": 5
+        }
+      },
+      "rejectedInput": {
+        "messageId": "m1",
+        "partId": "1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/messages/m1",
+          "query": {
+            "format": "full"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/users/me/messages/m1/attachments/a1"
+        }
+      ]
+    },
+    {
+      "id": "gmail.labels.list",
+      "input": {},
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "labels": [
+              {
+                "id": "INBOX",
+                "name": "INBOX",
+                "type": "system"
+              },
+              {
+                "id": "Label_1",
+                "name": "Fixture",
+                "type": "user"
+              }
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "labels": [
+          {
+            "id": "INBOX",
+            "name": "INBOX",
+            "type": "system"
+          },
+          {
+            "id": "Label_1",
+            "name": "Fixture",
+            "type": "user"
+          }
+        ]
+      },
+      "rejectedInput": {
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/labels"
+        }
+      ]
+    },
+    {
+      "id": "gmail.drafts.list",
+      "input": {
+        "maxResults": 1
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "drafts": [
+              {
+                "id": "d1",
+                "message": {
+                  "id": "m1",
+                  "threadId": "t1"
+                }
+              }
+            ],
+            "nextPageToken": "next"
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": true,
+        "allPagesRead": false
+      },
+      "rejectedInput": {
+        "maxResults": 1,
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/drafts",
+          "query": {
+            "maxResults": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.drafts.get",
+      "input": {
+        "draftId": "d1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "d1",
+            "message": {
+              "id": "m1",
+              "threadId": "t1",
+              "labelIds": [
+                "INBOX"
+              ],
+              "historyId": "10",
+              "internalDate": "1700000000000",
+              "sizeEstimate": 120,
+              "payload": {
+                "partId": "0",
+                "mimeType": "text/plain",
+                "headers": [
+                  {
+                    "name": "From",
+                    "value": "Sender <sender@example.test>"
+                  },
+                  {
+                    "name": "To",
+                    "value": "owner@example.test"
+                  },
+                  {
+                    "name": "Subject",
+                    "value": "Fixture subject"
+                  },
+                  {
+                    "name": "Message-ID",
+                    "value": "<source@example.test>"
+                  }
+                ],
+                "body": {
+                  "size": 5,
+                  "data": "SGVsbG8"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "id": "d1",
+        "message": {
+          "id": "m1",
+          "text": "Hello"
+        }
+      },
+      "rejectedInput": {
+        "draftId": "d1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/drafts/d1",
+          "query": {
+            "format": "full"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.drafts.create",
+      "input": {
+        "message": {
+          "to": [
+            "target@example.test"
+          ],
+          "bcc": [
+            "hidden@example.test"
+          ],
+          "replyTo": "reply@example.test",
+          "subject": "Fixture subject",
+          "text": "Hello"
+        }
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "d1",
+            "message": {
+              "id": "m2",
+              "threadId": "t1"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "expectedMime": {
+        "From": "owner@example.test",
+        "To": "target@example.test",
+        "Bcc": "hidden@example.test",
+        "Reply-To": "reply@example.test",
+        "Subject": "Fixture subject",
+        "bodyText": "Hello"
+      },
+      "rejectedInput": {
+        "message": {
+          "to": [
+            "target@example.test"
+          ],
+          "bcc": [
+            "hidden@example.test"
+          ],
+          "replyTo": "reply@example.test",
+          "subject": "Fixture subject",
+          "text": "Hello"
+        },
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/users/me/drafts",
+          "body": {
+            "message": {
+              "raw": "RnJvbTogb3duZXJAZXhhbXBsZS50ZXN0DQpUbzogdGFyZ2V0QGV4YW1wbGUudGVzdA0KQmNjOiBoaWRkZW5AZXhhbXBsZS50ZXN0DQpSZXBseS1UbzogcmVwbHlAZXhhbXBsZS50ZXN0DQpTdWJqZWN0OiBGaXh0dXJlIHN1YmplY3QNCkRhdGU6IFN1biwgMTggT2N0IDIwMjYgMDA6MDA6MDAgR01UDQpNZXNzYWdlLUlEOiA8Y29naW5lLWQ3NjRkNDdjZmJiZGY0NTBhZTZiM2U3M2JkZmFhZDcxYzQ2MTJmN2QwMzhhMzI0MjBkOTNlNTIxYmYyYTExZGVAbWFpbC5pbnZhbGlkPg0KTUlNRS1WZXJzaW9uOiAxLjANCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD1VVEYtOA0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogYmFzZTY0DQoNClNHVnNiRzg9DQo"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.drafts.update",
+      "input": {
+        "message": {
+          "to": [
+            "target@example.test"
+          ],
+          "bcc": [
+            "hidden@example.test"
+          ],
+          "replyTo": "reply@example.test",
+          "subject": "Fixture subject",
+          "text": "Hello"
+        },
+        "draftId": "d1",
+        "expectedMessageId": "m1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "d1",
+            "message": {
+              "id": "m1",
+              "threadId": "t1",
+              "labelIds": [
+                "INBOX"
+              ],
+              "historyId": "10",
+              "internalDate": "1700000000000",
+              "sizeEstimate": 120,
+              "payload": {
+                "partId": "0",
+                "mimeType": "text/plain",
+                "headers": [
+                  {
+                    "name": "From",
+                    "value": "Sender <sender@example.test>"
+                  },
+                  {
+                    "name": "To",
+                    "value": "owner@example.test"
+                  },
+                  {
+                    "name": "Subject",
+                    "value": "Fixture subject"
+                  },
+                  {
+                    "name": "Message-ID",
+                    "value": "<source@example.test>"
+                  }
+                ],
+                "body": {
+                  "size": 5,
+                  "data": "SGVsbG8"
+                }
+              }
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "d1",
+            "message": {
+              "id": "m2",
+              "threadId": "t1"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "expectedMime": {
+        "From": "owner@example.test",
+        "To": "target@example.test",
+        "Bcc": "hidden@example.test",
+        "Reply-To": "reply@example.test",
+        "Subject": "Fixture subject",
+        "bodyText": "Hello"
+      },
+      "rejectedInput": {
+        "message": {
+          "to": [
+            "target@example.test"
+          ],
+          "bcc": [
+            "hidden@example.test"
+          ],
+          "replyTo": "reply@example.test",
+          "subject": "Fixture subject",
+          "text": "Hello"
+        },
+        "draftId": "d1",
+        "expectedMessageId": "m1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/drafts/d1",
+          "query": {
+            "format": "full"
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/users/me/drafts/d1",
+          "body": {
+            "message": {
+              "raw": "RnJvbTogb3duZXJAZXhhbXBsZS50ZXN0DQpUbzogdGFyZ2V0QGV4YW1wbGUudGVzdA0KQmNjOiBoaWRkZW5AZXhhbXBsZS50ZXN0DQpSZXBseS1UbzogcmVwbHlAZXhhbXBsZS50ZXN0DQpTdWJqZWN0OiBGaXh0dXJlIHN1YmplY3QNCkRhdGU6IFN1biwgMTggT2N0IDIwMjYgMDA6MDA6MDAgR01UDQpNZXNzYWdlLUlEOiA8Y29naW5lLTc0MTZkMjRjMTk1NWFiZDA2OTM3ZDFjNjcxNzY0N2MzMWY5ZmJiZjcyNDMwNmM4NmE1NTY3ODdmZGM1YzUyOWZAbWFpbC5pbnZhbGlkPg0KTUlNRS1WZXJzaW9uOiAxLjANCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD1VVEYtOA0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogYmFzZTY0DQoNClNHVnNiRzg9DQo"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.drafts.delete",
+      "input": {
+        "draftId": "d1",
+        "expectedMessageId": "m1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "d1",
+            "message": {
+              "id": "m1",
+              "threadId": "t1",
+              "labelIds": [
+                "INBOX"
+              ],
+              "historyId": "10",
+              "internalDate": "1700000000000",
+              "sizeEstimate": 120,
+              "payload": {
+                "partId": "0",
+                "mimeType": "text/plain",
+                "headers": [
+                  {
+                    "name": "From",
+                    "value": "Sender <sender@example.test>"
+                  },
+                  {
+                    "name": "To",
+                    "value": "owner@example.test"
+                  },
+                  {
+                    "name": "Subject",
+                    "value": "Fixture subject"
+                  },
+                  {
+                    "name": "Message-ID",
+                    "value": "<source@example.test>"
+                  }
+                ],
+                "body": {
+                  "size": 5,
+                  "data": "SGVsbG8"
+                }
+              }
+            }
+          }
+        },
+        {
+          "status": 204,
+          "body": null
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "rejectedInput": {
+        "draftId": "d1",
+        "expectedMessageId": "m1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/drafts/d1",
+          "query": {
+            "format": "full"
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/users/me/drafts/d1"
+        }
+      ]
+    },
+    {
+      "id": "gmail.messages.send",
+      "input": {
+        "message": {
+          "to": [
+            "target@example.test"
+          ],
+          "bcc": [
+            "hidden@example.test"
+          ],
+          "replyTo": "reply@example.test",
+          "subject": "Fixture subject",
+          "text": "Hello"
+        }
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "m2",
+            "threadId": "t1",
+            "labelIds": [
+              "SENT"
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "expectedMime": {
+        "From": "owner@example.test",
+        "To": "target@example.test",
+        "Bcc": "hidden@example.test",
+        "Reply-To": "reply@example.test",
+        "Subject": "Fixture subject",
+        "bodyText": "Hello"
+      },
+      "rejectedInput": {
+        "message": {
+          "to": [
+            "target@example.test"
+          ],
+          "bcc": [
+            "hidden@example.test"
+          ],
+          "replyTo": "reply@example.test",
+          "subject": "Fixture subject",
+          "text": "Hello"
+        },
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/users/me/messages/send",
+          "body": {
+            "raw": "RnJvbTogb3duZXJAZXhhbXBsZS50ZXN0DQpUbzogdGFyZ2V0QGV4YW1wbGUudGVzdA0KQmNjOiBoaWRkZW5AZXhhbXBsZS50ZXN0DQpSZXBseS1UbzogcmVwbHlAZXhhbXBsZS50ZXN0DQpTdWJqZWN0OiBGaXh0dXJlIHN1YmplY3QNCkRhdGU6IFN1biwgMTggT2N0IDIwMjYgMDA6MDA6MDAgR01UDQpNZXNzYWdlLUlEOiA8Y29naW5lLTY1OWY0ZDZhOTc4ZTg4OGJkMGY4YzFmZTFmODA4NzIyNGM3OTVkMWNmNDhmZGY5M2ViY2I3MmE0MGUzNjg3MDNAbWFpbC5pbnZhbGlkPg0KTUlNRS1WZXJzaW9uOiAxLjANCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD1VVEYtOA0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogYmFzZTY0DQoNClNHVnNiRzg9DQo"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.messages.reply",
+      "input": {
+        "messageId": "m1",
+        "expectedThreadId": "t1",
+        "replyAll": true,
+        "text": "Reply fixture"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "m1",
+            "threadId": "t1",
+            "labelIds": [
+              "INBOX"
+            ],
+            "historyId": "10",
+            "internalDate": "1700000000000",
+            "sizeEstimate": 120,
+            "payload": {
+              "partId": "0",
+              "mimeType": "text/plain",
+              "headers": [
+                {
+                  "name": "From",
+                  "value": "Sender <sender@example.test>"
+                },
+                {
+                  "name": "To",
+                  "value": "owner@example.test"
+                },
+                {
+                  "name": "Subject",
+                  "value": "Fixture subject"
+                },
+                {
+                  "name": "Message-ID",
+                  "value": "<source@example.test>"
+                }
+              ],
+              "body": {
+                "size": 5,
+                "data": "SGVsbG8"
+              }
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "m2",
+            "threadId": "t1",
+            "labelIds": [
+              "SENT"
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "expectedMime": {
+        "From": "owner@example.test",
+        "To": "sender@example.test",
+        "In-Reply-To": "<source@example.test>",
+        "Subject": "Re: Fixture subject",
+        "bodyText": "Reply fixture"
+      },
+      "rejectedInput": {
+        "messageId": "m1",
+        "expectedThreadId": "t1",
+        "replyAll": true,
+        "text": "Reply fixture",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/messages/m1",
+          "query": {
+            "format": "full"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/users/me/messages/send",
+          "body": {
+            "raw": "RnJvbTogb3duZXJAZXhhbXBsZS50ZXN0DQpUbzogc2VuZGVyQGV4YW1wbGUudGVzdA0KU3ViamVjdDogUmU6IEZpeHR1cmUgc3ViamVjdA0KRGF0ZTogU3VuLCAxOCBPY3QgMjAyNiAwMDowMDowMCBHTVQNCk1lc3NhZ2UtSUQ6IDxjb2dpbmUtNDAxYzg2ODAxODYxOWQwNmJiMzliM2E1YmZmYjJlMGVmZjllNWFmZDk2NTQ0MmQyMjdjMzliZDE5ZWNkNmI3ZkBtYWlsLmludmFsaWQ-DQpNSU1FLVZlcnNpb246IDEuMA0KSW4tUmVwbHktVG86IDxzb3VyY2VAZXhhbXBsZS50ZXN0Pg0KUmVmZXJlbmNlczogPHNvdXJjZUBleGFtcGxlLnRlc3Q-DQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9VVRGLTgNCkNvbnRlbnQtVHJhbnNmZXItRW5jb2Rpbmc6IGJhc2U2NA0KDQpVbVZ3YkhrZ1ptbDRkSFZ5WlE9PQ0K",
+            "threadId": "t1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.drafts.send",
+      "input": {
+        "draftId": "d1",
+        "expectedMessageId": "m1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "d1",
+            "message": {
+              "id": "m1",
+              "threadId": "t1",
+              "labelIds": [
+                "INBOX"
+              ],
+              "historyId": "10",
+              "internalDate": "1700000000000",
+              "sizeEstimate": 120,
+              "payload": {
+                "partId": "0",
+                "mimeType": "text/plain",
+                "headers": [
+                  {
+                    "name": "From",
+                    "value": "Sender <sender@example.test>"
+                  },
+                  {
+                    "name": "To",
+                    "value": "owner@example.test"
+                  },
+                  {
+                    "name": "Subject",
+                    "value": "Fixture subject"
+                  },
+                  {
+                    "name": "Message-ID",
+                    "value": "<source@example.test>"
+                  }
+                ],
+                "body": {
+                  "size": 5,
+                  "data": "SGVsbG8"
+                }
+              }
+            }
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "id": "m2",
+            "threadId": "t1",
+            "labelIds": [
+              "SENT"
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "rejectedInput": {
+        "draftId": "d1",
+        "expectedMessageId": "m1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/users/me/drafts/d1",
+          "query": {
+            "format": "full"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/users/me/drafts/send",
+          "body": {
+            "id": "d1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.messages.modify",
+      "input": {
+        "messageId": "m1",
+        "removeLabelIds": [
+          "UNREAD"
+        ]
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "m1",
+            "threadId": "t1",
+            "labelIds": [
+              "INBOX"
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "rejectedInput": {
+        "messageId": "m1",
+        "removeLabelIds": [
+          "UNREAD"
+        ],
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/users/me/messages/m1/modify",
+          "body": {
+            "addLabelIds": [],
+            "removeLabelIds": [
+              "UNREAD"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "gmail.messages.trash",
+      "input": {
+        "messageId": "m1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "m1",
+            "threadId": "t1",
+            "labelIds": [
+              "TRASH"
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "rejectedInput": {
+        "messageId": "m1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/users/me/messages/m1/trash"
+        }
+      ]
+    },
+    {
+      "id": "gmail.messages.untrash",
+      "input": {
+        "messageId": "m1"
+      },
+      "context": {
+        "subject": "fixture-google-sub",
+        "email": "owner@example.test",
+        "operationId": "fixture-operation-001",
+        "now": "2026-10-18T00:00:00.000Z",
+        "synthetic": true
+      },
+      "responses": [
+        {
+          "status": 200,
+          "body": {
+            "id": "m1",
+            "threadId": "t1",
+            "labelIds": [
+              "INBOX"
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "outcome": "succeeded"
+      },
+      "rejectedInput": {
+        "messageId": "m1",
+        "access_token": "fixture-not-a-token"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/users/me/messages/m1/untrash"
+        }
+      ]
+    }
+  ]
+}

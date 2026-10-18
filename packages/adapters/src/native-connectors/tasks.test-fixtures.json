@@ -1,0 +1,1013 @@
+{
+  "frozenAt": "2026-10-18",
+  "actions": [
+    {
+      "id": "tasks.tasklists.list",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks.readonly",
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks.readonly"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {},
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks.readonly"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/users/@me/lists",
+                "query": {
+                  "maxResults": 100
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "items": [
+                    {
+                      "id": "list_fixture",
+                      "title": "Fixture",
+                      "etag": "list_v1"
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "items": [
+              {
+                "id": "list_fixture",
+                "title": "Fixture",
+                "etag": "list_v1"
+              }
+            ],
+            "hasMore": false,
+            "allPagesRead": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "tasks.tasklists.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "title": "Fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "title": "Fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "title": "Fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/users/@me/lists",
+                "body": {
+                  "title": "Fixture"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "new_list",
+                  "title": "Fixture",
+                  "etag": "list_v1"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "tasklist": {
+              "id": "new_list",
+              "title": "Fixture",
+              "etag": "list_v1"
+            },
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "tasks.tasks.list",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tasklistId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "showCompleted": {
+            "type": "boolean"
+          },
+          "showHidden": {
+            "type": "boolean"
+          },
+          "showDeleted": {
+            "type": "boolean"
+          },
+          "updatedMin": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "tasklistId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks.readonly",
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks.readonly"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "tasklistId": "list_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "tasklistId": "list_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "tasklistId": "list_fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks.readonly"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/lists/list_fixture/tasks",
+                "query": {
+                  "maxResults": 100,
+                  "showCompleted": true,
+                  "showHidden": true,
+                  "showDeleted": false
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "items": [
+                    {
+                      "id": "task_fixture",
+                      "title": "Fixture",
+                      "etag": "task_v1",
+                      "status": "needsAction"
+                    }
+                  ],
+                  "nextPageToken": "next_fixture"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "items": [
+              {
+                "id": "task_fixture",
+                "title": "Fixture",
+                "etag": "task_v1",
+                "status": "needsAction"
+              }
+            ],
+            "nextPageToken": "next_fixture",
+            "hasMore": true,
+            "allPagesRead": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "tasks.tasks.get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tasklistId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          }
+        },
+        "required": [
+          "tasklistId",
+          "taskId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks.readonly",
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks.readonly"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks.readonly"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/lists/list_fixture/tasks/task_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "task_fixture",
+                  "title": "Fixture",
+                  "etag": "task_v1",
+                  "status": "needsAction"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "task": {
+              "id": "task_fixture",
+              "title": "Fixture",
+              "etag": "task_v1",
+              "status": "needsAction"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "tasks.tasks.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tasklistId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 8192
+          },
+          "dueDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "parent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "previous": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          }
+        },
+        "required": [
+          "tasklistId",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "tasklistId": "list_fixture",
+            "title": "Fixture",
+            "dueDate": "2026-10-20",
+            "parent": "parent_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "tasklistId": "list_fixture",
+            "title": "Fixture",
+            "dueDate": "2026-10-20",
+            "parent": "parent_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "tasklistId": "list_fixture",
+            "title": "Fixture",
+            "dueDate": "2026-10-20",
+            "parent": "parent_fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/lists/list_fixture/tasks/parent_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "parent_fixture",
+                  "title": "Parent",
+                  "etag": "parent_v1"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/lists/list_fixture/tasks",
+                "body": {
+                  "title": "Fixture",
+                  "due": "2026-10-20T00:00:00.000Z"
+                },
+                "query": {
+                  "parent": "parent_fixture"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "new_task",
+                  "title": "Fixture",
+                  "etag": "task_v1",
+                  "status": "needsAction",
+                  "parent": "parent_fixture",
+                  "due": "2026-10-20T00:00:00.000Z"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "task": {
+              "id": "new_task",
+              "title": "Fixture",
+              "etag": "task_v1",
+              "status": "needsAction",
+              "parent": "parent_fixture",
+              "due": "2026-10-20T00:00:00.000Z"
+            },
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "tasks.tasks.update",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tasklistId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "notes": {
+                "type": "string",
+                "maxLength": 8192
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "needsAction",
+                  "completed"
+                ]
+              },
+              "dueDate": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date"
+              }
+            },
+            "required": [],
+            "additionalProperties": false,
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "tasklistId",
+          "taskId",
+          "expectedEtag",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1",
+            "changes": {
+              "status": "completed"
+            },
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1",
+            "changes": {
+              "status": "completed"
+            },
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1",
+            "changes": {
+              "status": "completed"
+            }
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/lists/list_fixture/tasks/task_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "task_fixture",
+                  "title": "Fixture",
+                  "etag": "task_v1",
+                  "status": "needsAction"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "PATCH",
+                "path": "/lists/list_fixture/tasks/task_fixture",
+                "body": {
+                  "status": "completed"
+                },
+                "headers": {
+                  "If-Match": "task_v1"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "task_fixture",
+                  "title": "Fixture",
+                  "etag": "task_v2",
+                  "status": "completed"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "task": {
+              "id": "task_fixture",
+              "title": "Fixture",
+              "etag": "task_v2",
+              "status": "completed"
+            },
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "tasks.tasks.move",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tasklistId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "parent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "previous": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          }
+        },
+        "required": [
+          "tasklistId",
+          "taskId",
+          "expectedEtag"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/lists/list_fixture/tasks/task_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "task_fixture",
+                  "title": "Fixture",
+                  "etag": "task_v1",
+                  "status": "needsAction"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/lists/list_fixture/tasks/task_fixture/move"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "task_fixture",
+                  "title": "Fixture",
+                  "etag": "task_v2",
+                  "status": "needsAction"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "task": {
+              "id": "task_fixture",
+              "title": "Fixture",
+              "etag": "task_v2",
+              "status": "needsAction"
+            },
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "tasks.tasks.delete",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tasklistId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "tasklistId",
+          "taskId",
+          "expectedEtag"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/tasks"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "User tasks; not organization task management"
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "tasklistId": "list_fixture",
+            "taskId": "task_fixture",
+            "expectedEtag": "task_v1"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/tasks"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/lists/list_fixture/tasks/task_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "task_fixture",
+                  "title": "Fixture",
+                  "etag": "task_v1",
+                  "status": "needsAction"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "DELETE",
+                "path": "/lists/list_fixture/tasks/task_fixture"
+              },
+              "response": {
+                "status": 204,
+                "body": null
+              }
+            }
+          ],
+          "expectedOutput": {
+            "taskId": "task_fixture",
+            "tasklistId": "list_fixture",
+            "outcome": "deleted",
+            "atomicVersionPrecondition": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1263 @@
+{
+  "frozenAt": "2026-10-18",
+  "actions": [
+    {
+      "id": "slides.templates.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "replacements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "replace": {
+                  "type": "string",
+                  "maxLength": 100000
+                },
+                "matchCase": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "find",
+                "replace",
+                "matchCase"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "templateId",
+          "title",
+          "replacements"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ]
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/drive"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/files/template_fixture",
+                "query": {
+                  "fields": "id,mimeType,version,isAppAuthorized",
+                  "supportsAllDrives": true
+                },
+                "service": "drive"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "template_fixture",
+                  "mimeType": "application/vnd.google-apps.presentation",
+                  "version": "1",
+                  "isAppAuthorized": true
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/files/template_fixture/copy",
+                "body": {
+                  "name": "Fixture"
+                },
+                "query": {
+                  "fields": "id,mimeType",
+                  "supportsAllDrives": true
+                },
+                "service": "drive"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "new_deck",
+                  "mimeType": "application/vnd.google-apps.presentation"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "path": "/presentations/new_deck"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "new_deck",
+                  "title": "Fixture",
+                  "revisionId": "rev_new"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/presentations/new_deck:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "replaceAllText": {
+                        "containsText": {
+                          "text": "{{name}}",
+                          "matchCase": true
+                        },
+                        "replaceText": "Team"
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_new"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "new_deck",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "presentationId": "new_deck",
+            "outcome": "succeeded",
+            "templateFilled": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "slides.presentations.get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [
+          "presentationId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations.readonly",
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/presentations.readonly"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "presentationId": "deck_fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations.readonly"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/presentations/deck_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "slides": [
+                    {
+                      "objectId": "slide_fixture"
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "presentation": {
+              "presentationId": "deck_fixture",
+              "title": "Fixture",
+              "revisionId": "rev_1",
+              "slides": [
+                {
+                  "objectId": "slide_fixture"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "slides.presentations.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/presentations"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "title": "Fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "title": "Fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "title": "Fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/presentations",
+                "body": {
+                  "title": "Fixture"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "new_deck",
+                  "title": "Fixture"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "presentation": {
+              "presentationId": "new_deck",
+              "title": "Fixture"
+            },
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "slides.pages.get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "pageObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          }
+        },
+        "required": [
+          "presentationId",
+          "pageObjectId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations.readonly",
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/presentations.readonly"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "pageObjectId": "slide_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "pageObjectId": "slide_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "presentationId": "deck_fixture",
+            "pageObjectId": "slide_fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations.readonly"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/presentations/deck_fixture/pages/slide_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "objectId": "slide_fixture",
+                  "pageElements": []
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "page": {
+              "objectId": "slide_fixture",
+              "pageElements": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "slides.text.replace",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "replacements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "replace": {
+                  "type": "string",
+                  "maxLength": 100000
+                },
+                "matchCase": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "find",
+                "replace",
+                "matchCase"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "presentationId",
+          "expectedRevisionId",
+          "replacements"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/presentations"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ]
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/presentations/deck_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "slides": [
+                    {
+                      "objectId": "slide_fixture"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/presentations/deck_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "replaceAllText": {
+                        "containsText": {
+                          "text": "{{name}}",
+                          "matchCase": true
+                        },
+                        "replaceText": "Team"
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "presentationId": "deck_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "slides.images.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "pageObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "objectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50,
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "widthPt": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          },
+          "heightPt": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          },
+          "xPt": {
+            "type": "number",
+            "minimum": -10000,
+            "maximum": 10000
+          },
+          "yPt": {
+            "type": "number",
+            "minimum": -10000,
+            "maximum": 10000
+          }
+        },
+        "required": [
+          "presentationId",
+          "expectedRevisionId",
+          "pageObjectId",
+          "objectId",
+          "url",
+          "widthPt",
+          "heightPt",
+          "xPt",
+          "yPt"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/presentations"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "pageObjectId": "slide_fixture",
+            "objectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "widthPt": 100,
+            "heightPt": 50,
+            "xPt": 10,
+            "yPt": 20,
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "pageObjectId": "slide_fixture",
+            "objectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "widthPt": 100,
+            "heightPt": 50,
+            "xPt": 10,
+            "yPt": 20,
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "pageObjectId": "slide_fixture",
+            "objectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "widthPt": 100,
+            "heightPt": 50,
+            "xPt": 10,
+            "yPt": 20
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/presentations/deck_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "slides": [
+                    {
+                      "objectId": "slide_fixture"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/presentations/deck_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "createImage": {
+                        "objectId": "image_fixture",
+                        "url": "https://images.example.test/fixture.png",
+                        "elementProperties": {
+                          "pageObjectId": "slide_fixture",
+                          "size": {
+                            "width": {
+                              "magnitude": 100,
+                              "unit": "PT"
+                            },
+                            "height": {
+                              "magnitude": 50,
+                              "unit": "PT"
+                            }
+                          },
+                          "transform": {
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "translateX": 10,
+                            "translateY": 20,
+                            "unit": "PT"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "presentationId": "deck_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "slides.images.replace",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "imageObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "imageReplaceMethod": {
+            "type": "string",
+            "enum": [
+              "CENTER_INSIDE",
+              "CENTER_CROP"
+            ]
+          }
+        },
+        "required": [
+          "presentationId",
+          "expectedRevisionId",
+          "imageObjectId",
+          "url",
+          "imageReplaceMethod"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/presentations"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "imageObjectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "imageReplaceMethod": "CENTER_INSIDE",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "imageObjectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "imageReplaceMethod": "CENTER_INSIDE",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "imageObjectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "imageReplaceMethod": "CENTER_INSIDE"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/presentations/deck_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "slides": [
+                    {
+                      "objectId": "slide_fixture",
+                      "pageElements": [
+                        {
+                          "objectId": "image_fixture",
+                          "image": {
+                            "sourceUrl": "https://images.example.test/original.png"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/presentations/deck_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "replaceImage": {
+                        "imageObjectId": "image_fixture",
+                        "url": "https://images.example.test/fixture.png",
+                        "imageReplaceMethod": "CENTER_INSIDE"
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "presentationId": "deck_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "slides.slides.duplicate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "slideObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "newSlideObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50,
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}$"
+          }
+        },
+        "required": [
+          "presentationId",
+          "expectedRevisionId",
+          "slideObjectId",
+          "newSlideObjectId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/presentations"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "slideObjectId": "slide_fixture",
+            "newSlideObjectId": "slide_new_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "slideObjectId": "slide_fixture",
+            "newSlideObjectId": "slide_new_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "slideObjectId": "slide_fixture",
+            "newSlideObjectId": "slide_new_fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/presentations"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/presentations/deck_fixture"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "slides": [
+                    {
+                      "objectId": "slide_fixture"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/presentations/deck_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "duplicateObject": {
+                        "objectId": "slide_fixture",
+                        "objectIds": {
+                          "slide_fixture": "slide_new_fixture"
+                        }
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "presentationId": "deck_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "presentationId": "deck_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    }
+  ]
+}

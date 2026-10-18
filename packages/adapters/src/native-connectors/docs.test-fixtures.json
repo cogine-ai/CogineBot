@@ -1,0 +1,1260 @@
+{
+  "frozenAt": "2026-10-18",
+  "actions": [
+    {
+      "id": "docs.documents.get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [
+          "documentId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/documents.readonly",
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/documents.readonly"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "documentId": "doc_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "documentId": "doc_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "documentId": "doc_fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents.readonly"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/documents/doc_fixture",
+                "query": {
+                  "includeTabsContent": true,
+                  "suggestionsViewMode": "SUGGESTIONS_INLINE"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "tabs": [
+                    {
+                      "documentTab": {
+                        "body": {
+                          "content": []
+                        }
+                      },
+                      "tabProperties": {
+                        "tabId": "tab_fixture"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "document": {
+              "documentId": "doc_fixture",
+              "title": "Fixture",
+              "revisionId": "rev_1",
+              "tabs": [
+                {
+                  "documentTab": {
+                    "body": {
+                      "content": []
+                    }
+                  },
+                  "tabProperties": {
+                    "tabId": "tab_fixture"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "docs.documents.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/documents"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "title": "Fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "title": "Fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "title": "Fixture"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/documents",
+                "body": {
+                  "title": "Fixture"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "new_doc",
+                  "title": "Fixture"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "document": {
+              "documentId": "new_doc",
+              "title": "Fixture"
+            },
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "id": "docs.text.insert",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "tabId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          }
+        },
+        "required": [
+          "documentId",
+          "expectedRevisionId",
+          "tabId",
+          "index",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/documents"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "index": 1,
+            "text": "Hi",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "index": 1,
+            "text": "Hi",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "index": 1,
+            "text": "Hi"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/documents/doc_fixture",
+                "query": {
+                  "includeTabsContent": true,
+                  "suggestionsViewMode": "SUGGESTIONS_INLINE"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "tabs": [
+                    {
+                      "documentTab": {
+                        "body": {
+                          "content": []
+                        }
+                      },
+                      "tabProperties": {
+                        "tabId": "tab_fixture"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/documents/doc_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "insertText": {
+                        "location": {
+                          "index": 1,
+                          "tabId": "tab_fixture"
+                        },
+                        "text": "Hi"
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "documentId": "doc_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "docs.text.replace",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "tabId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "find": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "replace": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "matchCase": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "documentId",
+          "expectedRevisionId",
+          "tabId",
+          "find",
+          "replace",
+          "matchCase"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/documents"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "find": "{{name}}",
+            "replace": "Team",
+            "matchCase": true,
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "find": "{{name}}",
+            "replace": "Team",
+            "matchCase": true,
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "find": "{{name}}",
+            "replace": "Team",
+            "matchCase": true
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/documents/doc_fixture",
+                "query": {
+                  "includeTabsContent": true,
+                  "suggestionsViewMode": "SUGGESTIONS_INLINE"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "tabs": [
+                    {
+                      "documentTab": {
+                        "body": {
+                          "content": []
+                        }
+                      },
+                      "tabProperties": {
+                        "tabId": "tab_fixture"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/documents/doc_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "replaceAllText": {
+                        "containsText": {
+                          "text": "{{name}}",
+                          "matchCase": true
+                        },
+                        "replaceText": "Team",
+                        "tabsCriteria": {
+                          "tabIds": [
+                            "tab_fixture"
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "documentId": "doc_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "docs.text.delete",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "tabId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "startIndex": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "endIndex": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "documentId",
+          "expectedRevisionId",
+          "tabId",
+          "startIndex",
+          "endIndex"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/documents"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "startIndex": 1,
+            "endIndex": 3,
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "startIndex": 1,
+            "endIndex": 3,
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "tabId": "tab_fixture",
+            "startIndex": 1,
+            "endIndex": 3
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/documents/doc_fixture",
+                "query": {
+                  "includeTabsContent": true,
+                  "suggestionsViewMode": "SUGGESTIONS_INLINE"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "tabs": [
+                    {
+                      "documentTab": {
+                        "body": {
+                          "content": []
+                        }
+                      },
+                      "tabProperties": {
+                        "tabId": "tab_fixture"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/documents/doc_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "deleteContentRange": {
+                        "range": {
+                          "startIndex": 1,
+                          "endIndex": 3,
+                          "tabId": "tab_fixture"
+                        }
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "documentId": "doc_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "docs.text.batch",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "insert"
+                    },
+                    "tabId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+                    },
+                    "index": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2147483647
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100000
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "tabId",
+                    "index",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "replace"
+                    },
+                    "tabId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+                    },
+                    "find": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "replace": {
+                      "type": "string",
+                      "maxLength": 100000
+                    },
+                    "matchCase": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "tabId",
+                    "find",
+                    "replace",
+                    "matchCase"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "delete"
+                    },
+                    "tabId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+                    },
+                    "startIndex": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2147483647
+                    },
+                    "endIndex": {
+                      "type": "integer",
+                      "minimum": 2,
+                      "maximum": 2147483647
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "tabId",
+                    "startIndex",
+                    "endIndex"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "documentId",
+          "expectedRevisionId",
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/documents"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "operations": [
+              {
+                "kind": "insert",
+                "tabId": "tab_fixture",
+                "index": 1,
+                "text": "Hi"
+              }
+            ],
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "operations": [
+              {
+                "kind": "insert",
+                "tabId": "tab_fixture",
+                "index": 1,
+                "text": "Hi"
+              }
+            ],
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "documentId": "doc_fixture",
+            "expectedRevisionId": "rev_1",
+            "operations": [
+              {
+                "kind": "insert",
+                "tabId": "tab_fixture",
+                "index": 1,
+                "text": "Hi"
+              }
+            ]
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/documents"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/documents/doc_fixture",
+                "query": {
+                  "includeTabsContent": true,
+                  "suggestionsViewMode": "SUGGESTIONS_INLINE"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "title": "Fixture",
+                  "revisionId": "rev_1",
+                  "tabs": [
+                    {
+                      "documentTab": {
+                        "body": {
+                          "content": []
+                        }
+                      },
+                      "tabProperties": {
+                        "tabId": "tab_fixture"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/documents/doc_fixture:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "insertText": {
+                        "location": {
+                          "index": 1,
+                          "tabId": "tab_fixture"
+                        },
+                        "text": "Hi"
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_1"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "doc_fixture",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "documentId": "doc_fixture",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "docs.templates.create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "replacements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "replace": {
+                  "type": "string",
+                  "maxLength": 100000
+                },
+                "matchCase": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "find",
+                "replace",
+                "matchCase"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "templateId",
+          "title",
+          "replacements"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ],
+      "fixtures": [
+        {
+          "id": "fixed-request-response",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ]
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/drive"
+          ],
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/files/template_fixture",
+                "query": {
+                  "fields": "id,mimeType,version,isAppAuthorized",
+                  "supportsAllDrives": true
+                },
+                "service": "drive"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "template_fixture",
+                  "mimeType": "application/vnd.google-apps.document",
+                  "version": "1",
+                  "isAppAuthorized": true
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/files/template_fixture/copy",
+                "body": {
+                  "name": "Fixture"
+                },
+                "query": {
+                  "fields": "id,mimeType",
+                  "supportsAllDrives": true
+                },
+                "service": "drive"
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "new_doc",
+                  "mimeType": "application/vnd.google-apps.document"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "path": "/documents/new_doc",
+                "query": {
+                  "includeTabsContent": true,
+                  "suggestionsViewMode": "SUGGESTIONS_INLINE"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "new_doc",
+                  "title": "Fixture",
+                  "revisionId": "rev_new"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/documents/new_doc:batchUpdate",
+                "body": {
+                  "requests": [
+                    {
+                      "replaceAllText": {
+                        "containsText": {
+                          "text": "{{name}}",
+                          "matchCase": true
+                        },
+                        "replaceText": "Team"
+                      }
+                    }
+                  ],
+                  "writeControl": {
+                    "requiredRevisionId": "rev_new"
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "documentId": "new_doc",
+                  "replies": [
+                    {}
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "documentId": "new_doc",
+            "outcome": "succeeded",
+            "templateFilled": true
+          }
+        }
+      ]
+    }
+  ]
+}
