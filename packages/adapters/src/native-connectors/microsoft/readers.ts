@@ -279,17 +279,14 @@ async function planner(
   if (saved.ready === true) {
     for (const row of rows)
       if (previous[text(row.id)] !== current[text(row.id)])
-        await emit(
-          ctx,
-          text(row.id),
-          text(current[text(row.id)]),
-          {
-            planId: spec.planId,
-            taskId: row.id,
-            change: previous[text(row.id)] === undefined ? "created" : "updated",
-          },
-          row.createdDateTime,
-        );
+        await emit(ctx, text(row.id), text(current[text(row.id)]), {
+          planId: spec.planId,
+          taskId: row.id,
+          ...(typeof row.createdDateTime === "string"
+            ? { createdDateTime: row.createdDateTime }
+            : {}),
+          change: previous[text(row.id)] === undefined ? "created" : "updated",
+        });
     for (const [id, version] of Object.entries(previous))
       if (!Object.hasOwn(current, id))
         await emit(ctx, id, `removed:${digest(version)}`, {

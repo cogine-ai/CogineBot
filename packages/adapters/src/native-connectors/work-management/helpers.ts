@@ -27,7 +27,21 @@ export function authorize(
       "The selected Atlassian site is not verified.",
     );
   // Personal Todoist tokens expose no introspection endpoint. Never manufacture OAuth scopes.
-  if (p.context.credentialType === "personal_token" && def.id.startsWith("todoist.")) return;
+  if (p.context.credentialType === "personal_token" && def.id.startsWith("todoist.")) {
+    const configured = p.context.configuredScopes;
+    if (
+      !Array.isArray(configured) ||
+      !configured.length ||
+      configured.some((scope) => typeof scope !== "string")
+    )
+      throw new NativeActionError(
+        "insufficient_scope",
+        "This personal-token connection has no configured operation policy.",
+      );
+    // These are the administrator's configured limits, never introspected PAT scopes.
+    scopes({ principal: { ...p, scopes: configured } }, def.authorization.acceptedAnyOfScopes);
+    return;
+  }
   // Asana documents default as Full permissions. This must survive the provider's
   // actual-grant/config intersection; no granular scope is synthesized from it.
   if (def.id.startsWith("asana.") && p.scopes.includes("default")) return;

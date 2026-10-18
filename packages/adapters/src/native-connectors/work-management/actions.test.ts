@@ -276,3 +276,56 @@ test("Todoist due_string and due_date cannot silently override each other", asyn
     failure("invalid_input"),
   );
 });
+
+for (const [name, configuredScopes] of [
+  ["missing configured scopes", undefined],
+  ["read-only configured scopes", ["data:read"]],
+  ["empty configured scopes", []],
+] as const)
+  test(`Todoist personal token ${name} hides and blocks writes without fabricating actual scopes`, async () => {
+    const action = workManagementApps
+      .find((a) => a.slug === "todoist")!
+      .actions.find((a) => a.id === "todoist.tasks.create")!;
+    let calls = 0;
+    const ctx = context("todoist", async () => {
+      calls++;
+      throw Error("No unauthorized request");
+    });
+    ctx.principal.scopes = [];
+    ctx.principal.context = {
+      actorType: "user",
+      credentialType: "personal_token",
+      scopeAuthority: "provider_enforced",
+      ...(configuredScopes ? { configuredScopes } : {}),
+    };
+    assert.equal(action.available?.(ctx.principal), false);
+    await assert.rejects(
+      action.execute({ content: "Fixture" }, ctx),
+      failure("insufficient_scope"),
+    );
+    assert.equal(calls, 0);
+    assert.deepEqual(ctx.principal.scopes, []);
+  });
+test("Todoist personal token configured read policy permits reads; configured write policy permits exact write", async () => {
+  const app = workManagementApps.find((a) => a.slug === "todoist")!;
+  for (const [id, scopes] of [
+    ["todoist.projects.list", ["data:read"]],
+    ["todoist.tasks.create", ["data:read_write"]],
+  ] as const) {
+    const action = app.actions.find((a) => a.id === id)!;
+    const fixture = (todoist.fixtures as Fixture[]).find((f) => f.id === id)!;
+    let index = 0;
+    const ctx = context("todoist", async () => response(fixture.steps[index++]!));
+    ctx.principal.scopes = [];
+    ctx.principal.context = {
+      actorType: "user",
+      credentialType: "personal_token",
+      scopeAuthority: "provider_enforced",
+      configuredScopes: [...scopes],
+    };
+    assert.equal(action.available?.(ctx.principal), true);
+    await action.execute(fixture.input, ctx);
+    assert.equal(index, fixture.steps.length);
+    assert.deepEqual(ctx.principal.scopes, []);
+  }
+});

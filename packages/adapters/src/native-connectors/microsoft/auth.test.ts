@@ -333,4 +333,12 @@ describe("Microsoft delegated authority", () => {
       { kind: "not_configured" },
     );
   });
+  it("preserves HTTP 429 rate limiting even when Microsoft's OAuth body says temporarily_unavailable", async () => {
+    const s = setup([
+      new Response(JSON.stringify({ error: "temporarily_unavailable" }), { status: 429 }),
+    ]);
+    await assert.rejects(s.authority.refresh(config(), "fixture-secret", previous, signal()), {
+      kind: "rate_limited",
+    });
+  });
 });

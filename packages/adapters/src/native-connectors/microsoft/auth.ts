@@ -349,19 +349,19 @@ export class MicrosoftAuthorities {
     }
     if (!response.ok || body?.error)
       throw new NativeActionError(
-        [
-          "invalid_client",
-          "unauthorized_client",
-          "invalid_scope",
-          "invalid_request",
-          "unsupported_grant_type",
-        ].includes(String(body?.error))
-          ? "not_configured"
-          : ["temporarily_unavailable", "server_error"].includes(String(body?.error)) ||
-              response.status >= 500
-            ? "temporarily_unavailable"
-            : response.status === 429
-              ? "rate_limited"
+        response.status === 429
+          ? "rate_limited"
+          : [
+                "invalid_client",
+                "unauthorized_client",
+                "invalid_scope",
+                "invalid_request",
+                "unsupported_grant_type",
+              ].includes(String(body?.error))
+            ? "not_configured"
+            : ["temporarily_unavailable", "server_error"].includes(String(body?.error)) ||
+                response.status >= 500
+              ? "temporarily_unavailable"
               : ["invalid_grant", "interaction_required", "consent_required"].includes(
                     String(body?.error),
                   ) || response.status === 401

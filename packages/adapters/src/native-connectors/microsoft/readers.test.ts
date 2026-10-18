@@ -231,6 +231,7 @@ describe("Microsoft existing Routine reader adapters", () => {
     assert.equal(changed.requests.length, 2);
     assert.equal(changed.emitted.length, 1);
     assert.equal(changed.emitted[0]?.metadata.messageId, "new");
+    assert.equal(changed.emitted[0]?.occurredAt, "2026-10-18T01:00:00.000Z");
   });
   it("rebaselines when the exact account/grant generation fingerprint changes", async () => {
     const base = setup(ex, [matrix()]);
@@ -249,5 +250,19 @@ describe("Microsoft existing Routine reader adapters", () => {
       versions.push(next.emitted[0]!.eventIdentity);
     }
     assert.equal(new Set(versions).size, 3);
+  });
+  it("timestamps a newly observed Planner edit at the trusted read time rather than the task creation time", async () => {
+    const row = {
+      id: "task-fixture",
+      planId: "plan-fixture",
+      createdDateTime: "2020-01-01T00:00:00Z",
+      "@odata.etag": '"one"',
+    };
+    const base = setup(pl, [{ value: [row] }]);
+    const state = (await readMicrosoftEvent(base.context, base.api)).state;
+    const changed = setup(pl, [{ value: [{ ...row, "@odata.etag": '"two"' }] }], state);
+    await readMicrosoftEvent(changed.context, changed.api);
+    assert.equal(changed.emitted[0]?.occurredAt, now.toISOString());
+    assert.equal(changed.emitted[0]?.metadata.createdDateTime, row.createdDateTime);
   });
 });
