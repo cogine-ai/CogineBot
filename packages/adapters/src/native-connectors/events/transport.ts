@@ -13,7 +13,7 @@ import type { NotionEventPrincipal } from "./signals.js";
 import type { SlackEventPrincipal } from "./slack-signals.js";
 import type { NativeSourceReadContext } from "./worker.js";
 
-function pinnedEventAuthorization(
+export function pinnedEventAuthorization(
   oauth: Pick<NativeOAuthStore, "authorization">,
   context: NativeSourceReadContext,
 ) {
@@ -44,12 +44,17 @@ function pinnedEventAuthorization(
       );
     const settings = NativeConfigSettingsSchema.parse(live.config.config),
       scopes = live.grant.scopes.filter((scope) => settings.scopes.includes(scope));
+    if (settings.boundSpaceId && settings.boundSpaceId !== context.scope.spaceId)
+      throw new NativeActionError(
+        "authorization_required",
+        "This application belongs to a different space.",
+      );
     if (
       !nativeEventReadPermitted(
         NativeRoutineEventSpecSchema.parse(row.spec),
         scopes,
         settings.capabilities,
-        live.auth.identity.context,
+        { ...live.auth.identity.context, configuredScopes: settings.scopes },
       )
     )
       throw new NativeActionError(

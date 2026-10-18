@@ -38,6 +38,7 @@ export type NativeApplicationDraft = Omit<NativeConfigInput, "knowledgeBaseIds" 
   hasClientSecret: boolean;
   hasVerificationToken?: boolean;
   hasEncryptionKey?: boolean;
+  enterpriseCallbackUri?: string;
   knowledgeBaseIdsText: string;
   targetIdsText: string;
 };
@@ -109,6 +110,7 @@ export function draftNativeApplication(value: NativeConfigEditable): NativeAppli
     hasClientSecret: value.hasClientSecret,
     hasVerificationToken: value.hasVerificationToken,
     hasEncryptionKey: value.hasEncryptionKey,
+    enterpriseCallbackUri: value.enterpriseCallbackUri,
   };
 }
 export function nativeApplicationInput(draft: NativeApplicationDraft): NativeConfigInput {
@@ -217,8 +219,10 @@ export function changeNativeCredential(
 
 export function nativeApplicationCredentialKinds(
   appId: NativeAppId,
+  ownership: NativeConfigInput["ownership"] = "byo",
 ): readonly NativeConfigInput["credentialKind"][] {
   const profile = remainingNativeProfile(appId);
+  if (appId === "feishu-lark" && ownership === "official") return ["oauth"];
   if (profile) return profile.credentialKinds;
   if (appId === "notion") return ["oauth", "internal_token", "personal_token"];
   if (appId === "github") return ["personal_token", "github_app_installation", "oauth"];

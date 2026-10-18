@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { Id } from "./ids.js";
+import { NativeRemainingAppIdSchema } from "./native-remaining-apps.js";
+import { remainingNativeProfile } from "./native-remaining-profiles.js";
 
 export const NativeGoogleAppIdSchema = z.enum([
   "google-calendar",
@@ -18,6 +20,7 @@ export const NativeAppIdSchema = z.enum([
   "github",
   "linear",
   "slack",
+  ...NativeRemainingAppIdSchema.options,
 ]);
 export type NativeAppId = z.infer<typeof NativeAppIdSchema>;
 
@@ -77,11 +80,19 @@ export const NativeConfigInputSchema = z
     endpoint: z.url().max(2048).optional(),
     clientId: z.string().trim().min(1).max(512).optional(),
     clientSecret: z.string().min(1).max(8192).optional(),
+    verificationToken: z.string().min(1).max(512).optional(),
+    encryptionKey: z.string().min(1).max(512).optional(),
     scopes: z.array(z.string().min(1).max(256)).max(24).default([]),
     capabilities: z.array(z.string().min(1).max(80)).max(24).default([]),
     knowledgeBaseIds: z.array(z.string().min(1).max(160)).max(100).default([]),
     tenantId: z.string().min(1).max(160).optional(),
     actor: z.enum(["user", "app", "bot", "installation"]).optional(),
+    region: z.enum(["feishu", "lark"]).optional(),
+    agentId: z.string().trim().min(1).max(160).optional(),
+    targetIds: z
+      .array(z.string().regex(/^-?[0-9]{1,32}$/))
+      .max(100)
+      .optional(),
     githubAppId: z.string().regex(/^\d+$/).max(32).optional(),
     githubInstallationId: z.string().regex(/^\d+$/).max(32).optional(),
     googleWatch: NativeGoogleWatchConfigSchema.optional(),
@@ -94,6 +105,80 @@ export const NativeConfigInputSchema = z
       issue("googleWatch", "Only Gmail uses this Pub/Sub configuration.");
     if (value.id && !value.expectedRevision)
       issue("expectedRevision", "Configuration revision is required");
+    const profile = remainingNativeProfile(value.appId);
+    if (profile) {
+      const kinds: readonly string[] = profile.credentialKinds;
+      const actors: readonly string[] = profile.actors;
+      if (!kinds.includes(value.credentialKind))
+        issue("credentialKind", "Choose a supported credential type for this application");
+      if (!actors.includes(value.actor ?? "")) issue("actor", "Choose the actual credential actor");
+      if (
+        value.appId === "hubspot" &&
+        value.credentialKind === "personal_token" &&
+        value.actor !== "app"
+      )
+        issue("actor", "HubSpot private application tokens act as the application");
+      if (value.endpoint && value.appId !== "gitlab")
+        issue("endpoint", "This service uses its fixed API authority");
+      if (["jira", "confluence"].includes(value.appId) && !value.tenantId)
+        issue("tenantId", "Select the exact Atlassian cloud site ID");
+    }
+    const enterprise = ["feishu-lark", "dingtalk", "wecom"].includes(value.appId);
+    const botPlatform = ["telegram-bot", "discord"].includes(value.appId);
+    if (
+      (value.verificationToken || value.encryptionKey) &&
+      !["feishu-lark", "wecom"].includes(value.appId)
+    )
+      issue("verificationToken", "Only supported enterprise callbacks use these credentials");
+    if (enterprise) {
+      if (
+        value.appId === "feishu-lark" &&
+        value.ownership === "official" &&
+        value.credentialKind === "machine_key"
+      )
+        issue(
+          "credentialKind",
+          "Official Feishu / Lark connections require user OAuth; internal application credentials use BYO",
+        );
+      if (!value.clientId && !(value.appId === "wecom" && value.credentialKind === "machine_key"))
+        issue("clientId", "The enterprise application ID is required");
+      if (value.credentialKind === "machine_key" && value.actor !== "app")
+        issue("actor", "Enterprise application credentials act as the application");
+      if (
+        value.credentialKind === "oauth" &&
+        value.actor !== (value.appId === "wecom" ? "app" : "user")
+      )
+        issue("actor", "Choose the actor authorized by this enterprise protocol");
+      if (
+        value.credentialKind === "machine_key" &&
+        ["dingtalk", "wecom"].includes(value.appId) &&
+        !value.tenantId
+      )
+        issue("tenantId", "The enterprise corporation ID is required");
+      if (value.appId === "wecom" && (!value.agentId || !/^[0-9]+$/.test(value.agentId)))
+        issue("agentId", "The enterprise application agent ID is required");
+      if (
+        value.appId === "wecom" &&
+        value.credentialKind === "machine_key" &&
+        value.clientId &&
+        value.clientId !== value.tenantId
+      )
+        issue("clientId", "Internal WeCom applications use their corporation ID");
+    }
+    if (value.region && value.appId !== "feishu-lark")
+      issue("region", "Only Feishu / Lark selects this region");
+    if (value.appId === "feishu-lark" && !value.region) issue("region", "Select Feishu or Lark");
+    if (value.agentId && !enterprise)
+      issue("agentId", "This application does not use an enterprise agent ID");
+    if (value.targetIds?.length && !botPlatform)
+      issue("targetIds", "These targets belong to bot applications");
+    if (
+      botPlatform &&
+      (!value.targetIds?.length || value.credentialKind !== "bot_token" || value.actor !== "bot")
+    )
+      issue("targetIds", "Configure a bot credential and explicit targets for this space");
+    if (value.appId === "discord" && !value.tenantId)
+      issue("tenantId", "Select the Discord server ID");
     if (value.appId === "coginex" && value.credentialKind !== "mcp_oauth")
       issue("credentialKind", "CogineX uses MCP OAuth");
     if (value.appId === "knowai" && value.credentialKind !== "machine_key")
@@ -150,7 +235,11 @@ export const NativeConfigInputSchema = z
       value.endpoint
     )
       issue("endpoint", "This service uses its fixed API authority");
-    if (value.credentialKind !== "oauth" && value.clientSecret)
+    if (
+      value.credentialKind !== "oauth" &&
+      value.clientSecret &&
+      !((enterprise && value.credentialKind === "machine_key") || botPlatform)
+    )
       issue("clientSecret", "Account credentials belong to the connecting user");
   });
 export type NativeConfigInput = z.infer<typeof NativeConfigInputSchema>;
@@ -168,6 +257,7 @@ export const NativeConfigStatusSchema = z.object({
   callbackUri: z.url(),
   executionLocation: z.literal("instance"),
   actor: z.enum(["user", "app", "bot", "installation"]).optional(),
+  usesConfiguredCredential: z.boolean().optional(),
   driveFilePickerAvailable: z.boolean().optional(),
 });
 export type NativeConfigStatus = z.infer<typeof NativeConfigStatusSchema>;
@@ -175,12 +265,20 @@ export type NativeConfigStatus = z.infer<typeof NativeConfigStatusSchema>;
 /** Deployment-owner editor values; account credentials and client secrets stay write-only. */
 export const NativeConfigEditableSchema = z
   .object(NativeConfigInputSchema.shape)
-  .omit({ clientSecret: true, expectedRevision: true })
+  .omit({
+    clientSecret: true,
+    verificationToken: true,
+    encryptionKey: true,
+    expectedRevision: true,
+  })
   .extend({
     id: Id,
     revision: z.number().int().positive(),
     hasClientSecret: z.boolean(),
+    hasVerificationToken: z.boolean().optional(),
+    hasEncryptionKey: z.boolean().optional(),
     callbackUri: z.url(),
+    enterpriseCallbackUri: z.url().optional(),
   });
 export type NativeConfigEditable = z.infer<typeof NativeConfigEditableSchema>;
 export const NativeSetupStateSchema = z.object({

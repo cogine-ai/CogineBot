@@ -10,6 +10,7 @@ import {
   NativeConfigEditableSchema,
   NativeConfigInputSchema,
   NativeGoogleWatchConfigSchema,
+  remainingNativeProfile,
 } from "@rakazo/contracts";
 import type { NativeAppConfig, PrismaClient } from "@rakazo/db";
 import { Prisma } from "@rakazo/db";
@@ -20,6 +21,7 @@ import type { RemoteTransportDependencies } from "../remote-mcp.js";
 import { assertSafeRemoteUrl } from "../remote-mcp.js";
 import { persistPreparedSecret } from "../secret-persistence.js";
 import { COLLABORATION_SCOPES, SLACK_POLICY_CAPABILITIES } from "./collaboration-config.js";
+import { enterpriseConfigSecret } from "./enterprise-config-secret.js";
 import { GOOGLE_NATIVE_APPS, isGoogleNativeApp } from "./google.js";
 
 export const CALENDAR_SCOPE_PREFIX = "https://www.googleapis.com/auth/";
@@ -41,6 +43,11 @@ export const NativeConfigSettingsSchema = z.object({
   knowledgeBaseIds: z.array(z.string()),
   tenantId: z.string().optional(),
   actor: z.enum(["user", "app", "bot", "installation"]).optional(),
+  region: z.enum(["feishu", "lark"]).optional(),
+  agentId: z.string().optional(),
+  targetIds: z.array(z.string()).optional(),
+  boundSpaceId: z.string().optional(),
+  credentialOwner: z.object({ userId: z.string(), spaceId: z.string() }).optional(),
   githubAppId: z.string().optional(),
   githubInstallationId: z.string().optional(),
   googleWatch: NativeGoogleWatchConfigSchema.optional(),
@@ -94,6 +101,57 @@ function settingsFor(input: NativeConfigInput): NativeConfigSettings {
       throw new Error("Unsupported collaboration application scope");
     if (input.appId === "slack" && input.actor === "bot" && input.scopes.includes("search:read"))
       throw new Error("Slack legacy search requires the selected user actor");
+  } else if (remainingNativeProfile(input.appId)) {
+    const profile = remainingNativeProfile(input.appId)!;
+    const allowedScopes: readonly string[] = profile.scopes;
+    if (input.scopes.some((scope) => !allowedScopes.includes(scope)))
+      throw new Error("Unsupported application scope");
+    if (input.appId === "asana" && input.scopes.includes("default") && input.scopes.length !== 1)
+      throw new Error("Choose Asana full permissions or individual scopes, not both");
+    if (
+      [
+        "outlook-mail",
+        "outlook-calendar",
+        "onedrive",
+        "microsoft-todo",
+        "sharepoint",
+        "excel",
+        "planner",
+        "teams",
+      ].includes(input.appId)
+    ) {
+      if (
+        ["openid", "profile", "offline_access", "User.Read"].some(
+          (scope) => !input.scopes.includes(scope),
+        )
+      )
+        throw new Error(
+          "Microsoft identity requires openid, profile, offline_access and User.Read",
+        );
+      if (
+        input.tenantId &&
+        !["common", "organizations", "consumers"].includes(input.tenantId) &&
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.tenantId)
+      )
+        throw new Error("Select a supported Microsoft tenant or account audience");
+      if (
+        ["sharepoint", "excel", "planner", "teams"].includes(input.appId) &&
+        input.tenantId === "consumers"
+      )
+        throw new Error("This Microsoft application requires a business account");
+    }
+    if (input.appId === "gitlab" && input.endpoint) {
+      const url = new URL(input.endpoint);
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        url.pathname !== "/" ||
+        url.search ||
+        url.hash
+      )
+        throw new Error("GitLab requires a fixed HTTPS origin");
+    }
   } else if (input.scopes.length) {
     throw new Error("This authorization protocol does not accept Google OAuth scopes");
   }
@@ -104,7 +162,7 @@ function settingsFor(input: NativeConfigInput): NativeConfigSettings {
         ? NOTION_CAPABILITIES
         : input.appId === "slack"
           ? SLACK_POLICY_CAPABILITIES
-          : new Set<string>();
+          : new Set<string>(remainingNativeProfile(input.appId)?.capabilities ?? []);
   if (input.capabilities.some((capability) => !allowed.has(capability)))
     throw new Error("Unsupported service capability");
   let endpoint = input.endpoint?.replace(/\/$/, "");
@@ -123,6 +181,9 @@ function settingsFor(input: NativeConfigInput): NativeConfigSettings {
     knowledgeBaseIds: [...new Set(input.knowledgeBaseIds)].sort(),
     ...(input.tenantId ? { tenantId: input.tenantId } : {}),
     ...(input.actor ? { actor: input.actor } : {}),
+    ...(input.region ? { region: input.region } : {}),
+    ...(input.agentId ? { agentId: input.agentId } : {}),
+    ...(input.targetIds?.length ? { targetIds: [...new Set(input.targetIds)].sort() } : {}),
     ...(input.githubAppId ? { githubAppId: input.githubAppId } : {}),
     ...(input.githubInstallationId ? { githubInstallationId: input.githubInstallationId } : {}),
     ...(input.googleWatch ? { googleWatch: input.googleWatch } : {}),
@@ -131,6 +192,11 @@ function settingsFor(input: NativeConfigInput): NativeConfigSettings {
 
 export function nativeConfigStatus(row: NativeAppConfig): NativeConfigStatus {
   const settings = NativeConfigSettingsSchema.parse(row.config);
+  const managedCredential =
+    ["feishu-lark", "dingtalk", "wecom"].includes(row.appId) &&
+    row.credentialKind === "machine_key";
+  const botPlatform = ["telegram-bot", "discord"].includes(row.appId);
+  const secretReady = Boolean(row.ciphertext && row.secretRecordId);
   return {
     id: row.id,
     appId: NativeConfigInputSchema.shape.appId.parse(row.appId),
@@ -138,12 +204,21 @@ export function nativeConfigStatus(row: NativeAppConfig): NativeConfigStatus {
     ownership: row.ownership === "official" ? "official" : "byo",
     credentialKind: NativeConfigInputSchema.shape.credentialKind.parse(row.credentialKind),
     enabled: row.enabled,
-    configured:
-      row.credentialKind !== "oauth" ||
-      Boolean(row.ciphertext && row.secretRecordId && settings.clientId),
+    configured: managedCredential
+      ? Boolean(secretReady && settings.boundSpaceId)
+      : botPlatform
+        ? Boolean(
+            settings.boundSpaceId &&
+              settings.targetIds?.length &&
+              (row.ownership !== "official" || secretReady),
+          )
+        : row.credentialKind !== "oauth" || Boolean(secretReady && settings.clientId),
     revision: row.revision,
     callbackUri: row.callbackUri,
     executionLocation: "instance",
+    ...(managedCredential || botPlatform
+      ? { usesConfiguredCredential: managedCredential || row.ownership === "official" }
+      : {}),
     ...(settings.actor ? { actor: settings.actor } : {}),
     ...(row.appId === "google-drive" && row.credentialKind === "oauth"
       ? {
@@ -153,6 +228,15 @@ export function nativeConfigStatus(row: NativeAppConfig): NativeConfigStatus {
         }
       : {}),
   };
+}
+
+export function nativeConfigVisibleInSpace(row: NativeAppConfig, spaceId?: string): boolean {
+  const settings = NativeConfigSettingsSchema.parse(row.config);
+  const bound =
+    ["telegram-bot", "discord"].includes(row.appId) ||
+    (["feishu-lark", "dingtalk", "wecom"].includes(row.appId) &&
+      row.credentialKind === "machine_key");
+  return !bound || Boolean(spaceId && settings.boundSpaceId === spaceId);
 }
 
 /** Deployment configuration only; account tokens never enter this table or DTO. */
@@ -169,19 +253,33 @@ export class NativeConfigStore {
     return new URL(NATIVE_OAUTH_CALLBACK_PATH, new URL(this.apiUrl).origin).toString();
   }
 
-  async statuses(): Promise<NativeConfigStatus[]> {
+  async statuses(spaceId?: string): Promise<NativeConfigStatus[]> {
     const rows = await this.prisma.nativeAppConfig.findMany({
       orderBy: [{ appId: "asc" }, { id: "asc" }],
     });
-    return rows.map(nativeConfigStatus);
+    return Promise.all(
+      rows.filter((row) => nativeConfigVisibleInSpace(row, spaceId)).map((row) => this.status(row)),
+    );
   }
 
-  async configuration(id: string, isDeploymentOwner: boolean): Promise<NativeConfigEditable> {
+  async configuration(
+    id: string,
+    isDeploymentOwner: boolean,
+    spaceId?: string,
+  ): Promise<NativeConfigEditable> {
     if (!isDeploymentOwner)
       throw new Error("Only the deployment administrator can read application configuration");
     const row = await this.prisma.nativeAppConfig.findUniqueOrThrow({
       where: { id },
     });
+    if (!nativeConfigVisibleInSpace(row, spaceId))
+      throw new Error("Application configuration is unavailable in this space");
+    const secret =
+      ["feishu-lark", "dingtalk", "wecom"].includes(row.appId) &&
+      row.ciphertext &&
+      row.secretRecordId
+        ? enterpriseConfigSecret(await this.credential(row))
+        : undefined;
     return NativeConfigEditableSchema.parse({
       ...NativeConfigSettingsSchema.parse(row.config),
       id: row.id,
@@ -192,17 +290,126 @@ export class NativeConfigStore {
       credentialKind: row.credentialKind,
       enabled: row.enabled,
       hasClientSecret: Boolean(row.ciphertext && row.secretRecordId),
+      ...(secret
+        ? {
+            hasVerificationToken: Boolean(secret.verificationToken),
+            hasEncryptionKey: Boolean(secret.encryptionKey),
+          }
+        : {}),
       callbackUri: row.callbackUri,
+      ...(["feishu-lark", "wecom"].includes(row.appId) && row.credentialKind === "oauth"
+        ? {
+            enterpriseCallbackUri: new URL(
+              `/api/connectors/enterprise/${encodeURIComponent(row.id)}`,
+              this.apiUrl,
+            ).toString(),
+          }
+        : {}),
     });
   }
 
-  async require(id: string): Promise<NativeAppConfig> {
-    const row = await this.prisma.nativeAppConfig.findUnique({ where: { id } });
-    if (!row?.enabled || !nativeConfigStatus(row).configured)
+  async require(
+    id: string,
+    database: Pick<PrismaClient, "nativeAppConfig"> = this.prisma,
+  ): Promise<NativeAppConfig> {
+    const row = await database.nativeAppConfig.findUnique({ where: { id } });
+    if (!row?.enabled || !(await this.status(row)).configured)
       throw new Error("This connection source is not configured");
     if (row.callbackUri !== this.callbackUri)
       throw new Error("API origin changed; update the registered application callback");
     return row;
+  }
+
+  private async status(row: NativeAppConfig): Promise<NativeConfigStatus> {
+    const status = nativeConfigStatus(row);
+    if (row.appId === "wecom" && row.credentialKind === "oauth") {
+      try {
+        const secret = enterpriseConfigSecret(await this.credential(row));
+        status.configured = Boolean(
+          status.configured &&
+            secret.verificationToken &&
+            secret.encryptionKey &&
+            secret.suiteTicket,
+        );
+      } catch {
+        status.configured = false;
+      }
+    }
+    return status;
+  }
+
+  async forEnterpriseCallback(id: string): Promise<NativeAppConfig> {
+    const row = await this.prisma.nativeAppConfig.findUnique({ where: { id } });
+    if (
+      !row?.enabled ||
+      !["wecom", "feishu-lark"].includes(row.appId) ||
+      row.callbackUri !== this.callbackUri
+    )
+      throw new Error("Enterprise callback configuration is unavailable");
+    return row;
+  }
+
+  /** Server-only: inline configuration credentials never enter member or editor DTOs. */
+  async credential(row: NativeAppConfig, signal?: AbortSignal): Promise<string> {
+    if (!row.ciphertext || !row.secretRecordId)
+      throw new Error("Application credential is unavailable");
+    return this.secrets.load(row.ciphertext, { recordId: row.secretRecordId, signal });
+  }
+
+  /** Verified rotating provider tickets do not change the owner-authorized configuration. */
+  async recordEnterpriseTicket(
+    configId: string,
+    appId: string,
+    expectedRevision: number,
+    ticket: { platform: "feishu-lark" | "wecom"; value: string; issuedAt: number },
+    signal: AbortSignal,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const row = await this.forEnterpriseCallback(configId);
+      const settings = NativeConfigSettingsSchema.parse(row.config);
+      if (
+        row.revision !== expectedRevision ||
+        row.appId !== ticket.platform ||
+        settings.clientId !== appId ||
+        !settings.credentialOwner
+      )
+        throw new Error("Enterprise callback application does not match the configuration");
+      const current = enterpriseConfigSecret(await this.credential(row, signal));
+      const key = ticket.platform === "wecom" ? "suiteTicket" : "appTicket";
+      if ((current[key]?.issuedAt ?? 0) >= ticket.issuedAt) return;
+      const value = JSON.stringify({
+        ...current,
+        [key]: { value: ticket.value, issuedAt: ticket.issuedAt },
+      });
+      enterpriseConfigSecret(value);
+      const material = await this.prepareSecret(value, {
+        ...settings.credentialOwner,
+        operationId: "native.enterprise.ticket",
+        traceId: row.id,
+        signal,
+      });
+      const saved = await persistPreparedSecret(this.prisma, this.secrets, material, () =>
+        this.prisma.$transaction(
+          async (tx) =>
+            (
+              await tx.nativeAppConfig.updateMany({
+                where: {
+                  id: row.id,
+                  revision: row.revision,
+                  enabled: true,
+                  ciphertext: row.ciphertext,
+                  secretRecordId: row.secretRecordId,
+                },
+                data: { ciphertext: material.ciphertext, secretRecordId: material.id },
+              })
+            ).count === 1,
+        ),
+      );
+      if (saved) return;
+    }
+    throw new Error(
+      "Enterprise credentials changed while accepting the ticket; retry the callback",
+    );
   }
 
   async save(
@@ -216,6 +423,11 @@ export class NativeConfigStore {
     // An optional OAuth adapter must not prevent an HTTP/LAN core deployment from starting.
     if (["oauth", "mcp_oauth"].includes(input.credentialKind)) nativeCallbackUri(this.apiUrl);
     const config = settingsFor(input);
+    const botPlatform = ["telegram-bot", "discord"].includes(input.appId);
+    const enterprise = ["feishu-lark", "dingtalk", "wecom"].includes(input.appId);
+    const spaceBound = botPlatform || (enterprise && input.credentialKind === "machine_key");
+    if (spaceBound) config.boundSpaceId = context.spaceId;
+    if (enterprise) config.credentialOwner = { userId: context.userId, spaceId: context.spaceId };
     if (config.googleWatch) {
       const callback = new URL("/api/connectors/events/gmail", this.apiUrl);
       if (callback.protocol !== "https:" || config.googleWatch.callbackAudience !== callback.href)
@@ -243,6 +455,20 @@ export class NativeConfigStore {
       throw new Error("Application configuration changed; refresh before saving");
     if (
       previous &&
+      spaceBound &&
+      NativeConfigSettingsSchema.parse(previous.config).boundSpaceId !== context.spaceId
+    )
+      throw new Error("Switch to the space that owns this application configuration");
+    if (
+      !previous?.ciphertext &&
+      !input.clientSecret &&
+      ((botPlatform && input.ownership === "official") ||
+        (["feishu-lark", "dingtalk", "wecom"].includes(input.appId) &&
+          input.credentialKind === "machine_key"))
+    )
+      throw new Error("Configure this application's write-only credential first");
+    if (
+      previous &&
       (previous.appId !== input.appId ||
         previous.credentialKind !== input.credentialKind ||
         previous.ownership !== input.ownership)
@@ -256,9 +482,28 @@ export class NativeConfigStore {
       !input.clientSecret
     )
       throw new Error("Changing the OAuth client requires its matching secret");
-    const material = input.clientSecret
-      ? await this.prepareSecret(input.clientSecret, context)
-      : undefined;
+    const secretChanged = Boolean(
+      input.clientSecret || input.verificationToken || input.encryptionKey,
+    );
+    let secretValue = input.clientSecret;
+    if (enterprise && secretChanged) {
+      const old =
+        previous?.ciphertext && previous.secretRecordId
+          ? enterpriseConfigSecret(await this.credential(previous))
+          : undefined;
+      secretValue = JSON.stringify({
+        version: 1,
+        clientSecret: input.clientSecret ?? old?.clientSecret,
+        ...((input.verificationToken ?? old?.verificationToken)
+          ? { verificationToken: input.verificationToken ?? old?.verificationToken }
+          : {}),
+        ...((input.encryptionKey ?? old?.encryptionKey)
+          ? { encryptionKey: input.encryptionKey ?? old?.encryptionKey }
+          : {}),
+      });
+      enterpriseConfigSecret(secretValue);
+    }
+    const material = secretValue ? await this.prepareSecret(secretValue, context) : undefined;
     const advancesAuthorization =
       !previous ||
       Boolean(material) ||
@@ -315,7 +560,14 @@ export class NativeConfigStore {
         const changed = await tx.nativeAppConfig.updateMany({
           where: { id: previous.id, revision: input.expectedRevision },
           data: {
-            ...data,
+            appId: data.appId,
+            label: data.label,
+            ownership: data.ownership,
+            credentialKind: data.credentialKind,
+            enabled: data.enabled,
+            config: data.config,
+            callbackUri: data.callbackUri,
+            ...(material ? { ciphertext: material.ciphertext, secretRecordId: material.id } : {}),
             ...(advancesAuthorization ? { revision: { increment: 1 } } : {}),
           },
         });
@@ -325,7 +577,7 @@ export class NativeConfigStore {
           where: { id: previous.id },
         });
       });
-      return nativeConfigStatus(row);
+      return this.status(row);
     });
   }
 

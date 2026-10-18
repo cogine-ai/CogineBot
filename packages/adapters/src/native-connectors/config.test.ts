@@ -47,7 +47,11 @@ function database() {
     }),
     updateMany: vi.fn(async ({ where, data }) => {
       if (!row || row.id !== where.id || row.revision !== where.revision) return { count: 0 };
-      const next: NativeAppConfig = { ...row, ...data, revision: row.revision + 1 };
+      const next: NativeAppConfig = {
+        ...row,
+        ...data,
+        revision: row.revision + (data.revision?.increment ?? 0),
+      };
       row = next;
       stored.clear();
       if (next.ciphertext && next.secretRecordId)
@@ -271,8 +275,14 @@ describe("native application configuration boundary", () => {
       context,
       true,
     );
-    expect(next.revision).toBe(2);
+    expect(next.revision).toBe(1);
     expect([...stored.values()]).toEqual([original]);
+    const disabled = await service.save(
+      { ...configInput(), id: "config-1", expectedRevision: 1, enabled: false },
+      context,
+      true,
+    );
+    expect(disabled.revision).toBe(2);
     await expect(
       service.save({ ...configInput(), id: "config-1", expectedRevision: 1 }, context, true),
     ).rejects.toThrow("changed");
@@ -341,3 +351,197 @@ describe("native application configuration boundary", () => {
     );
   });
 });
+
+it.each([
+  {
+    appId: "telegram-bot",
+    actor: "bot",
+    credentialKind: "bot_token",
+    ownership: "official",
+    targetIds: ["-100000000001"],
+  },
+  {
+    appId: "discord",
+    actor: "bot",
+    credentialKind: "bot_token",
+    ownership: "official",
+    tenantId: "123456789",
+    targetIds: ["987654321"],
+  },
+  {
+    appId: "dingtalk",
+    actor: "app",
+    credentialKind: "machine_key",
+    ownership: "byo",
+    clientId: "synthetic-app",
+    tenantId: "synthetic-corp",
+  },
+  {
+    appId: "wecom",
+    actor: "app",
+    credentialKind: "machine_key",
+    ownership: "byo",
+    tenantId: "synthetic-corp",
+    agentId: "100001",
+  },
+  {
+    appId: "feishu-lark",
+    actor: "app",
+    credentialKind: "machine_key",
+    ownership: "byo",
+    clientId: "synthetic-app",
+    region: "feishu",
+  },
+])(
+  "keeps $appId owner credentials and connection candidates in the configured Space",
+  async (fields) => {
+    const { db } = database();
+    const service = new NativeConfigStore(
+      db,
+      new EncryptedSecretStore("space-bound-fixture-key"),
+      "https://api.example.test",
+    );
+    const input = NativeConfigInputSchema.parse({
+      ...fields,
+      label: "Synthetic private application",
+      clientSecret: "write-only-fixture-secret",
+    });
+    const saved = await service.save(input, context, true);
+    expect(saved.configured).toBe(true);
+    expect(saved.usesConfiguredCredential).toBe(true);
+    expect(await service.statuses()).toEqual([]);
+    expect(await service.statuses("space-elsewhere")).toEqual([]);
+    expect(await service.statuses(context.spaceId)).toEqual([saved]);
+    await expect(service.configuration(saved.id, true, "space-elsewhere")).rejects.toThrow();
+    const editable = await service.configuration(saved.id, true, context.spaceId);
+    expect(editable.hasClientSecret).toBe(true);
+    expect(JSON.stringify(editable)).not.toContain("write-only-fixture-secret");
+    expect(JSON.stringify(editable)).not.toContain("credentialOwner");
+    expect(JSON.stringify(editable)).not.toContain("boundSpaceId");
+    await expect(
+      service.save(
+        { ...input, id: saved.id, expectedRevision: saved.revision },
+        { ...context, spaceId: "space-elsewhere" },
+        true,
+      ),
+    ).rejects.toThrow();
+  },
+);
+
+it("keeps enterprise callback credentials write-only in an encrypted owner envelope", async () => {
+  const { db } = database();
+  const service = new NativeConfigStore(
+    db,
+    new EncryptedSecretStore("enterprise-fixture-key"),
+    "https://api.example.test",
+  );
+  const saved = await service.save(
+    NativeConfigInputSchema.parse({
+      appId: "wecom",
+      actor: "app",
+      credentialKind: "oauth",
+      ownership: "official",
+      label: "Synthetic suite",
+      clientId: "synthetic-suite",
+      agentId: "100001",
+      clientSecret: "suite-fixture-secret",
+      verificationToken: "callback-fixture-token",
+      encryptionKey: "callback-fixture-key",
+    }),
+    context,
+    true,
+  );
+  const editable = await service.configuration(saved.id, true, context.spaceId);
+  expect(editable).toMatchObject({
+    hasClientSecret: true,
+    hasVerificationToken: true,
+    hasEncryptionKey: true,
+  });
+  for (const value of ["suite-fixture-secret", "callback-fixture-token", "callback-fixture-key"])
+    expect(JSON.stringify(editable)).not.toContain(value);
+  expect(
+    JSON.parse(await service.credential(await service.forEnterpriseCallback(saved.id))),
+  ).toEqual({
+    version: 1,
+    clientSecret: "suite-fixture-secret",
+    verificationToken: "callback-fixture-token",
+    encryptionKey: "callback-fixture-key",
+  });
+});
+
+it.each([
+  ["wecom", false],
+  ["wecom", true],
+  ["feishu-lark", false],
+  ["feishu-lark", true],
+] as const)(
+  "preserves a concurrently rotated %s ticket through an owner label save (existing=%s)",
+  async (platform, existing) => {
+    const { db, nativeAppConfig } = database();
+    const service = new NativeConfigStore(
+      db,
+      new EncryptedSecretStore("concurrent-ticket-fixture-key"),
+      "https://api.example.test",
+    );
+    const input = NativeConfigInputSchema.parse({
+      appId: platform,
+      actor: platform === "wecom" ? "app" : "user",
+      credentialKind: "oauth",
+      ownership: "official",
+      label: "Original synthetic label",
+      clientId: "synthetic-application",
+      clientSecret: "synthetic-secret",
+      verificationToken: "synthetic-verification",
+      encryptionKey: "synthetic-encryption",
+      ...(platform === "wecom" ? { agentId: "100001" } : { region: "feishu" }),
+    });
+    const saved = await service.save(input, context, true);
+    const ticket = { platform, value: "synthetic-current-ticket", issuedAt: 200 };
+    if (existing)
+      await service.recordEnterpriseTicket(
+        saved.id,
+        "synthetic-application",
+        saved.revision,
+        { ...ticket, value: "synthetic-previous-ticket", issuedAt: 100 },
+        context.signal,
+      );
+    const before = structuredClone(await service.forEnterpriseCallback(saved.id));
+    nativeAppConfig.findUnique.mockImplementationOnce(async () => {
+      await service.recordEnterpriseTicket(
+        saved.id,
+        "synthetic-application",
+        saved.revision,
+        ticket,
+        context.signal,
+      );
+      return before;
+    });
+    const {
+      clientSecret: _secret,
+      verificationToken: _verify,
+      encryptionKey: _key,
+      ...editable
+    } = input;
+    const result = await service.save(
+      {
+        ...editable,
+        id: saved.id,
+        expectedRevision: saved.revision,
+        label: "Changed synthetic label",
+      },
+      context,
+      true,
+    );
+    const row = await service.forEnterpriseCallback(saved.id);
+    const material = JSON.parse(await service.credential(row));
+    expect(material[platform === "wecom" ? "suiteTicket" : "appTicket"]).toEqual({
+      value: ticket.value,
+      issuedAt: 200,
+    });
+    expect(row.revision).toBe(saved.revision);
+    expect(result.configured).toBe(true);
+    const update = nativeAppConfig.updateMany.mock.calls.at(-1)?.[0].data;
+    expect(update).not.toHaveProperty("ciphertext");
+    expect(update).not.toHaveProperty("secretRecordId");
+  },
+);

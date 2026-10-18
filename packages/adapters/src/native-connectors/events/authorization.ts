@@ -10,6 +10,51 @@ export function nativeEventReadPermitted(
   principal: Record<string, unknown>,
 ): boolean {
   const any = (values: readonly string[]) => values.some((scope) => scopes.includes(scope));
+  switch (spec.kind) {
+    case "sharepoint.list_item.changed":
+      return any(["Sites.Read.All", "Sites.ReadWrite.All", "Sites.Selected"]);
+    case "excel.range.changed":
+      return any(["Files.ReadWrite"]);
+    case "planner.task.changed":
+      return any(["Tasks.Read", "Tasks.ReadWrite", "Group.Read.All", "Group.ReadWrite.All"]);
+    case "teams.channel_message.created":
+      return any(["ChannelMessage.Read.All"]) && any(["Channel.ReadBasic.All"]);
+    case "feishu.calendar_event.changed":
+    case "dingtalk.calendar_event.changed":
+    case "wecom.schedule.changed": {
+      const provider = spec.kind.startsWith("feishu.") ? "feishu-lark" : spec.kind.split(".")[0];
+      if (
+        principal.provider !== provider ||
+        !["app", "user"].includes(String(principal.actorType)) ||
+        !["oauth", "machine_key"].includes(String(principal.credentialType)) ||
+        typeof principal.tenantId !== "string" ||
+        !principal.tenantId ||
+        typeof principal.appId !== "string" ||
+        !principal.appId
+      )
+        return false;
+      if (spec.kind === "wecom.schedule.changed" && principal.actorType !== "app") return false;
+      if (spec.kind === "feishu.calendar_event.changed") {
+        if (!["feishu", "lark"].includes(String(principal.region))) return false;
+        const accepted = ["calendar:calendar:readonly", "calendar:calendar"];
+        const configured = principal.configuredScopes;
+        return principal.actorType === "user"
+          ? any(accepted)
+          : Array.isArray(configured) && accepted.some((scope) => configured.includes(scope));
+      }
+      return true;
+    }
+    case "telegram.pinned_message.changed":
+    case "discord.channel_message.created":
+    case "discord.command.invoked":
+      return (
+        principal.actorType === "bot" &&
+        principal.credentialType === "bot_token" &&
+        principal.scopeAuthority === "provider_enforced" &&
+        typeof principal.boundSpaceId === "string" &&
+        capabilities.includes(spec.kind === "discord.command.invoked" ? "commands" : "read")
+      );
+  }
   if (spec.kind.startsWith("calendar."))
     return any(
       google(["calendar.events.readonly", "calendar.events", "calendar.readonly", "calendar"]),

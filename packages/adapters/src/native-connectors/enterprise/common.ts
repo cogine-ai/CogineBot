@@ -48,6 +48,20 @@ export function enterpriseActions(
         "authorization_required",
         "Select the exact Feishu or Lark region.",
       );
+    if (c.actorType === "app" && appId === "feishu-lark") {
+      const configured = Array.isArray(c.configuredScopes)
+        ? c.configuredScopes.filter((value): value is string => typeof value === "string")
+        : [];
+      // This is an administrator policy ceiling, not a claim about token-granted scopes.
+      if (
+        definition.authorization.acceptedAnyOfScopes.length &&
+        !definition.authorization.acceptedAnyOfScopes.some((scope) => configured.includes(scope))
+      )
+        throw new NativeActionError(
+          "insufficient_scope",
+          "This connection source does not enable this Feishu application permission.",
+        );
+    }
     if (c.actorType === "user" && appId === "feishu-lark") {
       scopes({ principal }, definition.authorization.acceptedAnyOfScopes);
       if (

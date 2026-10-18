@@ -9,6 +9,7 @@ import type {
   SecretStore,
 } from "@rakazo/adapter-kit";
 import type { ConnectionCatalogItem, NativeBeginInputSchema } from "@rakazo/contracts";
+import { NativeAppIdSchema, NativeRemainingAppIdSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import type { z } from "zod";
 import {
@@ -34,6 +35,9 @@ import type { NativeAction, NativeActionContext, NativeRequest } from "./action.
 import { NativeActionError } from "./action.js";
 import { writeNativeArtifact } from "./artifact-output.js";
 import { NativeOAuthAuthorities, NOTION_VERSION } from "./authorities.js";
+import { DiscordAttachmentDownloads } from "./bot-platforms/download.js";
+import { botPlatformApps } from "./bot-platforms/index.js";
+import { businessFilesApps } from "./business-files/index.js";
 import { calendarActions } from "./calendar.js";
 import { coginexActions } from "./coginex.js";
 import type { NativeConfigSettings } from "./config.js";
@@ -41,6 +45,8 @@ import { NativeConfigSettingsSchema, NativeConfigStore } from "./config.js";
 import { docsActions } from "./docs.js";
 import { driveActions } from "./drive.js";
 import { nativeEffectCheckpoint } from "./effect.js";
+import { enterpriseApps } from "./enterprise/index.js";
+import { NativeEnterpriseHookStore } from "./enterprise-hooks.js";
 import { NativeRoutineEventApi } from "./events/api.js";
 import { NativeNotionHookStore } from "./events/notion-hooks.js";
 import { NativeEventResourceVerifier } from "./events/resource-verifier.js";
@@ -48,9 +54,13 @@ import { NativeSlackHookStore } from "./events/slack-hooks.js";
 import { NativeSlackFileTransfers } from "./file-transfers.js";
 import { githubActions } from "./github.js";
 import { gmailActions } from "./gmail.js";
+import { NativeGraphFileDownloads } from "./graph-file-downloads.js";
+import type { NativeCredential } from "./http.js";
 import { NativeHttpClient } from "./http.js";
 import { knowaiActions } from "./knowai.js";
 import { linearActions } from "./linear.js";
+import { microsoftApps } from "./microsoft/index.js";
+import { isMicrosoftApp } from "./microsoft/metadata.js";
 import { notionActions } from "./notion.js";
 import { NativeOAuthStore } from "./oauth.js";
 import { nativeServiceBase } from "./service-bases.js";
@@ -59,6 +69,7 @@ import { slackActions } from "./slack.js";
 import { slidesActions } from "./slides.js";
 import { tasksActions } from "./tasks.js";
 import { validateNativeInput } from "./validation.js";
+import { workManagementApps } from "./work-management/index.js";
 
 const APPS = [
   { slug: "coginex", name: "CogineX", actions: coginexActions },
@@ -78,7 +89,12 @@ const APPS = [
   { slug: "github", name: "GitHub", actions: githubActions },
   { slug: "linear", name: "Linear", actions: linearActions },
   { slug: "slack", name: "Slack", actions: slackActions },
-] as const;
+  ...microsoftApps,
+  ...workManagementApps,
+  ...businessFilesApps,
+  ...enterpriseApps,
+  ...botPlatformApps,
+].map((app) => ({ ...app, slug: NativeAppIdSchema.parse(app.slug) }));
 
 /** Fixed native actions coexist with third-party long-tail and custom connectors. */
 export class NativeConnectorProvider implements ManagedConnectorProvider {
@@ -87,6 +103,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
   readonly routineEvents: NativeRoutineEventApi;
   readonly eventHooks: NativeNotionHookStore;
   readonly slackEventHooks: NativeSlackHookStore;
+  readonly enterpriseHooks: NativeEnterpriseHookStore;
   private readonly authorities: NativeOAuthAuthorities;
   constructor(
     private readonly prisma: PrismaClient,
@@ -115,6 +132,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
     );
     this.eventHooks = new NativeNotionHookStore(prisma, secrets, apiUrl);
     this.slackEventHooks = new NativeSlackHookStore(prisma, secrets, apiUrl);
+    this.enterpriseHooks = new NativeEnterpriseHookStore(prisma, this.configurations);
     this.routineEvents = new NativeRoutineEventApi(
       prisma,
       new NativeEventResourceVerifier(this.oauth, { network: options.network }),
@@ -136,7 +154,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
     await this.oauth.expireSessions(context);
     const connected = new Set(await this.listConnectedExternalIds(context));
     const connectable = new Set(
-      (await this.configurations.statuses())
+      (await this.configurations.statuses(context.spaceId))
         .filter((config) => config.enabled && config.configured)
         .map((config) => config.appId),
     );
@@ -207,6 +225,20 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
         "invalid_input",
         "File selection requires a new Google Drive OAuth connection.",
       );
+    if (
+      NativeRemainingAppIdSchema.safeParse(config.appId).success &&
+      config.credentialKind !== "oauth"
+    ) {
+      return {
+        ...(await this.oauth.connectRemainingToken(
+          config.id,
+          input.credential,
+          context,
+          input.previousConnectionId,
+        )),
+        authorizationUrl: null,
+      };
+    }
     if (["github", "linear", "slack"].includes(config.appId) && config.credentialKind !== "oauth") {
       if (!input.credential)
         throw new NativeActionError(
@@ -397,6 +429,8 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
     }
     const clients = new Map<string, NativeHttpClient>();
     let fileTransfers: NativeSlackFileTransfers | undefined;
+    let graphDownloads: NativeGraphFileDownloads | undefined;
+    let discordDownloads: DiscordAttachmentDownloads | undefined;
     const redactions: string[] = [];
     try {
       const selected = assertBoundConnectorAccount(call, context);
@@ -417,7 +451,6 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
         ...(bound.auth.tokens.refreshToken ? [bound.auth.tokens.refreshToken] : []),
       );
       const settings = NativeConfigSettingsSchema.parse(bound.config.config);
-      const scopes = bound.grant.scopes.filter((scope) => settings.scopes.includes(scope));
       const revalidate = async () => {
         const live = await this.oauth.authorization(selected.id, context);
         for (const value of [live.auth.tokens.accessToken, live.auth.tokens.refreshToken])
@@ -463,15 +496,30 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
             (value) => redactConnectorPayload(value, redactions) as Record<string, unknown>,
           );
       let requestTokenVersion = bound.grant.tokenVersion;
-      const credential = async () => {
+      const credential = async (): Promise<NativeCredential> => {
         const live = await revalidate();
         redactions.push(live.auth.tokens.accessToken);
         requestTokenVersion = live.grant.tokenVersion;
+        if (bound.config.appId === "figma" && bound.config.credentialKind === "personal_token")
+          return { kind: "header", header: "X-Figma-Token", value: live.auth.tokens.accessToken };
+        if (bound.config.appId === "dingtalk")
+          return {
+            kind: "header",
+            header: "x-acs-dingtalk-access-token",
+            value: live.auth.tokens.accessToken,
+          };
+        if (bound.config.appId === "wecom")
+          return { kind: "query", parameter: "access_token", value: live.auth.tokens.accessToken };
+        if (bound.config.appId === "telegram-bot")
+          return { kind: "telegram_bot", value: live.auth.tokens.accessToken };
+        if (bound.config.appId === "discord")
+          return { kind: "raw", value: `Bot ${live.auth.tokens.accessToken}` };
         return {
           kind:
             bound.config.appId === "knowai"
               ? ("api_key" as const)
-              : bound.config.appId === "linear" && bound.config.credentialKind === "personal_token"
+              : ["linear", "clickup"].includes(bound.config.appId) &&
+                  bound.config.credentialKind === "personal_token"
                 ? ("raw" as const)
                 : ("bearer" as const),
           value: live.auth.tokens.accessToken,
@@ -483,7 +531,13 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
         this.options.allowPrivateEndpoint ?? false,
       );
       const client = (service?: NativeRequest["service"]) => {
-        const base = nativeServiceBase(bound.config.appId, settings.endpoint, service);
+        const base = nativeServiceBase(
+          bound.config.appId,
+          settings.endpoint,
+          service,
+          bound.auth.identity.tenant,
+          settings.region,
+        );
         let http = clients.get(base);
         if (!http) {
           http = new NativeHttpClient(base, credential, {
@@ -507,6 +561,18 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
               if (current.grant.tokenVersion === requestTokenVersion)
                 await this.oauth.authorization(selected.id, context, true);
             },
+            ...(["feishu-lark", "wecom", "dingtalk"].includes(bound.config.appId)
+              ? {
+                  enterpriseAuthorization:
+                    bound.config.appId === "wecom"
+                      ? ("wecom" as const)
+                      : bound.config.appId === "dingtalk"
+                        ? ("dingtalk" as const)
+                        : ("feishu" as const),
+                  onRejectedCredential: () =>
+                    this.oauth.rejectCredential(selected.id, context, requestTokenVersion),
+                }
+              : {}),
             timeoutMs: action.id === "knowai.qa.ask" ? 300_000 : 30_000,
             resumableUpload: service === "drive-upload",
           });
@@ -520,18 +586,23 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
           context.signal,
           this.options.network,
         );
+      if (isMicrosoftApp(bound.config.appId))
+        graphDownloads = new NativeGraphFileDownloads(
+          revalidate,
+          context.signal,
+          this.options.network,
+        );
+      if (bound.config.appId === "discord")
+        discordDownloads = new DiscordAttachmentDownloads(
+          revalidate,
+          context.signal,
+          this.options.network,
+        );
       const actionContext: NativeActionContext = {
         operationId: call.executionId,
         signal: context.signal,
         ...checkpoint,
-        principal: {
-          subject: bound.grant.subject,
-          tenant: bound.grant.tenant,
-          scopes,
-          capabilities: settings.capabilities,
-          knowledgeBaseIds: settings.knowledgeBaseIds,
-          context: bound.auth.identity.context,
-        },
+        principal: this.principal(bound, settings),
         request: (request) => {
           if (bound.config.appId === "coginex")
             throw new NativeActionError("invalid_input", "CogineX uses its bound MCP transport.");
@@ -582,6 +653,12 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
               downloadResource: fileTransfers.download.bind(fileTransfers),
             }
           : {}),
+        ...(graphDownloads
+          ? { downloadResource: graphDownloads.download.bind(graphDownloads) }
+          : {}),
+        ...(discordDownloads
+          ? { downloadResource: discordDownloads.download.bind(discordDownloads) }
+          : {}),
         validateResourceUrl: async (url) => {
           await assertSafeRemoteUrl(url, this.options.network?.resolveHostname, {
             allowPrivateEndpoint: await actorMayUsePrivateEndpoint(
@@ -622,6 +699,8 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
     } finally {
       await Promise.all([...clients.values()].map((client) => client.close()));
       await fileTransfers?.close();
+      await graphDownloads?.close();
+      await discordDownloads?.close();
     }
   }
   private principal(
@@ -634,7 +713,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
       scopes: live.grant.scopes.filter((scope) => settings.scopes.includes(scope)),
       capabilities: settings.capabilities,
       knowledgeBaseIds: settings.knowledgeBaseIds,
-      context: live.auth.identity.context,
+      context: { ...live.auth.identity.context, configuredScopes: settings.scopes },
     };
   }
   private permitted(

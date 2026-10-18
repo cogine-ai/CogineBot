@@ -5788,3 +5788,115 @@ msgstr "ID de empresa (opcional)"
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Tenant ID (optional)"
 msgstr "ID de inquilino (opcional)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "SharePoint list item changed"
+msgstr "Elemento de lista de SharePoint modificado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Excel range changed"
+msgstr "Rango de Excel modificado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Planner task changed"
+msgstr "Tarea de Planner modificada"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Teams channel message"
+msgstr "Nuevo mensaje en un canal de Teams"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Feishu / Lark calendar changed"
+msgstr "Calendario de Feishu / Lark modificado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "DingTalk calendar changed"
+msgstr "Calendario de DingTalk modificado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "WeCom schedule changed"
+msgstr "Evento de WeCom modificado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Telegram pinned message changed"
+msgstr "Mensaje fijado de Telegram modificado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Discord channel message"
+msgstr "Nuevo mensaje en un canal de Discord"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discord command invoked"
+msgstr "Comando de Discord invocado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Site ID"
+msgstr "ID del sitio"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "List ID"
+msgstr "ID de la lista"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Drive ID"
+msgstr "ID de la unidad"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Workbook item ID"
+msgstr "ID del archivo del libro"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Worksheet ID"
+msgstr "ID de la hoja"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Cell range (A1 notation)"
+msgstr "Rango de celdas (notación A1)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Plan ID"
+msgstr "ID del plan"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Team ID"
+msgstr "ID del equipo"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "User ID"
+msgstr "ID del usuario"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Start time (ISO 8601)"
+msgstr "Hora de inicio (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "End time (ISO 8601)"
+msgstr "Hora de fin (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Chat ID"
+msgstr "ID del chat"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command ID"
+msgstr "ID del comando"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command name"
+msgstr "Nombre del comando"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event callback URL"
+msgstr "URL de callback de eventos"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Save this application to get its event callback URL."
+msgstr "Guarda esta aplicación para obtener su URL de callback de eventos."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Interactions endpoint URL"
+msgstr "URL del endpoint de interacciones"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect this bot before registering this URL in Discord."
+msgstr "Conecta este bot antes de registrar esta URL en Discord."

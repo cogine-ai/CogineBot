@@ -50,10 +50,12 @@ for (const app of botPlatformApps) {
         },
       );
       try {
-        await action.execute(
+        const result = await action.execute(
           f.input,
           context(app.slug, (r) => client.request(r)),
         );
+        assert.equal(JSON.stringify(result).includes("?ex=fixture"), false);
+        assert.equal(JSON.stringify(result).includes("hm=fixture"), false);
         assert.equal(i, f.steps.length);
       } finally {
         await client.close();

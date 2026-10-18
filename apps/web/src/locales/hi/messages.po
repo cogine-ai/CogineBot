@@ -5788,3 +5788,115 @@ msgstr "संगठन ID (वैकल्पिक)"
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Tenant ID (optional)"
 msgstr "टेनेंट ID (वैकल्पिक)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "SharePoint list item changed"
+msgstr "SharePoint सूची आइटम बदला"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Excel range changed"
+msgstr "Excel रेंज बदली"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Planner task changed"
+msgstr "Planner कार्य बदला"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Teams channel message"
+msgstr "Teams चैनल में नया संदेश"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Feishu / Lark calendar changed"
+msgstr "Feishu / Lark कैलेंडर बदला"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "DingTalk calendar changed"
+msgstr "DingTalk कैलेंडर बदला"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "WeCom schedule changed"
+msgstr "WeCom कार्यक्रम बदला"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Telegram pinned message changed"
+msgstr "Telegram पिन किया गया संदेश बदला"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Discord channel message"
+msgstr "Discord चैनल में नया संदेश"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discord command invoked"
+msgstr "Discord कमांड चलाई गई"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Site ID"
+msgstr "साइट ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "List ID"
+msgstr "सूची ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Drive ID"
+msgstr "ड्राइव ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Workbook item ID"
+msgstr "वर्कबुक फ़ाइल ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Worksheet ID"
+msgstr "वर्कशीट ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Cell range (A1 notation)"
+msgstr "सेल रेंज (A1 नोटेशन)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Plan ID"
+msgstr "योजना ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Team ID"
+msgstr "टीम ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "User ID"
+msgstr "उपयोगकर्ता ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Start time (ISO 8601)"
+msgstr "आरंभ समय (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "End time (ISO 8601)"
+msgstr "समाप्ति समय (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Chat ID"
+msgstr "चैट ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command ID"
+msgstr "कमांड ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command name"
+msgstr "कमांड का नाम"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event callback URL"
+msgstr "इवेंट कॉलबैक URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Save this application to get its event callback URL."
+msgstr "इवेंट कॉलबैक URL पाने के लिए यह ऐप सेव करें।"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Interactions endpoint URL"
+msgstr "इंटरैक्शन एंडपॉइंट URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect this bot before registering this URL in Discord."
+msgstr "Discord में यह URL दर्ज करने से पहले इस बॉट को कनेक्ट करें।"

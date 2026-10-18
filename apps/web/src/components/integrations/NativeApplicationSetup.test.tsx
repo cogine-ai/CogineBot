@@ -5,8 +5,12 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { NativeApplicationSetup } from "./NativeApplicationSetup";
 
-const { status, save } = vi.hoisted(() => ({ status: vi.fn(), save: vi.fn() }));
-vi.mock("../../lib/rpc", () => ({ rpc: { nativeConnectors: { status, save } } }));
+const { status, save, configuration } = vi.hoisted(() => ({
+  status: vi.fn(),
+  save: vi.fn(),
+  configuration: vi.fn(),
+}));
+vi.mock("../../lib/rpc", () => ({ rpc: { nativeConnectors: { status, save, configuration } } }));
 vi.mock("../../lib/user-error", () => ({
   errorText: (_error: unknown, fallback: string) => fallback,
 }));
@@ -66,6 +70,7 @@ afterEach(async () => {
   await act(async () => root.render(null));
   status.mockReset();
   save.mockReset();
+  configuration.mockReset();
 });
 function control(label: string): HTMLInputElement | HTMLSelectElement {
   const node = [...container.querySelectorAll("label")].find((node) => node.textContent === label);
@@ -246,4 +251,60 @@ it("WeCom distinguishes local Corp/Agent credentials from a suite installation a
   await choose("Authorization", "oauth");
   expect(control("Client ID").required).toBe(true);
   expect(control("Corp ID (optional)").required).toBe(false);
+});
+
+it("Feishu official ownership only offers the implemented user OAuth protocol", async () => {
+  await render("feishu-lark");
+  expect(control("App secret")).toBeTruthy();
+  await choose("Application owner", "official");
+  expect(control("App ID").required).toBe(true);
+  expect(control("Client secret").type).toBe("password");
+  expect(container.textContent).not.toContain("App secret");
+  expect(container.textContent).not.toContain("This application is bound to the current space.");
+  expect(container.querySelector('select[id$="-kind"]')).toBeNull();
+});
+
+it("owner editing distinguishes the enterprise ticket callback from the OAuth redirect and never returns saved secrets", async () => {
+  const source = {
+    id: "fixture-config",
+    appId: "wecom",
+    label: "WeCom suite",
+    ownership: "official",
+    credentialKind: "oauth",
+    actor: "app",
+    enabled: true,
+    configured: true,
+    revision: 2,
+    callbackUri: "https://instance.example.test/api/connectors/oauth/callback",
+    executionLocation: "instance",
+  };
+  status.mockResolvedValue({
+    canConfigure: true,
+    callbackUri: source.callbackUri,
+    configurations: [source],
+  });
+  configuration.mockResolvedValue({
+    ...source,
+    clientId: "suite",
+    agentId: "1000001",
+    scopes: [],
+    capabilities: [],
+    knowledgeBaseIds: [],
+    hasClientSecret: true,
+    hasVerificationToken: true,
+    hasEncryptionKey: true,
+    enterpriseCallbackUri: "https://instance.example.test/api/connectors/enterprise/fixture-config",
+  });
+  await act(async () => root.render(<NativeApplicationSetup />));
+  await act(async () =>
+    [...container.querySelectorAll("button")].find((node) => node.textContent === "Edit")!.click(),
+  );
+  expect(control("Callback URL").value).toBe(source.callbackUri);
+  expect(control("Event callback URL").value).toBe(
+    "https://instance.example.test/api/connectors/enterprise/fixture-config",
+  );
+  expect((control("Event callback URL") as HTMLInputElement).readOnly).toBe(true);
+  expect(control("Client secret").value).toBe("");
+  expect(control("Verification token").value).toBe("");
+  expect(control("Encryption key").value).toBe("");
 });

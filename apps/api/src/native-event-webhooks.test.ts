@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import type { NativeNotionHookStore } from "@rakazo/adapters";
 import {
   calendarChannelTokenHash,
+  NativeActionError,
   NativeRoutineEventService,
   verifyNotionSignal,
 } from "@rakazo/adapters";
@@ -273,5 +274,59 @@ describe("native event HTTP boundary", () => {
     ).toBe(401);
     expect(f.enqueue).not.toHaveBeenCalled();
     f.noMessages();
+  });
+});
+
+describe("Discord command HTTP protocol receipt", () => {
+  it("returns an ephemeral queued response only after passing exact bounded raw bytes to the service", async () => {
+    const app = new Hono(),
+      ingestDiscord = vi.fn(
+        async (
+          _configId: string,
+          _raw: Uint8Array,
+          _headers: Headers | Record<string, string>,
+          _signal: AbortSignal,
+        ) => ({ type: 4 as const, data: { content: "Routine queued.", flags: 64 as const } }),
+      );
+    registerNativeEventWebhooks(app, {
+      ingestNotion: async () => 0,
+      ingestCalendar: async () => 0,
+      ingestDiscord,
+    });
+    const raw = '  {"type":2,"untrusted":"bytes retained exactly"}\n';
+    const response = await app.request("/api/connectors/events/discord/config-a", {
+      method: "POST",
+      headers: { "x-signature-ed25519": "fixture-signature" },
+      body: raw,
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      type: 4,
+      data: { content: "Routine queued.", flags: 64 },
+    });
+    expect(ingestDiscord).toHaveBeenCalledTimes(1);
+    expect(ingestDiscord.mock.calls[0]?.[0]).toBe("config-a");
+    expect(new TextDecoder().decode(ingestDiscord.mock.calls[0]?.[1])).toBe(raw);
+  });
+  it("queue failures are 503 and invalid signatures are 401, with no successful queued acknowledgement", async () => {
+    for (const error of [
+      new Error("durable queue failed"),
+      new NativeActionError("authorization_required", "invalid signature"),
+    ]) {
+      const app = new Hono();
+      registerNativeEventWebhooks(app, {
+        ingestNotion: async () => 0,
+        ingestCalendar: async () => 0,
+        ingestDiscord: async () => {
+          throw error;
+        },
+      });
+      const response = await app.request("/api/connectors/events/discord/config-a", {
+        method: "POST",
+        body: "{}",
+      });
+      expect(response.status).toBe(error instanceof NativeActionError ? 401 : 503);
+      expect(await response.text()).not.toContain("queued");
+    }
   });
 });

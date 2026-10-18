@@ -5788,3 +5788,115 @@ msgstr "企业 ID（可选）"
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Tenant ID (optional)"
 msgstr "租户 ID（可选）"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "SharePoint list item changed"
+msgstr "SharePoint 列表项发生变化"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Excel range changed"
+msgstr "Excel 单元格区域发生变化"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Planner task changed"
+msgstr "Planner 任务发生变化"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Teams channel message"
+msgstr "Teams 频道收到新消息"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Feishu / Lark calendar changed"
+msgstr "飞书 / Lark 日历发生变化"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "DingTalk calendar changed"
+msgstr "钉钉日历发生变化"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "WeCom schedule changed"
+msgstr "企业微信日程发生变化"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Telegram pinned message changed"
+msgstr "Telegram 置顶消息发生变化"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Discord channel message"
+msgstr "Discord 频道收到新消息"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discord command invoked"
+msgstr "Discord 命令被调用"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Site ID"
+msgstr "站点 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "List ID"
+msgstr "列表 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Drive ID"
+msgstr "云盘 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Workbook item ID"
+msgstr "工作簿文件 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Worksheet ID"
+msgstr "工作表 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Cell range (A1 notation)"
+msgstr "单元格区域（A1 表示法）"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Plan ID"
+msgstr "计划 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Team ID"
+msgstr "团队 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "User ID"
+msgstr "用户 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Start time (ISO 8601)"
+msgstr "开始时间（ISO 8601）"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "End time (ISO 8601)"
+msgstr "结束时间（ISO 8601）"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Chat ID"
+msgstr "聊天 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command ID"
+msgstr "命令 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command name"
+msgstr "命令名称"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event callback URL"
+msgstr "事件回调 URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Save this application to get its event callback URL."
+msgstr "保存此应用后即可获取事件回调 URL。"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Interactions endpoint URL"
+msgstr "交互端点 URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect this bot before registering this URL in Discord."
+msgstr "请先连接此机器人，再到 Discord 登记此 URL。"

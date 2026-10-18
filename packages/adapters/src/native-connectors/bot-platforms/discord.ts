@@ -12,6 +12,7 @@ import {
 } from "../collaboration-action.js";
 import { authorizeBot, safeFilename } from "./action.js";
 import contract from "./discord.contract.json" with { type: "json" };
+import { publicDiscordMessage } from "./message.js";
 import {
   boundTarget,
   channelSnapshot,
@@ -23,28 +24,12 @@ import {
   requireDiscord,
 } from "./permissions.js";
 
-const MESSAGE = [
-  "id",
-  "channel_id",
-  "author",
-  "content",
-  "timestamp",
-  "edited_timestamp",
-  "type",
-  "attachments",
-  "embeds",
-  "message_reference",
-  "referenced_message",
-  "mentions",
-  "reactions",
-  "flags",
-];
 function message(value: unknown, channelId: string, messageId?: unknown): Data {
   const row = object(value);
   if (row.channel_id !== channelId || (messageId !== undefined && row.id !== messageId))
     return incomplete("Discord returned another channel message.");
   id(row.id);
-  return select(row, MESSAGE);
+  return row;
 }
 export const discordActions = collaborationActions(
   contract.actions,
@@ -171,7 +156,7 @@ export const discordActions = collaborationActions(
         .map((row) => id(row.id))
         .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
       return run.finish({
-        items,
+        items: items.map((row) => publicDiscordMessage(row)),
         hasMore: items.length === limit,
         nextBefore: items.length === limit ? (sorted[0] ?? null) : null,
         nextAfter: items.length === limit ? (sorted.at(-1) ?? null) : null,
@@ -194,7 +179,7 @@ export const discordActions = collaborationActions(
         channelId,
         args.message_id,
       );
-      if (action === "discord.messages.get") return run.finish(current);
+      if (action === "discord.messages.get") return run.finish(publicDiscordMessage(current));
       if (action === "discord.attachments.download") {
         if (!run.context.downloadResource || !run.context.writeArtifact)
           throw new NativeActionError(
@@ -267,7 +252,10 @@ export const discordActions = collaborationActions(
         );
         if (id(object(updated.author).id) !== botId)
           return incomplete("Discord returned another message author.");
-        return run.finish(updated, { resource_id: String(updated.id), channel: channelId });
+        return run.finish(publicDiscordMessage(updated), {
+          resource_id: String(updated.id),
+          channel: channelId,
+        });
       }
       if (action === "discord.messages.delete") {
         if (id(object(current.author).id) !== botId)
@@ -283,7 +271,28 @@ export const discordActions = collaborationActions(
           { resource_id: String(args.message_id), channel: channelId },
         );
       }
-      requireDiscord(proof, PERMISSIONS.ADD_REACTIONS, true);
+      const existingEmoji = (current.reactions === undefined ? [] : array(current.reactions))
+        .map(object)
+        .some((reaction) => {
+          if (
+            typeof reaction.count !== "number" ||
+            !Number.isSafeInteger(reaction.count) ||
+            reaction.count < 1
+          )
+            return false;
+          const emoji = object(reaction.emoji);
+          return (
+            (emoji.id === null && emoji.name === args.emoji) ||
+            (typeof emoji.id === "string" &&
+              typeof emoji.name === "string" &&
+              `${emoji.name}:${emoji.id}` === args.emoji)
+          );
+        });
+      requireDiscord(
+        proof,
+        existingEmoji ? PERMISSIONS.VIEW_CHANNEL : PERMISSIONS.ADD_REACTIONS,
+        true,
+      );
       const reacted = await run.request(
         {
           method: "PUT",
@@ -340,7 +349,10 @@ export const discordActions = collaborationActions(
     const sent = message((await run.request({ method: "POST", path, body }, true)).body, channelId);
     if (id(object(sent.author).id) !== botId)
       return incomplete("Discord returned another message author.");
-    return run.finish(sent, { resource_id: String(sent.id), channel: channelId });
+    return run.finish(publicDiscordMessage(sent), {
+      resource_id: String(sent.id),
+      channel: channelId,
+    });
   },
   authorizeBot,
 );

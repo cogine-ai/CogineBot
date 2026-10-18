@@ -5788,3 +5788,115 @@ msgstr "Şirket kimliği (isteğe bağlı)"
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Tenant ID (optional)"
 msgstr "Kiracı kimliği (isteğe bağlı)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "SharePoint list item changed"
+msgstr "SharePoint liste öğesi değişti"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Excel range changed"
+msgstr "Excel aralığı değişti"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Planner task changed"
+msgstr "Planner görevi değişti"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Teams channel message"
+msgstr "Teams kanalında yeni mesaj"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Feishu / Lark calendar changed"
+msgstr "Feishu / Lark takvimi değişti"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "DingTalk calendar changed"
+msgstr "DingTalk takvimi değişti"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "WeCom schedule changed"
+msgstr "WeCom etkinliği değişti"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Telegram pinned message changed"
+msgstr "Sabitlenmiş Telegram mesajı değişti"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Discord channel message"
+msgstr "Discord kanalında yeni mesaj"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discord command invoked"
+msgstr "Discord komutu çağrıldı"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Site ID"
+msgstr "Site kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "List ID"
+msgstr "Liste kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Drive ID"
+msgstr "Sürücü kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Workbook item ID"
+msgstr "Çalışma kitabı dosya kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Worksheet ID"
+msgstr "Çalışma sayfası kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Cell range (A1 notation)"
+msgstr "Hücre aralığı (A1 gösterimi)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Plan ID"
+msgstr "Plan kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Team ID"
+msgstr "Takım kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "User ID"
+msgstr "Kullanıcı kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Start time (ISO 8601)"
+msgstr "Başlangıç zamanı (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "End time (ISO 8601)"
+msgstr "Bitiş zamanı (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Chat ID"
+msgstr "Sohbet kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command ID"
+msgstr "Komut kimliği"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command name"
+msgstr "Komut adı"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event callback URL"
+msgstr "Olay geri çağrı URL’si"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Save this application to get its event callback URL."
+msgstr "Olay geri çağrı URL’sini almak için bu uygulamayı kaydedin."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Interactions endpoint URL"
+msgstr "Etkileşim uç noktası URL’si"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect this bot before registering this URL in Discord."
+msgstr "Bu URL’yi Discord’a kaydetmeden önce bu botu bağlayın."

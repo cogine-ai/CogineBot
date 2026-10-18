@@ -1,6 +1,7 @@
 import type {
   CacheCapabilities as ConnectionCacheCapabilities,
   ConnectionCatalogItem,
+  NativeDiscordSignalJob,
   NativeNotionSignalJobPayload,
   NativeSlackLifecycleJobPayload,
   NativeSlackSignalJobPayload,
@@ -642,6 +643,7 @@ export interface VoiceTranscribeRequest {
 export interface BackgroundJobPayloads {
   "native.source.poll": NativeSourceJobPayload;
   "native.notion.signal": NativeNotionSignalJobPayload;
+  "native.discord.signal": NativeDiscordSignalJob;
   "native.slack.signal": NativeSlackSignalJobPayload;
   "native.slack.lifecycle": NativeSlackLifecycleJobPayload;
   "run.continue": { runId: string };

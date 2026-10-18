@@ -899,4 +899,13 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Authorizing this Figma account replaces its previous authorization for this application.":
     "重新授权此 Figma 账号会替换该应用的旧授权。",
   "App credentials": "应用凭据",
+  "SharePoint event": "SharePoint 事件",
+  "Excel event": "Excel 事件",
+  "Planner event": "Planner 事件",
+  "Teams event": "Teams 事件",
+  "Feishu / Lark event": "飞书 / Lark 事件",
+  "DingTalk event": "钉钉事件",
+  "WeCom event": "企业微信事件",
+  "Telegram bot event": "Telegram 机器人事件",
+  "Discord bot event": "Discord 机器人事件",
 };

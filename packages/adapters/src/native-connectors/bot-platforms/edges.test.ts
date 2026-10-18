@@ -351,3 +351,117 @@ for (const [name, res] of [
       await h.transport.close();
     }
   });
+
+for (const emoji of ["👍", "fixture:100030"])
+  test(`Discord existing ${emoji} reaction succeeds without ADD_REACTIONS`, async () => {
+    const h = harness("discord.reactions.create");
+    h.f.input.emoji = emoji;
+    (h.f.steps[3]!.response.body as Data[])[0]!.permissions = String(1024 + 65536);
+    (h.f.steps[4]!.response.body as Data).reactions = [
+      {
+        count: 1,
+        me: false,
+        emoji: emoji === "👍" ? { id: null, name: emoji } : { id: "100030", name: "fixture" },
+      },
+    ];
+    await h.run();
+    assert.equal(h.writes, 1);
+  });
+for (const reactions of [
+  [],
+  [{ count: 1, emoji: { id: null, name: "👎" } }],
+  [{ count: 0, emoji: { id: null, name: "👍" } }],
+])
+  test(`Discord new emoji still requires ADD_REACTIONS ${JSON.stringify(reactions)}`, async () => {
+    const h = harness("discord.reactions.create");
+    (h.f.steps[3]!.response.body as Data[])[0]!.permissions = String(1024 + 65536);
+    (h.f.steps[4]!.response.body as Data).reactions = reactions;
+    await assert.rejects(h.run(), failure("insufficient_scope"));
+    assert.equal(h.writes, 0);
+  });
+for (const id of [
+  "discord.messages.get",
+  "discord.messages.list",
+  "discord.messages.send",
+  "discord.messages.update",
+])
+  test(`${id}: public metadata strips signed attachment URLs recursively and keeps message text`, async () => {
+    const h = harness(id),
+      body = h.f.steps.at(-1)!.response.body;
+    const raw = (Array.isArray(body) ? body[0] : body) as Data;
+    const signed =
+      "https://cdn.discordapp.com/attachments/100004/100006/file.txt?ex=private&is=private&hm=private";
+    raw.attachments = [
+      {
+        id: "100006",
+        filename: "fixture.txt",
+        size: 3,
+        content_type: "text/plain",
+        url: signed,
+        proxy_url: signed,
+      },
+    ];
+    raw.embeds = [
+      {
+        type: "rich",
+        title: "Fixture",
+        url: signed,
+        image: { url: signed, proxy_url: signed, width: 10, height: 10 },
+        thumbnail: { url: signed },
+        author: { name: "Creator", url: signed, icon_url: signed },
+        footer: { text: "Footer", icon_url: signed },
+      },
+    ];
+    raw.referenced_message = {
+      ...structuredClone(raw),
+      id: "100099",
+      referenced_message: {
+        id: "100098",
+        channel_id: "100004",
+        content: "Nested",
+        attachments: structuredClone(raw.attachments),
+      },
+    };
+    const result = (await h.run()) as Data,
+      message = id.endsWith("list") ? (result.items as Data[])[0]! : result;
+    assert.equal(JSON.stringify(result).includes("?ex="), false);
+    assert.equal(JSON.stringify(result).includes("hm=private"), false);
+    assert.equal(JSON.stringify(result).includes("cdn.discordapp.com"), false);
+    assert.equal(message.content, "Hello");
+    assert.deepEqual(message.attachments, [
+      { id: "100006", filename: "fixture.txt", size: 3, content_type: "text/plain" },
+    ]);
+    assert.equal((message.referenced_message as Data).id, "100099");
+    assert.equal(
+      ((message.referenced_message as Data).referenced_message as Data).content,
+      "Nested",
+    );
+  });
+test("Discord private download still uses the original proved signed URL and only returns a Space artifact", async () => {
+  const h = harness("discord.attachments.download");
+  const file = ((h.f.steps.at(-1)!.response.body as Data).attachments as Data[])[0]!;
+  let seen = "";
+  h.ctx.downloadResource = async (input) => {
+    seen = input.url;
+    return { bytes: new TextEncoder().encode("abc"), mimeType: "text/plain" };
+  };
+  const result = await h.run();
+  assert.equal(seen, file.url);
+  assert.ok(seen.includes("?ex=fixture"));
+  assert.equal(JSON.stringify(result).includes("cdn.discordapp.com"), false);
+});
+
+test("Discord reply previews do not expand the bound channel into a different channel", async () => {
+  const h = harness("discord.messages.get"),
+    raw = h.f.steps.at(-1)!.response.body as Data;
+  raw.message_reference = { message_id: "100099", channel_id: "100090", guild_id: GUILD };
+  raw.referenced_message = {
+    id: "100099",
+    channel_id: "100090",
+    content: "Outside owner channel allowlist",
+    attachments: [{ id: "100006", url: "https://cdn.discordapp.com/private?ex=private" }],
+  };
+  const result = (await h.run()) as Data;
+  assert.deepEqual(result.message_reference, raw.message_reference);
+  assert.equal("referenced_message" in result, false);
+});

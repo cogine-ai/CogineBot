@@ -1,5 +1,9 @@
 import type { NativeRoutineEventService } from "@rakazo/adapters";
-import { InvalidNativeEventSignal, InvalidNativeSlackSignal } from "@rakazo/adapters";
+import {
+  InvalidNativeEventSignal,
+  InvalidNativeSlackSignal,
+  NativeActionError,
+} from "@rakazo/adapters";
 import type { Hono } from "hono";
 
 /** Signature verification must receive these exact bounded bytes, not JSON decoded and reserialized. */
@@ -45,8 +49,28 @@ export async function readNativeEventBytes(
 export function registerNativeEventWebhooks(
   app: Hono,
   events: Pick<NativeRoutineEventService, "ingestNotion" | "ingestCalendar"> &
-    Partial<Pick<NativeRoutineEventService, "ingestSlack" | "ingestDrive" | "ingestGmail">>,
+    Partial<
+      Pick<
+        NativeRoutineEventService,
+        "ingestSlack" | "ingestDrive" | "ingestGmail" | "ingestDiscord"
+      >
+    >,
 ): void {
+  app.post("/api/connectors/events/discord/:configId", async (c) => {
+    try {
+      if (!events.ingestDiscord) return c.body(null, 503);
+      const configId = c.req.param("configId");
+      if (configId.length > 1024) return c.body(null, 404);
+      const raw = await readNativeEventBytes(c.req.raw, 262144);
+      if (!raw) return c.body(null, 413);
+      return c.json(await events.ingestDiscord(configId, raw, c.req.raw.headers, c.req.raw.signal));
+    } catch (error) {
+      return c.body(
+        null,
+        error instanceof NativeActionError && error.kind === "authorization_required" ? 401 : 503,
+      );
+    }
+  });
   app.post("/api/connectors/events/calendar", async (c) => {
     try {
       const raw = await readNativeEventBytes(c.req.raw, 0);

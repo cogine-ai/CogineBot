@@ -5,12 +5,22 @@ import { combineSignals } from "../connector-safety.js";
 import type { OAuthMaterial } from "../mcp-oauth.js";
 import type { RemoteTransportDependencies, SafeRemoteFetch } from "../remote-mcp.js";
 import { NativeActionError } from "./action.js";
+import { BotPlatformAuthorities } from "./bot-platforms/auth.js";
+import { isBotPlatformApp } from "./bot-platforms/metadata.js";
+import { BusinessFilesAuthorities } from "./business-files/auth.js";
+import { isBusinessFilesApp } from "./business-files/metadata.js";
 import { CollaborationOAuthAuthorities } from "./collaboration-authorities.js";
 import { NativeConfigSettingsSchema } from "./config.js";
+import { EnterpriseAuthorities } from "./enterprise/auth.js";
+import { isEnterpriseApp } from "./enterprise/metadata.js";
 import { isGoogleNativeApp } from "./google.js";
 import type { NativeMcpPending } from "./mcp.js";
 import { NativeMcpProtocol } from "./mcp.js";
+import { MicrosoftAuthorities } from "./microsoft/auth.js";
+import { isMicrosoftApp } from "./microsoft/metadata.js";
 import { createNativeFetch, nativeAbortable } from "./network.js";
+import { WorkManagementAuthorities } from "./work-management/auth.js";
+import { isWorkManagementApp } from "./work-management/metadata.js";
 
 export const NOTION_VERSION = "2026-03-11";
 export const DRIVE_PICKER_SCOPE = "https://www.googleapis.com/auth/drive.file";
@@ -34,6 +44,17 @@ export interface NativeTokenMaterial {
   mcp?: OAuthMaterial;
   /** GitHub App signing material stays inside the encrypted per-owner grant secret. */
   githubInstallation?: { appId: string; installationId: string; privateKeyPem: string };
+  /** Provider-issued installation material; encrypted with this exact owner and space grant. */
+  enterpriseInstallation?:
+    | {
+        kind: "wecom_suite";
+        suiteId: string;
+        corpId: string;
+        agentId: string;
+        permanentCode: string;
+        authMode?: number;
+      }
+    | { kind: "feishu_store"; region: "feishu" | "lark"; appId: string; tenantKey: string };
 }
 export interface NativeIdentity {
   authority: string;
@@ -118,18 +139,63 @@ export class NativeOAuthAuthorities {
   private readonly fetch: SafeRemoteFetch;
   readonly mcp: NativeMcpProtocol;
   readonly collaboration: CollaborationOAuthAuthorities;
+  readonly microsoft: MicrosoftAuthorities;
+  readonly workManagement: WorkManagementAuthorities;
+  private readonly privateGitLab: WorkManagementAuthorities;
+  readonly businessFiles: BusinessFilesAuthorities;
+  readonly botPlatforms: BotPlatformAuthorities;
+  readonly enterprise: EnterpriseAuthorities;
   constructor(network: RemoteTransportDependencies = {}) {
     this.fetch = createNativeFetch(network);
     this.mcp = new NativeMcpProtocol(network);
     this.collaboration = new CollaborationOAuthAuthorities(network);
+    this.microsoft = new MicrosoftAuthorities(network);
+    this.workManagement = new WorkManagementAuthorities(network);
+    this.privateGitLab = new WorkManagementAuthorities(network, true);
+    this.businessFiles = new BusinessFilesAuthorities(network);
+    this.botPlatforms = new BotPlatformAuthorities(network);
+    this.enterprise = new EnterpriseAuthorities(network);
   }
   close(): Promise<void> {
-    return Promise.all([this.fetch.close(), this.mcp.close(), this.collaboration.close()]).then(
-      () => undefined,
-    );
+    return Promise.all([
+      this.fetch.close(),
+      this.mcp.close(),
+      this.collaboration.close(),
+      this.microsoft.close(),
+      this.workManagement.close(),
+      this.privateGitLab.close(),
+      this.businessFiles.close(),
+      this.botPlatforms.close(),
+      this.enterprise.close(),
+    ]).then(() => undefined);
+  }
+  private remaining(config: NativeAppConfig, allowPrivateEndpoint = false) {
+    if (isMicrosoftApp(config.appId)) return this.microsoft;
+    if (isWorkManagementApp(config.appId))
+      return config.appId === "gitlab" && allowPrivateEndpoint
+        ? this.privateGitLab
+        : this.workManagement;
+    if (isBusinessFilesApp(config.appId)) return this.businessFiles;
+    if (isEnterpriseApp(config.appId)) return this.enterprise;
+    return undefined;
+  }
+  async verifyRemainingStatic(
+    config: NativeAppConfig,
+    credential: string,
+    signal: AbortSignal,
+    allowPrivateEndpoint = false,
+  ): Promise<NativeAuthorization> {
+    if (isBotPlatformApp(config.appId))
+      return this.botPlatforms.verifyStatic(config, credential, signal);
+    const authority = this.remaining(config, allowPrivateEndpoint);
+    if (!authority)
+      throw new NativeActionError("invalid_input", "Unsupported static application credential.");
+    return authority.verifyStatic(config, credential, signal);
   }
 
   authorizationUrl(config: NativeAppConfig, state: string, verifier: string): string {
+    const remaining = this.remaining(config);
+    if (remaining) return remaining.authorizationUrl(config, state, verifier);
     if (["github", "linear", "slack"].includes(config.appId))
       return this.collaboration.authorizationUrl(config, state, verifier);
     const settings = NativeConfigSettingsSchema.parse(config.config);
@@ -295,7 +361,12 @@ export class NativeOAuthAuthorities {
     mcpPending?: NativeMcpPending,
     mcpState?: string,
     allowPrivateEndpoint = false,
+    enterprisePending?: Record<string, unknown>,
   ): Promise<NativeAuthorization> {
+    if (isEnterpriseApp(config.appId))
+      return this.enterprise.exchange(config, secret, code, verifier, signal, enterprisePending);
+    const remaining = this.remaining(config, allowPrivateEndpoint);
+    if (remaining) return remaining.exchange(config, secret, code, verifier, signal);
     if (["github", "linear", "slack"].includes(config.appId))
       return this.collaboration.exchange(config, secret, code, verifier, signal);
     if (config.appId === "coginex") {
@@ -372,6 +443,8 @@ export class NativeOAuthAuthorities {
     signal: AbortSignal,
     allowPrivateEndpoint = false,
   ): Promise<NativeAuthorization> {
+    const remaining = this.remaining(config, allowPrivateEndpoint);
+    if (remaining) return remaining.refresh(config, secret, previous, signal);
     const picker = previous.identity.context.identityKind === DRIVE_PICKER_IDENTITY_KIND;
     if (picker) {
       requireDrivePickerConfig(config);

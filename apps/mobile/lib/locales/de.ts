@@ -928,4 +928,13 @@ export const DE_MESSAGES: Record<string, string> = {
   "Authorizing this Figma account replaces its previous authorization for this application.":
     "Wenn Sie dieses Figma-Konto autorisieren, wird seine bisherige Autorisierung für diese Anwendung ersetzt.",
   "App credentials": "App-Zugangsdaten",
+  "SharePoint event": "SharePoint-Ereignis",
+  "Excel event": "Excel-Ereignis",
+  "Planner event": "Planner-Ereignis",
+  "Teams event": "Teams-Ereignis",
+  "Feishu / Lark event": "Feishu-/Lark-Ereignis",
+  "DingTalk event": "DingTalk-Ereignis",
+  "WeCom event": "WeCom-Ereignis",
+  "Telegram bot event": "Telegram-Bot-Ereignis",
+  "Discord bot event": "Discord-Bot-Ereignis",
 };

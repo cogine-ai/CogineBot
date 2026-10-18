@@ -12,6 +12,35 @@ import {
 
 const PAGE = "11111111-1111-4111-8111-111111111111";
 const specs: NativeRoutineEventSpec[] = [
+  { kind: "sharepoint.list_item.changed", siteId: "site", listId: "list" },
+  {
+    kind: "excel.range.changed",
+    driveId: "drive",
+    itemId: "workbook",
+    worksheetId: "sheet",
+    address: "A1:B2",
+  },
+  { kind: "planner.task.changed", planId: "plan" },
+  { kind: "teams.channel_message.created", teamId: "team", channelId: "channel" },
+  { kind: "feishu.calendar_event.changed", calendarId: "calendar" },
+  {
+    kind: "dingtalk.calendar_event.changed",
+    userId: "user",
+    calendarId: "calendar",
+    timeMin: "2026-10-18T00:00:00Z",
+    timeMax: "2026-10-19T00:00:00Z",
+  },
+  { kind: "wecom.schedule.changed", calendarId: "calendar" },
+  { kind: "telegram.pinned_message.changed", chatId: "-100123456" },
+  { kind: "discord.channel_message.created", channelId: "423456789012345678" },
+  {
+    kind: "discord.command.invoked",
+    guildId: "323456789012345678",
+    channelId: "423456789012345678",
+    commandId: "523456789012345678",
+    commandName: "review",
+  },
+
   { kind: "calendar.event_changed", calendarId: "primary", target: { kind: "calendar" } },
   {
     kind: "calendar.event_starting",

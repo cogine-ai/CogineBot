@@ -274,7 +274,9 @@ export function NativeApplicationSetup({
         }))
       : capabilities
     : [];
-  const credentialOptions = draft ? nativeApplicationCredentialKinds(draft.appId) : [];
+  const credentialOptions = draft
+    ? nativeApplicationCredentialKinds(draft.appId, draft.ownership)
+    : [];
   const actorOptions = draft ? nativeApplicationActors(draft) : [];
   const remainingCapabilities = draft
     ? [...(remainingNativeProfile(draft.appId)?.capabilities ?? [])]
@@ -479,14 +481,22 @@ export function NativeApplicationSetup({
                   className="w-full"
                   value={draft.ownership}
                   disabled={busy}
-                  onChange={(event) =>
-                    update({
-                      ownership: event.target.value === "official" ? "official" : "byo",
-                      ...(["telegram-bot", "discord"].includes(draft.appId)
-                        ? { clientSecret: undefined }
-                        : {}),
-                    })
-                  }
+                  onChange={(event) => {
+                    const ownership = event.target.value === "official" ? "official" : "byo";
+                    if (
+                      draft.appId === "feishu-lark" &&
+                      ownership === "official" &&
+                      draft.credentialKind === "machine_key"
+                    ) {
+                      update(changeNativeCredential({ ...draft, ownership }, "oauth"));
+                    } else
+                      update({
+                        ownership,
+                        ...(["telegram-bot", "discord"].includes(draft.appId)
+                          ? { clientSecret: undefined }
+                          : {}),
+                      });
+                  }}
                 >
                   <NativeSelectOption value="byo">
                     <Trans>Your application</Trans>
@@ -692,6 +702,44 @@ export function NativeApplicationSetup({
                 ) : null}
               </Field>
             </>
+          ) : null}
+          {draft.credentialKind === "oauth" && ["feishu-lark", "wecom"].includes(draft.appId) ? (
+            draft.enterpriseCallbackUri ? (
+              <Field>
+                <FieldLabel htmlFor={`${id}-enterprise-callback`}>
+                  <Trans>Event callback URL</Trans>
+                </FieldLabel>
+                <Input
+                  id={`${id}-enterprise-callback`}
+                  value={draft.enterpriseCallbackUri}
+                  readOnly
+                  onFocus={(event) => event.target.select()}
+                />
+              </Field>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                <Trans>Save this application to get its event callback URL.</Trans>
+              </p>
+            )
+          ) : null}
+          {draft.appId === "discord" && draft.id && draft.capabilities.includes("commands") ? (
+            <Field>
+              <FieldLabel htmlFor={`${id}-discord-interaction`}>
+                <Trans>Interactions endpoint URL</Trans>
+              </FieldLabel>
+              <Input
+                id={`${id}-discord-interaction`}
+                value={new URL(
+                  `/api/connectors/events/discord/${encodeURIComponent(draft.id)}`,
+                  state.callbackUri,
+                ).toString()}
+                readOnly
+                onFocus={(event) => event.target.select()}
+              />
+              <p className="text-xs text-muted-foreground">
+                <Trans>Connect this bot before registering this URL in Discord.</Trans>
+              </p>
+            </Field>
           ) : null}
           {enterpriseApp ? (
             <>

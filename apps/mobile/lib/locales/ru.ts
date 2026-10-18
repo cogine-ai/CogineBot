@@ -931,4 +931,13 @@ export const RU_MESSAGES: Record<string, string> = {
   "Authorizing this Figma account replaces its previous authorization for this application.":
     "Авторизация этого аккаунта Figma заменит его предыдущую авторизацию для этого приложения.",
   "App credentials": "Учётные данные приложения",
+  "SharePoint event": "Событие SharePoint",
+  "Excel event": "Событие Excel",
+  "Planner event": "Событие Planner",
+  "Teams event": "Событие Teams",
+  "Feishu / Lark event": "Событие Feishu / Lark",
+  "DingTalk event": "Событие DingTalk",
+  "WeCom event": "Событие WeCom",
+  "Telegram bot event": "Событие бота Telegram",
+  "Discord bot event": "Событие бота Discord",
 };

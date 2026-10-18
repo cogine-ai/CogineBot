@@ -113,4 +113,24 @@ describe("routineStatusLine", () => {
       "Paused · Calendar event, Notion event, Gmail event, Drive event, Slack bot event, Slack message · UTC",
     );
   });
+  it("shows remaining platform events without silently conflating them with chat message triggers", () => {
+    const value = routine({
+      nativeTriggers: [
+        trigger({ kind: "teams.channel_message.created", teamId: "team", channelId: "channel" }),
+        trigger({ kind: "wecom.schedule.changed", calendarId: "calendar" }),
+        trigger({ kind: "discord.channel_message.created", channelId: "423456789012345678" }),
+        trigger({
+          kind: "discord.command.invoked",
+          guildId: "323456789012345678",
+          channelId: "423456789012345678",
+          commandId: "523456789012345678",
+          commandName: "review",
+        }),
+      ],
+      messageProvider: "teams",
+    });
+    expect(routineStatusLine(value)).toBe(
+      "Active · Teams event, WeCom event, Discord bot event, Teams message · UTC",
+    );
+  });
 });

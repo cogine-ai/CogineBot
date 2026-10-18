@@ -1,5 +1,5 @@
 {
-  "contractSha256": "3e80ac4ea345e441b8463d6692decb81e368bd33a2f55c3362a279335f14a937",
+  "contractSha256": "98c3abc14be420862d3e8de1577f693d35d7cf1dc4b51c71613ab88576d39cd9",
   "fixtures": [
     {
       "id": "discord.channels.get",
@@ -172,7 +172,54 @@
                 "content": "Hello",
                 "timestamp": "2026-10-18T00:00:00.000Z",
                 "type": 0,
-                "attachments": []
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ],
+                "referenced_message": {
+                  "id": "100099",
+                  "channel_id": "100004",
+                  "author": {
+                    "id": "100001",
+                    "bot": true,
+                    "username": "fixture_bot"
+                  },
+                  "content": "Reference",
+                  "attachments": [
+                    {
+                      "id": "100006",
+                      "filename": "fixture.txt",
+                      "size": 3,
+                      "content_type": "text/plain",
+                      "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                    }
+                  ]
+                },
+                "embeds": [
+                  {
+                    "type": "rich",
+                    "title": "Fixture",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "image": {
+                      "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "width": 10,
+                      "height": 10
+                    },
+                    "author": {
+                      "name": "Creator",
+                      "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                    }
+                  }
+                ]
               }
             ]
           }
@@ -191,7 +238,45 @@
             "content": "Hello",
             "timestamp": "2026-10-18T00:00:00.000Z",
             "type": 0,
-            "attachments": []
+            "attachments": [
+              {
+                "id": "100006",
+                "filename": "fixture.txt",
+                "size": 3,
+                "content_type": "text/plain"
+              }
+            ],
+            "referenced_message": {
+              "id": "100099",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Reference",
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain"
+                }
+              ]
+            },
+            "embeds": [
+              {
+                "type": "rich",
+                "title": "Fixture",
+                "image": {
+                  "width": 10,
+                  "height": 10
+                },
+                "author": {
+                  "name": "Creator"
+                }
+              }
+            ]
           }
         ],
         "hasMore": true,
@@ -290,7 +375,54 @@
               "content": "Hello",
               "timestamp": "2026-10-18T00:00:00.000Z",
               "type": 0,
-              "attachments": []
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                }
+              ],
+              "referenced_message": {
+                "id": "100099",
+                "channel_id": "100004",
+                "author": {
+                  "id": "100001",
+                  "bot": true,
+                  "username": "fixture_bot"
+                },
+                "content": "Reference",
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ]
+              },
+              "embeds": [
+                {
+                  "type": "rich",
+                  "title": "Fixture",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "image": {
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "width": 10,
+                    "height": 10
+                  },
+                  "author": {
+                    "name": "Creator",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                }
+              ]
             }
           }
         }
@@ -306,7 +438,45 @@
         "content": "Hello",
         "timestamp": "2026-10-18T00:00:00.000Z",
         "type": 0,
-        "attachments": []
+        "attachments": [
+          {
+            "id": "100006",
+            "filename": "fixture.txt",
+            "size": 3,
+            "content_type": "text/plain"
+          }
+        ],
+        "referenced_message": {
+          "id": "100099",
+          "channel_id": "100004",
+          "author": {
+            "id": "100001",
+            "bot": true,
+            "username": "fixture_bot"
+          },
+          "content": "Reference",
+          "attachments": [
+            {
+              "id": "100006",
+              "filename": "fixture.txt",
+              "size": 3,
+              "content_type": "text/plain"
+            }
+          ]
+        },
+        "embeds": [
+          {
+            "type": "rich",
+            "title": "Fixture",
+            "image": {
+              "width": 10,
+              "height": 10
+            },
+            "author": {
+              "name": "Creator"
+            }
+          }
+        ]
       }
     },
     {
@@ -404,7 +574,54 @@
               "content": "Hello",
               "timestamp": "2026-10-18T00:00:00.000Z",
               "type": 0,
-              "attachments": []
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                }
+              ],
+              "referenced_message": {
+                "id": "100099",
+                "channel_id": "100004",
+                "author": {
+                  "id": "100001",
+                  "bot": true,
+                  "username": "fixture_bot"
+                },
+                "content": "Reference",
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ]
+              },
+              "embeds": [
+                {
+                  "type": "rich",
+                  "title": "Fixture",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "image": {
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "width": 10,
+                    "height": 10
+                  },
+                  "author": {
+                    "name": "Creator",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                }
+              ]
             }
           }
         }
@@ -420,8 +637,46 @@
         "content": "Hello",
         "timestamp": "2026-10-18T00:00:00.000Z",
         "type": 0,
-        "attachments": [],
-        "write_outcome": "confirmed"
+        "attachments": [
+          {
+            "id": "100006",
+            "filename": "fixture.txt",
+            "size": 3,
+            "content_type": "text/plain"
+          }
+        ],
+        "write_outcome": "confirmed",
+        "referenced_message": {
+          "id": "100099",
+          "channel_id": "100004",
+          "author": {
+            "id": "100001",
+            "bot": true,
+            "username": "fixture_bot"
+          },
+          "content": "Reference",
+          "attachments": [
+            {
+              "id": "100006",
+              "filename": "fixture.txt",
+              "size": 3,
+              "content_type": "text/plain"
+            }
+          ]
+        },
+        "embeds": [
+          {
+            "type": "rich",
+            "title": "Fixture",
+            "image": {
+              "width": 10,
+              "height": 10
+            },
+            "author": {
+              "name": "Creator"
+            }
+          }
+        ]
       }
     },
     {
@@ -542,7 +797,54 @@
               "content": "Hello",
               "timestamp": "2026-10-18T00:00:00.000Z",
               "type": 0,
-              "attachments": []
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                }
+              ],
+              "referenced_message": {
+                "id": "100099",
+                "channel_id": "100004",
+                "author": {
+                  "id": "100001",
+                  "bot": true,
+                  "username": "fixture_bot"
+                },
+                "content": "Reference",
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ]
+              },
+              "embeds": [
+                {
+                  "type": "rich",
+                  "title": "Fixture",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "image": {
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "width": 10,
+                    "height": 10
+                  },
+                  "author": {
+                    "name": "Creator",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                }
+              ]
             }
           }
         }
@@ -558,8 +860,46 @@
         "content": "Hello",
         "timestamp": "2026-10-18T00:00:00.000Z",
         "type": 0,
-        "attachments": [],
-        "write_outcome": "confirmed"
+        "attachments": [
+          {
+            "id": "100006",
+            "filename": "fixture.txt",
+            "size": 3,
+            "content_type": "text/plain"
+          }
+        ],
+        "write_outcome": "confirmed",
+        "referenced_message": {
+          "id": "100099",
+          "channel_id": "100004",
+          "author": {
+            "id": "100001",
+            "bot": true,
+            "username": "fixture_bot"
+          },
+          "content": "Reference",
+          "attachments": [
+            {
+              "id": "100006",
+              "filename": "fixture.txt",
+              "size": 3,
+              "content_type": "text/plain"
+            }
+          ]
+        },
+        "embeds": [
+          {
+            "type": "rich",
+            "title": "Fixture",
+            "image": {
+              "width": 10,
+              "height": 10
+            },
+            "author": {
+              "name": "Creator"
+            }
+          }
+        ]
       }
     },
     {

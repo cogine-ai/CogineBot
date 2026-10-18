@@ -35,6 +35,16 @@ const EVENT_KINDS: NativeRoutineEventKind[] = [
   "slack.app_mention",
   "slack.app_dm",
   "slack.channel_message",
+  "sharepoint.list_item.changed",
+  "excel.range.changed",
+  "planner.task.changed",
+  "teams.channel_message.created",
+  "feishu.calendar_event.changed",
+  "dingtalk.calendar_event.changed",
+  "wecom.schedule.changed",
+  "telegram.pinned_message.changed",
+  "discord.channel_message.created",
+  "discord.command.invoked",
 ];
 const EVENT_APP_NAMES: Record<string, string> = {
   "google-calendar": "Google Calendar",
@@ -42,6 +52,15 @@ const EVENT_APP_NAMES: Record<string, string> = {
   gmail: "Gmail",
   "google-drive": "Google Drive",
   slack: "Slack",
+  sharepoint: "SharePoint",
+  excel: "Excel",
+  planner: "Planner",
+  teams: "Teams",
+  "feishu-lark": "飞书 / Lark",
+  dingtalk: "钉钉",
+  wecom: "企业微信",
+  "telegram-bot": "Telegram Bot",
+  discord: "Discord",
 };
 
 export function RoutineNativeEvents({
@@ -141,7 +160,22 @@ type TextKey =
   | "threadId"
   | "fileId"
   | "channelId"
-  | "threadTs";
+  | "threadTs"
+  | "siteId"
+  | "listId"
+  | "driveId"
+  | "itemId"
+  | "worksheetId"
+  | "address"
+  | "planId"
+  | "teamId"
+  | "chatId"
+  | "guildId"
+  | "commandId"
+  | "commandName"
+  | "userId"
+  | "timeMin"
+  | "timeMax";
 function NativeEventFields({
   draft,
   rows,
@@ -165,6 +199,26 @@ function NativeEventFields({
   const kinds = EVENT_KINDS.filter((kind) => nativeEventAppForKind(kind) === app);
   const kindLabel = (kind: NativeRoutineEventKind): string => {
     switch (kind) {
+      case "sharepoint.list_item.changed":
+        return t`SharePoint list item changed`;
+      case "excel.range.changed":
+        return t`Excel range changed`;
+      case "planner.task.changed":
+        return t`Planner task changed`;
+      case "teams.channel_message.created":
+        return t`New Teams channel message`;
+      case "feishu.calendar_event.changed":
+        return t`Feishu / Lark calendar changed`;
+      case "dingtalk.calendar_event.changed":
+        return t`DingTalk calendar changed`;
+      case "wecom.schedule.changed":
+        return t`WeCom schedule changed`;
+      case "telegram.pinned_message.changed":
+        return t`Telegram pinned message changed`;
+      case "discord.channel_message.created":
+        return t`New Discord channel message`;
+      case "discord.command.invoked":
+        return t`Discord command invoked`;
       case "calendar.event_changed":
         return t`Calendar event changed`;
       case "calendar.event_starting":
@@ -287,6 +341,50 @@ function NativeEventFields({
         </p>
       ) : null}
       <fieldset disabled={!selected} className="space-y-3">
+        {draft.kind === "sharepoint.list_item.changed" ? (
+          <>
+            {textField("siteId", t`Site ID`)}
+            {textField("listId", t`List ID`)}
+          </>
+        ) : null}
+        {draft.kind === "excel.range.changed" ? (
+          <>
+            {textField("driveId", t`Drive ID`)}
+            {textField("itemId", t`Workbook item ID`)}
+            {textField("worksheetId", t`Worksheet ID`)}
+            {textField("address", t`Cell range (A1 notation)`)}
+          </>
+        ) : null}
+        {draft.kind === "planner.task.changed" ? textField("planId", t`Plan ID`) : null}
+        {draft.kind === "teams.channel_message.created" ? (
+          <>
+            {textField("teamId", t`Team ID`)}
+            {textField("channelId", t`Channel ID`)}
+          </>
+        ) : null}
+        {[
+          "feishu.calendar_event.changed",
+          "dingtalk.calendar_event.changed",
+          "wecom.schedule.changed",
+        ].includes(draft.kind)
+          ? textField("calendarId", t`Calendar ID`)
+          : null}
+        {draft.kind === "dingtalk.calendar_event.changed" ? (
+          <>
+            {textField("userId", t`User ID`)}
+            {textField("timeMin", t`Start time (ISO 8601)`)}
+            {textField("timeMax", t`End time (ISO 8601)`)}
+          </>
+        ) : null}
+        {draft.kind === "telegram.pinned_message.changed" ? textField("chatId", t`Chat ID`) : null}
+        {draft.kind.startsWith("discord.") ? textField("channelId", t`Channel ID`) : null}
+        {draft.kind === "discord.command.invoked" ? (
+          <>
+            {textField("guildId", t`Server ID`)}
+            {textField("commandId", t`Command ID`)}
+            {textField("commandName", t`Command name`)}
+          </>
+        ) : null}
         {gmail ? (
           <>
             <Field>

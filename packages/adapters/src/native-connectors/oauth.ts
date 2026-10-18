@@ -1,16 +1,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterContext, SecretStore } from "@rakazo/adapter-kit";
-import type {
-  Connection,
-  NativeAppConfig,
-  NativeOAuthGrant,
-  Prisma,
-  PrismaClient,
-} from "@rakazo/db";
+import { NativeRemainingAppIdSchema } from "@rakazo/contracts";
+import type { Connection, NativeAppConfig, NativeOAuthGrant, PrismaClient } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 import { asRecord } from "../connector-http.js";
 import { actorMayUsePrivateEndpoint } from "../private-endpoint.js";
 import { persistPreparedSecret } from "../secret-persistence.js";
+import { deferSecretNotifications } from "../secret-store-factory.js";
 import { NativeActionError } from "./action.js";
 import type {
   NativeAuthorization,
@@ -19,7 +16,11 @@ import type {
   NativeTokenMaterial,
 } from "./authorities.js";
 import { DRIVE_PICKER_SCOPE, requireDrivePickerConfig } from "./authorities.js";
-import { NativeConfigSettingsSchema, type NativeConfigStore } from "./config.js";
+import {
+  NativeConfigSettingsSchema,
+  type NativeConfigStore,
+  nativeConfigVisibleInSpace,
+} from "./config.js";
 import type { NativeMcpPending } from "./mcp.js";
 
 const TTL = 10 * 60_000;
@@ -52,6 +53,7 @@ export class NativeOAuthStore {
     authorizationFlow?: "drive_picker",
   ): Promise<{ connectionId: string; authorizationUrl: string }> {
     const config = await this.configs.require(configId);
+    if (!nativeConfigVisibleInSpace(config, context.spaceId)) throw unavailable();
     if (
       authorizationFlow !== undefined &&
       (authorizationFlow !== "drive_picker" ||
@@ -186,24 +188,40 @@ export class NativeOAuthStore {
         throw unavailable();
       return this.authorities.drivePickerAuthorizationUrl(config, state, value.verifier);
     }
-    if (config.credentialKind === "mcp_oauth") {
-      if (value.mcp)
+    const enterpriseInstall = config.appId === "wecom" && config.credentialKind === "oauth";
+    if (config.credentialKind === "mcp_oauth" || enterpriseInstall) {
+      if (!enterpriseInstall && value.mcp)
         return this.authorities.mcp.pendingUrl(config, this.mcpPending(value.mcp), state);
+      const savedEnterprise = asRecord(value.enterprise);
+      if (
+        enterpriseInstall &&
+        typeof savedEnterprise?.authorizationUrl === "string" &&
+        asRecord(savedEnterprise.pending)
+      )
+        return savedEnterprise.authorizationUrl;
       // Discovery/DCR is outside the transaction. Only a DB-fenced winner may
       // publish an authorization URL; its matching verifier/client is encrypted
       // before the browser is redirected. Duplicate DCR creates no user grant.
-      const pending = await this.authorities.mcp.begin(
-        config,
-        state,
-        signal,
-        await this.privateEndpoint(session.userId),
-      );
+      const pending = enterpriseInstall
+        ? await this.authorities.enterprise.begin(
+            config,
+            await this.clientSecret(config),
+            state,
+            value.verifier,
+            signal,
+          )
+        : await this.authorities.mcp.begin(
+            config,
+            state,
+            signal,
+            await this.privateEndpoint(session.userId),
+          );
       const material = await this.prepare(
-        { ...value, mcp: pending },
+        { ...value, [enterpriseInstall ? "enterprise" : "mcp"]: pending },
         {
           userId: session.userId,
           spaceId: session.spaceId,
-          operationId: "native.mcp.launch",
+          operationId: enterpriseInstall ? "native.enterprise.launch" : "native.mcp.launch",
           traceId: session.id,
           signal,
         },
@@ -251,7 +269,13 @@ export class NativeOAuthStore {
 
   /** Bind the one-use state to its initiating browser user; never trust a request origin. */
   async callback(
-    input: { state: string; code?: string; denied?: boolean; pickedFileIds?: string },
+    input: {
+      state: string;
+      code?: string;
+      enterpriseCode?: string;
+      denied?: boolean;
+      pickedFileIds?: string;
+    },
     signal: AbortSignal,
     actorUserId: string,
   ): Promise<{ connectionId: string }> {
@@ -289,9 +313,16 @@ export class NativeOAuthStore {
     });
     if (claimed.count !== 1) throw unavailable();
     try {
-      if (input.denied || !input.code) throw unavailable();
+      if (input.denied) throw unavailable();
       const config = await this.configs.require(session.configId);
       if (config.revision !== session.configRevision) throw unavailable();
+      const code =
+        input.enterpriseCode !== undefined
+          ? config.appId === "wecom" && !input.code
+            ? input.enterpriseCode
+            : undefined
+          : input.code;
+      if (!code || code.length > 8192) throw unavailable();
       await this.member(this.prisma, context);
       const pending = asRecord(
         JSON.parse(
@@ -301,6 +332,7 @@ export class NativeOAuthStore {
         ),
       );
       if (typeof pending?.verifier !== "string") throw unavailable();
+      const verifier = pending.verifier;
       const picker = pending.authorizationFlow === "drive_picker";
       if (
         pending.authorizationFlow !== undefined &&
@@ -312,35 +344,38 @@ export class NativeOAuthStore {
           session.requestedScopes[0] !== DRIVE_PICKER_SCOPE)
       )
         throw unavailable();
-      const auth = picker
-        ? await this.authorities.exchangeDrivePicker(
-            config,
-            await this.clientSecret(config),
-            input.code,
-            pending.verifier,
-            input.pickedFileIds ?? "",
-            signal,
-          )
-        : await this.authorities.exchange(
-            config,
-            await this.clientSecret(config),
-            input.code,
-            pending.verifier,
-            signal,
-            pending.mcp ? this.mcpPending(pending.mcp) : undefined,
-            input.state,
-            await this.privateEndpoint(context.userId),
-          );
-      await this.adopt(
-        config,
-        session.connectionId,
-        auth,
-        context,
-        session.id,
-        !picker && typeof pending.previousConnectionId === "string"
-          ? pending.previousConnectionId
-          : undefined,
-      );
+      await this.withFigmaTokenLock(config, signal, async (store) => {
+        const auth = picker
+          ? await store.authorities.exchangeDrivePicker(
+              config,
+              await store.clientSecret(config),
+              code,
+              verifier,
+              input.pickedFileIds ?? "",
+              signal,
+            )
+          : await store.authorities.exchange(
+              config,
+              await store.clientSecret(config),
+              code,
+              verifier,
+              signal,
+              pending.mcp ? this.mcpPending(pending.mcp) : undefined,
+              input.state,
+              await store.privateEndpoint(context.userId),
+              asRecord(asRecord(pending.enterprise)?.pending),
+            );
+        await store.adopt(
+          config,
+          session.connectionId,
+          auth,
+          context,
+          session.id,
+          !picker && typeof pending.previousConnectionId === "string"
+            ? pending.previousConnectionId
+            : undefined,
+        );
+      });
       return { connectionId: session.connectionId };
     } catch (error) {
       await this.prisma.connection.updateMany({
@@ -398,6 +433,56 @@ export class NativeOAuthStore {
       config,
       credential,
       context.signal,
+    );
+    return this.connectStatic(
+      config,
+      auth.tokens.accessToken,
+      auth.identity,
+      context,
+      previousConnectionId,
+      auth,
+    );
+  }
+
+  async connectRemainingToken(
+    configId: string,
+    credential: string | undefined,
+    context: AdapterContext,
+    previousConnectionId?: string,
+  ): Promise<{ connectionId: string }> {
+    const config = await this.configs.require(configId);
+    if (
+      !NativeRemainingAppIdSchema.safeParse(config.appId).success ||
+      config.credentialKind === "oauth"
+    )
+      throw new NativeActionError("invalid_input", "Choose the exact non-browser credential type.");
+    await this.member(this.prisma, context);
+    const bot = ["telegram-bot", "discord"].includes(config.appId);
+    const managed =
+      (["feishu-lark", "dingtalk", "wecom"].includes(config.appId) &&
+        config.credentialKind === "machine_key") ||
+      (bot && config.ownership === "official");
+    if (!nativeConfigVisibleInSpace(config, context.spaceId))
+      throw new NativeActionError(
+        "authorization_required",
+        "This application configuration is unavailable in this space.",
+      );
+    if (managed && credential)
+      throw new NativeActionError(
+        "invalid_input",
+        "This connection uses its administrator-managed credential.",
+      );
+    const value = managed ? await this.clientSecret(config) : credential;
+    if (!value)
+      throw new NativeActionError(
+        "authorization_required",
+        "Enter the selected application credential.",
+      );
+    const auth = await this.authorities.verifyRemainingStatic(
+      config,
+      value,
+      context.signal,
+      await this.privateEndpoint(context.userId),
     );
     return this.connectStatic(
       config,
@@ -491,11 +576,29 @@ export class NativeOAuthStore {
     grant: NativeOAuthGrant;
     auth: NativeAuthorization;
   }> {
+    return this.authorizationWithTokenLock(connectionId, context, forceRefresh);
+  }
+
+  private async authorizationWithTokenLock(
+    connectionId: string,
+    context: AdapterContext,
+    forceRefresh = false,
+    figmaLocked = false,
+  ): Promise<{
+    connection: Connection;
+    config: NativeAppConfig;
+    grant: NativeOAuthGrant;
+    auth: NativeAuthorization;
+  }> {
     const deadline = Date.now() + 12_000;
     let refreshVersion: number | undefined;
     while (true) {
       context.signal.throwIfAborted();
       const { connection, config, grant } = await this.bound(connectionId, context);
+      const reissuableEnterprise =
+        (["feishu-lark", "dingtalk", "wecom"].includes(config.appId) &&
+          config.credentialKind === "machine_key") ||
+        (config.appId === "wecom" && config.credentialKind === "oauth");
       refreshVersion ??= grant.tokenVersion;
       if (grant.tokenVersion > refreshVersion) forceRefresh = false;
       if (
@@ -516,6 +619,7 @@ export class NativeOAuthStore {
         // stopped. Retrying the old rotating token can revoke the whole family.
         // Exact lease/version CAS cannot retire a pair already committed by the winner.
         const recoverableLease =
+          reissuableEnterprise ||
           config.credentialKind === "github_app_installation" ||
           (config.appId === "linear" &&
             Boolean(
@@ -540,7 +644,11 @@ export class NativeOAuthStore {
         (!grant.accessExpiresAt || grant.accessExpiresAt.getTime() > Date.now() + 60_000)
       )
         return { connection, config, grant, auth };
-      if (!auth.tokens.refreshToken && !auth.tokens.githubInstallation) {
+      if (config.appId === "figma" && config.credentialKind === "oauth" && !figmaLocked)
+        return this.withFigmaTokenLock(config, context.signal, (store) =>
+          store.authorizationWithTokenLock(connectionId, context, forceRefresh, true),
+        );
+      if (!auth.tokens.refreshToken && !auth.tokens.githubInstallation && !reissuableEnterprise) {
         await this.failGrant(connection, grant);
         throw new NativeActionError(
           "authorization_expired",
@@ -606,6 +714,7 @@ export class NativeOAuthStore {
           (error.kind === "authorization_expired" ||
             (error.options.uncertain &&
               config.appId !== "linear" &&
+              !reissuableEnterprise &&
               config.credentialKind !== "github_app_installation"))
         )
           await this.failGrant(connection, grant, leaseId);
@@ -678,8 +787,22 @@ export class NativeOAuthStore {
           }),
         );
       } catch (error) {
-        if (config.appId !== "linear" && config.credentialKind !== "github_app_installation")
+        if (
+          config.appId !== "linear" &&
+          config.credentialKind !== "github_app_installation" &&
+          !reissuableEnterprise
+        )
           await this.failGrant(connection, grant, leaseId);
+        else if (reissuableEnterprise)
+          await this.prisma.nativeOAuthGrant.updateMany({
+            where: {
+              id: grant.id,
+              tokenVersion: grant.tokenVersion,
+              refreshLeaseId: leaseId,
+              revokedAt: null,
+            },
+            data: { refreshLeaseId: null, refreshLeaseUntil: null },
+          });
         throw error;
       }
       forceRefresh = false;
@@ -738,6 +861,16 @@ export class NativeOAuthStore {
         },
       });
     });
+  }
+
+  /** A delayed rejection cannot retire a newer token committed by another worker. */
+  async rejectCredential(
+    connectionId: string,
+    context: AdapterContext,
+    expectedTokenVersion: number,
+  ): Promise<void> {
+    const { connection, grant } = await this.bound(connectionId, context);
+    if (grant.tokenVersion === expectedTokenVersion) await this.failGrant(connection, grant);
   }
 
   /** Local stop is authoritative and precedes any optional upstream revocation. */
@@ -803,6 +936,7 @@ export class NativeOAuthStore {
       this.prisma.$transaction(async (tx) => {
         await this.fenceConfig(tx, config);
         await this.member(tx, context, true);
+        await this.fenceExternalBinding(tx, config, auth, context);
         await this.lockConnections(
           tx,
           [connectionId, ...(previousConnectionId ? [previousConnectionId] : [])],
@@ -923,7 +1057,8 @@ export class NativeOAuthStore {
     const grant = connection?.oauthGrant;
     if (!connection || !grant || grant.revokedAt || !grant.secretId) throw unavailable();
     if (grant.userId !== context.userId || grant.spaceId !== context.spaceId) throw unavailable();
-    const config = await this.configs.require(grant.configId);
+    const config = await this.configs.require(grant.configId, this.prisma);
+    if (!nativeConfigVisibleInSpace(config, context.spaceId)) throw unavailable();
     if (
       config.revision !== grant.configRevision ||
       connection.nativeConfigRevision !== config.revision
@@ -1030,6 +1165,152 @@ export class NativeOAuthStore {
     return this.secrets.load(config.ciphertext, {
       recordId: config.secretRecordId,
     });
+  }
+  private async fenceExternalBinding(
+    tx: Prisma.TransactionClient,
+    config: NativeAppConfig,
+    auth: NativeAuthorization,
+    context: AdapterContext,
+  ): Promise<void> {
+    if (!["telegram-bot", "discord", "figma"].includes(config.appId)) return;
+    if (config.appId === "figma" && config.credentialKind !== "oauth") return;
+    const identity = auth.identity;
+    const settings = NativeConfigSettingsSchema.parse(config.config);
+    const namespace =
+      config.appId === "figma"
+        ? `${settings.clientId}:${identity.subject}`
+        : config.appId === "discord"
+          ? `${String(identity.context.applicationId)}:${identity.tenant}`
+          : identity.subject;
+    await tx.$executeRaw(
+      Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('native-external-binding'),hashtext(${`${config.appId}:${namespace}`}))`,
+    );
+    const peers = await tx.nativeOAuthGrant.findMany({
+      where: {
+        revokedAt: null,
+        secretId: { not: null },
+        subject: identity.subject,
+        authority: identity.authority,
+        config: { appId: config.appId },
+      },
+      include: { config: true },
+    });
+    for (const peer of peers) {
+      if (!peer.config.enabled || peer.configRevision !== peer.config.revision) continue;
+      const peerSettings = NativeConfigSettingsSchema.parse(peer.config.config);
+      if (config.appId === "figma") {
+        if (peer.config.credentialKind !== "oauth" || peerSettings.clientId !== settings.clientId)
+          continue;
+        // Figma issues one live access token per app/user. A new authorization
+        // invalidates the previous token; never copy credentials between Spaces.
+        await tx.nativeOAuthGrant.updateMany({
+          where: { id: peer.id, revokedAt: null },
+          data: {
+            revokedAt: new Date(),
+            secretId: null,
+            authGeneration: { increment: 1 },
+            refreshLeaseId: null,
+            refreshLeaseUntil: null,
+            refreshRecoveryUntil: null,
+          },
+        });
+        await tx.connection.updateMany({
+          where: { oauthGrantId: peer.id, status: "connected" },
+          data: { status: "error" },
+        });
+        if (peer.secretId)
+          await tx.secret.deleteMany({
+            where: { id: peer.secretId, userId: peer.userId, spaceId: peer.spaceId },
+          });
+      } else if (peer.spaceId !== context.spaceId) {
+        const principal = asRecord(peer.principal);
+        const sameTarget =
+          config.appId === "discord"
+            ? peer.tenant === identity.tenant &&
+              principal?.applicationId === identity.context.applicationId
+            : (peerSettings.targetIds ?? []).some((id) => settings.targetIds?.includes(id));
+        if (sameTarget)
+          throw new NativeActionError(
+            "authorization_required",
+            "This bot target is already assigned to another space.",
+          );
+      }
+    }
+  }
+  /** Figma has one live token per app/user, whose user is unknown before exchange. */
+  private async withFigmaTokenLock<T>(
+    config: NativeAppConfig,
+    signal: AbortSignal,
+    work: (store: NativeOAuthStore) => Promise<T>,
+  ): Promise<T> {
+    if (config.appId !== "figma" || config.credentialKind !== "oauth") return work(this);
+    const clientId = NativeConfigSettingsSchema.parse(config.config).clientId;
+    if (!clientId) throw unavailable();
+    const deadline = Date.now() + 12_000;
+    while (true) {
+      signal.throwIfAborted();
+      const result = await deferSecretNotifications(() =>
+        this.prisma.$transaction(
+          async (tx) => {
+            const rows = await tx.$queryRaw<Array<{ locked: boolean }>>(
+              Prisma.sql`SELECT pg_try_advisory_xact_lock(hashtext('native-figma-token'),hashtext(${clientId})) AS locked`,
+            );
+            if (!rows[0]?.locked) return { acquired: false as const };
+            const scoped = new NativeOAuthStore(
+              this.figmaTransactionClient(tx),
+              this.secrets,
+              this.configs,
+              this.authorities,
+              this.allowPrivateEndpoint,
+            );
+            try {
+              return { acquired: true as const, ok: true as const, value: await work(scoped) };
+            } catch (error) {
+              // Existing inner boundaries roll back to savepoints. Commit deliberate
+              // expiry/lease cleanup before propagating an upstream failure.
+              return { acquired: true as const, ok: false as const, error };
+            }
+          },
+          { maxWait: 5_000, timeout: 90_000 },
+        ),
+      );
+      if (result.acquired) {
+        if (!result.ok) throw result.error;
+        return result.value;
+      }
+      if (Date.now() >= deadline)
+        throw new NativeActionError(
+          "temporarily_unavailable",
+          "Another Figma authorization is being updated. Try connecting again shortly.",
+        );
+      await delay(75, undefined, { signal });
+    }
+  }
+  /** Keep existing atomic write boundaries on the connection that owns the token lock. */
+  private figmaTransactionClient(tx: Prisma.TransactionClient): PrismaClient {
+    let sequence = 0;
+    return new Proxy(tx, {
+      get(target, property) {
+        if (property === "$transaction")
+          return async <T>(
+            run: (transaction: Prisma.TransactionClient) => Promise<T>,
+          ): Promise<T> => {
+            const name = Prisma.raw(`native_figma_${++sequence}`);
+            await tx.$executeRaw(Prisma.sql`SAVEPOINT ${name}`);
+            try {
+              const result = await run(tx);
+              await tx.$executeRaw(Prisma.sql`RELEASE SAVEPOINT ${name}`);
+              return result;
+            } catch (error) {
+              await tx.$executeRaw(Prisma.sql`ROLLBACK TO SAVEPOINT ${name}`);
+              await tx.$executeRaw(Prisma.sql`RELEASE SAVEPOINT ${name}`);
+              throw error;
+            }
+          };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as PrismaClient;
   }
   private async prepare(value: unknown, context: AdapterContext): Promise<Material> {
     const id = randomUUID();

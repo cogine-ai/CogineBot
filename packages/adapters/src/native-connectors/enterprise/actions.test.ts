@@ -24,11 +24,18 @@ const setup = (app: string, values: Array<NativeResponse | Error>, actor = "app"
     principal: {
       subject: actor === "user" ? "union-fixture" : "app-fixture",
       tenant: "tenant-fixture",
-      scopes: ["docx:document", "task:task:write", "calendar:calendar", "im:message"],
+      scopes:
+        actor === "user"
+          ? ["docx:document", "task:task:write", "calendar:calendar", "im:message"]
+          : [],
       capabilities: [],
       knowledgeBaseIds: [],
       context: {
         provider: app,
+        configuredScopes:
+          app === "feishu-lark"
+            ? ["docx:document", "task:task:write", "calendar:calendar", "im:message:send_as_bot"]
+            : [],
         appId: "client-fixture",
         tenantId: "tenant-fixture",
         actorType: actor,
@@ -367,6 +374,56 @@ describe("Enterprise exact provider action contracts", () => {
       assert.equal(s.requests.length, 0);
     });
   }
+  for (const policy of [
+    undefined,
+    ["docx:document:readonly", "calendar:calendar:readonly", "task:task:read"],
+  ])
+    for (const actionId of ["feishu.documents.create", "feishu.events.create"])
+      it(`Feishu app local policy ${policy ? "readonly" : "missing"} blocks ${actionId} before HTTP`, async () => {
+        const s = setup("feishu-lark", []);
+        s.context.principal.scopes = [];
+        s.context.principal.context.configuredScopes = policy;
+        const fixture = fixtures.find((f) => f.id === actionId)!;
+        assert.equal(find(actionId).available?.(s.context.principal), false);
+        await assert.rejects(find(actionId).execute(fixture.args, s.context), {
+          kind: "insufficient_scope",
+        });
+        assert.equal(s.requests.length, 0);
+        assert.deepEqual(s.context.principal.scopes, []);
+      });
+  it("Feishu app readonly ceiling exposes only four read actions and retains empty actual scopes", () => {
+    const s = setup("feishu-lark", []);
+    s.context.principal.scopes = [];
+    s.context.principal.context.configuredScopes = [
+      "docx:document:readonly",
+      "calendar:calendar:readonly",
+      "task:task:read",
+    ];
+    assert.deepEqual(
+      actions
+        .filter((a) => a.id.startsWith("feishu.") && a.available?.(s.context.principal))
+        .map((a) => a.id)
+        .sort(),
+      [
+        "feishu.documents.content.get",
+        "feishu.tasks.get",
+        "feishu.calendars.list",
+        "feishu.events.list",
+      ].sort(),
+    );
+    assert.deepEqual(s.context.principal.scopes, []);
+  });
+  it("Feishu app configured write ceiling remains distinct from real provider permissions", async () => {
+    const s = setup("feishu-lark", [ok({ code: 99991672 }, 403)]);
+    s.context.principal.scopes = [];
+    s.context.principal.context.configuredScopes = ["docx:document:create"];
+    assert.equal(find("feishu.documents.create").available?.(s.context.principal), true);
+    await assert.rejects(find("feishu.documents.create").execute({ title: "Fixture" }, s.context), {
+      kind: "insufficient_scope",
+    });
+    assert.equal(s.requests.length, 1);
+    assert.deepEqual(s.context.principal.scopes, []);
+  });
   it("never treats a Feishu bot scope as permission to send as a user", async () => {
     const s = setup("feishu-lark", [], "user");
     s.context.principal.scopes = ["im:message:send_as_bot"];

@@ -19,7 +19,9 @@
             "maxLength": 256
           }
         },
-        "required": ["documentId"],
+        "required": [
+          "documentId"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -28,10 +30,17 @@
         "documentation": "https://open.feishu.cn/document/server-docs/docs/docx-v1/document/raw_content"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["docx:document:readonly", "docx:document"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "docx:document:readonly",
+          "docx:document"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -61,7 +70,9 @@
             "maxLength": 256
           }
         },
-        "required": ["title"],
+        "required": [
+          "title"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -70,10 +81,17 @@
         "documentation": "https://open.feishu.cn/document/server-docs/docs/docx-v1/document/create"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["docx:document:create", "docx:document"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "docx:document:create",
+          "docx:document"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -98,7 +116,9 @@
             "maxLength": 256
           }
         },
-        "required": ["taskGuid"],
+        "required": [
+          "taskGuid"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -107,10 +127,17 @@
         "documentation": "https://open.feishu.cn/document/server-docs/task-v2/task/get"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["task:task:read", "task:task:write"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "task:task:read",
+          "task:task:write"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -145,7 +172,9 @@
             "maxLength": 32
           }
         },
-        "required": ["summary"],
+        "required": [
+          "summary"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -154,10 +183,16 @@
         "documentation": "https://open.feishu.cn/document/server-docs/task-v2/task/create"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["task:task:write"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "task:task:write"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -185,7 +220,10 @@
             "type": "boolean"
           }
         },
-        "required": ["taskGuid", "completed"],
+        "required": [
+          "taskGuid",
+          "completed"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -194,10 +232,16 @@
         "documentation": "https://open.feishu.cn/document/server-docs/task-v2/task/patch"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["task:task:write"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "task:task:write"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -236,10 +280,17 @@
         "documentation": "https://open.feishu.cn/document/server-docs/calendar-v4/calendar/list-2.md"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["calendar:calendar:readonly", "calendar:calendar"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "calendar:calendar:readonly",
+          "calendar:calendar"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -279,7 +330,11 @@
             "maximum": 1000
           }
         },
-        "required": ["calendarId", "startTimestamp", "endTimestamp"],
+        "required": [
+          "calendarId",
+          "startTimestamp",
+          "endTimestamp"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -293,9 +348,13 @@
           "calendar:calendar:readonly",
           "calendar:calendar"
         ],
-        "actors": ["app", "user"],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate event IDs and report paginationSupported=false, nextPageToken=null, windowMayBeTruncated if has_more or returned count reaches requested page size. Never claim full window traversal with a fake cursor."
@@ -345,7 +404,12 @@
             "maxLength": 128
           }
         },
-        "required": ["calendarId", "summary", "startTimestamp", "endTimestamp"],
+        "required": [
+          "calendarId",
+          "summary",
+          "startTimestamp",
+          "endTimestamp"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -354,10 +418,17 @@
         "documentation": "https://open.feishu.cn/document/server-docs/calendar-v4/calendar-event/create"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["calendar:calendar.event:create", "calendar:calendar"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "calendar:calendar.event:create",
+          "calendar:calendar"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -382,7 +453,11 @@
             "maxLength": 256
           },
           "receiveIdType": {
-            "enum": ["open_id", "chat_id", "user_id"]
+            "enum": [
+              "open_id",
+              "chat_id",
+              "user_id"
+            ]
           },
           "text": {
             "type": "string",
@@ -390,7 +465,11 @@
             "maxLength": 20000
           }
         },
-        "required": ["receiveId", "receiveIdType", "text"],
+        "required": [
+          "receiveId",
+          "receiveIdType",
+          "text"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -399,10 +478,18 @@
         "documentation": "https://open.feishu.cn/document/server-docs/im-v1/message/create"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["im:message", "im:message:send_as_bot", "im:message.send_as_user"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "im:message",
+          "im:message:send_as_bot",
+          "im:message.send_as_user"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
@@ -432,7 +519,10 @@
             "maxLength": 20000
           }
         },
-        "required": ["messageId", "text"],
+        "required": [
+          "messageId",
+          "text"
+        ],
         "additionalProperties": false
       },
       "upstream": {
@@ -441,10 +531,18 @@
         "documentation": "https://open.feishu.cn/document/server-docs/im-v1/message/reply"
       },
       "authorization": {
-        "acceptedAnyOfScopes": ["im:message", "im:message:send_as_bot", "im:message.send_as_user"],
-        "actors": ["app", "user"],
+        "acceptedAnyOfScopes": [
+          "im:message",
+          "im:message:send_as_bot",
+          "im:message.send_as_user"
+        ],
+        "actors": [
+          "app",
+          "user"
+        ],
         "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
-        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account",
+        "configuredPermissionCeiling": "Application actors require an acceptedAnyOfScopes entry enabled in authoritative principal.context.configuredScopes. This is only a local ceiling; actual grant.scopes stays empty and provider ACL may still reject. User actors require actual granted scopes."
       },
       "output": {
         "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."

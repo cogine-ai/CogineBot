@@ -92,7 +92,10 @@ function observation(
   };
 }
 function targetMatches(
-  spec: Extract<NativeRoutineEventSpec, { calendarId: string }>,
+  spec: Extract<
+    NativeRoutineEventSpec,
+    { kind: "calendar.event_changed" | "calendar.event_starting" }
+  >,
   event: Obj,
 ): boolean {
   return (

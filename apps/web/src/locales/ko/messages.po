@@ -5788,3 +5788,115 @@ msgstr "기업 ID(선택 사항)"
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Tenant ID (optional)"
 msgstr "테넌트 ID(선택 사항)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "SharePoint list item changed"
+msgstr "SharePoint 목록 항목 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Excel range changed"
+msgstr "Excel 범위 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Planner task changed"
+msgstr "Planner 작업 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Teams channel message"
+msgstr "Teams 채널의 새 메시지"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Feishu / Lark calendar changed"
+msgstr "Feishu / Lark 캘린더 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "DingTalk calendar changed"
+msgstr "DingTalk 캘린더 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "WeCom schedule changed"
+msgstr "WeCom 일정 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Telegram pinned message changed"
+msgstr "Telegram 고정 메시지 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Discord channel message"
+msgstr "Discord 채널의 새 메시지"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discord command invoked"
+msgstr "Discord 명령 호출"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Site ID"
+msgstr "사이트 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "List ID"
+msgstr "목록 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Drive ID"
+msgstr "드라이브 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Workbook item ID"
+msgstr "통합 문서 파일 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Worksheet ID"
+msgstr "워크시트 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Cell range (A1 notation)"
+msgstr "셀 범위(A1 표기법)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Plan ID"
+msgstr "플랜 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Team ID"
+msgstr "팀 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "User ID"
+msgstr "사용자 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Start time (ISO 8601)"
+msgstr "시작 시간(ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "End time (ISO 8601)"
+msgstr "종료 시간(ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Chat ID"
+msgstr "채팅 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command ID"
+msgstr "명령 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command name"
+msgstr "명령 이름"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event callback URL"
+msgstr "이벤트 콜백 URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Save this application to get its event callback URL."
+msgstr "이 앱을 저장하면 이벤트 콜백 URL이 표시됩니다."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Interactions endpoint URL"
+msgstr "상호작용 엔드포인트 URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect this bot before registering this URL in Discord."
+msgstr "이 봇을 연결한 후 Discord에 이 URL을 등록하세요."

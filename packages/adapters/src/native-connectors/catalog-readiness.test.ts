@@ -57,9 +57,9 @@ async function catalog(configs: NativeAppConfig[], connected: string[] = []) {
   }
 }
 describe("native catalog connection readiness", () => {
-  it("keeps all thirteen native apps visible when none has an application configuration", async () => {
+  it("keeps all thirty-seven native apps visible when none has an application configuration", async () => {
     const rows = await catalog([]);
-    expect(rows).toHaveLength(13);
+    expect(rows).toHaveLength(37);
     expect(rows.every((row) => row.connectable === false)).toBe(true);
   });
   it("reports Gmail readiness from enabled application configuration", async () => {
