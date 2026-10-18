@@ -1,0 +1,460 @@
+{
+  "slug": "feishu-lark",
+  "name": "Feishu / Lark",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "baseUrl": "regional fixed open.feishu.cn/open-apis or open.larksuite.com/open-apis",
+  "actions": [
+    {
+      "id": "feishu.documents.content.get",
+      "description": "Read selected document plain text",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["documentId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/docx/v1/documents/{documentId}/raw_content",
+        "documentation": "https://open.feishu.cn/document/server-docs/docs/docx-v1/document/raw_content"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["docx:document:readonly", "docx:document"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.documents.create",
+      "description": "Create a titled document in an optional permitted folder",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "folderToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/docx/v1/documents",
+        "documentation": "https://open.feishu.cn/document/server-docs/docs/docx-v1/document/create"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["docx:document:create", "docx:document"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.tasks.get",
+      "description": "Read an explicitly selected task",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskGuid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["taskGuid"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/task/v2/tasks/{taskGuid}",
+        "documentation": "https://open.feishu.cn/document/server-docs/task-v2/task/get"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["task:task:read", "task:task:write"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.tasks.create",
+      "description": "Create a task with optional deadline",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "dueTimestamp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/task/v2/tasks",
+        "documentation": "https://open.feishu.cn/document/server-docs/task-v2/task/create"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["task:task:write"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.tasks.complete",
+      "description": "Complete or reopen the selected task",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskGuid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "completed": {
+            "type": "boolean"
+          }
+        },
+        "required": ["taskGuid", "completed"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "PATCH",
+        "path": "/task/v2/tasks/{taskGuid}",
+        "documentation": "https://open.feishu.cn/document/server-docs/task-v2/task/patch"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["task:task:write"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.calendars.list",
+      "description": "List calendars accessible to the selected actor",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pageSize": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 1000
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/calendar/v4/calendars",
+        "documentation": "https://open.feishu.cn/document/server-docs/calendar-v4/calendar/list-2.md"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["calendar:calendar:readonly", "calendar:calendar"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.events.list",
+      "description": "Read one bounded explicit time window; provider may truncate, no pagination in window mode",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "startTimestamp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "endTimestamp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 1000
+          }
+        },
+        "required": ["calendarId", "startTimestamp", "endTimestamp"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/calendar/v4/calendars/{calendarId}/events",
+        "documentation": "https://open.feishu.cn/document/server-docs/calendar-v4/calendar-event/list"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "calendar:calendar.event:read",
+          "calendar:calendar:readonly",
+          "calendar:calendar"
+        ],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate event IDs and report paginationSupported=false, nextPageToken=null, windowMayBeTruncated if has_more or returned count reaches requested page size. Never claim full window traversal with a fake cursor."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "Official start_time/end_time mode is a single bounded response, cannot combine page_token/sync_token/anchor_time. windowMayBeTruncated is explicit; reduce interval when true.",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.events.create",
+      "description": "Create an event in a selected writable calendar",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "startTimestamp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "endTimestamp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "timeZone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": ["calendarId", "summary", "startTimestamp", "endTimestamp"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/calendar/v4/calendars/{calendarId}/events",
+        "documentation": "https://open.feishu.cn/document/server-docs/calendar-v4/calendar-event/create"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["calendar:calendar.event:create", "calendar:calendar"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.messages.send",
+      "description": "Send explicit text as the selected app or user",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "receiveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "receiveIdType": {
+            "enum": ["open_id", "chat_id", "user_id"]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
+        },
+        "required": ["receiveId", "receiveIdType", "text"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/im/v1/messages",
+        "documentation": "https://open.feishu.cn/document/server-docs/im-v1/message/create"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["im:message", "im:message:send_as_bot", "im:message.send_as_user"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "feishu.messages.reply",
+      "description": "Reply to one selected message as the selected actor",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
+        },
+        "required": ["messageId", "text"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/im/v1/messages/{messageId}/reply",
+        "documentation": "https://open.feishu.cn/document/server-docs/im-v1/message/reply"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["im:message", "im:message:send_as_bot", "im:message.send_as_user"],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    }
+  ]
+}

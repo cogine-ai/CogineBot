@@ -1,0 +1,466 @@
+{
+  "slug": "wecom",
+  "name": "WeCom",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "baseUrl": "https://qyapi.weixin.qq.com/cgi-bin",
+  "actions": [
+    {
+      "id": "wecom.members.get",
+      "description": "Read an application-visible organization member",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["userId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/user/get",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/90196"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "wecom.messages.send",
+      "description": "Send application text to explicit visible users",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": ["userIds", "text"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/message/send",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/90236"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "wecom.calendars.create",
+      "description": "Create an application calendar with explicit administrators",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "admins": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "default": "#0000FF"
+          }
+        },
+        "required": ["summary", "admins"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/oa/calendar/add",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/93647"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "wecom.calendars.get",
+      "description": "Read one calendar created by this application",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["calendarId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/oa/calendar/get",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/97717"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "wecom.schedules.get",
+      "description": "Read a selected application schedule",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scheduleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["scheduleId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/oa/schedule/get",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/97724"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "wecom.schedules.create",
+      "description": "Create one schedule in an explicit application calendar",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "startTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "endTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "attendeeIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "admins": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 3
+          }
+        },
+        "required": ["calendarId", "summary", "startTime", "endTime"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/oa/schedule/add",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/93648"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "wecom.schedules.update",
+      "description": "Update selected schedule fields by preserving the supported overwrite state from an authoritative read",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scheduleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "startTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "endTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "attendeeIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "admins": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "operationMode": {
+            "type": "integer",
+            "enum": [0, 1, 2]
+          },
+          "operationStartTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "required": ["scheduleId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/oa/schedule/update",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/97720"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Use response schedule_id when supplied; recurring mode1/2 requires returned split schedule_id. Receipt resource_id uses actual ID; originalScheduleId retained separately."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system",
+        "concurrency": "Provider offers no atomic CAS. A preceding read preserves supported non-edited fields but concurrent external edits may race."
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown",
+      "recurrence": "Read current schedule first. Recurring source requires explicit operationMode; occurrence/future operations require exact occurrence start; never default a recurring series to cancellation of all occurrences.",
+      "overwrite": {
+        "preserved": [
+          "admins",
+          "summary",
+          "description",
+          "location",
+          "is_whole_day",
+          "start_time",
+          "end_time",
+          "reminders"
+        ],
+        "reminders": [
+          "is_remind",
+          "is_repeat",
+          "remind_before_event_secs",
+          "remind_time_diffs",
+          "repeat_type",
+          "repeat_until",
+          "is_custom_repeat",
+          "repeat_interval",
+          "repeat_day_of_week",
+          "repeat_day_of_month",
+          "timezone"
+        ],
+        "attendees": "skip_attendees=1 unless explicit attendeeIds supplied; then replace exact requested set with skip_attendees=0",
+        "calendar": "cal_id cannot be changed; no calendarId input",
+        "occurrence": "mode1/2 uses explicit operationStartTime as untouched occurrence start, preserves master duration, then applies requested time changes"
+      }
+    },
+    {
+      "id": "wecom.schedules.cancel",
+      "description": "Cancel the selected application schedule",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scheduleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "operationMode": {
+            "type": "integer",
+            "enum": [0, 1, 2]
+          },
+          "operationStartTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "required": ["scheduleId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/oa/schedule/del",
+        "documentation": "https://developer.work.weixin.qq.com/document/path/97725"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown",
+      "recurrence": "Read current schedule first. Recurring source requires explicit operationMode; occurrence/future operations require exact occurrence start; never default a recurring series to cancellation of all occurrences."
+    }
+  ],
+  "contractRevision": 4
+}
