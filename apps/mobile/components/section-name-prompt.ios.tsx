@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Alert } from "react-native";
 import { t } from "../lib/i18n";
+import { sectionNameValidationError } from "../lib/inbox-organization";
 import { errorText } from "../lib/user-error";
 import type { SectionNamePromptProps } from "./section-name-prompt";
 
@@ -22,12 +23,12 @@ export function SectionNamePrompt(props: SectionNamePromptProps) {
             onPress: (name?: string) => {
               if (!active) return;
               const trimmed = name?.trim() ?? "";
-              if (!trimmed) {
-                prompt(name ?? "", t("Enter a name"));
-                return;
-              }
-              if (trimmed.length > 60) {
-                prompt(name ?? "", t("Use 60 characters or fewer"));
+              const validationError = sectionNameValidationError(
+                trimmed,
+                latest.current.initialName,
+              );
+              if (validationError) {
+                prompt(name ?? "", validationError);
                 return;
               }
               void latest.current

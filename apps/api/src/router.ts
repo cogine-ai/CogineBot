@@ -2106,6 +2106,16 @@ export function createRouter(deps: RouterDeps) {
           throw error;
         }
       }),
+      restoreName: authed.botSections.restoreName.handler(async ({ context, input }) => {
+        try {
+          return await repos.restoreBotSectionName(context.actor, input);
+        } catch (error) {
+          if (error instanceof BotSectionNameConflictError) {
+            throw new ORPCError("CONFLICT", { message: error.message });
+          }
+          throw error;
+        }
+      }),
       reorder: authed.botSections.reorder.handler(async ({ context, input }) =>
         repos.reorderBotSections(context.actor, input.sectionIds),
       ),

@@ -1,4 +1,5 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Choose another group name": "请使用其他分组名称",
   "Uninstall this source?": "卸载此来源？",
   "Share this server's tools with all bots in this space.": "向此空间的所有伙伴共享此服务器工具。",
   "No connected or pending accounts remain for this source.": "此来源已无已连接或等待授权账号。",

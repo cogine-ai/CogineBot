@@ -1162,6 +1162,8 @@ function Home() {
           initialName={sectionPrompt.kind === "rename" ? sectionPrompt.section.name : undefined}
           onClose={() => setSectionPrompt(null)}
           onSave={async (name) => {
+            if (sectionPrompt.kind === "rename" && name === sectionPrompt.section.name.trim())
+              return;
             await saveOrganization(sectionPrompt.scope, sectionPrompt.spaceId, () =>
               sectionPrompt.kind === "rename"
                 ? rpc("botSections/update", { sectionId: sectionPrompt.section.id, name })

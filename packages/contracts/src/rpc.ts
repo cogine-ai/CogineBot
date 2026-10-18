@@ -39,7 +39,6 @@ import {
   BotSchema,
   BotSectionNameSchema,
   BotSectionSchema,
-  BotSectionStoredNameSchema,
   CapabilityInstallSchema,
   ComputerModeSchema,
   ComputerReleaseReasonSchema,
@@ -76,6 +75,7 @@ import {
   REPLY_QUOTE_MAX_LENGTH,
   RemovedBotSectionSchema,
   ReorderBotsInput,
+  RestoreBotSectionNameInput,
   RoutineSchema,
   ScratchpadItemSchema,
   ScratchpadItemStatusSchema,
@@ -94,6 +94,7 @@ import {
   ThreadSnapshotSchema,
   UpdateAgentSkillInput,
   UpdateBotInput,
+  UpdateBotSectionInput,
   UpdateExternalConversationPolicyInput,
   UpdateGroupInput,
   UsageRecordSchema,
@@ -347,9 +348,8 @@ export const appContract = {
     create: oc
       .input(threadTarget.safeExtend({ name: BotSectionNameSchema }))
       .output(BotSectionSchema),
-    update: oc
-      .input(z.object({ sectionId: Id, name: BotSectionStoredNameSchema }))
-      .output(BotSectionSchema),
+    update: oc.input(UpdateBotSectionInput).output(BotSectionSchema),
+    restoreName: oc.input(RestoreBotSectionNameInput).output(BotSectionSchema),
     reorder: oc.input(z.object({ sectionIds: z.array(Id) })).output(z.array(BotSectionSchema)),
     remove: oc.input(z.object({ sectionId: Id })).output(RemovedBotSectionSchema),
     restore: oc.input(RemovedBotSectionSchema).output(BotSectionSchema),

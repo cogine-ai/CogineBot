@@ -1,4 +1,5 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Choose another group name": "Wähle einen anderen Gruppennamen",
   "No connected apps.": "Keine verbundenen Apps.",
   "Share tools": "Tools teilen",
   "Review tool access": "Tool-Zugriff prüfen",

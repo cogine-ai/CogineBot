@@ -23,9 +23,11 @@ import {
   parseModelMaxTokens,
   RemovedBotSectionSchema,
   ReorderBotsInput,
+  RestoreBotSectionNameInput,
   RunActivityRowSchema,
   RunSchema,
   UpdateBotInput,
+  UpdateBotSectionInput,
   UpdateGroupInput,
   usableModelId,
 } from "./index.js";
@@ -38,7 +40,7 @@ describe("contracts", () => {
     }
   });
 
-  it("accepts historical reserved group names in stored-name updates and undo snapshots", () => {
+  it("accepts historical reserved group names only through explicit restore contracts", () => {
     for (const name of ["Unassigned", "未分组"]) {
       expect(
         RemovedBotSectionSchema.parse({
@@ -55,6 +57,14 @@ describe("contracts", () => {
       ).toBe(name);
       expect(BotSectionStoredNameSchema.parse(` ${name} `)).toBe(name);
       expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
+      expect(UpdateBotSectionInput.safeParse({ sectionId: "legacy", name }).success).toBe(false);
+      expect(
+        RestoreBotSectionNameInput.parse({
+          sectionId: "legacy",
+          name,
+          expectedName: "Product",
+        }).name,
+      ).toBe(name);
     }
   });
   it("accepts structured live activity progress", () => {

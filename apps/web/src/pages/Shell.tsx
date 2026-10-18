@@ -1882,10 +1882,13 @@ export function ShellPage() {
     remember = true,
   ) => {
     await performOrganization(async () => {
-      const updated = await rpc.botSections.update(
-        { sectionId: section.id, name },
-        { context: { spaceId } },
-      );
+      const options = { context: { spaceId } };
+      const updated = remember
+        ? await rpc.botSections.update({ sectionId: section.id, name }, options)
+        : await rpc.botSections.restoreName(
+            { sectionId: section.id, name, expectedName: section.name },
+            options,
+          );
       applySections(
         spaceId,
         sectionsForSpace(spaceId).map((item) => (item.id === section.id ? updated : item)),
@@ -3839,9 +3842,7 @@ export function ShellPage() {
                             }}
                             onDragEnd={() => setDraggedSection(null)}
                             onToggle={() => {
-                              if (group.emptySpaceId)
-                                openSpaceChat(group.emptySpaceId, "/onboarding");
-                              else if (collapsible) toggleSidebarSection(group.collapseKey);
+                              if (collapsible) toggleSidebarSection(group.collapseKey);
                             }}
                             onContextMenu={(event) => {
                               event.preventDefault();

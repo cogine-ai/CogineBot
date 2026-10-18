@@ -104,6 +104,34 @@ describe("sidebarGroupsForSpaces", () => {
     );
   });
 
+  it("keeps an empty grouped space selectable while retaining its section headings", () => {
+    const emptyGrouped = {
+      ...space("space-2", "Support", { canRename: true, bots: [] }),
+      botSections: [{ id: "s1", name: "Product" }],
+    };
+    const groups = sidebarGroupsForSpaces([space("space-1", "Personal"), emptyGrouped], "");
+    const emptyGroups = groups.filter((group) => group.spaceId === emptyGrouped.id);
+
+    expect(emptyGroups.map((group) => group.baseTitle)).toEqual(["Product", "Unassigned"]);
+    expect(emptyGroups[0]).toMatchObject({
+      sectionId: "s1",
+      emptySpaceId: emptyGrouped.id,
+      bots: [],
+    });
+    expect(emptyGroups[1]?.emptySpaceId).toBeUndefined();
+  });
+
+  it("does not mark a populated grouped space empty when search hides its chats", () => {
+    const grouped = {
+      ...space("space-2", "Support"),
+      botSections: [{ id: "s1", name: "Product" }],
+    };
+    const groups = sidebarGroupsForSpaces([space("space-1", "Personal"), grouped], "missing");
+
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.emptySpaceId === undefined)).toBe(true);
+  });
+
   it("distinguishes space labels from Unassigned and retains empty sections during filtering", () => {
     const grouped = {
       ...space("space-1", "Personal"),

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { activateUiLocale } from "./i18n";
+import { activateUiLocale, t } from "./i18n";
 import {
   chatOrganizationActions,
   reorderedSectionIds,
+  sectionNameValidationError,
   sectionOrganizationActions,
 } from "./inbox-organization";
 
@@ -15,6 +16,25 @@ const sections = [
 beforeEach(() => activateUiLocale("en"));
 
 describe("native inbox organization", () => {
+  it("validates changed names with the shared rules while accepting unchanged historical names", () => {
+    expect(sectionNameValidationError(" Product ", "Projects")).toBeNull();
+    for (const name of ["Unassigned", " unASSIGNED ", "未分组"]) {
+      expect(sectionNameValidationError(name, "Product")).toBe("Choose another group name");
+      expect(sectionNameValidationError(name, name.trim())).toBeNull();
+    }
+    expect(sectionNameValidationError(" ")).toBe("Enter a name");
+    expect(sectionNameValidationError("a".repeat(61))).toBe("Use 60 characters or fewer");
+  });
+
+  it("returns translated validation feedback in every supported non-English locale", () => {
+    for (const locale of ["zh-CN", "de", "ru"] as const) {
+      activateUiLocale(locale);
+      const message = sectionNameValidationError("Unassigned", "Product");
+      expect(message).toBe(t("Choose another group name"));
+      expect(message).not.toBe("Choose another group name");
+      expect(sectionNameValidationError(t("Unassigned"), "Product")).toBe(message);
+    }
+  });
   it("offers creation from the selected chat before any custom section exists", () => {
     const actions = chatOrganizationActions(target, []);
     expect(actions[0]).toMatchObject({ id: "create-section", title: "Group…" });

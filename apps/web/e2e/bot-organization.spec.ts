@@ -620,7 +620,11 @@ test("inline grouping retries failures and supports keyboard context menus, rena
   const delivery = sidebar.getByRole("button", { name: "Collapse Delivery", exact: true });
   await expect(delivery).toBeVisible();
   await delivery.focus();
+  const nameRestored = page.waitForResponse(
+    (response) => response.url().includes("/rpc/botSections/restoreName") && response.ok(),
+  );
   await page.keyboard.press("Control+z");
+  await nameRestored;
   await expect(projects).toBeVisible();
 
   await projects.focus();

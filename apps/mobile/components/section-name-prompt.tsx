@@ -8,6 +8,7 @@ import {
 } from "@expo/ui/jetpack-compose";
 import { useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
+import { sectionNameValidationError } from "../lib/inbox-organization";
 import { useResolvedAppearance } from "../lib/native";
 import { errorText } from "../lib/user-error";
 
@@ -19,22 +20,18 @@ export type SectionNamePromptProps = {
 };
 
 /** Android uses the native Compose dialog; iOS supplies its native alert prompt. */
-export function SectionNamePrompt({
-  title,
-  initialName = "",
-  onSave,
-  onClose,
-}: SectionNamePromptProps) {
+export function SectionNamePrompt({ title, initialName, onSave, onClose }: SectionNamePromptProps) {
   const { t } = useI18n();
   const appearance = useResolvedAppearance();
-  const name = useNativeState(initialName);
+  const name = useNativeState(initialName ?? "");
   const busy = useRef(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function save(value: string) {
     if (busy.current) return;
-    if (!value.trim()) {
-      setError(t("Enter a name"));
+    const validationError = sectionNameValidationError(value, initialName);
+    if (validationError) {
+      setError(validationError);
       return;
     }
     busy.current = true;

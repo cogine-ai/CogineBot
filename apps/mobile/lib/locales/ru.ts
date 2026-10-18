@@ -1,4 +1,5 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Choose another group name": "Выберите другое название группы",
   "No connected apps.": "Нет подключённых приложений.",
   "Share tools": "Предоставить инструменты",
   "Review tool access": "Проверить доступ к инструментам",

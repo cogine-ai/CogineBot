@@ -1,6 +1,21 @@
 import type { MenuAction } from "@expo/ui/community/menu";
 import type { BotSection } from "@rakazo/contracts";
+import { BotSectionNameSchema } from "@rakazo/contracts";
 import { t } from "./i18n";
+
+export function sectionNameValidationError(value: string, initialName?: string): string | null {
+  const name = value.trim();
+  if (initialName !== undefined && name === initialName.trim()) return null;
+  if (!name) return t("Enter a name");
+  if (name.length > 60) return t("Use 60 characters or fewer");
+  if (
+    !BotSectionNameSchema.safeParse(name).success ||
+    name.toLowerCase() === t("Unassigned").trim().toLowerCase()
+  ) {
+    return t("Choose another group name");
+  }
+  return null;
+}
 
 type OrganizationTarget = {
   pinned: boolean;

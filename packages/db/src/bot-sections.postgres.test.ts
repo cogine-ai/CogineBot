@@ -138,4 +138,48 @@ describePostgres("sidebar group undo (PostgreSQL)", () => {
       1,
     );
   });
+  it("restores a historical name only through the explicit undo path", async () => {
+    const section = await prisma.botSection.create({
+      data: { spaceId, userId, name: "Unassigned" },
+    });
+    const repos = createRepos(prisma);
+    await repos.updateBotSection(actor, { sectionId: section.id, name: "Legacy renamed" });
+    await expect(
+      repos.updateBotSection(actor, { sectionId: section.id, name: "Unassigned" }),
+    ).rejects.toThrow();
+
+    const restored = await repos.restoreBotSectionName(actor, {
+      sectionId: section.id,
+      name: "Unassigned",
+      expectedName: "Legacy renamed",
+    });
+
+    expect(restored.name).toBe("Unassigned");
+  });
+
+  it("keeps a concurrent rename when the expected-name update no longer matches", async () => {
+    const section = await prisma.botSection.create({ data: { spaceId, userId, name: "Current" } });
+    const racingPrisma = prisma.$extends({
+      query: {
+        botSection: {
+          async update({ args, query }) {
+            await prisma.botSection.update({ where: { id: section.id }, data: { name: "Later" } });
+            return query(args);
+          },
+        },
+      },
+    });
+
+    await expect(
+      createRepos(racingPrisma as unknown as PrismaClient).restoreBotSectionName(actor, {
+        sectionId: section.id,
+        name: "Previous",
+        expectedName: "Current",
+      }),
+    ).rejects.toBeInstanceOf(BotSectionNameConflictError);
+
+    expect(await prisma.botSection.findUniqueOrThrow({ where: { id: section.id } })).toMatchObject({
+      name: "Later",
+    });
+  });
 });

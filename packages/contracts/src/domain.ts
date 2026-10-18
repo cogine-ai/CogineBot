@@ -167,6 +167,14 @@ export const BotSectionNameSchema = BotSectionStoredNameSchema.refine(
   },
 );
 
+export const UpdateBotSectionInput = z.object({ sectionId: Id, name: BotSectionNameSchema });
+export const RestoreBotSectionNameInput = z.object({
+  sectionId: Id,
+  name: BotSectionStoredNameSchema,
+  expectedName: BotSectionStoredNameSchema,
+});
+export type RestoreBotSectionNameInput = z.infer<typeof RestoreBotSectionNameInput>;
+
 export const BotSectionSchema = z.object({
   id: Id,
   name: z.string(),

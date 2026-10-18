@@ -114,7 +114,7 @@ function database(input: { sections?: Section[]; bots?: Member[]; groups?: Membe
       }),
       update: vi.fn(async ({ where, data }: { where: Where; data: Where }) => {
         const row = rows().find((item) => matches(item, where));
-        if (!row) throw new Error("Missing row");
+        if (!row) throw Object.assign(new Error("Missing row"), { code: "P2025" });
         return update(row, data);
       }),
       updateMany: vi.fn(async ({ where, data }: { where: Where; data: Where }) => {
@@ -223,10 +223,11 @@ describe("personal sidebar groups", () => {
     expect(db.state.sections).toEqual([]);
   });
 
-  it("reserves system names on creation and rejects blank stored names on rename", async () => {
+  it("reserves system names on creation and ordinary renames", async () => {
     const db = database({ sections: [section("own")], bots: [member("bot")] });
     for (const name of ["Unassigned", " unASSIGNED ", "未分组", " "]) {
       await expect(db.repos.createBotSection(actor, { botId: "bot", name })).rejects.toThrow();
+      await expect(db.repos.updateBotSection(actor, { sectionId: "own", name })).rejects.toThrow();
     }
     await expect(
       db.repos.updateBotSection(actor, { sectionId: "own", name: " " }),
@@ -334,11 +335,72 @@ describe("personal sidebar groups", () => {
 
       await db.repos.updateBotSection(actor, { sectionId: "legacy", name: "Product" });
       expect(db.state.sections[0]?.name).toBe("Product");
-      const restored = await db.repos.updateBotSection(actor, { sectionId: "legacy", name });
+      await expect(
+        db.repos.updateBotSection(actor, { sectionId: "legacy", name }),
+      ).rejects.toThrow();
+      const restored = await db.repos.restoreBotSectionName(actor, {
+        sectionId: "legacy",
+        name,
+        expectedName: "Product",
+      });
 
       expect(restored).toMatchObject({ id: "legacy", name });
     },
   );
+
+  it("restores a name idempotently and leaves subsequent renames untouched", async () => {
+    const db = database({ sections: [section("work", "Product")] });
+    const undo = { sectionId: "work", name: "Unassigned", expectedName: "Product" };
+    await db.repos.restoreBotSectionName(actor, undo);
+    await expect(db.repos.restoreBotSectionName(actor, undo)).resolves.toMatchObject({
+      name: "Unassigned",
+    });
+    await db.repos.updateBotSection(actor, { sectionId: "work", name: "Later" });
+
+    await expect(db.repos.restoreBotSectionName(actor, undo)).rejects.toBeInstanceOf(
+      BotSectionNameConflictError,
+    );
+
+    expect(db.state.sections[0]?.name).toBe("Later");
+  });
+
+  it("checks name restoration against the actor and space", async () => {
+    const db = database({
+      sections: [
+        { ...section("foreign", "Product"), userId: "user-2" },
+        { ...section("other-space", "Product"), spaceId: "space-2" },
+      ],
+    });
+    for (const sectionId of ["foreign", "other-space"]) {
+      await expect(
+        db.repos.restoreBotSectionName(actor, {
+          sectionId,
+          name: "Unassigned",
+          expectedName: "Product",
+        }),
+      ).rejects.toBeInstanceOf(IsolationError);
+    }
+    expect(db.state.sections.every((section) => section.name === "Product")).toBe(true);
+  });
+
+  it("does not overwrite a concurrent rename between checking and updating", async () => {
+    const db = database({ sections: [section("work", "Product")] });
+    const update = db.prisma.botSection.update.getMockImplementation()!;
+    db.prisma.botSection.update.mockImplementationOnce(async (args) => {
+      db.state.sections[0]!.name = "Later";
+      return update(args);
+    });
+
+    await expect(
+      db.repos.restoreBotSectionName(actor, {
+        sectionId: "work",
+        name: "Unassigned",
+        expectedName: "Product",
+      }),
+    ).rejects.toBeInstanceOf(BotSectionNameConflictError);
+
+    expect(db.state.sections[0]?.name).toBe("Later");
+  });
 
   it("reuses a same-name personal section and preserves later moves and pin choices", async () => {
     const db = database({

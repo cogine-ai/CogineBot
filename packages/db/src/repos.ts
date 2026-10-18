@@ -4,13 +4,14 @@ import type {
   BotSection,
   MessageBlock,
   RemovedBotSection,
+  RestoreBotSectionNameInput,
   SpaceBot,
 } from "@rakazo/contracts";
 import {
   BOT_COLORS,
   BotSectionNameSchema,
-  BotSectionStoredNameSchema,
   RemovedBotSectionSchema,
+  RestoreBotSectionNameInput as RestoreBotSectionNameSchema,
 } from "@rakazo/contracts";
 import type { PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
@@ -144,6 +145,45 @@ function mapBot(
 }
 
 export function createRepos(prisma: PrismaClient) {
+  async function saveBotSectionName(
+    actor: Actor,
+    input: { sectionId: string; name: string },
+    expectedName?: string,
+  ): Promise<BotSection> {
+    const scope = { spaceId: actor.spaceId, userId: actor.userId };
+    const existing = await prisma.botSection.findFirst({
+      where: { id: input.sectionId, ...scope },
+    });
+    if (!existing) throw new IsolationError();
+    if (existing.name === input.name) return mapBotSection(existing);
+    if (expectedName !== undefined && existing.name !== expectedName) {
+      throw new BotSectionNameConflictError("Section has changed");
+    }
+    try {
+      const section = await prisma.botSection.update({
+        where: {
+          id: existing.id,
+          ...scope,
+          ...(expectedName === undefined ? {} : { name: expectedName }),
+        },
+        data: { name: input.name },
+      });
+      return mapBotSection(section);
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new BotSectionNameConflictError();
+      if (
+        expectedName !== undefined &&
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "P2025"
+      ) {
+        throw new BotSectionNameConflictError("Section has changed");
+      }
+      throw error;
+    }
+  }
+
   async function listBotSectionsForSpaces(
     actor: Actor,
     spaceIds: string[],
@@ -304,26 +344,12 @@ export function createRepos(prisma: PrismaClient) {
     },
 
     async updateBotSection(actor: Actor, input: { sectionId: string; name: string }) {
-      const name = BotSectionStoredNameSchema.parse(input.name);
-      const existing = await prisma.botSection.findFirst({
-        where: {
-          id: input.sectionId,
-          spaceId: actor.spaceId,
-          userId: actor.userId,
-        },
-      });
-      if (!existing) throw new IsolationError();
-      if (existing.name === name) return mapBotSection(existing);
-      try {
-        const section = await prisma.botSection.update({
-          where: { id: existing.id },
-          data: { name },
-        });
-        return mapBotSection(section);
-      } catch (error) {
-        if (isUniqueViolation(error)) throw new BotSectionNameConflictError();
-        throw error;
-      }
+      return saveBotSectionName(actor, { ...input, name: BotSectionNameSchema.parse(input.name) });
+    },
+
+    async restoreBotSectionName(actor: Actor, input: RestoreBotSectionNameInput) {
+      const parsed = RestoreBotSectionNameSchema.parse(input);
+      return saveBotSectionName(actor, parsed, parsed.expectedName);
     },
 
     async reorderBotSections(actor: Actor, sectionIds: string[]): Promise<BotSection[]> {

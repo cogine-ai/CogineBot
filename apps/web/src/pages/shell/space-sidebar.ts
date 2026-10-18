@@ -93,7 +93,10 @@ export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends 
           : space.name
         : group.title,
       showLock: showSpaceNames,
-      emptySpaceId: undefined as string | undefined,
+      emptySpaceId:
+        showSpaceNames && index === 0 && space.bots.length === 0 && space.groups.length === 0
+          ? space.id
+          : undefined,
       spaceId: space.id,
       spaceName: space.name,
       ...spaceHeaderMenu(space, index === 0),

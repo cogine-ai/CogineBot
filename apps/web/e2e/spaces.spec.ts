@@ -221,3 +221,55 @@ test("deleting the last bot in a space stays in the app after first use", async 
   await sidebar.getByRole("button", { name: /^Archived/ }).click();
   await expect(sidebar.getByText("Chief", { exact: true })).toBeVisible();
 });
+
+test("an empty grouped space stays selectable so its archived chat can be restored", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `spaces-grouped-empty-${Date.now()}@rakazo.test`, "password12", "Space Owner");
+  await completeOnboarding(page);
+  const personalBotId = new URL(page.url()).pathname.split("/").at(-1)!;
+  const sidebar = page.locator("aside").first();
+
+  await openNewSpace(page);
+  const createDialog = page.getByRole("dialog", { name: "New space" });
+  await createDialog.getByLabel("Name").fill("Grouped support");
+  await createDialog.getByRole("button", { name: "Create space", exact: true }).click();
+  await completeOnboarding(page);
+  await expect(page.getByTestId("sidebar-current-space")).toContainText("Grouped support");
+  const groupedSpaceId = await page.evaluate(() => localStorage.getItem("rakazo:space-id"));
+  expect(groupedSpaceId).toBeTruthy();
+  const supportBotId = new URL(page.url()).pathname.split("/").at(-1)!;
+  const supportBot = sidebar.locator(`[data-roster-bot-id="${supportBotId}"]`);
+
+  await supportBot.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Group", exact: true }).click();
+  const sectionName = page.getByRole("textbox", { name: "Section name", exact: true });
+  await sectionName.fill("Saved chats");
+  await sectionName.press("Enter");
+  await expect(
+    sidebar.getByRole("button", { name: "Collapse Saved chats", exact: true }),
+  ).toBeVisible();
+  await supportBot.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
+  await expect(supportBot).toHaveCount(0);
+
+  await sidebar.locator(`[data-roster-bot-id="${personalBotId}"]`).click();
+  await expect(page.getByTestId("sidebar-current-space")).toContainText("Personal");
+  const savedChats = sidebar.getByRole("button", { name: "Collapse Saved chats", exact: true });
+  await savedChats.click();
+  await expect(
+    sidebar.getByRole("button", { name: "Expand Saved chats, 0", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("sidebar-current-space")).toContainText("Personal");
+
+  await sidebar.getByRole("button", { name: "Grouped support", exact: true }).click();
+  await expect(page.getByTestId("sidebar-current-space")).toContainText("Grouped support");
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("rakazo:space-id")))
+    .toBe(groupedSpaceId);
+  await sidebar.getByRole("button", { name: /^Archived/ }).click();
+  await sidebar.getByRole("button", { name: "Restore", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Expand Saved chats, 1", exact: true }).click();
+  await expect(supportBot).toBeVisible();
+  await captureScreenshot(page, testInfo, "empty-grouped-space-restored-chat");
+});
