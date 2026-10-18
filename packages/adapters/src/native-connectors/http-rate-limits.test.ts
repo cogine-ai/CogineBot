@@ -15,6 +15,7 @@ const linearRate = {
 };
 const secondaryMessage =
   "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.";
+const secondaryBareMessage = "You have exceeded a secondary rate limit";
 
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((client) => client.close()));
@@ -86,15 +87,13 @@ async function throughAction(
           repo: "fixture-repo",
           ...(!action.readOnly ? { title: "Fixture issue" } : {}),
         };
-  const work = action.execute(
-    input,
-    context(app, (request) => client.request(request), {
-      checkpoint: async (receipt) => {
-        checkpoints.push(structuredClone(receipt));
-      },
-    }),
-  );
-  return { work, fetch, checkpoints };
+  const ctx = context(app, (request) => client.request(request), {
+    checkpoint: async (receipt) => {
+      checkpoints.push(structuredClone(receipt));
+    },
+  });
+  const work = action.execute(input, ctx);
+  return { work, fetch, checkpoints, input, ctx };
 }
 
 for (const readOnly of [true, false]) {
@@ -164,6 +163,45 @@ for (const readOnly of [true, false]) {
     await rejection(work, "resource_unavailable");
     assert.equal(fetch.mock.calls.length, 1);
   });
+
+  it(`GitHub exact no-period secondary message reaches the real ${mode} handler without replay`, async () => {
+    const { work, fetch, checkpoints, input, ctx } = await throughAction("github", github, 403, {
+      message: secondaryBareMessage,
+      private: secret,
+    });
+    await rejection(work, "rate_limited", 60);
+    assert.equal(fetch.mock.calls.length, 1);
+    assert.equal(checkpoints.length, readOnly ? 0 : 1);
+    if (!readOnly) {
+      assert.equal(checkpoints[0]?.dispatch_state, "in_flight");
+      assert.notEqual(checkpoints[0]?.complete, true);
+      await rejection(
+        github.execute(input, { ...ctx, recovery: checkpoints[0] }),
+        "result_unknown",
+        undefined,
+        true,
+      );
+      assert.equal(fetch.mock.calls.length, 1);
+      assert.equal(checkpoints.length, 1);
+    }
+  });
+
+  for (const message of [
+    `${secondaryBareMessage} for content creation`,
+    `${secondaryBareMessage}ish`,
+    `${secondaryBareMessage} `,
+    `Permission denied: ${secondaryBareMessage}`,
+  ]) {
+    it(`GitHub unproven secondary wording stays an ordinary 403 in the real ${mode} handler: ${message}`, async () => {
+      const { work, fetch, checkpoints } = await throughAction("github", github, 403, {
+        message,
+        private: secret,
+      });
+      await rejection(work, "resource_unavailable");
+      assert.equal(fetch.mock.calls.length, 1);
+      assert.equal(checkpoints.length, readOnly ? 0 : 1);
+    });
+  }
 }
 
 describe("provider-scoped error evidence", () => {
@@ -185,6 +223,21 @@ describe("provider-scoped error evidence", () => {
       assert.equal(fetch.mock.calls.length, blocked ? 0 : 1);
     });
   }
+  it("GitHub exact no-period message cannot classify another authority", async () => {
+    const { client, fetch } = transport("https://api.example.test", false, 403, {
+      message: secondaryBareMessage,
+      private: secret,
+    });
+    await rejection(
+      client.request({
+        method: "POST",
+        path: "/repos/fixture-owner/fixture-repo/issues",
+        body: {},
+      }),
+      "resource_unavailable",
+    );
+    assert.equal(fetch.mock.calls.length, 1);
+  });
   it("Linear rate code is limited to the GraphQL API path", async () => {
     const { client } = transport("https://api.linear.app", false, 400, linearRate);
     await rejection(client.request({ method: "POST", path: "/other", body: {} }), "invalid_input");

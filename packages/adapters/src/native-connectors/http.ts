@@ -58,7 +58,8 @@ function httpError(
     const secondary =
       githubRetry !== undefined ||
       (typeof record.message === "string" &&
-        /^You have exceeded a secondary rate limit\.(?: |$)/.test(record.message));
+        (record.message === "You have exceeded a secondary rate limit" ||
+          /^You have exceeded a secondary rate limit\.(?: |$)/.test(record.message)));
     if (primary || secondary) {
       // GitHub's reset is epoch seconds (Linear's similarly named header is ms).
       const reset = headers.get("x-ratelimit-reset");
