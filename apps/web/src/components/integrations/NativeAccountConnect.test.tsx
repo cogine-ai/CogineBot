@@ -39,6 +39,9 @@ async function render(
   appId: NativeAppId,
   kind: NativeConfigStatus["credentialKind"],
   actor: NativeConfigStatus["actor"],
+  options: Partial<ComponentProps<typeof NativeAccountConnect>> & {
+    pickerAvailable?: boolean;
+  } = {},
 ) {
   status.mockResolvedValue({
     canConfigure: true,
@@ -56,12 +59,22 @@ async function render(
         revision: 1,
         callbackUri: "https://instance.example.test/callback",
         executionLocation: "instance",
+        ...(options.pickerAvailable === undefined
+          ? {}
+          : { driveFilePickerAvailable: options.pickerAvailable }),
       },
     ],
   });
   await act(async () =>
     root.render(
-      <NativeAccountConnect appId={appId} onSubmit={async () => {}} onCancel={() => {}} />,
+      <NativeAccountConnect
+        appId={appId}
+        onSubmit={options.onSubmit ?? (async () => {})}
+        onCancel={() => {}}
+        {...(options.previousConnectionId
+          ? { previousConnectionId: options.previousConnectionId }
+          : {})}
+      />,
     ),
   );
 }
@@ -89,3 +102,52 @@ it("Slack OAuth identifies the selected actor and never asks for a pasted token"
   expect(container.querySelector("option")?.textContent).toContain("Bot");
   expect(container.textContent).toContain("Authorize account");
 });
+it("Drive file selection begins a separate connection without a previous account or credential", async () => {
+  const submit = vi.fn();
+  await render("google-drive", "oauth", "user", { pickerAvailable: true, onSubmit: submit });
+  const button = [...container.querySelectorAll("button")].find(
+    (entry) => entry.textContent === "Choose accessible files",
+  )!;
+  await act(async () => button.click());
+  expect(submit).toHaveBeenCalledWith({
+    configId: "fixture-config",
+    authorizationFlow: "drive_picker",
+  });
+  expect(container.querySelector("input")).toBeNull();
+});
+it("ordinary Drive authorization preserves the ordinary input shape", async () => {
+  const submit = vi.fn();
+  await render("google-drive", "oauth", "user", { pickerAvailable: true, onSubmit: submit });
+  await act(async () =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(submit).toHaveBeenCalledWith({ configId: "fixture-config" });
+});
+it("reauthorization never offers Picker or changes the existing account flow", async () => {
+  const submit = vi.fn();
+  await render("google-drive", "oauth", "user", {
+    pickerAvailable: true,
+    previousConnectionId: "old-drive",
+    onSubmit: submit,
+  });
+  expect(container.textContent).not.toContain("Choose accessible files");
+  await act(async () =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(submit).toHaveBeenCalledWith({
+    configId: "fixture-config",
+    previousConnectionId: "old-drive",
+  });
+});
+it.each([false, undefined])(
+  "does not offer Picker when its config capability is %s",
+  async (pickerAvailable) => {
+    await render("google-drive", "oauth", "user", { pickerAvailable });
+    expect(container.textContent).not.toContain("Choose accessible files");
+    if (pickerAvailable === false) expect(container.textContent).toContain("Ask an administrator");
+  },
+);

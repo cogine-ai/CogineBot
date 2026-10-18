@@ -14,7 +14,10 @@ import {
 import contract from "./linear.contract.json" with { type: "json" };
 
 const definitions = new Map(contract.actions.map((row) => [row.id, row]));
-function authorize(def: CollaborationDefinition, context: NativeActionContext): void {
+function authorize(
+  def: CollaborationDefinition,
+  context: Pick<NativeActionContext, "principal">,
+): void {
   const c = context.principal.context;
   if (
     !["user", "app"].includes(String(c.actorType)) ||

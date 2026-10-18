@@ -1,5 +1,6 @@
 import {
   NativeNotionSignalJobSchema,
+  NativeSlackLifecycleJobSchema,
   NativeSlackSignalJobSchema,
   NativeSourceJobPayloadSchema,
 } from "@rakazo/contracts";
@@ -15,6 +16,7 @@ const payloadSchemas = {
   "native.source.poll": NativeSourceJobPayloadSchema,
   "native.notion.signal": NativeNotionSignalJobSchema,
   "native.slack.signal": NativeSlackSignalJobSchema,
+  "native.slack.lifecycle": NativeSlackLifecycleJobSchema,
   "run.continue": z.object({ runId: z.string().min(1) }),
   "routine.wakeup": z.object({
     routineId: z.string().min(1),

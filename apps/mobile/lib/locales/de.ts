@@ -900,4 +900,23 @@ export const DE_MESSAGES: Record<string, string> = {
   "Connect integration": "Integration verbinden",
   "Calendar event": "Kalenderereignis",
   "Notion event": "Notion-Ereignis",
+  Application: "Anwendung",
+  User: "Benutzer",
+  "Bot token": "Bot-Token",
+  "User token": "Benutzer-Token",
+  "Personal API key": "Persönlicher API-Schlüssel",
+  "Linear API key": "Linear-API-Schlüssel",
+  "Slack bot token": "Slack-Bot-Token",
+  "Slack user token": "Slack-Benutzer-Token",
+  "GitHub App installation": "GitHub-App-Installation",
+  "Connect this GitHub App installation in the web app.":
+    "Verbinde diese GitHub-App-Installation in der Web-App.",
+  "Connect with access to the files and folders you choose in Google.":
+    "Verbinde dich mit Zugriff auf die Dateien und Ordner, die du bei Google auswählst.",
+  "Choose accessible files": "Zugängliche Dateien auswählen",
+  "Ask an administrator to enable access to selected files.":
+    "Bitte einen Administrator, den Zugriff auf ausgewählte Dateien zu aktivieren.",
+  "Gmail event": "Gmail-Ereignis",
+  "Drive event": "Drive-Ereignis",
+  "Slack bot event": "Slack-Bot-Ereignis",
 };

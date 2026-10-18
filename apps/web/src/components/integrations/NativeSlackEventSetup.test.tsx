@@ -132,7 +132,7 @@ it("saving writes the secret once, clears it before response and shows a verific
     boxes[0]!.click();
   });
   await act(async () => {
-    boxes[4]!.click();
+    boxes[boxes.length - 1]!.click();
   });
   await act(async () =>
     container
@@ -151,6 +151,9 @@ it("saving writes the secret once, clears it before response and shows a verific
   await act(async () => complete(hook));
   expect(container.textContent).toContain("Verify the Request URL in Slack");
   expect(container.textContent).toContain("Grant the matching bot scopes separately");
+  expect(container.textContent).toContain(
+    "app_uninstalled and tokens_revoked update account status",
+  );
   expect(container.textContent).not.toContain("fixture-signing-secret");
 });
 it("a stale response from another application configuration cannot replace the current setup", async () => {

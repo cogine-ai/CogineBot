@@ -310,7 +310,16 @@ export class CollaborationOAuthAuthorities {
           this.basic(clientId, secret),
         );
         receivedRotation = true;
-        return same(previous, await this.slackAuthorization(config, body, signal, true));
+        const next = await this.slackAuthorization(config, body, signal, true);
+        if (typeof previous.identity.context.appId === "string") {
+          if (
+            next.identity.context.appId !== undefined &&
+            next.identity.context.appId !== previous.identity.context.appId
+          )
+            return mismatch();
+          next.identity.context.appId = previous.identity.context.appId;
+        }
+        return same(previous, next);
       }
       throw new NativeActionError("invalid_input", "Unsupported collaboration authority.");
     } catch (error) {
@@ -652,6 +661,19 @@ export class CollaborationOAuthAuthorities {
         "Slack omitted the rotating token lifetime.",
       );
     const { identity } = await this.slackIdentity(config, accessToken, signal);
+    if (body.app_id !== undefined) {
+      const appId = required(body.app_id, "a Slack application ID");
+      if (!/^A[A-Z0-9]+$/.test(appId))
+        throw new NativeActionError(
+          "incomplete_response",
+          "Slack returned an invalid application ID.",
+        );
+      identity.context.appId = appId;
+    } else if (!refreshing)
+      throw new NativeActionError(
+        "incomplete_response",
+        "Slack omitted the authorized application ID.",
+      );
     if (body.is_enterprise_install === true)
       throw new NativeActionError(
         "not_configured",

@@ -1,7 +1,11 @@
 import type { BackgroundJob } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type { NativeEventScope, NativeRoutineEventSpec } from "@rakazo/contracts";
-import { NativeNotionSignalJobSchema, NativeSlackSignalJobSchema } from "@rakazo/contracts";
+import {
+  NativeNotionSignalJobSchema,
+  NativeSlackLifecycleJobSchema,
+  NativeSlackSignalJobSchema,
+} from "@rakazo/contracts";
 import { expandSkillReferencesInPrompt } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { Prisma } from "@rakazo/db";
@@ -34,6 +38,7 @@ import {
   verifyCalendarSignal,
 } from "./signals.js";
 import type { NativeSlackHookStore } from "./slack-hooks.js";
+import { applyNativeSlackLifecycle } from "./slack-lifecycle.js";
 import { readSlackWebhook } from "./slack-reader.js";
 import { slackSignalAccessible, slackSignalCandidate } from "./slack-signals.js";
 import {
@@ -64,6 +69,11 @@ type NativeSignalJob =
   | {
       name: "native.slack.signal";
       payload: z.infer<typeof NativeSlackSignalJobSchema>;
+      replaceKey?: string;
+    }
+  | {
+      name: "native.slack.lifecycle";
+      payload: z.infer<typeof NativeSlackLifecycleJobSchema>;
       replaceKey?: string;
     };
 export interface NativeEventJobPublisher {
@@ -218,7 +228,12 @@ export class NativeRoutineEventService {
     const result = await withNativeEventReadApi(
       this.oauth,
       context,
-      (api) => (app === "gmail" ? readGmailChanges(context, api) : readDriveChanges(context, api)),
+      (api) =>
+        app === "gmail"
+          ? readGmailChanges(context, api)
+          : readDriveChanges(context, api, undefined, {
+              driveFileOnly: api.driveFileOnly !== false,
+            }),
       this.network,
     );
     context.row.state = result.state;
@@ -442,9 +457,8 @@ export class NativeRoutineEventService {
     const accepted = await this.slackHooks.accept(hookId, raw, signature, timestamp);
     if (!accepted || accepted.kind === "ignored") return {};
     if (accepted.kind === "challenge") return { challenge: accepted.challenge };
-    // The signed, metadata-only inbox is already durable. Reconciliation repairs any enqueue/ACK crash gap.
-    if (!accepted.alreadyDispatched)
-      await this.dispatchSlackInbox(accepted.inboxId, accepted.hook.id, accepted.hook.revision);
+    // The signed metadata inbox is the durable ACK boundary. Existing reconciliation fans out jobs;
+    // waiting for every matching Routine's queue write would exceed Slack's response budget.
     return {};
   }
   private async dispatchSlackInbox(
@@ -453,7 +467,18 @@ export class NativeRoutineEventService {
     hookRevision: number,
   ): Promise<void> {
     const accepted = await this.slackHooks?.loadInbox(inboxId, hookId, hookRevision);
-    if (!accepted) return;
+    if (!accepted) {
+      const lifecycle = await this.slackHooks?.loadLifecycleInbox(inboxId, hookId, hookRevision);
+      if (lifecycle) {
+        await this.jobs.enqueue({
+          name: "native.slack.lifecycle",
+          payload: { inboxId, hookId, hookRevision },
+          replaceKey: `native-slack-lifecycle:${hookId}:${hookRevision}:${inboxId}`,
+        });
+        await this.slackHooks!.markDispatched(inboxId, hookId, hookRevision);
+      }
+      return;
+    }
     const { hook, signal } = accepted;
     const rows = await this.prisma.$queryRaw<
       Array<{
@@ -491,6 +516,15 @@ export class NativeRoutineEventService {
       });
     }
     await this.slackHooks!.markDispatched(inboxId, hookId, hookRevision);
+  }
+  async slackLifecycle(raw: unknown): Promise<void> {
+    if (!this.slackHooks)
+      throw new NativeActionError("not_configured", "Slack lifecycle processing is unavailable.");
+    await applyNativeSlackLifecycle(
+      this.prisma,
+      this.slackHooks,
+      NativeSlackLifecycleJobSchema.parse(raw),
+    );
   }
   async slackSignal(raw: unknown, signal: AbortSignal): Promise<void> {
     const payload = NativeSlackSignalJobSchema.parse(raw),

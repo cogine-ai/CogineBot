@@ -18,6 +18,7 @@ import type {
   NativeOAuthAuthorities,
   NativeTokenMaterial,
 } from "./authorities.js";
+import { DRIVE_PICKER_SCOPE, requireDrivePickerConfig } from "./authorities.js";
 import { NativeConfigSettingsSchema, type NativeConfigStore } from "./config.js";
 import type { NativeMcpPending } from "./mcp.js";
 
@@ -48,8 +49,21 @@ export class NativeOAuthStore {
     configId: string,
     context: AdapterContext,
     previousConnectionId?: string,
+    authorizationFlow?: "drive_picker",
   ): Promise<{ connectionId: string; authorizationUrl: string }> {
     const config = await this.configs.require(configId);
+    if (
+      authorizationFlow !== undefined &&
+      (authorizationFlow !== "drive_picker" ||
+        config.appId !== "google-drive" ||
+        config.credentialKind !== "oauth" ||
+        previousConnectionId !== undefined)
+    )
+      throw new NativeActionError(
+        "invalid_input",
+        "File selection creates a separate Google Drive connection.",
+      );
+    if (authorizationFlow === "drive_picker") requireDrivePickerConfig(config);
     if (!["oauth", "mcp_oauth"].includes(config.credentialKind))
       throw new NativeActionError("invalid_input", "Choose an OAuth connection source.");
     await this.member(this.prisma, context);
@@ -83,7 +97,10 @@ export class NativeOAuthStore {
     const verifier = randomBytes(48).toString("base64url");
     const sessionId = randomUUID();
     const connectionId = randomUUID();
-    const material = await this.prepare({ verifier, previousConnectionId }, context);
+    const material = await this.prepare(
+      { verifier, previousConnectionId, ...(authorizationFlow ? { authorizationFlow } : {}) },
+      context,
+    );
     await persistPreparedSecret(this.prisma, this.secrets, material, () =>
       this.prisma.$transaction(async (tx) => {
         await this.fenceConfig(tx, config);
@@ -113,7 +130,10 @@ export class NativeOAuthStore {
             configId: config.id,
             configRevision: config.revision,
             secretId: material.id,
-            requestedScopes: NativeConfigSettingsSchema.parse(config.config).scopes,
+            requestedScopes:
+              authorizationFlow === "drive_picker"
+                ? [DRIVE_PICKER_SCOPE]
+                : NativeConfigSettingsSchema.parse(config.config).scopes,
             expiresAt: new Date(Date.now() + TTL),
           },
         });
@@ -154,6 +174,18 @@ export class NativeOAuthStore {
       ),
     );
     if (typeof value?.verifier !== "string") throw unavailable();
+    if (value.authorizationFlow !== undefined) {
+      if (
+        value.authorizationFlow !== "drive_picker" ||
+        value.previousConnectionId !== undefined ||
+        config.appId !== "google-drive" ||
+        config.credentialKind !== "oauth" ||
+        session.requestedScopes.length !== 1 ||
+        session.requestedScopes[0] !== DRIVE_PICKER_SCOPE
+      )
+        throw unavailable();
+      return this.authorities.drivePickerAuthorizationUrl(config, state, value.verifier);
+    }
     if (config.credentialKind === "mcp_oauth") {
       if (value.mcp)
         return this.authorities.mcp.pendingUrl(config, this.mcpPending(value.mcp), state);
@@ -219,7 +251,7 @@ export class NativeOAuthStore {
 
   /** Bind the one-use state to its initiating browser user; never trust a request origin. */
   async callback(
-    input: { state: string; code?: string; denied?: boolean },
+    input: { state: string; code?: string; denied?: boolean; pickedFileIds?: string },
     signal: AbortSignal,
     actorUserId: string,
   ): Promise<{ connectionId: string }> {
@@ -269,23 +301,45 @@ export class NativeOAuthStore {
         ),
       );
       if (typeof pending?.verifier !== "string") throw unavailable();
-      const auth = await this.authorities.exchange(
-        config,
-        await this.clientSecret(config),
-        input.code,
-        pending.verifier,
-        signal,
-        pending.mcp ? this.mcpPending(pending.mcp) : undefined,
-        input.state,
-        await this.privateEndpoint(context.userId),
-      );
+      const picker = pending.authorizationFlow === "drive_picker";
+      if (
+        pending.authorizationFlow !== undefined &&
+        (!picker ||
+          pending.previousConnectionId !== undefined ||
+          config.appId !== "google-drive" ||
+          config.credentialKind !== "oauth" ||
+          session.requestedScopes.length !== 1 ||
+          session.requestedScopes[0] !== DRIVE_PICKER_SCOPE)
+      )
+        throw unavailable();
+      const auth = picker
+        ? await this.authorities.exchangeDrivePicker(
+            config,
+            await this.clientSecret(config),
+            input.code,
+            pending.verifier,
+            input.pickedFileIds ?? "",
+            signal,
+          )
+        : await this.authorities.exchange(
+            config,
+            await this.clientSecret(config),
+            input.code,
+            pending.verifier,
+            signal,
+            pending.mcp ? this.mcpPending(pending.mcp) : undefined,
+            input.state,
+            await this.privateEndpoint(context.userId),
+          );
       await this.adopt(
         config,
         session.connectionId,
         auth,
         context,
         session.id,
-        typeof pending.previousConnectionId === "string" ? pending.previousConnectionId : undefined,
+        !picker && typeof pending.previousConnectionId === "string"
+          ? pending.previousConnectionId
+          : undefined,
       );
       return { connectionId: session.connectionId };
     } catch (error) {

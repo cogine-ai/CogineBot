@@ -3,8 +3,9 @@ import type {
   NativeRoutineEventSpec,
   NativeSlackBotEvent,
   NativeSlackEventSignal,
+  NativeSlackLifecycleSignal,
 } from "@rakazo/contracts";
-import { NativeSlackEventSignalSchema } from "@rakazo/contracts";
+import { NativeSlackEventSignalSchema, NativeSlackLifecycleSignalSchema } from "@rakazo/contracts";
 
 export class InvalidNativeSlackSignal extends Error {
   constructor() {
@@ -42,6 +43,7 @@ const id = (value: unknown): string => {
 export type SlackVerifiedEnvelope =
   | { kind: "challenge"; challenge: string }
   | { kind: "event"; signal: NativeSlackEventSignal }
+  | { kind: "lifecycle"; signal: NativeSlackLifecycleSignal }
   | { kind: "ignored" };
 /** Verifies bytes before parsing; the deprecated verification-token field is never consulted. */
 export function verifySlackEnvelope(
@@ -91,6 +93,25 @@ export function verifySlackEnvelope(
   const teamId = id(envelope.team_id);
   if (hook.teamId && teamId !== hook.teamId) throw new InvalidNativeSlackSignal();
   const event = record(envelope.event);
+  if (event.type === "tokens_revoked" || event.type === "app_uninstalled") {
+    if (!hook.botEvents.includes(event.type)) return { kind: "ignored" };
+    const tokens = event.type === "tokens_revoked" ? record(event.tokens) : {};
+    const parsed = NativeSlackLifecycleSignalSchema.safeParse({
+      eventId: envelope.event_id,
+      appId: envelope.api_app_id,
+      teamId,
+      enterpriseId:
+        envelope.context_enterprise_id == null && envelope.enterprise_id == null
+          ? null
+          : id(envelope.context_enterprise_id ?? envelope.enterprise_id),
+      eventTime: envelope.event_time,
+      type: event.type,
+      botUserIds: tokens.bot ?? [],
+      oauthUserIds: tokens.oauth ?? [],
+    });
+    if (!parsed.success) throw new InvalidNativeSlackSignal();
+    return { kind: "lifecycle", signal: parsed.data };
+  }
   if (!["app_mention", "message"].includes(String(event.type))) return { kind: "ignored" };
   // User-authored file shares are new messages. Edits, deletes, bots and system subtypes are not.
   if (

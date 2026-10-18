@@ -12,6 +12,7 @@ import {
   NativeGoogleWatchConfigSchema,
 } from "@rakazo/contracts";
 import type { NativeAppConfig, PrismaClient } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 import { z } from "zod";
 import { assertNoSensitiveQuery } from "../connector-http.js";
 import { actorMayUsePrivateEndpoint } from "../private-endpoint.js";
@@ -144,6 +145,13 @@ export function nativeConfigStatus(row: NativeAppConfig): NativeConfigStatus {
     callbackUri: row.callbackUri,
     executionLocation: "instance",
     ...(settings.actor ? { actor: settings.actor } : {}),
+    ...(row.appId === "google-drive" && row.credentialKind === "oauth"
+      ? {
+          driveFilePickerAvailable: settings.scopes.includes(
+            "https://www.googleapis.com/auth/drive.file",
+          ),
+        }
+      : {}),
   };
 }
 
@@ -214,20 +222,6 @@ export class NativeConfigStore {
         throw new Error(
           "Gmail push requires this instance's exact public HTTPS callback audience.",
         );
-      const peers = await this.prisma.nativeAppConfig.findMany({
-        where: { appId: "gmail", enabled: true, ...(input.id ? { id: { not: input.id } } : {}) },
-        select: { config: true },
-      });
-      for (const peer of peers) {
-        const watch = NativeConfigSettingsSchema.parse(peer.config).googleWatch;
-        if (
-          watch?.projectId === config.googleWatch.projectId &&
-          watch.topicName !== config.googleWatch.topicName
-        )
-          throw new Error(
-            "Gmail configurations in this instance must share one fixed topic per Google project.",
-          );
-      }
     }
 
     if (config.endpoint) {
@@ -273,6 +267,39 @@ export class NativeConfigStore {
       JSON.stringify(NativeConfigSettingsSchema.parse(previous.config)) !== JSON.stringify(config);
     return persistPreparedSecret(this.prisma, this.secrets, material, async () => {
       const row = await this.prisma.$transaction(async (tx) => {
+        if (config.googleWatch && input.enabled) {
+          const configuredWatch = config.googleWatch;
+          // Configuration is deployment-owned. Serialize one project's fixed mailbox topic across admin writers.
+          await tx.$executeRaw(
+            Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('native-gmail-watch-project'),hashtext(${configuredWatch.projectId}))`,
+          );
+          const peers = await tx.nativeAppConfig.findMany({
+            where: {
+              appId: "gmail",
+              enabled: true,
+              ...(input.id ? { id: { not: input.id } } : {}),
+            },
+            select: { config: true },
+          });
+          for (const peer of peers) {
+            const watch = NativeConfigSettingsSchema.parse(peer.config).googleWatch;
+            if (
+              watch?.projectId === configuredWatch.projectId &&
+              watch.topicName !== configuredWatch.topicName
+            )
+              throw new Error(
+                "Gmail configurations in this instance must share one fixed topic per Google project.",
+              );
+            if (
+              watch?.subscriptionName === configuredWatch.subscriptionName &&
+              (watch.callbackAudience !== configuredWatch.callbackAudience ||
+                watch.pushServiceAccountEmail !== configuredWatch.pushServiceAccountEmail)
+            )
+              throw new Error(
+                "A Gmail push subscription requires one exact callback audience and service account.",
+              );
+          }
+        }
         const data = {
           appId: input.appId,
           label: input.label,

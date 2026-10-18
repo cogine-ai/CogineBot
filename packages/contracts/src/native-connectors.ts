@@ -168,6 +168,7 @@ export const NativeConfigStatusSchema = z.object({
   callbackUri: z.url(),
   executionLocation: z.literal("instance"),
   actor: z.enum(["user", "app", "bot", "installation"]).optional(),
+  driveFilePickerAvailable: z.boolean().optional(),
 });
 export type NativeConfigStatus = z.infer<typeof NativeConfigStatusSchema>;
 
@@ -193,10 +194,22 @@ export type NativeBeginInput = z.infer<typeof NativeBeginInputSchema>;
 export const NativeBeginInputSchema = z
   .object({
     configId: Id,
+    authorizationFlow: z.literal("drive_picker").optional(),
     previousConnectionId: Id.optional(),
     credential: z.string().min(1).max(16384).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.authorizationFlow === "drive_picker" &&
+      (value.previousConnectionId || value.credential)
+    )
+      context.addIssue({
+        code: "custom",
+        message: "File selection creates a separate Drive connection.",
+        path: ["authorizationFlow"],
+      });
+  });
 
 export const NativeConnectionInfoSchema = z.object({
   configId: Id,

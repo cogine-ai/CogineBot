@@ -215,7 +215,7 @@ test("Drive pending ID/hash is durable before POST and raw token is never persis
         includeItemsFromAllDrives: true,
         supportsAllDrives: true,
       });
-      assert.equal(request.service, "drive");
+      assert.equal(request.service, undefined);
       assert.equal(request.path, "/changes/watch");
       assert.equal(
         (request.body as Obj).address,

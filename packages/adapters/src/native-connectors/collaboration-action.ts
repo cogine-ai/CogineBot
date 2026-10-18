@@ -50,7 +50,10 @@ export function select(source: Data, keys: readonly string[]): Data {
     keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]),
   );
 }
-export function scopes(context: NativeActionContext, alternatives: readonly string[]): void {
+export function scopes(
+  context: Pick<NativeActionContext, "principal">,
+  alternatives: readonly string[],
+): void {
   if (
     alternatives.length &&
     !alternatives.some((scope) => context.principal.scopes.includes(scope))
@@ -191,13 +194,24 @@ export class CollaborationRun {
 export function collaborationActions(
   definitions: readonly CollaborationDefinition[],
   execute: (args: Data, run: CollaborationRun) => Promise<Data>,
-  authorize: (definition: CollaborationDefinition, context: NativeActionContext) => void,
+  authorize: (
+    definition: CollaborationDefinition,
+    context: Pick<NativeActionContext, "principal">,
+  ) => void,
 ): NativeAction[] {
   return definitions.map((definition) => ({
     id: definition.id,
     description: definition.description,
     inputSchema: structuredClone(definition.inputSchema),
     readOnly: definition.readOnly,
+    available(principal) {
+      try {
+        authorize(definition, { principal });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     async execute(args, context) {
       validateNativeInput(definition.inputSchema, args);
       authorize(definition, context);

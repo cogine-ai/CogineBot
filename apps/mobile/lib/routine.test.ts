@@ -1,4 +1,4 @@
-import type { Routine } from "@rakazo/contracts";
+import type { NativeRoutineEventSpec, NativeRoutineTrigger, Routine } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { routineStatusLine } from "./routine.js";
 
@@ -22,6 +22,17 @@ function routine(partial: Partial<Routine>): Routine {
     nextRunAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     ...partial,
+  };
+}
+
+function trigger(spec: NativeRoutineEventSpec, id = spec.kind): NativeRoutineTrigger {
+  return {
+    id,
+    version: 1,
+    routineId: "routine-1",
+    connectionId: `connection-${id}`,
+    spec,
+    armedAt: "2026-10-18T00:00:00.000Z",
   };
 }
 
@@ -54,5 +65,52 @@ describe("routineStatusLine", () => {
 
   it("omits the trigger segment when there are no triggers", () => {
     expect(routineStatusLine(routine({}))).toBe("Active · UTC");
+  });
+
+  it.each<NativeRoutineEventSpec>([
+    { kind: "gmail.message_received", labelIds: ["INBOX"] },
+    { kind: "gmail.thread_or_label_changed", threadId: "thread-1" },
+    { kind: "drive.file_changed", fileId: "file-1" },
+    { kind: "drive.file_trashed", fileId: "file-1" },
+    { kind: "slack.app_mention", channelId: "C1" },
+    { kind: "slack.app_dm", channelId: "D1" },
+    { kind: "slack.channel_message", channelId: "C1", threadTs: "123.456" },
+  ])("shows the native event family for $kind", (spec) => {
+    const label = spec.kind.startsWith("gmail.")
+      ? "Gmail event"
+      : spec.kind.startsWith("drive.")
+        ? "Drive event"
+        : "Slack bot event";
+    expect(routineStatusLine(routine({ nativeTriggers: [trigger(spec)] }))).toBe(
+      `Active · ${label} · UTC`,
+    );
+  });
+
+  it("keeps each native family once and distinguishes Slack bot events from message triggers", () => {
+    expect(
+      routineStatusLine(
+        routine({
+          active: false,
+          messageProvider: "slack",
+          nativeTriggers: [
+            trigger({
+              kind: "calendar.event_changed",
+              calendarId: "primary",
+              target: { kind: "calendar" },
+            }),
+            trigger({
+              kind: "notion.page_content_changed",
+              target: { type: "page", pageId: "e6f387fd-b1ec-435b-8a86-83d8e4be2ba0" },
+            }),
+            trigger({ kind: "gmail.message_received", labelIds: ["INBOX"] }),
+            trigger({ kind: "gmail.thread_or_label_changed", threadId: "thread-1" }),
+            trigger({ kind: "drive.file_changed", fileId: "file-1" }),
+            trigger({ kind: "slack.app_mention", channelId: "C1" }),
+          ],
+        }),
+      ),
+    ).toBe(
+      "Paused · Calendar event, Notion event, Gmail event, Drive event, Slack bot event, Slack message · UTC",
+    );
   });
 });

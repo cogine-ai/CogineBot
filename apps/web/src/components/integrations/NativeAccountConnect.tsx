@@ -71,6 +71,11 @@ export function NativeAccountConnect({
     ) ?? [];
   const selected = configurations.find((entry) => entry.id === selectedId);
   const oauth = selected?.credentialKind === "oauth" || selected?.credentialKind === "mcp_oauth";
+  const canChooseDriveFiles =
+    appId === "google-drive" &&
+    selected?.credentialKind === "oauth" &&
+    !previousConnectionId &&
+    selected.driveFilePickerAvailable === true;
   function methodLabel(entry: NativeConfigStatus): string {
     const kind =
       entry.credentialKind === "machine_key"
@@ -122,10 +127,12 @@ export function NativeAccountConnect({
         ? t`Connect integration`
         : t`Connect account`;
 
-  async function submit() {
+  async function submit(authorizationFlow?: "drive_picker") {
     if (!selected || submitting.current) return;
+    if (authorizationFlow && !canChooseDriveFiles) return;
     const parsed = NativeBeginInputSchema.safeParse({
       configId: selected.id,
+      ...(authorizationFlow ? { authorizationFlow } : {}),
       ...(previousConnectionId ? { previousConnectionId } : {}),
       ...(!oauth ? { credential: credential.trim() } : {}),
     });
@@ -252,6 +259,29 @@ export function NativeAccountConnect({
             </p>
           ) : null}
         </Field>
+      ) : null}
+      {canChooseDriveFiles ? (
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <p className="text-sm text-muted-foreground">
+            <Trans>Connect with access to the files and folders you choose in Google.</Trans>
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void submit("drive_picker")}
+          >
+            <Trans>Choose accessible files</Trans>
+          </Button>
+        </div>
+      ) : null}
+      {appId === "google-drive" &&
+      selected?.credentialKind === "oauth" &&
+      !previousConnectionId &&
+      selected.driveFilePickerAvailable === false ? (
+        <p className="text-sm text-muted-foreground">
+          <Trans>Ask an administrator to enable access to selected files.</Trans>
+        </p>
       ) : null}
       {busy && authorizationUrl ? (
         <a

@@ -424,7 +424,6 @@ export async function ensureDriveChangesWatch(
   try {
     response = optional(
       await call(context, {
-        service: "drive",
         method: "POST",
         path: "/changes/watch",
         query: {
@@ -498,7 +497,6 @@ export async function ensureDriveChangesWatch(
     }
     try {
       await call(context, {
-        service: "drive",
         method: "POST",
         path: "/channels/stop",
         body: { id: old.id, resourceId: old.resourceId },

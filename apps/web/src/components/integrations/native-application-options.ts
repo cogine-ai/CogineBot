@@ -26,7 +26,7 @@ export const GOOGLE_DEFAULT_SCOPES: Partial<Record<NativeAppId, readonly string[
     "calendar.freebusy",
   ],
   gmail: ["gmail.readonly"],
-  "google-drive": ["drive.metadata.readonly"],
+  "google-drive": ["drive.file"],
   "google-docs": ["documents.readonly"],
   "google-sheets": ["spreadsheets.readonly"],
   "google-slides": ["presentations.readonly"],

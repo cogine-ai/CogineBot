@@ -664,6 +664,7 @@ export async function createApp(
           state: c.req.query("state") ?? "",
           code: c.req.query("code"),
           denied: Boolean(c.req.query("error")),
+          pickedFileIds: c.req.query("picked_file_ids"),
         },
         c.req.raw.signal,
         session.user.id,

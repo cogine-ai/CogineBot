@@ -36,6 +36,7 @@ import { writeNativeArtifact } from "./artifact-output.js";
 import { NativeOAuthAuthorities, NOTION_VERSION } from "./authorities.js";
 import { calendarActions } from "./calendar.js";
 import { coginexActions } from "./coginex.js";
+import type { NativeConfigSettings } from "./config.js";
 import { NativeConfigSettingsSchema, NativeConfigStore } from "./config.js";
 import { docsActions } from "./docs.js";
 import { driveActions } from "./drive.js";
@@ -189,6 +190,17 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
     context: AdapterContext,
   ): Promise<{ connectionId: string; authorizationUrl: string | null }> {
     const config = await this.configurations.require(input.configId);
+    if (
+      input.authorizationFlow &&
+      (config.appId !== "google-drive" ||
+        config.credentialKind !== "oauth" ||
+        input.previousConnectionId ||
+        input.credential)
+    )
+      throw new NativeActionError(
+        "invalid_input",
+        "File selection requires a new Google Drive OAuth connection.",
+      );
     if (["github", "linear", "slack"].includes(config.appId) && config.credentialKind !== "oauth") {
       if (!input.credential)
         throw new NativeActionError(
@@ -274,7 +286,12 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
           "invalid_input",
           "OAuth connections do not accept a pasted account credential.",
         );
-      return this.oauth.begin(config.id, context, input.previousConnectionId);
+      return this.oauth.begin(
+        config.id,
+        context,
+        input.previousConnectionId,
+        input.authorizationFlow,
+      );
     }
     if (!input.credential)
       throw new NativeActionError(
@@ -314,7 +331,10 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
           continue;
         const suffix = createHash("sha256").update(selected.id).digest("hex").slice(0, 10);
         for (const action of app.actions) {
-          if (!this.permitted(action, scopes, settings.capabilities)) continue;
+          if (
+            !this.permitted(action, scopes, settings.capabilities, this.principal(live, settings))
+          )
+            continue;
           result.push({
             name: `native__${app.slug.replaceAll("-", "_")}__${suffix}__${action.id.replaceAll(".", "_")}`,
             description: `${action.description} (${live.connection.displayName})`,
@@ -407,6 +427,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
             action,
             live.grant.scopes.filter((scope) => settings.scopes.includes(scope)),
             settings.capabilities,
+            this.principal(live, settings),
           )
         )
           throw new NativeActionError(
@@ -597,12 +618,27 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
       await fileTransfers?.close();
     }
   }
+  private principal(
+    live: Awaited<ReturnType<NativeOAuthStore["authorization"]>>,
+    settings: NativeConfigSettings,
+  ): NativeActionContext["principal"] {
+    return {
+      subject: live.grant.subject,
+      tenant: live.grant.tenant,
+      scopes: live.grant.scopes.filter((scope) => settings.scopes.includes(scope)),
+      capabilities: settings.capabilities,
+      knowledgeBaseIds: settings.knowledgeBaseIds,
+      context: live.auth.identity.context,
+    };
+  }
   private permitted(
     action: NativeAction,
     scopes: readonly string[],
     capabilities: readonly string[],
+    principal?: NativeActionContext["principal"],
   ): boolean {
     return (
+      (!action.available || Boolean(principal && action.available(principal))) &&
       (!action.scopesAnyOf?.length || action.scopesAnyOf.some((scope) => scopes.includes(scope))) &&
       (!action.capabilities?.length ||
         action.capabilities.every((capability) => capabilities.includes(capability)))

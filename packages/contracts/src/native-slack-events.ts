@@ -14,6 +14,8 @@ export const NativeSlackBotEventSchema = z.enum([
   "message.im",
   "message.channels",
   "message.groups",
+  "tokens_revoked",
+  "app_uninstalled",
 ]);
 export const NativeSlackEventSignalSchema = z
   .object({
@@ -62,7 +64,7 @@ export const SaveNativeSlackHookInputSchema = z
     expectedRevision: z.number().int().positive().optional(),
     appId: SlackId,
     signingSecret: z.string().min(16).max(4096),
-    botEvents: z.array(NativeSlackBotEventSchema).min(1).max(4),
+    botEvents: z.array(NativeSlackBotEventSchema).min(1).max(6),
     botSubscriptionsConfirmed: z.literal(true),
   })
   .strict()
@@ -105,3 +107,29 @@ export type NativeSlackSignalJobPayload = z.infer<typeof NativeSlackSignalJobSch
 export type NativeSlackHook = z.infer<typeof NativeSlackHookSchema>;
 export type NativeSlackHookStatus = z.infer<typeof NativeSlackHookStatusSchema>;
 export type NativeSlackBotEvent = z.infer<typeof NativeSlackBotEventSchema>;
+
+/** Provider lifecycle metadata, never a Routine event or token-bearing payload. */
+export const NativeSlackLifecycleSignalSchema = z
+  .object({
+    eventId: z
+      .string()
+      .regex(/^Ev[A-Za-z0-9]+$/)
+      .max(128),
+    appId: SlackId,
+    teamId: SlackId,
+    enterpriseId: SlackId.nullable(),
+    eventTime: z.number().int().nonnegative(),
+    type: z.enum(["app_uninstalled", "tokens_revoked"]),
+    botUserIds: z.array(SlackId).max(1000),
+    oauthUserIds: z.array(SlackId).max(1000),
+  })
+  .strict();
+export const NativeSlackLifecycleJobSchema = z
+  .object({
+    inboxId: Id,
+    hookId: Id,
+    hookRevision: z.number().int().positive(),
+  })
+  .strict();
+export type NativeSlackLifecycleSignal = z.infer<typeof NativeSlackLifecycleSignalSchema>;
+export type NativeSlackLifecycleJobPayload = z.infer<typeof NativeSlackLifecycleJobSchema>;

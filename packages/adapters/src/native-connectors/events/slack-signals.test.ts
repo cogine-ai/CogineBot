@@ -202,3 +202,74 @@ test("Slack rejects invalid timestamps/IDs and bounded invalid UTF8 before any p
     InvalidNativeSlackSignal,
   );
 });
+test("Slack lifecycle controls require explicit subscription and sanitize IDs without message authorization", () => {
+  const value = envelope(
+    { type: "tokens_revoked", tokens: { bot: ["UBOTFIXTURE"], oauth: ["UUSERFIXTURE"] } },
+    { authorizations: undefined },
+  );
+  assert.equal(parse(value).kind, "ignored");
+  const s = signed(value),
+    parsed = verifySlackEnvelope(
+      s.raw,
+      s.signature,
+      s.at,
+      secret,
+      { ...hook, botEvents: ["tokens_revoked"] },
+      now,
+    );
+  assert.equal(parsed.kind, "lifecycle");
+  if (parsed.kind !== "lifecycle") return assert.fail("Expected lifecycle");
+  assert.deepEqual(parsed.signal.botUserIds, ["UBOTFIXTURE"]);
+  assert.deepEqual(parsed.signal.oauthUserIds, ["UUSERFIXTURE"]);
+  assert.equal(JSON.stringify(parsed.signal).includes("private text"), false);
+  assert.equal("channelId" in parsed.signal, false);
+});
+test("Slack lifecycle cannot bypass app/team/signature or accept access tokens as revoked IDs", () => {
+  for (const [event, outer] of [
+    [{ type: "tokens_revoked", tokens: { bot: ["xoxb-fixture-not-an-id"] } }, {}],
+    [{ type: "tokens_revoked", tokens: { bot: ["UBOTFIXTURE"] } }, { api_app_id: "AOTHER" }],
+    [{ type: "app_uninstalled" }, { team_id: "TOTHER" }],
+  ]) {
+    const s = signed(envelope(event, outer));
+    assert.throws(
+      () =>
+        verifySlackEnvelope(
+          s.raw,
+          s.signature,
+          s.at,
+          secret,
+          { ...hook, botEvents: ["tokens_revoked", "app_uninstalled"] },
+          now,
+        ),
+      InvalidNativeSlackSignal,
+    );
+  }
+  const s = signed(envelope({ type: "app_uninstalled" }));
+  assert.throws(
+    () =>
+      verifySlackEnvelope(
+        s.raw,
+        null,
+        s.at,
+        secret,
+        { ...hook, botEvents: ["app_uninstalled"] },
+        now,
+      ),
+    InvalidNativeSlackSignal,
+  );
+});
+test("Slack app uninstall carries no synthetic subject expansion", () => {
+  const s = signed(envelope({ type: "app_uninstalled" }, { authorizations: undefined })),
+    parsed = verifySlackEnvelope(
+      s.raw,
+      s.signature,
+      s.at,
+      secret,
+      { ...hook, botEvents: ["app_uninstalled"] },
+      now,
+    );
+  assert.equal(parsed.kind, "lifecycle");
+  if (parsed.kind !== "lifecycle") return assert.fail("Expected lifecycle");
+  assert.deepEqual(parsed.signal.botUserIds, []);
+  assert.deepEqual(parsed.signal.oauthUserIds, []);
+});

@@ -94,6 +94,7 @@ const slackMe = (bot = true, teamId = "T123FIXTURE") => ({
 });
 const slackToken = {
   ok: true,
+  app_id: "A123FIXTURE",
   token_type: "bot",
   access_token: "xoxe.xoxb-fixture",
   refresh_token: "fixture-bot-refresh",
@@ -433,6 +434,7 @@ test("Slack bot exchange selects only bot pair and verifies bot actor", async ()
   assert.equal(auth.tokens.refreshToken, "fixture-bot-refresh");
   assert.deepEqual(auth.scopes, ["chat:write"]);
   assert.equal(auth.identity.subject, "UBOTFIXTURE");
+  assert.equal(auth.identity.context.appId, "A123FIXTURE");
   assert.equal(JSON.stringify(auth).includes("fixture-user-refresh"), false);
   assert.equal(
     new Headers(fetch.mock.calls[0]![1]!.headers).get("authorization"),
@@ -479,9 +481,20 @@ test("Slack user refresh accepts one top-level user pair and checks original act
   const { authority } = setup([{ ok: true, ...slackToken.authed_user }, slackMe(false)]);
   const old = previous("slack", "user");
   old.identity.subject = "UUSERFIXTURE";
+  old.identity.context.appId = "A123FIXTURE";
   const auth = await authority.refresh(config("slack", "user"), "fixture-secret", old, signal());
   assert.equal(auth.tokens.refreshToken, "fixture-user-refresh");
   assert.equal(auth.identity.subject, "UUSERFIXTURE");
+  assert.equal(auth.identity.context.appId, "A123FIXTURE");
+});
+test("Slack rotating pair cannot switch its verified app identity", async () => {
+  const { authority } = setup([{ ...slackToken, app_id: "AOTHER" }, slackMe(true)]);
+  const old = previous("slack", "bot");
+  old.identity.context.appId = "A123FIXTURE";
+  await assert.rejects(
+    authority.refresh(config("slack", "bot"), "fixture-secret", old, signal()),
+    failure("authorization_required"),
+  );
 });
 test("Slack static bot verification reads actual scope header and never config scopes", async () => {
   const { authority } = setup([

@@ -89,5 +89,7 @@ export interface NativeAction {
   readOnly: boolean;
   scopesAnyOf?: readonly string[];
   capabilities?: readonly string[];
+  /** Pure, credential-aware directory filter. Execution still performs its own authorization checks. */
+  available?(principal: NativeActionContext["principal"]): boolean;
   execute(args: Record<string, unknown>, context: NativeActionContext): Promise<unknown>;
 }

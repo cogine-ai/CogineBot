@@ -5,6 +5,7 @@ import type {
   NativeSlackEventSignal,
   NativeSlackHook,
   NativeSlackHookStatus,
+  NativeSlackLifecycleSignal,
 } from "@rakazo/contracts";
 import {
   DisableNativeSlackHookInputSchema,
@@ -19,6 +20,11 @@ import { persistPreparedSecret } from "../../secret-persistence.js";
 import { NativeActionError } from "../action.js";
 import { NativeConfigSettingsSchema } from "../config.js";
 import { nativeEventWebhookOrigin } from "./notion-hooks.js";
+import type { NativeSlackLifecycleReceipt } from "./slack-lifecycle.js";
+import {
+  NativeSlackLifecycleReceiptSchema,
+  snapshotSlackLifecycleTargets,
+} from "./slack-lifecycle.js";
 import type { SlackVerifiedHook } from "./slack-signals.js";
 import { InvalidNativeSlackSignal, verifySlackEnvelope } from "./slack-signals.js";
 
@@ -57,6 +63,13 @@ export type AcceptedNativeSlackHookEvent =
       inboxId: string;
       hook: SlackVerifiedHook;
       signal: NativeSlackEventSignal;
+      alreadyDispatched: boolean;
+    }
+  | {
+      kind: "lifecycle";
+      inboxId: string;
+      hook: SlackVerifiedHook;
+      signal: NativeSlackLifecycleSignal;
       alreadyDispatched: boolean;
     }
   | { kind: "ignored" };
@@ -297,29 +310,58 @@ export class NativeSlackHookStore {
         Prisma.sql`UPDATE native_slack_hooks SET "lastVerifiedAt"=${now} WHERE id=${id} AND revision=${row.revision}`,
       );
       if (parsed.kind === "challenge") return parsed;
-      const signal = parsed.signal,
-        inboxId = randomUUID();
-      await tx.$executeRaw(
-        Prisma.sql`INSERT INTO native_slack_event_inbox(id,"hookId","hookRevision","configRevision","eventId",signal,"receivedAt") VALUES(${inboxId},${id},${row.revision},${row.configRevision},${signal.eventId},${JSON.stringify(signal)}::jsonb,${now}) ON CONFLICT("hookId","eventId") DO NOTHING`,
-      );
-      const stored = (
+      const signal = parsed.signal;
+      let stored = (
         await tx.$queryRaw<InboxRow[]>(
           Prisma.sql`SELECT * FROM native_slack_event_inbox WHERE "hookId"=${id} AND "eventId"=${signal.eventId}`,
         )
       )[0];
+      if (!stored) {
+        const payload =
+          parsed.kind === "lifecycle"
+            ? {
+                kind: "lifecycle",
+                signal: parsed.signal,
+                targets: await snapshotSlackLifecycleTargets(tx, verified(row), parsed.signal),
+              }
+            : signal;
+        await tx.$executeRaw(
+          Prisma.sql`INSERT INTO native_slack_event_inbox(id,"hookId","hookRevision","configRevision","eventId",signal,"receivedAt") VALUES(${randomUUID()},${id},${row.revision},${row.configRevision},${signal.eventId},${JSON.stringify(payload)}::jsonb,${now}) ON CONFLICT("hookId","eventId") DO NOTHING`,
+        );
+        stored = (
+          await tx.$queryRaw<InboxRow[]>(
+            Prisma.sql`SELECT * FROM native_slack_event_inbox WHERE "hookId"=${id} AND "eventId"=${signal.eventId}`,
+          )
+        )[0];
+      }
       if (
         !stored ||
         stored.hookRevision !== row.revision ||
         stored.configRevision !== row.configRevision
       )
         return { kind: "ignored" };
+      if (parsed.kind === "lifecycle") {
+        const receipt = NativeSlackLifecycleReceiptSchema.safeParse(stored.signal);
+        if (
+          !receipt.success ||
+          stableJsonValue(receipt.data.signal) !== stableJsonValue(parsed.signal)
+        )
+          throw new InvalidNativeSlackSignal();
+        return {
+          kind: "lifecycle",
+          inboxId: stored.id,
+          hook: { ...verified(row), verified: true },
+          signal: parsed.signal,
+          alreadyDispatched: Boolean(stored.dispatchedAt),
+        };
+      }
       if (stableJsonValue(stored.signal) !== stableJsonValue(signal))
         throw new InvalidNativeSlackSignal();
       return {
         kind: "event",
         inboxId: stored.id,
         hook: { ...verified(row), verified: true },
-        signal,
+        signal: parsed.signal,
         alreadyDispatched: Boolean(stored.dispatchedAt),
       };
     });
@@ -354,6 +396,28 @@ export class NativeSlackHookStore {
     )
       return undefined;
     return { hook, signal: parsed.data };
+  }
+  async loadLifecycleInbox(
+    inboxId: string,
+    hookId: string,
+    hookRevision: number,
+  ): Promise<{ hook: SlackVerifiedHook; receipt: NativeSlackLifecycleReceipt } | undefined> {
+    const hook = await this.load(hookId, hookRevision);
+    if (!hook) return undefined;
+    const row = (
+      await this.prisma.$queryRaw<InboxRow[]>(
+        Prisma.sql`SELECT * FROM native_slack_event_inbox WHERE id=${inboxId} AND "hookId"=${hookId} AND "hookRevision"=${hookRevision} AND "configRevision"=${hook.configRevision}`,
+      )
+    )[0];
+    if (!row) return undefined;
+    const parsed = NativeSlackLifecycleReceiptSchema.safeParse(row.signal);
+    if (
+      !parsed.success ||
+      parsed.data.signal.appId !== hook.appId ||
+      (hook.teamId && parsed.data.signal.teamId !== hook.teamId)
+    )
+      return undefined;
+    return { hook, receipt: parsed.data };
   }
   async markDispatched(inboxId: string, hookId: string, hookRevision: number): Promise<boolean> {
     const count = await this.prisma.$executeRaw(

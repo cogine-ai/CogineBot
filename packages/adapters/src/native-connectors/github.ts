@@ -45,7 +45,10 @@ const PULL = [
 function project(value: unknown, fields: string[]): Data {
   return select(identity(value), fields);
 }
-function authorize(def: CollaborationDefinition, context: NativeActionContext): void {
+function authorize(
+  def: CollaborationDefinition,
+  context: Pick<NativeActionContext, "principal">,
+): void {
   const actor = context.principal.context.actorType;
   if (!["installation", "user", "fine_grained_pat"].includes(String(actor)))
     throw new NativeActionError(

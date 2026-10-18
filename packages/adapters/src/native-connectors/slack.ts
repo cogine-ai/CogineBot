@@ -70,7 +70,10 @@ const MESSAGE_FIELDS = [
   "permalink",
   "channel",
 ];
-function authorize(definition: CollaborationDefinition, context: NativeActionContext): void {
+function authorize(
+  definition: CollaborationDefinition,
+  context: Pick<NativeActionContext, "principal">,
+): void {
   const p = context.principal,
     c = p.context;
   if (

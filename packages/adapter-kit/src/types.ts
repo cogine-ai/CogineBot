@@ -2,6 +2,7 @@ import type {
   CacheCapabilities as ConnectionCacheCapabilities,
   ConnectionCatalogItem,
   NativeNotionSignalJobPayload,
+  NativeSlackLifecycleJobPayload,
   NativeSlackSignalJobPayload,
   NativeSourceJobPayload,
   SandboxKind,
@@ -642,6 +643,7 @@ export interface BackgroundJobPayloads {
   "native.source.poll": NativeSourceJobPayload;
   "native.notion.signal": NativeNotionSignalJobPayload;
   "native.slack.signal": NativeSlackSignalJobPayload;
+  "native.slack.lifecycle": NativeSlackLifecycleJobPayload;
   "run.continue": { runId: string };
   "routine.wakeup": { routineId: string; scheduledFor: string };
   "computer.sleep": { computerId: string };

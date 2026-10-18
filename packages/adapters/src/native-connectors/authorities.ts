@@ -5,14 +5,28 @@ import { combineSignals } from "../connector-safety.js";
 import type { OAuthMaterial } from "../mcp-oauth.js";
 import type { RemoteTransportDependencies, SafeRemoteFetch } from "../remote-mcp.js";
 import { NativeActionError } from "./action.js";
-import { NativeConfigSettingsSchema } from "./config.js";
 import { CollaborationOAuthAuthorities } from "./collaboration-authorities.js";
+import { NativeConfigSettingsSchema } from "./config.js";
 import { isGoogleNativeApp } from "./google.js";
 import type { NativeMcpPending } from "./mcp.js";
 import { NativeMcpProtocol } from "./mcp.js";
 import { createNativeFetch, nativeAbortable } from "./network.js";
 
 export const NOTION_VERSION = "2026-03-11";
+export const DRIVE_PICKER_SCOPE = "https://www.googleapis.com/auth/drive.file";
+export const DRIVE_PICKER_IDENTITY_KIND = "google_drive_permission";
+export function requireDrivePickerConfig(config: NativeAppConfig): void {
+  if (config.appId !== "google-drive" || config.credentialKind !== "oauth")
+    throw new NativeActionError(
+      "invalid_input",
+      "File selection requires a new Google Drive OAuth connection.",
+    );
+  if (!NativeConfigSettingsSchema.parse(config.config).scopes.includes(DRIVE_PICKER_SCOPE))
+    throw new NativeActionError(
+      "not_configured",
+      "Ask a deployment administrator to enable drive.file permission for this Drive connection source.",
+    );
+}
 export interface NativeTokenMaterial {
   accessToken: string;
   refreshToken: string | null;
@@ -51,6 +65,31 @@ function expiry(value: unknown): Date | null {
     );
   return new Date(Date.now() + value * 1000);
 }
+/** Callback file IDs are candidates, never proof of Google authorization. */
+export function drivePickerFileIds(value: unknown): string[] {
+  if (typeof value !== "string" || !value || value.length > 25_700)
+    throw new NativeActionError(
+      "authorization_required",
+      "Choose at least one Drive file or folder.",
+    );
+  const ids = value.split(",");
+  if (
+    ids.length > 100 ||
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !/^[A-Za-z0-9_-]{1,256}$/.test(id))
+  )
+    throw new NativeActionError("invalid_input", "The Drive file selection is invalid.");
+  return ids;
+}
+function narrowDriveScopes(value: readonly string[]): string[] {
+  const scopes = [...new Set(value)];
+  if (scopes.length !== 1 || scopes[0] !== DRIVE_PICKER_SCOPE)
+    throw new NativeActionError(
+      "insufficient_scope",
+      "The file-selection grant must contain only drive.file permission.",
+    );
+  return scopes;
+}
 function tokenMaterial(
   body: Record<string, unknown>,
   previous?: NativeTokenMaterial,
@@ -85,11 +124,14 @@ export class NativeOAuthAuthorities {
     this.collaboration = new CollaborationOAuthAuthorities(network);
   }
   close(): Promise<void> {
-    return Promise.all([this.fetch.close(), this.mcp.close(), this.collaboration.close()]).then(() => undefined);
+    return Promise.all([this.fetch.close(), this.mcp.close(), this.collaboration.close()]).then(
+      () => undefined,
+    );
   }
 
   authorizationUrl(config: NativeAppConfig, state: string, verifier: string): string {
-    if (["github", "linear", "slack"].includes(config.appId)) return this.collaboration.authorizationUrl(config, state, verifier);
+    if (["github", "linear", "slack"].includes(config.appId))
+      return this.collaboration.authorizationUrl(config, state, verifier);
     const settings = NativeConfigSettingsSchema.parse(config.config);
     const clientId = required(settings.clientId, "an application client ID");
     if (isGoogleNativeApp(config.appId)) {
@@ -126,6 +168,124 @@ export class NativeOAuthAuthorities {
     throw new NativeActionError("invalid_input", "This application does not use SaaS OAuth.");
   }
 
+  drivePickerAuthorizationUrl(config: NativeAppConfig, state: string, verifier: string): string {
+    requireDrivePickerConfig(config);
+    const settings = NativeConfigSettingsSchema.parse(config.config);
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    for (const [key, value] of Object.entries({
+      client_id: required(settings.clientId, "an application client ID"),
+      redirect_uri: config.callbackUri,
+      response_type: "code",
+      state,
+      scope: DRIVE_PICKER_SCOPE,
+      access_type: "offline",
+      prompt: "consent",
+      trigger_onepick: "true",
+      allow_multiple: "true",
+      allow_folder_selection: "true",
+      code_challenge_method: "S256",
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    }))
+      url.searchParams.set(key, value);
+    return url.toString();
+  }
+
+  async exchangeDrivePicker(
+    config: NativeAppConfig,
+    secret: string,
+    code: string,
+    verifier: string,
+    pickedFileIds: string,
+    signal: AbortSignal,
+  ): Promise<NativeAuthorization> {
+    requireDrivePickerConfig(config);
+    const ids = drivePickerFileIds(pickedFileIds);
+    const settings = NativeConfigSettingsSchema.parse(config.config);
+    const body = await this.json(
+      "https://oauth2.googleapis.com/token",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: required(settings.clientId, "an application client ID"),
+          client_secret: secret,
+          redirect_uri: config.callbackUri,
+          code,
+          code_verifier: verifier,
+        }),
+      },
+      signal,
+    );
+    const tokens = tokenMaterial(body);
+    const scopes = narrowDriveScopes(
+      required(body.scope, "the granted scopes").split(/\s+/).filter(Boolean),
+    );
+    const identity = await this.googleDriveIdentity(tokens.accessToken, signal);
+    const files: Record<string, unknown>[] = [];
+    for (let start = 0; start < ids.length; start += 4) {
+      const batch = await Promise.allSettled(
+        ids.slice(start, start + 4).map(async (id) => {
+          const url = new URL(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}`,
+          );
+          url.searchParams.set(
+            "fields",
+            "id,name,mimeType,isAppAuthorized,driveId,parents,resourceKey,capabilities",
+          );
+          url.searchParams.set("supportsAllDrives", "true");
+          const file = await this.json(
+            url.toString(),
+            { headers: { authorization: `Bearer ${tokens.accessToken}` } },
+            signal,
+          );
+          if (
+            file.id !== id ||
+            file.isAppAuthorized !== true ||
+            typeof file.name !== "string" ||
+            typeof file.mimeType !== "string" ||
+            !file.mimeType
+          )
+            throw new NativeActionError(
+              "authorization_required",
+              "A selected Drive file was not authorized to this application.",
+            );
+          return Object.fromEntries(
+            [
+              "id",
+              "name",
+              "mimeType",
+              "isAppAuthorized",
+              "driveId",
+              "parents",
+              "resourceKey",
+              "capabilities",
+            ]
+              .filter((key) => file[key] !== undefined)
+              .map((key) => [key, file[key]]),
+          );
+        }),
+      );
+      for (const item of batch) {
+        if (item.status === "rejected") throw item.reason;
+        files.push(item.value);
+      }
+    }
+    return {
+      tokens,
+      scopes,
+      expiresAt: expiry(body.expires_in),
+      identity: {
+        ...identity,
+        context: {
+          ...identity.context,
+          pickedFiles: files,
+          pickedFilesVerifiedAtAuthorization: true,
+        },
+      },
+    };
+  }
+
   async exchange(
     config: NativeAppConfig,
     secret: string,
@@ -136,7 +296,8 @@ export class NativeOAuthAuthorities {
     mcpState?: string,
     allowPrivateEndpoint = false,
   ): Promise<NativeAuthorization> {
-    if (["github", "linear", "slack"].includes(config.appId)) return this.collaboration.exchange(config, secret, code, verifier, signal);
+    if (["github", "linear", "slack"].includes(config.appId))
+      return this.collaboration.exchange(config, secret, code, verifier, signal);
     if (config.appId === "coginex") {
       if (!mcpPending || !mcpState)
         throw new NativeActionError(
@@ -211,7 +372,24 @@ export class NativeOAuthAuthorities {
     signal: AbortSignal,
     allowPrivateEndpoint = false,
   ): Promise<NativeAuthorization> {
-    if (["github", "linear", "slack"].includes(config.appId)) return this.collaboration.refresh(config, secret, previous, signal);
+    const picker = previous.identity.context.identityKind === DRIVE_PICKER_IDENTITY_KIND;
+    if (picker) {
+      requireDrivePickerConfig(config);
+      narrowDriveScopes(previous.scopes);
+      const permissionId = previous.identity.context.drivePermissionId;
+      if (
+        typeof permissionId !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,255}$/.test(permissionId) ||
+        previous.identity.authority !== "https://www.googleapis.com/drive/v3" ||
+        previous.identity.subject !== `drive-permission:${permissionId}`
+      )
+        throw new NativeActionError(
+          "authorization_expired",
+          "The Drive file-selection identity is invalid. Connect again.",
+        );
+    }
+    if (["github", "linear", "slack"].includes(config.appId))
+      return this.collaboration.refresh(config, secret, previous, signal);
     if (config.appId === "coginex")
       return this.mcp.refresh(config, previous, signal, allowPrivateEndpoint);
     const settings = NativeConfigSettingsSchema.parse(config.config);
@@ -238,16 +416,38 @@ export class NativeOAuthAuthorities {
       );
       return this.afterRotation(async () => {
         const tokens = tokenMaterial(body, previous.tokens);
-        const identity = await this.googleIdentity(tokens.accessToken, signal);
+        const scopes =
+          typeof body.scope === "string"
+            ? body.scope.split(/\s+/).filter(Boolean)
+            : previous.scopes;
+        if (picker) {
+          narrowDriveScopes(previous.scopes);
+          narrowDriveScopes(scopes);
+        }
+        const verified = picker
+          ? await this.googleDriveIdentity(tokens.accessToken, signal)
+          : await this.googleIdentity(tokens.accessToken, signal);
+        const identity =
+          picker && Array.isArray(previous.identity.context.pickedFiles)
+            ? {
+                ...verified,
+                context: {
+                  ...verified.context,
+                  pickedFiles: previous.identity.context.pickedFiles,
+                  pickedFilesVerifiedAtAuthorization: true,
+                },
+              }
+            : verified;
         if (identity.subject !== previous.identity.subject)
           throw new NativeActionError(
             "authorization_expired",
             "The refreshed authorization belongs to another account.",
           );
-        const scopes =
-          typeof body.scope === "string"
-            ? body.scope.split(/\s+/).filter(Boolean)
-            : previous.scopes;
+        if (picker && identity.authority !== previous.identity.authority)
+          throw new NativeActionError(
+            "authorization_expired",
+            "The refreshed Drive identity authority changed.",
+          );
         return { tokens, identity, scopes, expiresAt: expiry(body.expires_in) };
       });
     }
@@ -345,6 +545,39 @@ export class NativeOAuthAuthorities {
       },
       signal,
     );
+  }
+
+  private async googleDriveIdentity(token: string, signal: AbortSignal): Promise<NativeIdentity> {
+    const url = new URL("https://www.googleapis.com/drive/v3/about");
+    url.searchParams.set("fields", "user(permissionId,displayName,emailAddress,me)");
+    const response = await this.json(
+      url.toString(),
+      { headers: { authorization: `Bearer ${token}` } },
+      signal,
+    );
+    const user = asRecord(response.user);
+    const permissionId = required(user?.permissionId, "a stable Drive permission identity");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,255}$/.test(permissionId) || user?.me !== true)
+      throw new NativeActionError(
+        "authorization_required",
+        "Drive did not verify the requesting user's identity.",
+      );
+    return {
+      authority: "https://www.googleapis.com/drive/v3",
+      subject: `drive-permission:${permissionId}`,
+      tenant: null,
+      displayName:
+        typeof user.emailAddress === "string" && user.emailAddress
+          ? user.emailAddress
+          : typeof user.displayName === "string" && user.displayName
+            ? user.displayName
+            : "Google Drive",
+      context: {
+        identityKind: DRIVE_PICKER_IDENTITY_KIND,
+        drivePermissionId: permissionId,
+        ...(typeof user.emailAddress === "string" ? { displayEmail: user.emailAddress } : {}),
+      },
+    };
   }
 
   private async googleIdentity(token: string, signal: AbortSignal): Promise<NativeIdentity> {

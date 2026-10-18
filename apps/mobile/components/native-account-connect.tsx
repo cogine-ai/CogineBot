@@ -2,7 +2,6 @@ import type {
   IntegrationSetupState,
   NativeAppId,
   NativeBeginInput,
-  NativeConfigStatus,
   NativeSetupState,
 } from "@rakazo/contracts";
 import { NativeBeginInputSchema, NativeSetupStateSchema } from "@rakazo/contracts";
@@ -14,6 +13,7 @@ import { useI18n } from "../lib/i18n";
 import type { IntegrationsCacheScope } from "../lib/integrations-cache";
 import { integrationsCacheScope, isIntegrationsScopeCurrent } from "../lib/integrations-cache";
 import { native, useThemedStyles } from "../lib/native";
+import { nativeConnectionMethodLabel } from "../lib/native-connection-method";
 import { errorText } from "../lib/user-error";
 import { MenuPicker } from "./menu-picker";
 import { NativeActionButton } from "./native-action-button";
@@ -88,6 +88,11 @@ export function NativeAccountConnect({
     ) ?? [];
   const selected = configurations.find((entry) => entry.id === selectedId);
   const oauth = selected?.credentialKind === "oauth" || selected?.credentialKind === "mcp_oauth";
+  const canChooseDriveFiles =
+    appId === "google-drive" &&
+    selected?.credentialKind === "oauth" &&
+    !previousConnectionId &&
+    selected.driveFilePickerAvailable === true;
   const webCredential = selected?.credentialKind === "github_app_installation";
   const credentialLabel =
     selected?.credentialKind === "machine_key"
@@ -101,23 +106,6 @@ export function NativeAccountConnect({
             : appId === "slack"
               ? t("Slack user token")
               : t("Personal access token");
-  function kindLabel(entry: NativeConfigStatus) {
-    return entry.credentialKind === "machine_key"
-      ? t("Machine API key")
-      : entry.credentialKind === "internal_token"
-        ? t("Internal integration")
-        : entry.credentialKind === "personal_token"
-          ? appId === "linear"
-            ? t("Personal API key")
-            : appId === "slack"
-              ? t("User token")
-              : t("Personal access token")
-          : entry.credentialKind === "bot_token"
-            ? t("Bot token")
-            : entry.credentialKind === "github_app_installation"
-              ? t("GitHub App installation")
-              : t("Account authorization");
-  }
   async function openWebSettings() {
     if (!webUrl || !scope.current || !isIntegrationsScopeCurrent(scope.current)) return;
     try {
@@ -126,8 +114,9 @@ export function NativeAccountConnect({
       setError(errorText(reason, t("Could not open the web app")));
     }
   }
-  async function submit() {
+  async function submit(authorizationFlow?: "drive_picker") {
     if (!selected || submitting.current) return;
+    if (authorizationFlow && !canChooseDriveFiles) return;
     if (webCredential) return;
     if (!scope.current || !isIntegrationsScopeCurrent(scope.current)) {
       setCredential("");
@@ -136,6 +125,7 @@ export function NativeAccountConnect({
     }
     const parsed = NativeBeginInputSchema.safeParse({
       configId: selected.id,
+      ...(authorizationFlow ? { authorizationFlow } : {}),
       ...(previousConnectionId ? { previousConnectionId } : {}),
       ...(!oauth ? { credential: credential.trim() } : {}),
     });
@@ -201,7 +191,7 @@ export function NativeAccountConnect({
                 : []),
               ...configurations.map((entry) => ({
                 key: entry.id,
-                label: `${entry.ownership === "official" ? t("Official application") : t("Your application")} · ${entry.label} · ${kindLabel(entry)}`,
+                label: nativeConnectionMethodLabel(entry, appId, t),
               })),
             ]}
             onChange={(value) => {
@@ -259,6 +249,27 @@ export function NativeAccountConnect({
           {t(
             "Authorization opens in your system browser. If asked, sign in to this CogineBot instance to continue. Then return here to check the result.",
           )}
+        </Text>
+      ) : null}
+      {canChooseDriveFiles ? (
+        <View style={styles.content}>
+          <Text style={styles.secondary}>
+            {t("Connect with access to the files and folders you choose in Google.")}
+          </Text>
+          <NativeActionButton
+            label={t("Choose accessible files")}
+            prominence="secondary"
+            disabled={busy}
+            onPress={() => void submit("drive_picker")}
+          />
+        </View>
+      ) : null}
+      {appId === "google-drive" &&
+      selected?.credentialKind === "oauth" &&
+      !previousConnectionId &&
+      selected.driveFilePickerAvailable === false ? (
+        <Text style={styles.secondary}>
+          {t("Ask an administrator to enable access to selected files.")}
         </Text>
       ) : null}
       {!loading && state?.canConfigure && !configurations.length && webUrl ? (

@@ -10,6 +10,15 @@ export function routineStatusLine(routine: Routine): string {
     ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("notion."))
       ? [t("Notion event")]
       : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("gmail."))
+      ? [t("Gmail event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("drive."))
+      ? [t("Drive event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("slack."))
+      ? [t("Slack bot event")]
+      : []),
     ...routine.crons.map(formatCron),
     ...(routine.webhookEnabled ? [t("Webhook")] : []),
     ...(routine.githubEnabled ? [t("Git event")] : []),

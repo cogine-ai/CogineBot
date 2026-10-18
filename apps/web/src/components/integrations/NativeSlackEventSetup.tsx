@@ -26,11 +26,13 @@ import { useEffect, useId, useRef, useState } from "react";
 import { rpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
 
-const EVENTS: { event: NativeSlackBotEvent; scope: string }[] = [
+const EVENTS: { event: NativeSlackBotEvent; scope: string | null }[] = [
   { event: "app_mention", scope: "app_mentions:read" },
   { event: "message.im", scope: "im:history" },
   { event: "message.channels", scope: "channels:history" },
   { event: "message.groups", scope: "groups:history" },
+  { event: "app_uninstalled", scope: null },
+  { event: "tokens_revoked", scope: null },
 ];
 /** App-owner setup only. Signed delivery does not itself enable any Routine. */
 export function NativeSlackEventSetup({
@@ -331,7 +333,7 @@ export function NativeSlackEventSetup({
           </Field>
           <fieldset className="space-y-2" disabled={busy}>
             <legend className="mb-2 text-sm font-medium">
-              <Trans>Subscribe to bot events</Trans>
+              <Trans>Subscribe to Slack events</Trans>
             </legend>
             {EVENTS.map((entry) => (
               <Field key={entry.event} orientation="horizontal">
@@ -348,11 +350,17 @@ export function NativeSlackEventSetup({
                   }}
                 />
                 <FieldLabel htmlFor={`${id}-${entry.event}`}>
-                  {entry.event} · {entry.scope}
+                  {entry.event} · {entry.scope ?? t`Update connection status`}
                 </FieldLabel>
               </Field>
             ))}
           </fieldset>
+          <p className="text-xs text-muted-foreground">
+            <Trans>
+              app_uninstalled and tokens_revoked update account status. They do not trigger
+              Routines.
+            </Trans>
+          </p>
           <p className="text-xs text-muted-foreground">
             <Trans>
               After saving, verify the Request URL and enable these bot events in Slack. Grant the

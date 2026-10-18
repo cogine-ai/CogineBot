@@ -11,7 +11,7 @@ import {
   nativeGmailCallbackAudience,
 } from "./native-application-options";
 
-it("offers every supported app and starts each Google app with only its own read permissions", () => {
+it("offers every supported app and defaults to read access or Drive app files", () => {
   expect(NATIVE_APPLICATIONS.map((app) => app.id).sort()).toEqual(
     [...NativeAppIdSchema.options].sort(),
   );
@@ -28,6 +28,11 @@ it("offers every supported app and starts each Google app with only its own read
     expect(draft.scopes).not.toContain(`${GOOGLE_SCOPE_PREFIX}gmail.send`);
     expect(draft.capabilities).toEqual([]);
   }
+  expect(freshNativeApplication("google-drive").scopes).toEqual([
+    "openid",
+    "email",
+    `${GOOGLE_SCOPE_PREFIX}drive.file`,
+  ]);
 });
 it("Gmail push configuration round-trips for the owner and uses the instance event audience", () => {
   const googleWatch = {
