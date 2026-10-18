@@ -214,6 +214,50 @@ async function render(node: ReactNode = <Integrations />) {
   await act(async () => root.render(node));
 }
 
+it.each(["composio", "pipedream"])(
+  "native-first unconfigured source defaults to available %s in the rendered chooser",
+  async (broker) => {
+    const original = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation((proc: string) =>
+      proc === "connections/list" ? Promise.resolve([]) : original(proc),
+    );
+    await render();
+    const native = {
+      ...item,
+      connectorId: "native",
+      slug: "gmail",
+      name: "Gmail",
+      connected: false,
+      connectable: false,
+    };
+    const available = {
+      ...item,
+      connectorId: broker,
+      slug: "gmail",
+      name: "Gmail",
+      connected: false,
+    };
+    await act(async () => resolveCatalog([native, available]));
+    const add = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Add",
+    );
+    expect(add).toBeDefined();
+    await act(async () => add!.click());
+    const choice = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Connection source"]',
+    )!;
+    expect(choice.value).toBe(JSON.stringify([broker, "gmail"]));
+    expect([...choice.options].map((option) => option.value)).toContain(
+      JSON.stringify(["native", "gmail"]),
+    );
+    await act(async () => {
+      choice.value = JSON.stringify(["native", "gmail"]);
+      choice.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(choice.value).toBe(JSON.stringify(["native", "gmail"]));
+  },
+);
+
 it("keeps Search visible and shows rows on a cold load until the first success", async () => {
   await render();
   expect(container.querySelector('input[placeholder="Search apps"]')).not.toBeNull();

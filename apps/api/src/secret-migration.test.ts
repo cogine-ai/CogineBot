@@ -8,6 +8,9 @@ import {
   secretMigrationReportIdentity,
 } from "./secret-migration.js";
 
+const hookTables = ["nativeNotionHook", "nativeSlackHook"] as const;
+type HookTable = (typeof hookTables)[number];
+
 function fixture() {
   const tables = {
     secret: Array.from({ length: 101 }, (_, i) => ({
@@ -18,6 +21,11 @@ function fixture() {
     botSecret: [{ id: "bot-row", ciphertext: "fake-bot-ref" }],
     integrationProviderConfig: [{ id: "composio", ciphertext: "fake-config-ref" }],
     nativeNotionHook: [] as Array<{
+      id: string;
+      ciphertext: string | null;
+      secretRecordId: string | null;
+    }>,
+    nativeSlackHook: [] as Array<{
       id: string;
       ciphertext: string | null;
       secretRecordId: string | null;
@@ -121,7 +129,7 @@ const migrationContext: AdapterContext = {
   userId: "synthetic-owner",
   signal: new AbortController().signal,
 };
-async function hookOnlyFixture() {
+async function hookOnlyFixture(table: HookTable) {
   const f = fixture();
   for (const rows of Object.values(f.tables)) rows.splice(0);
   const encrypted = new EncryptedSecretStore("synthetic-migration-key"),
@@ -131,7 +139,7 @@ async function hookOnlyFixture() {
   const material = await encrypted.put("synthetic-webhook-token", migrationContext, {
     recordId: "hook-material-aad",
   });
-  f.tables.nativeNotionHook.push({
+  f.tables[table].push({
     id: "hook-row",
     ciphertext: material.ref,
     secretRecordId: "hook-material-aad",
@@ -147,10 +155,10 @@ async function hookOnlyFixture() {
     },
   };
 }
-describe("native webhook material migration", () => {
+describe.each(hookTables)("%s material migration", (table) => {
   it("paginates the new table, skips empty pending material and keeps its independent AAD", async () => {
     const f = fixture();
-    f.tables.nativeNotionHook.push(
+    f.tables[table].push(
       ...Array.from({ length: 101 }, (_, i) => ({
         id: `hook-${String(i).padStart(3, "0")}`,
         ciphertext: `synthetic-hook-ref-${i}`,
@@ -160,7 +168,7 @@ describe("native webhook material migration", () => {
     );
     const rows = [];
     for await (const row of f.repository.rows()) rows.push(row);
-    const hooks = rows.filter((row) => row.label === "nativeNotionHook");
+    const hooks = rows.filter((row) => row.label === table);
     expect(hooks).toHaveLength(101);
     expect(hooks[100]).toMatchObject({
       id: "hook-100",
@@ -168,44 +176,44 @@ describe("native webhook material migration", () => {
       ref: "synthetic-hook-ref-100",
     });
     expect(rows).toHaveLength(205);
-    expect(f.client.nativeNotionHook!.findMany).toHaveBeenCalledTimes(2);
+    expect(f.client[table]!.findMany).toHaveBeenCalledTimes(2);
     expect(await f.repository.referenced("synthetic-hook-ref-100")).toBe(true);
   });
   it("CAS protects both ciphertext and AAD generation for Hook and existing NativeAppConfig material", async () => {
     const f = fixture();
-    f.tables.nativeNotionHook.push({
+    f.tables[table].push({
       id: "hook-row",
       ciphertext: "synthetic-hook-ref",
       secretRecordId: "hook-aad",
     });
     const rows = [];
     for await (const row of f.repository.rows()) rows.push(row);
-    const hook = rows.find((row) => row.label === "nativeNotionHook")!,
+    const hook = rows.find((row) => row.label === table)!,
       app = rows.find((row) => row.id === "native-app")!;
-    f.tables.nativeNotionHook[0]!.secretRecordId = "new-hook-aad";
+    f.tables[table][0]!.secretRecordId = "new-hook-aad";
     expect(await f.repository.replace(hook, "losing-hook-ref")).toBe(false);
-    expect(f.tables.nativeNotionHook[0]!.ciphertext).toBe("synthetic-hook-ref");
+    expect(f.tables[table][0]!.ciphertext).toBe("synthetic-hook-ref");
     const native = f.tables.nativeAppConfig.find((row) => row.id === "native-app")!;
     native.secretRecordId = "new-app-aad";
     expect(await f.repository.replace(app, "losing-app-ref")).toBe(false);
     expect(native.ciphertext).toBe("fake-native-ref");
-    f.tables.nativeNotionHook[0]!.secretRecordId = "hook-aad";
+    f.tables[table][0]!.secretRecordId = "hook-aad";
     expect(await f.repository.replace(hook, "new-hook-ref")).toBe(true);
     expect(await f.repository.replace(hook, "stale-hook-ref")).toBe(false);
     expect(await f.repository.referenced("synthetic-hook-ref")).toBe(false);
     expect(await f.repository.referenced("new-hook-ref")).toBe(true);
-    f.tables.nativeNotionHook.splice(0);
+    f.tables[table].splice(0);
     expect(await f.repository.replace({ ...hook, ref: "new-hook-ref" }, "deleted-hook-ref")).toBe(
       false,
     );
     expect(await f.repository.referenced("new-hook-ref")).toBe(false);
   });
-  it.each(["nativeAppConfig", "nativeNotionHook"] as const)(
+  it.each(["nativeAppConfig", table] as const)(
     "fails closed when nonempty %s material lacks its AAD identity",
     async (label) => {
       const f = fixture();
-      if (label === "nativeNotionHook")
-        f.tables.nativeNotionHook.push({
+      if (label === table)
+        f.tables[table].push({
           id: "hook-bad",
           ciphertext: "synthetic-ref",
           secretRecordId: null,
@@ -221,7 +229,7 @@ describe("native webhook material migration", () => {
     },
   );
   it("uses the existing migration both ways with actual AES-GCM/AAD and protects the hook reference", async () => {
-    const f = await hookOnlyFixture();
+    const f = await hookOnlyFixture(table);
     try {
       expect(
         await migrateSecrets(f.repository, f.encrypted, f.remote, migrationContext, {
@@ -229,7 +237,7 @@ describe("native webhook material migration", () => {
         }),
       ).toMatchObject({ migrated: 1, failed: 0 });
       expect(f.fake.values.size).toBe(1);
-      expect(await f.repository.referenced(f.tables.nativeNotionHook[0]!.ciphertext!)).toBe(true);
+      expect(await f.repository.referenced(f.tables[table][0]!.ciphertext!)).toBe(true);
       expect(
         await migrateSecrets(f.repository, f.encrypted, f.remote, migrationContext, {
           direction: "forward",
@@ -241,7 +249,7 @@ describe("native webhook material migration", () => {
         }),
       ).toMatchObject({ migrated: 1, failed: 0 });
       expect(f.fake.values.size).toBe(0);
-      const ref = f.tables.nativeNotionHook[0]!.ciphertext!;
+      const ref = f.tables[table][0]!.ciphertext!;
       await expect(f.encrypted.load(ref, { recordId: "hook-material-aad" })).resolves.toBe(
         "synthetic-webhook-token",
       );
@@ -251,10 +259,10 @@ describe("native webhook material migration", () => {
     }
   });
   it("keeps the committed remote hook material when the persistence acknowledgement is lost", async () => {
-    const f = await hookOnlyFixture();
+    const f = await hookOnlyFixture(table);
     try {
-      f.client.nativeNotionHook!.updateMany.mockImplementationOnce(async (args) => {
-        f.tables.nativeNotionHook[0]!.ciphertext = args.data.ciphertext;
+      f.client[table]!.updateMany.mockImplementationOnce(async (args) => {
+        f.tables[table][0]!.ciphertext = args.data.ciphertext;
         throw new Error("synthetic lost acknowledgement");
       });
       expect(
@@ -264,7 +272,7 @@ describe("native webhook material migration", () => {
       ).toMatchObject({ failed: 1, migrated: 0 });
       expect(f.fake.values.size).toBe(1);
       await expect(
-        f.remote.load(f.tables.nativeNotionHook[0]!.ciphertext!, {
+        f.remote.load(f.tables[table][0]!.ciphertext!, {
           recordId: "hook-material-aad",
         }),
       ).resolves.toBe("synthetic-webhook-token");
@@ -279,17 +287,103 @@ describe("native webhook material migration", () => {
   });
 });
 
-it("keeps the setup callback capability out of CLI progress while preserving ordinary row labels", () => {
+describe("Slack signing material store switching", () => {
+  it("reverses a newly created Infisical signing secret and migrates it forward again", async () => {
+    const f = await hookOnlyFixture("nativeSlackHook");
+    try {
+      const material = await f.remote.put("synthetic-webhook-token", migrationContext, {
+        recordId: "hook-material-aad",
+      });
+      f.tables.nativeSlackHook[0]!.ciphertext = material.ref;
+      const progress: string[] = [];
+      const report = (row: { id: string; label: string }) => {
+        progress.push(secretMigrationReportIdentity(row));
+      };
+      expect(
+        await migrateSecrets(f.repository, f.encrypted, f.remote, migrationContext, {
+          direction: "reverse",
+          report,
+        }),
+      ).toMatchObject({ migrated: 1, failed: 0 });
+      expect(progress).toEqual(["nativeSlackHook [redacted]"]);
+      const ref = f.tables.nativeSlackHook[0]!.ciphertext!;
+      await expect(f.encrypted.load(ref, { recordId: "hook-material-aad" })).resolves.toBe(
+        "synthetic-webhook-token",
+      );
+      await expect(f.encrypted.load(ref, { recordId: "hook-row" })).rejects.toThrow();
+      expect(f.fake.values.size).toBe(0);
+      expect(
+        await migrateSecrets(f.repository, f.encrypted, f.remote, migrationContext, {
+          direction: "forward",
+        }),
+      ).toMatchObject({ migrated: 1, failed: 0 });
+      await expect(
+        f.remote.load(f.tables.nativeSlackHook[0]!.ciphertext!, {
+          recordId: "hook-material-aad",
+        }),
+      ).resolves.toBe("synthetic-webhook-token");
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("keeps a shared source ref until the Slack hook has also switched stores", async () => {
+    const f = await hookOnlyFixture("nativeSlackHook");
+    try {
+      const material = await f.remote.put("synthetic-webhook-token", migrationContext, {
+        recordId: "hook-material-aad",
+      });
+      f.tables.nativeSlackHook[0]!.ciphertext = material.ref;
+      f.tables.secret.push({
+        id: "hook-material-aad",
+        ciphertext: material.ref,
+        kind: "model",
+      });
+      f.client.nativeSlackHook!.updateMany.mockImplementationOnce(async (args) => {
+        // The ordinary secret migrated first; its cleanup must see the remaining hook ref.
+        await expect(f.remote.load(material.ref, { recordId: "hook-material-aad" })).resolves.toBe(
+          "synthetic-webhook-token",
+        );
+        expect(args.where).toEqual({
+          id: "hook-row",
+          ciphertext: material.ref,
+          secretRecordId: "hook-material-aad",
+        });
+        f.tables.nativeSlackHook[0]!.ciphertext = args.data.ciphertext;
+        return { count: 1 };
+      });
+      expect(
+        await migrateSecrets(f.repository, f.encrypted, f.remote, migrationContext, {
+          direction: "reverse",
+        }),
+      ).toMatchObject({ migrated: 2, failed: 0 });
+      expect(f.client.nativeSlackHook!.updateMany).toHaveBeenCalledTimes(1);
+      expect(f.fake.values.size).toBe(0);
+      for (const ref of [
+        f.tables.secret[0]!.ciphertext,
+        f.tables.nativeSlackHook[0]!.ciphertext!,
+      ]) {
+        await expect(f.encrypted.load(ref, { recordId: "hook-material-aad" })).resolves.toBe(
+          "synthetic-webhook-token",
+        );
+      }
+    } finally {
+      await f.close();
+    }
+  });
+});
+
+it.each(hookTables)("keeps %s setup capabilities out of CLI progress", (label) => {
   const capability = "synthetic-private-callback-capability";
   expect(
     secretMigrationReportIdentity({
-      label: "nativeNotionHook",
+      label,
       id: capability,
     }),
-  ).toBe("nativeNotionHook [redacted]");
+  ).toBe(`${label} [redacted]`);
   expect(
     secretMigrationReportIdentity({
-      label: "nativeNotionHook",
+      label,
       id: capability,
     }),
   ).not.toContain(capability);

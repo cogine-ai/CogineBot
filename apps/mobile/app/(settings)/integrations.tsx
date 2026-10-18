@@ -11,7 +11,6 @@ import {
   abortableDelay,
   CONNECTION_CATALOG_PAGE_SIZE,
   catalogAccounts,
-  catalogItemConnected,
   catalogUninstallAccounts,
   connectionAppSummary,
   connectionCatalogKey,
@@ -21,6 +20,7 @@ import {
   filterConnectionApps,
   groupConnectionCatalog,
   humanizeToolName,
+  preferredConnectionSource,
 } from "@rakazo/core";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -458,16 +458,8 @@ export default function Integrations() {
     );
   }
 
-  function itemConnected(item: ConnectionCatalogItem) {
-    return catalogItemConnected(connections, item);
-  }
   function openApp(app: ConnectionApp) {
-    const item =
-      app.sources.find(itemConnected) ??
-      app.sources.find((source) =>
-        catalogAccounts(connections, source).some((row) => row.status === "pending"),
-      ) ??
-      app.sources[0];
+    const item = preferredConnectionSource(app, connections);
     if (item) openDetail(item);
   }
 

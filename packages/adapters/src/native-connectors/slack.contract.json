@@ -1,0 +1,1091 @@
+{
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "offlineOnly": true,
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "slack.users.resolve",
+      "description": "Find a user by ID, email or name; return ambiguous candidates",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": ["userId"],
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["email"]
+                },
+                {
+                  "required": ["query"]
+                }
+              ]
+            }
+          },
+          {
+            "required": ["email"],
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["userId"]
+                },
+                {
+                  "required": ["query"]
+                }
+              ]
+            }
+          },
+          {
+            "required": ["query"],
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["userId"]
+                },
+                {
+                  "required": ["email"]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/users.info",
+        "branches": [
+          {
+            "when": "input.userId",
+            "method": "GET",
+            "path": "/users.info",
+            "query": {
+              "user": "input.userId"
+            },
+            "requiredScopes": ["users:read"]
+          },
+          {
+            "when": "input.email",
+            "method": "GET",
+            "path": "/users.lookupByEmail",
+            "query": {
+              "email": "input.email"
+            },
+            "requiredScopes": ["users:read", "users:read.email"]
+          },
+          {
+            "when": "input.query",
+            "method": "GET",
+            "path": "/users.list",
+            "query": {
+              "limit": "input.limit ?? 100",
+              "cursor": "input.cursor when supplied"
+            },
+            "requiredScopes": ["users:read"],
+            "pagination": "Return next_cursor and filter only this page; any next_cursor prevents treating one candidate as unique."
+          }
+        ]
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["users:read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ],
+        "conditionalScopeGuards": [
+          {
+            "when": "input.email",
+            "requiredAllOfScopes": ["users:read", "users:read.email"],
+            "missingScope": "Reject before dispatch; userId and query do not require email scope."
+          }
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "outputContract": {
+        "userId": "exact stable selected user ID",
+        "email": "exact email lookup from users.lookupByEmail, requiring separate email grant",
+        "query": "candidate array with ambiguous=true for multiple/zero matches or any unsearched next page",
+        "emailDisclosure": "profile.email is returned only when actual users:read.email is present"
+      }
+    },
+    {
+      "id": "slack.conversations.list",
+      "description": "List conversations visible to the selected token",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["public_channel", "private_channel", "im", "mpim"]
+            },
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true
+          },
+          "exclude_archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/conversations.list"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["channels:read", "groups:read", "im:read", "mpim:read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.conversations.get",
+      "description": "Read a conversation and optionally one page of members",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "includeMembers": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": ["channel"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/conversations.info",
+        "secondaryRequests": [
+          {
+            "when": "input.includeMembers===true",
+            "method": "GET",
+            "path": "/conversations.members",
+            "query": {
+              "channel": "input.channel",
+              "limit": "input.limit ?? 100",
+              "cursor": "input.cursor when supplied"
+            },
+            "pagination": "Return next_cursor; do not silently enumerate all members."
+          }
+        ]
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["channels:read", "groups:read", "im:read", "mpim:read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.conversations.history",
+      "description": "Read a bounded page of conversation messages",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 15
+          },
+          "oldest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "latest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "inclusive": {
+            "type": "boolean"
+          }
+        },
+        "required": ["channel"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/conversations.history"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["channels:history", "groups:history", "im:history", "mpim:history"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.conversations.replies",
+      "description": "Read a bounded page of thread replies",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "ts": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 15
+          },
+          "oldest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "latest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "inclusive": {
+            "type": "boolean"
+          }
+        },
+        "required": ["channel", "ts"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/conversations.replies"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["channels:history", "groups:history", "im:history", "mpim:history"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.search.messages",
+      "description": "Search messages with a verified legacy user grant",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "sort": {
+            "type": "string",
+            "enum": ["score", "timestamp"]
+          },
+          "sort_dir": {
+            "type": "string",
+            "enum": ["asc", "desc"]
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/search.messages"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["search:read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.search.files",
+      "description": "Search files with a verified legacy user grant",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "sort": {
+            "type": "string",
+            "enum": ["score", "timestamp"]
+          },
+          "sort_dir": {
+            "type": "string",
+            "enum": ["asc", "desc"]
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/search.files"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["search:read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.messages.send",
+      "description": "Send a message as the selected bot or user",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "unfurl_links": {
+            "type": "boolean"
+          },
+          "unfurl_media": {
+            "type": "boolean"
+          }
+        },
+        "required": ["channel", "text"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/chat.postMessage"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["chat:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.messages.reply",
+      "description": "Reply in an explicit thread as the selected actor",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "thread_ts": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "reply_broadcast": {
+            "type": "boolean"
+          }
+        },
+        "required": ["channel", "thread_ts", "text"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/chat.postMessage"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["chat:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.messages.update",
+      "description": "Update a message owned by the selected actor",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "ts": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "required": ["channel", "ts", "text"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/chat.update"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["chat:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ],
+        "additionalScopesAnyOf": [
+          "channels:history",
+          "groups:history",
+          "im:history",
+          "mpim:history"
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.messages.delete",
+      "description": "Delete a message owned by the selected actor",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "ts": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          }
+        },
+        "required": ["channel", "ts"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/chat.delete"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["chat:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ],
+        "additionalScopesAnyOf": [
+          "channels:history",
+          "groups:history",
+          "im:history",
+          "mpim:history"
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.messages.schedule",
+      "description": "Schedule a message at an explicit future Unix time",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "post_at": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4102444800
+          },
+          "thread_ts": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          }
+        },
+        "required": ["channel", "text", "post_at"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/chat.scheduleMessage"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["chat:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.scheduled.list",
+      "description": "List messages scheduled through this selected token via the API",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "oldest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20,
+            "pattern": "^[0-9]+$"
+          },
+          "latest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20,
+            "pattern": "^[0-9]+$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/chat.scheduledMessages.list"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.scheduled.cancel",
+      "description": "Cancel an explicit API-scheduled message",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "scheduled_message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          }
+        },
+        "required": ["channel", "scheduled_message_id"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/chat.deleteScheduledMessage"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["chat:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.conversations.open",
+      "description": "Open or resume a direct conversation",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[A-Z][A-Z0-9]+$"
+            },
+            "minItems": 1,
+            "maxItems": 8,
+            "uniqueItems": true
+          }
+        },
+        "required": ["users"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/conversations.open"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["im:write", "mpim:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.reactions.add",
+      "description": "Add a reaction as the selected actor",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "timestamp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[a-z0-9_+\\-]+$"
+          }
+        },
+        "required": ["channel", "timestamp", "name"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/reactions.add"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["reactions:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "slack.files.upload",
+      "description": "Upload an artifact and share it using the external upload protocol",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^/\\\\\\r\\n]+$"
+          },
+          "channel_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "initial_comment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "thread_ts": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[0-9]+\\.[0-9]{6}$"
+          }
+        },
+        "required": ["artifactId", "filename", "channel_id"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "POST",
+        "path": "/files.getUploadURLExternal"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["files:write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "protocol": [
+        "POST /files.getUploadURLExternal",
+        "POST returned https://files.slack.com/upload/v1/... with raw bytes and no Authorization",
+        "POST /files.completeUploadExternal with exact file_id and channel_id; never replay completion on timeout"
+      ],
+      "runtimeRequirements": [
+        "Server artifact must be nonempty and no larger than shared ATTACHMENT_MAX_BYTES=10*1024*1024, checked before upload allocation."
+      ]
+    },
+    {
+      "id": "slack.files.download",
+      "description": "Download an authorized Slack file into an artifact",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]+$"
+          },
+          "maxBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10485760,
+            "default": 10485760
+          }
+        },
+        "required": ["file"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://slack.com/api",
+        "method": "GET",
+        "path": "/files.info"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["files:read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "actors": ["bot", "user"],
+        "conditionalGuards": [
+          "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "runtimeRequirements": [
+        "Shared ATTACHMENT_MAX_BYTES=10*1024*1024 for schema, default, bounded streaming reader and artifact writer."
+      ]
+    }
+  ],
+  "events": ["app_mention", "app_dm_message", "bot_authorized_channel_or_thread_message"]
+}

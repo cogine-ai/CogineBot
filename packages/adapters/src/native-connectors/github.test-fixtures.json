@@ -1,0 +1,351 @@
+{
+  "contractSha256": "7cf75b1686e3dd81b9967848407f0f434dfa5794250920ca2030184a1d963c87",
+  "subjectFixture": {
+    "subject": "fixture-actor",
+    "tenant": "fixture-tenant"
+  },
+  "fixtures": [
+    {
+      "id": "github.issues.list",
+      "input": {
+        "owner": "fixture-owner",
+        "repo": "fixture-repo"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/repos/fixture-owner/fixture-repo/issues",
+            "query": {
+              "per_page": 30,
+              "page": 1
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": 1,
+                "number": 2,
+                "title": "Fixture issue",
+                "state": "open"
+              },
+              {
+                "id": 3,
+                "number": 4,
+                "pull_request": {
+                  "url": "https://api.github.com/repos/fixture-owner/fixture-repo/pulls/4"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "github.issues.get",
+      "input": {
+        "owner": "fixture-owner",
+        "repo": "fixture-repo",
+        "issue_number": 2
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/repos/fixture-owner/fixture-repo/issues/2",
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": 1,
+              "number": 2,
+              "title": "Fixture issue",
+              "state": "open"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "issue": {
+          "id": 1,
+          "number": 2
+        }
+      }
+    },
+    {
+      "id": "github.issues.create",
+      "input": {
+        "owner": "fixture-owner",
+        "repo": "fixture-repo",
+        "title": "Fixture issue"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/repos/fixture-owner/fixture-repo/issues",
+            "body": {
+              "title": "Fixture issue"
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": 1,
+              "number": 2,
+              "title": "Fixture issue"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "issue": {
+          "id": 1,
+          "number": 2
+        },
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "github.comments.create",
+      "input": {
+        "owner": "fixture-owner",
+        "repo": "fixture-repo",
+        "issue_number": 2,
+        "body": "Fixture comment"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/repos/fixture-owner/fixture-repo/issues/2/comments",
+            "body": {
+              "body": "Fixture comment"
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": 9,
+              "body": "Fixture comment"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "comment": {
+          "id": 9
+        },
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "github.pulls.list",
+      "input": {
+        "owner": "fixture-owner",
+        "repo": "fixture-repo"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/repos/fixture-owner/fixture-repo/pulls",
+            "query": {
+              "per_page": 30,
+              "page": 1
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": 3,
+                "number": 4,
+                "title": "Fixture pull request"
+              }
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "hasMore": false
+      }
+    },
+    {
+      "id": "github.pulls.get",
+      "input": {
+        "owner": "fixture-owner",
+        "repo": "fixture-repo",
+        "pull_number": 4
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/repos/fixture-owner/fixture-repo/pulls/4",
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": 3,
+              "number": 4,
+              "title": "Fixture pull request",
+              "head": {
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "pull": {
+          "id": 3,
+          "number": 4
+        }
+      }
+    },
+    {
+      "id": "github.repositories.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/user/repos",
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            },
+            "query": {
+              "page": 1,
+              "per_page": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": 5,
+                "full_name": "fixture-owner/fixture-repo",
+                "default_branch": "main",
+                "temp_clone_token": "fixture-never-return"
+              }
+            ]
+          }
+        }
+      ],
+      "expectedOutput": {
+        "items": [
+          {
+            "id": 5,
+            "full_name": "fixture-owner/fixture-repo"
+          }
+        ],
+        "hasMore": false
+      }
+    },
+    {
+      "id": "github.ci.status",
+      "input": {
+        "owner": "fixture-owner",
+        "repo": "fixture-repo",
+        "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/repos/fixture-owner/fixture-repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs",
+            "query": {
+              "per_page": 30,
+              "page": 1
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "total_count": 1,
+              "check_runs": [
+                {
+                  "id": 10,
+                  "status": "completed",
+                  "conclusion": "success",
+                  "name": "fixture"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/repos/fixture-owner/fixture-repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status",
+            "query": {
+              "per_page": 30,
+              "page": 1
+            },
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2026-03-10"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "success",
+              "total_count": 1,
+              "statuses": [
+                {
+                  "id": 11,
+                  "state": "success"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "checks": {
+          "total_count": 1
+        },
+        "status": {
+          "state": "success"
+        },
+        "hasMore": false
+      }
+    }
+  ]
+}

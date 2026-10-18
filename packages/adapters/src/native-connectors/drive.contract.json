@@ -1,0 +1,984 @@
+{
+  "frozenAt": "2026-10-18",
+  "contractVersion": "batch2-2026-10-18.1",
+  "validation": "Strict offline developer-owned schemas; no coerce/default auth arguments.",
+  "evidence": "Deterministic synthetic fixtures only. Not real OAuth, account, platform verification or distribution proof.",
+  "appId": "drive",
+  "actions": [
+    {
+      "id": "drive.files.search",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "GET",
+        "path": "/files",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "orderBy": {
+            "type": "string",
+            "enum": [
+              "name",
+              "name desc",
+              "modifiedTime",
+              "modifiedTime desc",
+              "createdTime",
+              "createdTime desc"
+            ]
+          },
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.metadata.readonly",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "spaces=drive; shared drive corpora selected explicitly; include incompleteSearch; drive.file results additionally filtered by isAppAuthorized, cursor not silently discarded.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.get",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "GET",
+        "path": "/files/{fileId}",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["fileId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.metadata.readonly",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Metadata only; preserve capabilities, shortcut target and shared drive id; no automatic shortcut dereference.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/get",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.download",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "GET",
+        "path": "/files/{fileId}",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["fileId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "First metadata/canDownload/size authorization, then alt=media bounded bytes <=10MiB into owner/space artifact; never publicize webContentLink; native Workspace/shortcut content requires explicit export/target.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/get",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.export",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "GET",
+        "path": "/files/{fileId}/export",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "application/pdf",
+              "text/plain",
+              "text/csv",
+              "text/tab-separated-values",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              "image/svg+xml",
+              "image/png",
+              "image/jpeg"
+            ]
+          }
+        },
+        "required": ["fileId", "mimeType"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Exact approved native MIME/export pair checked via about.exportFormats. files.export has 10MB output limit. Output artifact, no bytes/base64 returned.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.upload",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "POST",
+        "path": "/files",
+        "uploadBaseUrl": "https://www.googleapis.com/upload/drive/v3"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 10000
+          }
+        },
+        "required": ["artifactId", "name"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Binary only, no implicit Google Workspace conversion. Read artifact owned by actor/space, pin SHA256+size, generate remote file ID, resumable initiation/chunks/status, 256KiB multiples; max10MiB. Lost initiation ACK stops; lost chunk ACK queries same session, never creates replacement file. Zero-byte new files use metadata-only create; explicit zero-byte replacements use PATCH uploadType=media with empty bytes and exact size/checksum acknowledgement.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.update_content",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "PATCH",
+        "path": "/files/{fileId}",
+        "uploadBaseUrl": "https://www.googleapis.com/upload/drive/v3"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[0-9]+$"
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["fileId", "expectedVersion", "artifactId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Binary-only replacement, not Docs/Sheets editing; capability/MIME/version preflight; same resumable protocol, no auto restart after expired session. Zero-byte new files use metadata-only create; explicit zero-byte replacements use PATCH uploadType=media with empty bytes and exact size/checksum acknowledgement.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.folders.create",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "POST",
+        "path": "/files",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 10000
+          }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Pre-generated file ID, folder MIME only, parent authorization/canAddChildren checked. Shared drive inherits parent, no new ACL assumptions.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.update_metadata",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "PATCH",
+        "path": "/files/{fileId}",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[0-9]+$"
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 10000
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": ["fileId", "expectedVersion", "metadata"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Nonempty allowlist name/description only; no owners, MIME, permissions or arbitrary File body.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.move",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "PATCH",
+        "path": "/files/{fileId}",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[0-9]+$"
+          },
+          "destinationParentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedParentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "minItems": 0,
+            "maxItems": 1,
+            "uniqueItems": true
+          }
+        },
+        "required": ["fileId", "expectedVersion", "destinationParentId", "expectedParentIds"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Check exact current parents, destination folder + canAddChildren and move capability; same-drive only in this increment. Explicit cross-drive changes rejected; addParents/removeParents are server-derived.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.copy",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "POST",
+        "path": "/files/{fileId}/copy",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["fileId", "name"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Source canCopy must be true; copyRequiresWriterPermission respected by provider ACL. Copy is non-idempotent; unknown outcome never retries, even Workspace copy without pre-generated identity.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/copy",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.trash",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "PATCH",
+        "path": "/files/{fileId}",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[0-9]+$"
+          }
+        },
+        "required": ["fileId", "expectedVersion"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Set trashed=true after canTrash/version preflight; never DELETE file.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.files.restore",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "PATCH",
+        "path": "/files/{fileId}",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[0-9]+$"
+          }
+        },
+        "required": ["fileId", "expectedVersion"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Set trashed=false after canUntrash/version preflight; return actual parents/capabilities.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.permissions.list",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "GET",
+        "path": "/files/{fileId}/permissions",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["fileId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Visible permissions only, inherited details preserved. Shared-drive restrictions not bypassed with domain admin flag.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions/list",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.permissions.create",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "POST",
+        "path": "/files/{fileId}/permissions",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[0-9]+$"
+          },
+          "permission": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["user", "group", "domain", "anyone"]
+              },
+              "role": {
+                "type": "string",
+                "enum": ["reader", "commenter", "writer"]
+              },
+              "emailAddress": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 254,
+                "format": "email",
+                "pattern": "^[^\\s<>\\r\\n,;]+@[^\\s<>\\r\\n,;]+$"
+              },
+              "domain": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253,
+                "pattern": "^[A-Za-z0-9.-]+$"
+              }
+            },
+            "required": ["type", "role"],
+            "additionalProperties": false
+          },
+          "sendNotificationEmail": {
+            "type": "boolean"
+          },
+          "allowPublic": {
+            "type": "boolean"
+          }
+        },
+        "required": ["fileId", "expectedVersion", "permission", "sendNotificationEmail"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Role/type/recipient explicit. anyone requires allowPublic===true, never default public; notifications explicit for user/group; no ownership transfer or domain-admin bypass; lost ACK no duplicate share.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions/create",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.permissions.delete",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "DELETE",
+        "path": "/files/{fileId}/permissions/{permissionId}",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30,
+            "pattern": "^[0-9]+$"
+          },
+          "permissionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]*$"
+          }
+        },
+        "required": ["fileId", "expectedVersion", "permissionId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "external-write",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Read permission and current about.user.permissionId. Refuse owner, inherited, pendingOwner, or actor own access; exact permission required. 204 ack only.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions/delete",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    },
+    {
+      "id": "drive.revisions.list",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/drive/v3",
+        "method": "GET",
+        "path": "/files/{fileId}/revisions",
+        "uploadBaseUrl": null
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["fileId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
+        "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
+        "conditionalGuards": [
+          "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
+          "Picker UI is separate and must use a narrow independent token; this contract does not claim Picker is implemented."
+        ]
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "approval": "existing ExternalEffect approval",
+        "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
+        "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
+      },
+      "notes": "Read visible version metadata only; native revision history may be incomplete/different and not arbitrarily downloadable. Preserve pagination.",
+      "sourceUrls": [
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/revisions/list",
+        "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
+      ]
+    }
+  ],
+  "sourcesVerifiedOn": "2026-10-18",
+  "runtimeRequirements": [
+    "Backend exact bound credential; effective scopes checked per action.",
+    "ExternalEffect checkpoint and approval provided by existing executor.",
+    "Owner/space artifact read/write for binary actions."
+  ],
+  "notClaimed": [
+    "Official hosted OAuth deployment",
+    "Real account end-to-end proof",
+    "App review / restricted-scope security assessment completion",
+    "Picker selection flow"
+  ],
+  "fileFields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+}

@@ -23,13 +23,15 @@ const payload = {
 function fixture() {
   const poll = vi.fn(async () => undefined),
     notionSignal = vi.fn(async () => undefined),
+    slackSignal = vi.fn(async () => undefined),
+    slackLifecycle = vi.fn(async () => undefined),
     continueRun = vi.fn(),
     wakeRoutine = vi.fn();
   const handlers = createBackgroundJobHandlers({
-    nativeEvents: { poll, notionSignal },
+    nativeEvents: { poll, notionSignal, slackSignal, slackLifecycle },
     executor: { continueRun, wakeRoutine },
   } as unknown as Parameters<typeof createBackgroundJobHandlers>[0]);
-  return { handlers, poll, notionSignal, continueRun, wakeRoutine };
+  return { handlers, poll, notionSignal, slackSignal, slackLifecycle, continueRun, wakeRoutine };
 }
 describe("native events use existing job dispatch", () => {
   it("dispatches source ID/version and signed delivery to their exact native handlers", async () => {
@@ -45,6 +47,29 @@ describe("native events use existing job dispatch", () => {
     expect(f.continueRun).not.toHaveBeenCalled();
     expect(f.wakeRoutine).not.toHaveBeenCalled();
     expect(job.availableAt.toISOString()).toBe("2026-10-18T01:00:00.000Z");
+  });
+  it("routes signed Slack inbox jobs without creating chat or wake actions", async () => {
+    const f = fixture(),
+      metadata = { inboxId: "inbox-a", hookId: "hook-a", hookRevision: 1 };
+    await dispatchBackgroundJob(f.handlers, "native.slack.signal", {
+      ...metadata,
+      triggerId: "trigger-a",
+      triggerVersion: 1,
+    });
+    await dispatchBackgroundJob(f.handlers, "native.slack.lifecycle", metadata);
+    expect(f.slackSignal).toHaveBeenCalledWith(
+      { ...metadata, triggerId: "trigger-a", triggerVersion: 1 },
+      expect.any(AbortSignal),
+    );
+    expect(f.slackLifecycle).toHaveBeenCalledWith(metadata);
+    await expect(
+      dispatchBackgroundJob(f.handlers, "native.slack.lifecycle", {
+        ...metadata,
+        userId: "other-owner",
+      }),
+    ).rejects.toThrow();
+    expect(f.wakeRoutine).not.toHaveBeenCalled();
+    expect(f.continueRun).not.toHaveBeenCalled();
   });
   it("rejects caller actor/source override and arbitrary signed payload data before handlers", async () => {
     const f = fixture();

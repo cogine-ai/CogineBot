@@ -99,6 +99,18 @@ export function catalogItemConnected(rows: readonly Connection[], item: Connecti
   return local.length ? local.some((row) => row.status === "connected") : item.connected;
 }
 
+/** Keep existing accounts first; an unconfigured source must not obscure an available one. */
+export function preferredConnectionSource(app: ConnectionApp, rows: readonly Connection[]) {
+  return (
+    app.sources.find((source) => catalogItemConnected(rows, source)) ??
+    app.sources.find((source) =>
+      catalogAccounts(rows, source).some((row) => row.status === "pending"),
+    ) ??
+    app.sources.find((source) => source.connectable !== false) ??
+    app.sources[0]
+  );
+}
+
 function appIdentity(item: ConnectionCatalogItem) {
   const known = canonicalConnectionAppId(item.slug);
   if (known)

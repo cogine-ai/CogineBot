@@ -9,6 +9,7 @@ import {
   connectionRemovalState,
   filterConnectionApps,
   groupConnectionCatalog,
+  preferredConnectionSource,
 } from "./connection-catalog.js";
 
 const source = (connectorId: string, slug = "gmail", name = "Gmail"): ConnectionCatalogItem => ({
@@ -34,6 +35,50 @@ const account = (
 });
 
 describe("connection catalog presentation", () => {
+  it.each(["composio", "pipedream"])(
+    "chooses available %s when the first native source is unconfigured",
+    (broker) => {
+      const app = groupConnectionCatalog([
+        { ...source("native"), connectable: false },
+        source(broker),
+      ])[0]!;
+      expect(preferredConnectionSource(app, [])?.connectorId).toBe(broker);
+      expect(app.sources[0]?.connectorId).toBe("native");
+    },
+  );
+  it.each(["connected", "pending"] as const)(
+    "keeps an existing %s native account ahead of another available source",
+    (status) => {
+      const app = groupConnectionCatalog([
+        { ...source("native"), connectable: false },
+        source("composio"),
+      ])[0]!;
+      expect(preferredConnectionSource(app, [account("native", status)])?.connectorId).toBe(
+        "native",
+      );
+    },
+  );
+  it("keeps connected ahead of pending and still permits explicit unconfigured sources", () => {
+    const native = { ...source("native"), connectable: false };
+    const app = groupConnectionCatalog([native, source("composio")])[0]!;
+    expect(
+      preferredConnectionSource(app, [
+        account("native", "pending"),
+        account("composio", "connected"),
+      ])?.connectorId,
+    ).toBe("composio");
+    const unavailable = groupConnectionCatalog([
+      native,
+      { ...source("composio"), connectable: false },
+    ])[0]!;
+    expect(preferredConnectionSource(unavailable, [])?.connectorId).toBe("native");
+    expect(
+      preferredConnectionSource(
+        groupConnectionCatalog([{ ...native, connectable: true }, source("composio")])[0]!,
+        [],
+      )?.connectorId,
+    ).toBe("native");
+  });
   it("groups known app aliases without changing exact provider identities", () => {
     const apps = groupConnectionCatalog([
       source("composio", "GMAIL"),

@@ -14,7 +14,6 @@ import {
   abortableDelay,
   CONNECTION_CATALOG_PAGE_SIZE,
   catalogAccounts,
-  catalogItemConnected,
   catalogUninstallAccounts,
   connectionAppSummary,
   connectionCatalogKey,
@@ -23,6 +22,7 @@ import {
   filterConnectionApps,
   groupConnectionCatalog,
   humanizeToolName,
+  preferredConnectionSource,
 } from "@rakazo/core";
 import {
   AlertDialog,
@@ -282,17 +282,8 @@ export function PluginsOverlay({
     setTools([]);
   }
 
-  function itemConnected(item: ConnectionCatalogItem) {
-    return catalogItemConnected(connections, item);
-  }
-
   function openApp(app: ConnectionApp) {
-    const preferred =
-      app.sources.find((item) => itemConnected(item)) ??
-      app.sources.find((item) =>
-        catalogAccounts(connections, item).some((row) => row.status === "pending"),
-      ) ??
-      app.sources[0];
+    const preferred = preferredConnectionSource(app, connections);
     if (preferred) openDetail(preferred);
   }
 

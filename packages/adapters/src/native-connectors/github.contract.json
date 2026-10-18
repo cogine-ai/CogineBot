@@ -1,0 +1,493 @@
+{
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "offlineOnly": true,
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "github.issues.list",
+      "description": "List repository issues and pull-request markers",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "state": {
+            "type": "string",
+            "enum": ["open", "closed", "all"]
+          },
+          "labels": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["owner", "repo"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "GET",
+        "path": "/repos/{owner}/{repo}/issues"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": ["issues:read", "issues:write"],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "github.issues.get",
+      "description": "Read an issue and optionally one page of conversation comments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "includeComments": {
+            "type": "boolean"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["owner", "repo", "issue_number"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "GET",
+        "path": "/repos/{owner}/{repo}/issues/{issue_number}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": ["issues:read", "issues:write"],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "secondaryRequests": [
+        "GET /repos/{owner}/{repo}/issues/{issue_number}/comments when includeComments=true"
+      ]
+    },
+    {
+      "id": "github.issues.create",
+      "description": "Create a repository issue",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 0,
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 0,
+            "maxItems": 30,
+            "uniqueItems": true
+          }
+        },
+        "required": ["owner", "repo", "title"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "POST",
+        "path": "/repos/{owner}/{repo}/issues"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": ["issues:write"],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "github.comments.create",
+      "description": "Comment on an issue or pull-request conversation",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": ["owner", "repo", "issue_number", "body"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "POST",
+        "path": "/repos/{owner}/{repo}/issues/{issue_number}/comments"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": ["issues:write", "pull_requests:write"],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "github.pulls.list",
+      "description": "List repository pull requests",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "state": {
+            "type": "string",
+            "enum": ["open", "closed", "all"]
+          },
+          "head": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "base": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["owner", "repo"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "GET",
+        "path": "/repos/{owner}/{repo}/pulls"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": ["pull_requests:read", "pull_requests:write"],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "github.pulls.get",
+      "description": "Read a pull request and optionally conversation comments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "pull_number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "includeComments": {
+            "type": "boolean"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["owner", "repo", "pull_number"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "GET",
+        "path": "/repos/{owner}/{repo}/pulls/{pull_number}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": ["pull_requests:read", "pull_requests:write"],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "secondaryRequests": [
+        "GET /repos/{owner}/{repo}/issues/{pull_number}/comments when includeComments=true"
+      ]
+    },
+    {
+      "id": "github.repositories.list",
+      "description": "Discover repositories and selected metadata available to this actor",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "GET",
+        "path": "/installation/repositories for installation, otherwise /user/repos"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": [],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      }
+    },
+    {
+      "id": "github.ci.status",
+      "description": "Read check runs and combined commit status",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_./-]+$"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["owner", "repo", "ref"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.github.com",
+        "method": "GET",
+        "path": "/repos/{owner}/{repo}/commits/{ref}/check-runs"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actualGrantedScopesRequired": false,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching",
+        "acceptedAnyOfPermissions": ["checks:read", "checks:write"],
+        "remoteRepositoryPermissionRequired": true
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "requiredAllPermissions": ["checks:read|write", "statuses:read|write"],
+      "secondaryRequests": ["GET /repos/{owner}/{repo}/commits/{ref}/status"],
+      "pagination": "check and status arrays independently paginated; never infer CI green from a partial page"
+    }
+  ],
+  "events": []
+}

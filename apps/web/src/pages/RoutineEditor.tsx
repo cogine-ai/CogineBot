@@ -125,6 +125,12 @@ export function nativeRoutineTriggerSummary(routine: Pick<Routine, "nativeTrigge
     parts.push(t`Calendar event`);
   if (routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("notion.")))
     parts.push(t`Notion event`);
+  if (routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("gmail.")))
+    parts.push(t`Gmail event`);
+  if (routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("drive.")))
+    parts.push(t`Drive event`);
+  if (routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("slack.")))
+    parts.push(t`Slack bot event`);
   return parts.join(" · ");
 }
 

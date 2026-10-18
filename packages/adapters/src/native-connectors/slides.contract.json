@@ -1,0 +1,868 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-18",
+  "appId": "google-slides",
+  "actions": [
+    {
+      "id": "slides.templates.create",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "POST",
+        "path": "/files/{templateId}/copy + controlled replacement",
+        "secondary": {
+          "service": "drive",
+          "baseUrl": "https://www.googleapis.com/drive/v3",
+          "method": "POST",
+          "path": "/files/{templateId}/copy"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "replacements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "replace": {
+                  "type": "string",
+                  "maxLength": 100000
+                },
+                "matchCase": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["find", "replace", "matchCase"],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": ["templateId", "title", "replacements"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "remoteMutation": true,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "copy has no atomic source revision; record source version. Fill uses copied requiredRevisionId. No compensation/deletion.",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [
+        "Drive API enabled for same OAuth client",
+        "Same-token MIME/resource authority preflight",
+        "Copies inherit Drive visibility; no public sharing requested"
+      ],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/copy"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "templateId": "template_fixture",
+            "title": "Fixture",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    },
+    {
+      "id": "slides.presentations.get",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "GET",
+        "path": "/presentations/{presentationId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": ["presentationId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations.readonly",
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations.readonly"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "remoteMutation": false,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "none",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    },
+    {
+      "id": "slides.presentations.create",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "POST",
+        "path": "/presentations"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "remoteMutation": true,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "none",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "title": "Fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "title": "Fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    },
+    {
+      "id": "slides.pages.get",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "GET",
+        "path": "/presentations/{presentationId}/pages/{pageObjectId}"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "pageObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          }
+        },
+        "required": ["presentationId", "pageObjectId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations.readonly",
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations.readonly"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "remoteMutation": false,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "none",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "pageObjectId": "slide_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "pageObjectId": "slide_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    },
+    {
+      "id": "slides.text.replace",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "POST",
+        "path": "/presentations/{presentationId}:batchUpdate"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "replacements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "replace": {
+                  "type": "string",
+                  "maxLength": 100000
+                },
+                "matchCase": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["find", "replace", "matchCase"],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": ["presentationId", "expectedRevisionId", "replacements"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "remoteMutation": true,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "requiredRevisionId; no rebase/replay",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "replacements": [
+              {
+                "find": "{{name}}",
+                "replace": "Team",
+                "matchCase": true
+              }
+            ],
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    },
+    {
+      "id": "slides.images.create",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "POST",
+        "path": "/presentations/{presentationId}:batchUpdate"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "pageObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "objectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50,
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "widthPt": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          },
+          "heightPt": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          },
+          "xPt": {
+            "type": "number",
+            "minimum": -10000,
+            "maximum": 10000
+          },
+          "yPt": {
+            "type": "number",
+            "minimum": -10000,
+            "maximum": 10000
+          }
+        },
+        "required": [
+          "presentationId",
+          "expectedRevisionId",
+          "pageObjectId",
+          "objectId",
+          "url",
+          "widthPt",
+          "heightPt",
+          "xPt",
+          "yPt"
+        ],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "remoteMutation": true,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "requiredRevisionId; no rebase/replay",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [
+        "Images use explicit public HTTPS URL validated by existing resource URL policy; URL is persisted by Google, no signed/token-bearing URLs"
+      ],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "pageObjectId": "slide_fixture",
+            "objectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "widthPt": 100,
+            "heightPt": 50,
+            "xPt": 10,
+            "yPt": 20,
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "pageObjectId": "slide_fixture",
+            "objectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "widthPt": 100,
+            "heightPt": 50,
+            "xPt": 10,
+            "yPt": 20,
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    },
+    {
+      "id": "slides.images.replace",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "POST",
+        "path": "/presentations/{presentationId}:batchUpdate"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "imageObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "imageReplaceMethod": {
+            "type": "string",
+            "enum": ["CENTER_INSIDE", "CENTER_CROP"]
+          }
+        },
+        "required": [
+          "presentationId",
+          "expectedRevisionId",
+          "imageObjectId",
+          "url",
+          "imageReplaceMethod"
+        ],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "remoteMutation": true,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "requiredRevisionId; no rebase/replay",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [
+        "Images use explicit public HTTPS URL validated by existing resource URL policy; URL is persisted by Google, no signed/token-bearing URLs"
+      ],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "imageObjectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "imageReplaceMethod": "CENTER_INSIDE",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "imageObjectId": "image_fixture",
+            "url": "https://images.example.test/fixture.png",
+            "imageReplaceMethod": "CENTER_INSIDE",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    },
+    {
+      "id": "slides.slides.duplicate",
+      "upstream": {
+        "baseUrl": "https://slides.googleapis.com/v1",
+        "method": "POST",
+        "path": "/presentations/{presentationId}:batchUpdate"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "presentationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "expectedRevisionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "slideObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "newSlideObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50,
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}$"
+          }
+        },
+        "required": ["presentationId", "expectedRevisionId", "slideObjectId", "newSlideObjectId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          "drive.file-only existing file: authoritative same-token Drive files.get(id,isAppAuthorized) must return same id and isAppAuthorized=true"
+        ],
+        "credentialSource": "backend bound grant only; business credential/header/URL fields are rejected",
+        "scopeBoundary": "Product-specific Docs/Sheets/Slides scope covers accessible files for that product, not per-file consent. drive.file is limited to files opened/created by this OAuth app."
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "remoteMutation": true,
+        "existingApprovalPolicy": true,
+        "recovery": "operationId + subject + tenant + exact intent hash; prepared/dispatching/committed ExternalEffect checkpoint; unknown outcome never blindly replays"
+      },
+      "concurrency": "requiredRevisionId; no rebase/replay",
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "Only requested resource/range; never entire Drive or full account"
+      },
+      "runtimeRequirements": [],
+      "sources": [
+        "https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate",
+        "https://developers.google.com/workspace/drive/api/reference/rest/v3/files"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "credential-in-business-input",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "slideObjectId": "slide_fixture",
+            "newSlideObjectId": "slide_new_fixture",
+            "access_token": "fixture-forbidden"
+          },
+          "reason": "additionalProperties=false"
+        },
+        {
+          "id": "arbitrary-request",
+          "input": {
+            "presentationId": "deck_fixture",
+            "expectedRevisionId": "rev_1",
+            "slideObjectId": "slide_fixture",
+            "newSlideObjectId": "slide_new_fixture",
+            "requests": [
+              {
+                "deleteObject": {}
+              }
+            ]
+          },
+          "reason": "No arbitrary batchUpdate passthrough"
+        }
+      ]
+    }
+  ],
+  "events": {
+    "status": "not-implemented-in-this-module",
+    "target": "Drive changes for selected slides files, delivered only into enabled existing Routine chain; changes are invalidation and need authoritative content refetch",
+    "independentRealtimeEvent": false
+  },
+  "sharedContracts": {
+    "unknownOutcome": "Never replay dispatching/committed effects. Committed checkpoint returns receipt without claiming current resource state. Copy/fill phases preserve destination ID on partial failure.",
+    "resultBoundary": "Offline conformance only; no real-account or platform distribution proof."
+  }
+}

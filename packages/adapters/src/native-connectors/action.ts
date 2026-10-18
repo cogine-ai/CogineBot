@@ -2,10 +2,12 @@ export interface NativeRequest {
   method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   /** Relative to the adapter's fixed/configured API authority; never a model URL. */
   path: string;
-  query?: Record<string, string | number | boolean | undefined>;
+  /** Trusted adapter constant selecting an app-allowlisted fixed API, never business input. */
+  service?: "drive" | "drive-upload";
+  query?: Record<string, string | number | boolean | readonly string[] | undefined>;
   headers?: Record<string, string>;
   body?: unknown;
-  responseType?: "json" | "text";
+  responseType?: "json" | "text" | "bytes";
 }
 
 export interface NativeResponse {
@@ -33,6 +35,22 @@ export interface NativeActionContext {
   request(request: NativeRequest): Promise<NativeResponse>;
   callMcp(tool: string, args: Record<string, unknown>): Promise<unknown>;
   readArtifact(id: string): Promise<{ bytes: Uint8Array; name: string; mimeType: string }>;
+  writeArtifact?(input: { bytes: Uint8Array; name: string; mimeType: string }): Promise<{
+    id: string;
+    name: string;
+    mimeType: string;
+    size: number;
+  }>;
+  /** Only provider-returned Slack file URLs; the backend pins authority, path and token policy. */
+  uploadResource?(input: {
+    url: string;
+    bytes: Uint8Array;
+    contentType: string;
+  }): Promise<{ status: number }>;
+  downloadResource?(input: {
+    url: string;
+    maxBytes: number;
+  }): Promise<{ bytes: Uint8Array; mimeType: string }>;
   validateResourceUrl(url: string): Promise<void>;
 }
 
@@ -71,5 +89,7 @@ export interface NativeAction {
   readOnly: boolean;
   scopesAnyOf?: readonly string[];
   capabilities?: readonly string[];
+  /** Pure, credential-aware directory filter. Execution still performs its own authorization checks. */
+  available?(principal: NativeActionContext["principal"]): boolean;
   execute(args: Record<string, unknown>, context: NativeActionContext): Promise<unknown>;
 }

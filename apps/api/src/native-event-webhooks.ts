@@ -1,5 +1,5 @@
 import type { NativeRoutineEventService } from "@rakazo/adapters";
-import { InvalidNativeEventSignal } from "@rakazo/adapters";
+import { InvalidNativeEventSignal, InvalidNativeSlackSignal } from "@rakazo/adapters";
 import type { Hono } from "hono";
 
 /** Signature verification must receive these exact bounded bytes, not JSON decoded and reserialized. */
@@ -44,7 +44,8 @@ export async function readNativeEventBytes(
 /** Public routes authenticate provider signals only. They do not create general Bot webhook messages. */
 export function registerNativeEventWebhooks(
   app: Hono,
-  events: Pick<NativeRoutineEventService, "ingestNotion" | "ingestCalendar">,
+  events: Pick<NativeRoutineEventService, "ingestNotion" | "ingestCalendar"> &
+    Partial<Pick<NativeRoutineEventService, "ingestSlack" | "ingestDrive" | "ingestGmail">>,
 ): void {
   app.post("/api/connectors/events/calendar", async (c) => {
     try {
@@ -54,6 +55,48 @@ export function registerNativeEventWebhooks(
       return c.body(null, 204);
     } catch (error) {
       return c.body(null, error instanceof InvalidNativeEventSignal ? 401 : 503);
+    }
+  });
+  app.post("/api/connectors/events/gmail", async (c) => {
+    try {
+      if (!events.ingestGmail) return c.body(null, 503);
+      const raw = await readNativeEventBytes(c.req.raw, 64 * 1024);
+      if (!raw) return c.body(null, 413);
+      await events.ingestGmail(raw, c.req.header("authorization") ?? null);
+      return c.body(null, 204);
+    } catch (error) {
+      return c.body(null, error instanceof InvalidNativeEventSignal ? 401 : 503);
+    }
+  });
+  app.post("/api/connectors/events/drive", async (c) => {
+    try {
+      if (!events.ingestDrive) return c.body(null, 503);
+      const raw = await readNativeEventBytes(c.req.raw, 0);
+      if (!raw) return c.body(null, 413);
+      await events.ingestDrive(c.req.raw.headers);
+      return c.body(null, 204);
+    } catch (error) {
+      return c.body(null, error instanceof InvalidNativeEventSignal ? 401 : 503);
+    }
+  });
+  app.post("/api/connectors/events/slack/:hookId", async (c) => {
+    try {
+      if (!events.ingestSlack) return c.body(null, 503);
+      const hookId = c.req.param("hookId");
+      if (hookId.length > 256) return c.body(null, 404);
+      const raw = await readNativeEventBytes(c.req.raw, 1_000_000);
+      if (!raw) return c.body(null, 413);
+      const result = await events.ingestSlack(
+        hookId,
+        raw,
+        c.req.header("x-slack-signature") ?? null,
+        c.req.header("x-slack-request-timestamp") ?? null,
+      );
+      return result.challenge !== undefined
+        ? c.json({ challenge: result.challenge })
+        : c.body(null, 204);
+    } catch (error) {
+      return c.body(null, error instanceof InvalidNativeSlackSignal ? 401 : 503);
     }
   });
   app.post("/api/connectors/events/notion/:hookId", async (c) => {

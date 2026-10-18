@@ -1,0 +1,480 @@
+{
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "offlineOnly": true,
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "linear.issues.list",
+      "description": "List issues with explicit bounded filters",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "first": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "teamId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "assigneeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "stateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "query ConnectorIssues($first: Int!, $after: String, $filter: IssueFilter) { issues(first: $first, after: $after, filter: $filter) { nodes { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } pageInfo { hasNextPage endCursor } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    },
+    {
+      "id": "linear.issues.get",
+      "description": "Read an issue by ID or identifier",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "query ConnectorIssue($id: String!) { issue(id: $id) { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    },
+    {
+      "id": "linear.issues.create",
+      "description": "Create an issue in an explicit team",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "teamId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "assigneeId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projectId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4
+          },
+          "labelIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "minItems": 0,
+            "maxItems": 50,
+            "uniqueItems": true
+          }
+        },
+        "required": ["teamId", "title"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["issues:create", "write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "mutation ConnectorIssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    },
+    {
+      "id": "linear.issues.update",
+      "description": "Update selected issue fields after a best-effort version precheck",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              },
+              "assigneeId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 36,
+                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "projectId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 36,
+                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stateId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "priority": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4
+              },
+              "labelIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36,
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                },
+                "minItems": 0,
+                "maxItems": 50,
+                "uniqueItems": true
+              }
+            },
+            "required": [],
+            "additionalProperties": false,
+            "minProperties": 1
+          }
+        },
+        "required": ["id", "expectedUpdatedAt", "changes"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "mutation ConnectorIssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier title description url updatedAt priority state { id name } team { id key } assignee { id name } project { id name } } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    },
+    {
+      "id": "linear.projects.list",
+      "description": "List visible projects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "first": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "query ConnectorProjects($first: Int!, $after: String) { projects(first: $first, after: $after) { nodes { id name description url updatedAt } pageInfo { hasNextPage endCursor } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    },
+    {
+      "id": "linear.teams.list",
+      "description": "Discover visible teams for explicit issue creation",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "first": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "query ConnectorTeams($first: Int!, $after: String) { teams(first: $first, after: $after) { nodes { id key name description } pageInfo { hasNextPage endCursor } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    },
+    {
+      "id": "linear.users.list",
+      "description": "List visible users to choose an explicit assignee",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "first": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "query ConnectorUsers($first: Int!, $after: String) { users(first: $first, after: $after) { nodes { id name displayName active } pageInfo { hasNextPage endCursor } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    },
+    {
+      "id": "linear.comments.create",
+      "description": "Create an issue comment as the selected actor",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          }
+        },
+        "required": ["issueId", "body"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "baseUrl": "https://api.linear.app",
+        "method": "POST",
+        "path": "/graphql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["comments:create", "write"],
+        "actualGrantedScopesRequired": true,
+        "credentialsInBusinessInput": false,
+        "subject": "exact selected connection actor; no implicit default/account switching"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "write",
+        "existingApprovalPolicy": true,
+        "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "graphql": "mutation ConnectorCommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id body url updatedAt user { id name } issue { id identifier } } } }",
+      "requiredResponse": "Reject any errors array even when HTTP=200. Mutation success=true and stable exact ID required; partial mutation is unknown outcome."
+    }
+  ],
+  "events": []
+}
