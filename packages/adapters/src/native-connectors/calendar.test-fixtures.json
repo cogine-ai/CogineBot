@@ -1,0 +1,5176 @@
+{
+  "actions": [
+    {
+      "id": "calendar.calendars.list",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "GET",
+        "path": "/users/me/calendarList",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 250,
+            "default": 100
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "showHidden": {
+            "type": "boolean",
+            "default": false
+          },
+          "showDeleted": {
+            "type": "boolean",
+            "default": false
+          },
+          "minAccessRole": {
+            "type": "string",
+            "enum": ["freeBusyReader", "reader", "writerWithoutPrivateAccess", "writer", "owner"]
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+        ],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+          "https://www.googleapis.com/auth/calendar.calendarlist",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "remoteMutation": false
+      },
+      "requestMapping": {
+        "path": {},
+        "query": {
+          "maxResults": "input.maxResults when present/materialized",
+          "pageToken": "input.pageToken when present/materialized",
+          "showHidden": "input.showHidden when present/materialized",
+          "showDeleted": "input.showDeleted when present/materialized",
+          "minAccessRole": "input.minAccessRole when present/materialized"
+        },
+        "body": null
+      },
+      "runtimeRequirements": [],
+      "fixtures": [
+        {
+          "id": "first-page-has-more",
+          "input": {
+            "maxResults": 1
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/users/me/calendarList",
+                "query": {
+                  "maxResults": 1
+                },
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "kind": "calendar#calendarList",
+                  "items": [
+                    {
+                      "id": "fixture-work-calendar@example.test",
+                      "summary": "Fixture work calendar",
+                      "timeZone": "Asia/Taipei",
+                      "primary": true,
+                      "accessRole": "owner",
+                      "etag": "\"fixture-cal-1\""
+                    }
+                  ],
+                  "nextPageToken": "fixture-calendar-page-2"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "items": [
+              {
+                "id": "fixture-work-calendar@example.test",
+                "summary": "Fixture work calendar",
+                "timeZone": "Asia/Taipei",
+                "primary": true,
+                "accessRole": "owner",
+                "etag": "\"fixture-cal-1\""
+              }
+            ],
+            "nextPageToken": "fixture-calendar-page-2",
+            "hasMore": true,
+            "allPagesRead": false
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "maxResults": 1
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/users/me/calendarList",
+                "query": {
+                  "maxResults": 1
+                },
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "summary",
+          "summaryOverride",
+          "description",
+          "timeZone",
+          "primary",
+          "accessRole",
+          "selected",
+          "hidden",
+          "deleted",
+          "colorId",
+          "backgroundColor",
+          "foregroundColor",
+          "conferenceProperties"
+        ],
+        "items": "Only calendars on this subject calendar list; no organization-wide enumeration.",
+        "allPagesRead": "False while pagination remains.",
+        "displayMetadataOnly": [
+          "summary",
+          "summaryOverride",
+          "colorId",
+          "backgroundColor",
+          "foregroundColor"
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "opaque-page-token",
+        "input": "pageToken",
+        "upstreamNext": "nextPageToken",
+        "outputNext": "nextPageToken",
+        "scope": "Identical accepted query and exact connection/auth generation; never move a cursor to another account.",
+        "completeMeaning": "hasMore is Boolean(nextPageToken); a page with no next token is the terminal page. allPagesRead may be true only when the adapter read from the first page through the terminal page in this same frozen query.",
+        "limits": "Return nextPageToken when bounded reading stops. Never call a truncated prefix complete."
+      },
+      "sourceIds": ["gcal.calendarList.list", "gcal.scopes", "gcal.calendarList.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "maxResults": 1,
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "maxResults": 1,
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.calendars.get",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "GET",
+        "path": "/users/me/calendarList/{calendarId}",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": ["calendarId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": [
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+        ],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+          "https://www.googleapis.com/auth/calendar.calendarlist",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "remoteMutation": false
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId"
+        },
+        "query": {},
+        "body": null
+      },
+      "runtimeRequirements": [],
+      "fixtures": [
+        {
+          "id": "subscribed-calendar",
+          "input": {
+            "calendarId": "primary"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/users/me/calendarList/primary",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixture-work-calendar@example.test",
+                  "summary": "Fixture work calendar",
+                  "timeZone": "Asia/Taipei",
+                  "primary": true,
+                  "accessRole": "owner",
+                  "etag": "\"fixture-cal-1\""
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "calendar": {
+              "id": "fixture-work-calendar@example.test",
+              "summary": "Fixture work calendar",
+              "timeZone": "Asia/Taipei",
+              "primary": true,
+              "accessRole": "owner",
+              "etag": "\"fixture-cal-1\""
+            }
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/users/me/calendarList/primary",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "summary",
+          "summaryOverride",
+          "description",
+          "timeZone",
+          "primary",
+          "accessRole",
+          "selected",
+          "hidden",
+          "deleted",
+          "colorId",
+          "backgroundColor",
+          "foregroundColor",
+          "conferenceProperties"
+        ],
+        "meaning": "This is calendarList.get for a subscribed calendar entry, not calendars.get metadata or organization discovery.",
+        "displayMetadataOnly": [
+          "summary",
+          "summaryOverride",
+          "colorId",
+          "backgroundColor",
+          "foregroundColor"
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.calendarList.get", "gcal.calendarList.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.search",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "GET",
+        "path": "/calendars/{calendarId}/events",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "timeMin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "timeMax": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "timeZone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+          },
+          "singleEvents": {
+            "type": "boolean",
+            "default": true
+          },
+          "orderBy": {
+            "type": "string",
+            "enum": ["startTime", "updated"]
+          },
+          "showDeleted": {
+            "type": "boolean",
+            "default": false
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2500,
+            "default": 100
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        },
+        "required": ["calendarId", "timeMin", "timeMax"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events.readonly"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events.readonly",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned.readonly",
+            "condition": "Only after backend verifies this calendar is owned by the authenticated subject."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for calendars proven created by this app."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "remoteMutation": false
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId"
+        },
+        "query": {
+          "timeMin": "input.timeMin when present/materialized",
+          "timeMax": "input.timeMax when present/materialized",
+          "q": "input.q when present/materialized",
+          "timeZone": "input.timeZone when present/materialized",
+          "singleEvents": "input.singleEvents when present/materialized",
+          "orderBy": "input.orderBy when present/materialized",
+          "showDeleted": "input.showDeleted when present/materialized",
+          "maxResults": "input.maxResults when present/materialized",
+          "pageToken": "input.pageToken when present/materialized"
+        },
+        "body": null
+      },
+      "runtimeRequirements": [
+        "timeMin < timeMax; both include an explicit offset.",
+        "orderBy=startTime requires singleEvents=true; explicit false rejects rather than silently changing intent.",
+        "q searches the documented event text fields; this action requires a time window and does not claim full-account history search.",
+        "No model-provided syncToken: subscription synchronization is a separate server-owned task."
+      ],
+      "fixtures": [
+        {
+          "id": "window-first-page",
+          "input": {
+            "calendarId": "primary",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "singleEvents": true,
+            "orderBy": "startTime",
+            "maxResults": 1
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events",
+                "query": {
+                  "timeMin": "2026-10-20T00:00:00Z",
+                  "timeMax": "2026-10-21T00:00:00Z",
+                  "singleEvents": true,
+                  "orderBy": "startTime",
+                  "maxResults": 1
+                },
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "kind": "calendar#events",
+                  "timeZone": "Asia/Taipei",
+                  "accessRole": "owner",
+                  "items": [
+                    {
+                      "id": "fixtureevent001",
+                      "etag": "\"fixture-event-1\"",
+                      "status": "confirmed",
+                      "eventType": "default",
+                      "summary": "Fixture planning",
+                      "start": {
+                        "dateTime": "2026-10-20T09:00:00+08:00",
+                        "timeZone": "Asia/Taipei"
+                      },
+                      "end": {
+                        "dateTime": "2026-10-20T09:30:00+08:00",
+                        "timeZone": "Asia/Taipei"
+                      },
+                      "organizer": {
+                        "email": "fixture-user@example.test",
+                        "self": true
+                      }
+                    }
+                  ],
+                  "nextPageToken": "fixture-event-page-2"
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "items": [
+              {
+                "id": "fixtureevent001",
+                "etag": "\"fixture-event-1\"",
+                "status": "confirmed",
+                "eventType": "default",
+                "summary": "Fixture planning",
+                "start": {
+                  "dateTime": "2026-10-20T09:00:00+08:00",
+                  "timeZone": "Asia/Taipei"
+                },
+                "end": {
+                  "dateTime": "2026-10-20T09:30:00+08:00",
+                  "timeZone": "Asia/Taipei"
+                },
+                "organizer": {
+                  "email": "fixture-user@example.test",
+                  "self": true
+                }
+              }
+            ],
+            "nextPageToken": "fixture-event-page-2",
+            "hasMore": true,
+            "allPagesRead": false
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "singleEvents": true,
+            "orderBy": "startTime",
+            "maxResults": 1
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events",
+                "query": {
+                  "timeMin": "2026-10-20T00:00:00Z",
+                  "timeMax": "2026-10-21T00:00:00Z",
+                  "singleEvents": true,
+                  "orderBy": "startTime",
+                  "maxResults": 1
+                },
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "representation": "projection-of-authoritative-upstream-resource",
+        "credentialFieldsExcluded": true,
+        "sourceIdentity": "backend binds owner+space+connectionId+authGeneration; these are not business input properties",
+        "requiredResourceFields": ["id"],
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "status",
+          "eventType",
+          "summary",
+          "description",
+          "location",
+          "start",
+          "end",
+          "recurrence",
+          "recurringEventId",
+          "originalStartTime",
+          "organizer",
+          "creator",
+          "attendees",
+          "attendeesOmitted",
+          "iCalUID",
+          "htmlLink",
+          "updated",
+          "visibility",
+          "transparency",
+          "reminders",
+          "conferenceData",
+          "hangoutLink"
+        ],
+        "completeness": [
+          "Sparse cancelled events are valid and must not be dropped.",
+          "Missing private event fields are visibility-limited, not an empty fully-readable event.",
+          "Do not assert complete attendee lists when upstream attendeesOmitted=true."
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "opaque-page-token",
+        "input": "pageToken",
+        "upstreamNext": "nextPageToken",
+        "outputNext": "nextPageToken",
+        "scope": "Identical accepted query and exact connection/auth generation; never move a cursor to another account.",
+        "completeMeaning": "hasMore is Boolean(nextPageToken); a page with no next token is the terminal page. allPagesRead may be true only when the adapter read from the first page through the terminal page in this same frozen query.",
+        "limits": "Return nextPageToken when bounded reading stops. Never call a truncated prefix complete."
+      },
+      "sourceIds": ["gcal.events.list", "gcal.events.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "singleEvents": true,
+            "orderBy": "startTime",
+            "maxResults": 1,
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "singleEvents": true,
+            "orderBy": "startTime",
+            "maxResults": 1,
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.get",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "GET",
+        "path": "/calendars/{calendarId}/events/{eventId}",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "timeZone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+          }
+        },
+        "required": ["calendarId", "eventId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events.readonly"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events.readonly",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned.readonly",
+            "condition": "Only after backend verifies this calendar is owned by the authenticated subject."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for calendars proven created by this app."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "remoteMutation": false
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId",
+          "eventId": "input.eventId"
+        },
+        "query": {
+          "timeZone": "input.timeZone when present/materialized"
+        },
+        "body": null
+      },
+      "runtimeRequirements": [],
+      "fixtures": [
+        {
+          "id": "single-event",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "fixtureevent001",
+              "etag": "\"fixture-event-1\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-user@example.test",
+                "self": true
+              }
+            },
+            "visibilityLimited": false,
+            "attendeesComplete": true
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "representation": "projection-of-authoritative-upstream-resource",
+        "credentialFieldsExcluded": true,
+        "sourceIdentity": "backend binds owner+space+connectionId+authGeneration; these are not business input properties",
+        "requiredResourceFields": ["id"],
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "status",
+          "eventType",
+          "summary",
+          "description",
+          "location",
+          "start",
+          "end",
+          "recurrence",
+          "recurringEventId",
+          "originalStartTime",
+          "organizer",
+          "creator",
+          "attendees",
+          "attendeesOmitted",
+          "iCalUID",
+          "htmlLink",
+          "updated",
+          "visibility",
+          "transparency",
+          "reminders",
+          "conferenceData",
+          "hangoutLink"
+        ],
+        "completeness": [
+          "Sparse cancelled events are valid and must not be dropped.",
+          "Missing private event fields are visibility-limited, not an empty fully-readable event.",
+          "Do not assert complete attendee lists when upstream attendeesOmitted=true."
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.events.get", "gcal.events.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.freebusy.query",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "POST",
+        "path": "/freeBusy",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "timeMin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "timeMax": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "timeZone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": ["timeMin", "timeMax", "items"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events.freebusy"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events.freebusy",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "remoteMutation": false
+      },
+      "requestMapping": {
+        "path": {},
+        "query": {},
+        "body": {
+          "timeMin": "input.timeMin",
+          "timeMax": "input.timeMax",
+          "items": "input.items"
+        },
+        "optionalBody": {
+          "timeZone": "input.timeZone"
+        }
+      },
+      "runtimeRequirements": [
+        "timeMin < timeMax.",
+        "Accept at most 50 explicit calendar IDs in this first contract. Group IDs are not an advertised product capability; if upstream expands a requested ID as a group, preserve group results and errors without hiding them.",
+        "calendar.events and calendar.events.readonly alone do not authorize this action."
+      ],
+      "fixtures": [
+        {
+          "id": "http-200-partial-failure",
+          "input": {
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "items": [
+              {
+                "id": "primary"
+              },
+              {
+                "id": "fixture-inaccessible@example.test"
+              }
+            ]
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/freeBusy",
+                "query": {},
+                "headers": {},
+                "body": {
+                  "timeMin": "2026-10-20T00:00:00Z",
+                  "timeMax": "2026-10-21T00:00:00Z",
+                  "items": [
+                    {
+                      "id": "primary"
+                    },
+                    {
+                      "id": "fixture-inaccessible@example.test"
+                    }
+                  ]
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "kind": "calendar#freeBusy",
+                  "timeMin": "2026-10-20T00:00:00Z",
+                  "timeMax": "2026-10-21T00:00:00Z",
+                  "calendars": {
+                    "fixture-user@example.test": {
+                      "busy": [
+                        {
+                          "start": "2026-10-20T01:00:00Z",
+                          "end": "2026-10-20T01:30:00Z"
+                        }
+                      ]
+                    },
+                    "fixture-inaccessible@example.test": {
+                      "errors": [
+                        {
+                          "domain": "global",
+                          "reason": "notFound"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "freebusy": {
+              "kind": "calendar#freeBusy",
+              "timeMin": "2026-10-20T00:00:00Z",
+              "timeMax": "2026-10-21T00:00:00Z",
+              "calendars": {
+                "fixture-user@example.test": {
+                  "busy": [
+                    {
+                      "start": "2026-10-20T01:00:00Z",
+                      "end": "2026-10-20T01:30:00Z"
+                    }
+                  ]
+                },
+                "fixture-inaccessible@example.test": {
+                  "errors": [
+                    {
+                      "domain": "global",
+                      "reason": "notFound"
+                    }
+                  ]
+                }
+              }
+            },
+            "partial": true,
+            "failedCalendarIds": ["fixture-inaccessible@example.test"]
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "items": [
+              {
+                "id": "primary"
+              },
+              {
+                "id": "fixture-inaccessible@example.test"
+              }
+            ]
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/freeBusy",
+                "query": {},
+                "headers": {},
+                "body": {
+                  "timeMin": "2026-10-20T00:00:00Z",
+                  "timeMax": "2026-10-21T00:00:00Z",
+                  "items": [
+                    {
+                      "id": "primary"
+                    },
+                    {
+                      "id": "fixture-inaccessible@example.test"
+                    }
+                  ]
+                }
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "mustPreserveWhenPresent": ["timeMin", "timeMax", "groups", "calendars", "busy", "errors"],
+        "doesNotReturn": "Event titles, attendees or details.",
+        "partial": "True if any calendar or group reports errors, even for HTTP 200.",
+        "intervals": "start inclusive, end exclusive."
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.freebusy", "gcal.scopes"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "items": [
+              {
+                "id": "primary"
+              },
+              {
+                "id": "fixture-inaccessible@example.test"
+              }
+            ],
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-21T00:00:00Z",
+            "items": [
+              {
+                "id": "primary"
+              },
+              {
+                "id": "fixture-inaccessible@example.test"
+              }
+            ],
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.create",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "POST",
+        "path": "/calendars/{calendarId}/events",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "sendUpdates": {
+            "type": "string",
+            "enum": ["all", "externalOnly", "none"]
+          },
+          "event": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 16384
+              },
+              "location": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2048
+              },
+              "start": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 10,
+                        "format": "date",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      }
+                    },
+                    "required": ["date"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "format": "date-time",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+                      }
+                    },
+                    "required": ["dateTime"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "end": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 10,
+                        "format": "date",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      }
+                    },
+                    "required": ["date"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "format": "date-time",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+                      }
+                    },
+                    "required": ["dateTime"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "attendees": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 254,
+                      "format": "email"
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "optional": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["email"],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 200
+              },
+              "recurrence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "pattern": "^(RRULE|EXRULE|RDATE|EXDATE):"
+                },
+                "minItems": 1,
+                "maxItems": 20
+              },
+              "reminders": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "useDefault": {
+                        "const": true
+                      }
+                    },
+                    "required": ["useDefault"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "useDefault": {
+                        "const": false
+                      },
+                      "overrides": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "method": {
+                              "type": "string",
+                              "enum": ["email", "popup"]
+                            },
+                            "minutes": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 40320
+                            }
+                          },
+                          "required": ["method", "minutes"],
+                          "additionalProperties": false
+                        },
+                        "minItems": 0,
+                        "maxItems": 5
+                      }
+                    },
+                    "required": ["useDefault", "overrides"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "visibility": {
+                "type": "string",
+                "enum": ["default", "public", "private"]
+              },
+              "transparency": {
+                "type": "string",
+                "enum": ["opaque", "transparent"]
+              },
+              "conferenceData": {
+                "type": "object",
+                "properties": {
+                  "createRequest": {
+                    "type": "object",
+                    "properties": {
+                      "conferenceSolutionKey": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "const": "hangoutsMeet"
+                          }
+                        },
+                        "required": ["type"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": ["conferenceSolutionKey"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["createRequest"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["summary", "start", "end"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["calendarId", "sendUpdates", "event"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership of every affected calendar."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for operations whose method accepts the scope and app-created resources are proven."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "create",
+        "existingApprovalPolicy": true,
+        "remoteMutation": true,
+        "freeze": [
+          "owner",
+          "space",
+          "connectionId",
+          "authGeneration",
+          "actionId",
+          "resourceIds",
+          "normalizedArguments"
+        ],
+        "recovery": "Persist the server-derived event ID before I/O. Replays use the SAME ID and exact request. After timeout or 409 duplicate GET that ID on the SAME calendar; compare frozen request. A mismatch is unknown/conflict, never generate another ID.",
+        "noAccountFallback": true
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId"
+        },
+        "query": {
+          "sendUpdates": "input.sendUpdates",
+          "conferenceDataVersion": "1 when event.conferenceData is provided; omit otherwise"
+        },
+        "body": "input.event plus server stable event id; when conferenceData is present also inject its stable createRequest.requestId. No response-only conference fields are accepted."
+      },
+      "runtimeRequirements": [
+        "Backend derives id = \"cgn\" + sha256(ExternalEffect.idempotencyKey UTF-8).hex; it is not an accepted model argument.",
+        "Time shape must match: date/date or dateTime/dateTime, end after start, all-day end exclusive.",
+        "Recurring dateTime events require explicit matching IANA timeZone and valid recurrence parse; DTSTART/DTEND recurrence lines reject.",
+        "At most 200 attendees is a product input bound, not an upstream claim; array is explicit and empty by default.",
+        "sendUpdates is explicit and is included in approval. No-guests personal event may use none; invitations cannot silently rewrite all/externalOnly to none.",
+        "No caller-provided attachments/status/organizer/creator/responseStatus, conference requestId, conference entryPoints, arbitrary meeting URLs or auth fields are accepted. conferenceData is the strict createRequest branch only.",
+        "When event.conferenceData.createRequest is present, send conferenceDataVersion=1 and inject requestId = \"cgnconf\" + sha256(ExternalEffect.idempotencyKey + \":conference\").hex(). It is persisted with the effect before I/O and remains stable across retries of this SAME event creation.",
+        "A different new event/conference intent receives a different effect and requestId. Never reuse conference data or entry points from another event.",
+        "The createRequest input supports Google Meet (hangoutsMeet). The account/calendar must actually support that solution; unsupported or unknown solutions are a capability error, not a reason to fabricate a link or fall back to another account.",
+        "Event creation success and conference creation success are separate. Read conferenceData.createRequest.status.statusCode; only success with returned entryPoints yields a confirmed meeting link.",
+        "After an initial pending result, GET the exact stable eventId with the same account within a bounded recovery budget. Pending remains pending when the budget ends; persist enough effect/result state for explicit later readback via events.get. Do not send another events.insert or regenerate requestId.",
+        "A failed conference does not delete/recreate the successfully created event. Return eventCreated=true and conference.status=failure; a new conference-generation attempt is a new explicit write intent under existing approval, not an automatic retry."
+      ],
+      "fixtures": [
+        {
+          "id": "stable-create-no-guests",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1",
+            "effectIdempotencyKey": "fixture-calendar-create-001",
+            "stableUpstreamEventId": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events",
+                "query": {
+                  "sendUpdates": "none"
+                },
+                "headers": {},
+                "body": {
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "etag": "\"fixture-created-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+              "etag": "\"fixture-created-1\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-user@example.test",
+                "self": true
+              }
+            },
+            "outcome": "succeeded",
+            "notificationDelivery": "not-observed"
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events",
+                "query": {
+                  "sendUpdates": "none"
+                },
+                "headers": {},
+                "body": {
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1"
+                }
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        },
+        {
+          "id": "conference-pending-readback",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  }
+                }
+              }
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1",
+            "effectIdempotencyKey": "fixture-calendar-create-001",
+            "stableUpstreamEventId": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+            "stableConferenceRequestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events",
+                "query": {
+                  "sendUpdates": "none",
+                  "conferenceDataVersion": 1
+                },
+                "headers": {},
+                "body": {
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      }
+                    }
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "etag": "\"fixture-created-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      },
+                      "status": {
+                        "statusCode": "pending"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "purpose": "same-event-conference-status-readback",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "etag": "\"fixture-created-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      },
+                      "status": {
+                        "statusCode": "pending"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+              "etag": "\"fixture-created-1\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-user@example.test",
+                "self": true
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  },
+                  "status": {
+                    "statusCode": "pending"
+                  }
+                }
+              }
+            },
+            "eventCreated": true,
+            "outcome": "partial",
+            "conference": {
+              "status": "pending",
+              "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+              "entryPoints": []
+            },
+            "complete": false,
+            "incompleteReasons": ["CONFERENCE_PENDING"],
+            "notificationDelivery": "not-observed"
+          }
+        },
+        {
+          "id": "conference-success-readback",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  }
+                }
+              }
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1",
+            "effectIdempotencyKey": "fixture-calendar-create-001",
+            "stableUpstreamEventId": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+            "stableConferenceRequestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events",
+                "query": {
+                  "sendUpdates": "none",
+                  "conferenceDataVersion": 1
+                },
+                "headers": {},
+                "body": {
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      }
+                    }
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "etag": "\"fixture-created-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      },
+                      "status": {
+                        "statusCode": "pending"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "purpose": "same-event-conference-status-readback",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "etag": "\"fixture-created-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      },
+                      "status": {
+                        "statusCode": "success"
+                      }
+                    },
+                    "conferenceSolution": {
+                      "key": {
+                        "type": "hangoutsMeet"
+                      },
+                      "name": "Google Meet"
+                    },
+                    "conferenceId": "fixture-meet-id",
+                    "entryPoints": [
+                      {
+                        "entryPointType": "video",
+                        "uri": "https://meet.google.com/fixture-meeting"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+              "etag": "\"fixture-created-1\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-user@example.test",
+                "self": true
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  },
+                  "status": {
+                    "statusCode": "success"
+                  }
+                },
+                "conferenceSolution": {
+                  "key": {
+                    "type": "hangoutsMeet"
+                  },
+                  "name": "Google Meet"
+                },
+                "conferenceId": "fixture-meet-id",
+                "entryPoints": [
+                  {
+                    "entryPointType": "video",
+                    "uri": "https://meet.google.com/fixture-meeting"
+                  }
+                ]
+              }
+            },
+            "eventCreated": true,
+            "outcome": "succeeded",
+            "conference": {
+              "status": "success",
+              "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+              "entryPoints": [
+                {
+                  "entryPointType": "video",
+                  "uri": "https://meet.google.com/fixture-meeting"
+                }
+              ]
+            },
+            "complete": true,
+            "incompleteReasons": [],
+            "notificationDelivery": "not-observed"
+          }
+        },
+        {
+          "id": "conference-failure-readback",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  }
+                }
+              }
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1",
+            "effectIdempotencyKey": "fixture-calendar-create-001",
+            "stableUpstreamEventId": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+            "stableConferenceRequestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events",
+                "query": {
+                  "sendUpdates": "none",
+                  "conferenceDataVersion": 1
+                },
+                "headers": {},
+                "body": {
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      }
+                    }
+                  }
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "etag": "\"fixture-created-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      },
+                      "status": {
+                        "statusCode": "pending"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "purpose": "same-event-conference-status-readback",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+                  "etag": "\"fixture-created-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "conferenceData": {
+                    "createRequest": {
+                      "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                      "conferenceSolutionKey": {
+                        "type": "hangoutsMeet"
+                      },
+                      "status": {
+                        "statusCode": "failure"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "cgnfd06983f99ad43bf351b742380a30179c048aea149303d020f31cbb90b907cb1",
+              "etag": "\"fixture-created-1\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-user@example.test",
+                "self": true
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  },
+                  "status": {
+                    "statusCode": "failure"
+                  }
+                }
+              }
+            },
+            "eventCreated": true,
+            "outcome": "partial",
+            "conference": {
+              "status": "failure",
+              "requestId": "cgnconf862ade7ca99c9c7cb2e2580561fc520c4491be20cf8d250eb8ff9f29135c305b",
+              "entryPoints": []
+            },
+            "complete": false,
+            "incompleteReasons": ["CONFERENCE_FAILED"],
+            "notificationDelivery": "not-observed"
+          }
+        }
+      ],
+      "outputContract": {
+        "representation": "projection-of-authoritative-upstream-resource",
+        "credentialFieldsExcluded": true,
+        "sourceIdentity": "backend binds owner+space+connectionId+authGeneration; these are not business input properties",
+        "requiredResourceFields": ["id"],
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "status",
+          "eventType",
+          "summary",
+          "description",
+          "location",
+          "start",
+          "end",
+          "recurrence",
+          "recurringEventId",
+          "originalStartTime",
+          "organizer",
+          "creator",
+          "attendees",
+          "attendeesOmitted",
+          "iCalUID",
+          "htmlLink",
+          "updated",
+          "visibility",
+          "transparency",
+          "reminders",
+          "conferenceData",
+          "hangoutLink"
+        ],
+        "completeness": [
+          "Sparse cancelled events are valid and must not be dropped.",
+          "Missing private event fields are visibility-limited, not an empty fully-readable event.",
+          "Do not assert complete attendee lists when upstream attendeesOmitted=true."
+        ],
+        "conferenceContract": {
+          "eventAndConferenceSeparate": true,
+          "statusPath": "conferenceData.createRequest.status.statusCode",
+          "states": ["pending", "success", "failure"],
+          "pending": "Event exists; no confirmed meeting link yet.",
+          "success": "Return only upstream entryPoints/solution/ID; never invent a link.",
+          "failure": "Event may exist but conference was not created; no implicit delete/recreate.",
+          "unknownTypes": "Preserve readable returned entry points; do not modify an unfamiliar solution."
+        }
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": [
+        "gcal.events.insert",
+        "gcal.events.resource",
+        "gcal.errors",
+        "gcal.conferences"
+      ],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            },
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            },
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        },
+        {
+          "id": "conference-request-id-is-server-owned",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  },
+                  "requestId": "model-must-not-pick-effect-identity"
+                }
+              }
+            }
+          },
+          "reason": "strict createRequest schema rejects caller-supplied requestId; exact effect determines it"
+        },
+        {
+          "id": "arbitrary-conference-entrypoint",
+          "input": {
+            "calendarId": "primary",
+            "sendUpdates": "none",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "conferenceData": {
+                "createRequest": {
+                  "conferenceSolutionKey": {
+                    "type": "hangoutsMeet"
+                  }
+                },
+                "entryPoints": [
+                  {
+                    "entryPointType": "video",
+                    "uri": "https://unexpected.example.test/meeting"
+                  }
+                ]
+              }
+            }
+          },
+          "reason": "response-only entryPoints are not writable model parameters in this createRequest contract"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.update",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "PATCH",
+        "path": "/calendars/{calendarId}/events/{eventId}",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "targetKind": {
+            "type": "string",
+            "enum": ["single", "series", "instance"]
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^\"[^\"\\r\\n]+\"$"
+          },
+          "sendUpdates": {
+            "type": "string",
+            "enum": ["all", "externalOnly", "none"]
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 16384
+              },
+              "location": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2048
+              },
+              "start": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 10,
+                        "format": "date",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      }
+                    },
+                    "required": ["date"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "format": "date-time",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+                      }
+                    },
+                    "required": ["dateTime"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "end": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 10,
+                        "format": "date",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      }
+                    },
+                    "required": ["date"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "format": "date-time",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+                      }
+                    },
+                    "required": ["dateTime"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "attendees": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 254,
+                      "format": "email"
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "optional": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["email"],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 200
+              },
+              "recurrence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "pattern": "^(RRULE|EXRULE|RDATE|EXDATE):"
+                },
+                "minItems": 0,
+                "maxItems": 20
+              },
+              "reminders": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "useDefault": {
+                        "const": true
+                      }
+                    },
+                    "required": ["useDefault"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "useDefault": {
+                        "const": false
+                      },
+                      "overrides": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "method": {
+                              "type": "string",
+                              "enum": ["email", "popup"]
+                            },
+                            "minutes": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 40320
+                            }
+                          },
+                          "required": ["method", "minutes"],
+                          "additionalProperties": false
+                        },
+                        "minItems": 0,
+                        "maxItems": 5
+                      }
+                    },
+                    "required": ["useDefault", "overrides"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "visibility": {
+                "type": "string",
+                "enum": ["default", "public", "private"]
+              },
+              "transparency": {
+                "type": "string",
+                "enum": ["opaque", "transparent"]
+              }
+            },
+            "required": [],
+            "additionalProperties": false,
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "calendarId",
+          "eventId",
+          "targetKind",
+          "expectedEtag",
+          "sendUpdates",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership of every affected calendar."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for operations whose method accepts the scope and app-created resources are proven."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "update",
+        "existingApprovalPolicy": true,
+        "remoteMutation": true,
+        "freeze": [
+          "owner",
+          "space",
+          "connectionId",
+          "authGeneration",
+          "actionId",
+          "resourceIds",
+          "normalizedArguments"
+        ],
+        "recovery": "GET exact event to verify target kind and expectedEtag; PATCH with If-Match. A lost response is checked by exact ID and approved changed fields; 412 does not auto-rebase. No update-to-create fallback.",
+        "noAccountFallback": true
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId",
+          "eventId": "input.eventId"
+        },
+        "query": {
+          "sendUpdates": "input.sendUpdates"
+        },
+        "headers": {
+          "If-Match": "input.expectedEtag"
+        },
+        "body": "input.changes only",
+        "preflightOnly": ["targetKind"]
+      },
+      "runtimeRequirements": [
+        "Before PATCH GET the exact event and compare expectedEtag plus targetKind: single has no recurrence/recurringEventId; series has recurrence; instance has recurringEventId/originalStartTime.",
+        "PATCH only changes fields. Supplied attendee/recurrence arrays replace the complete existing arrays; approval must show that replacement.",
+        "start and end must be changed together, same shape, with end after start. Reject unknown event fields instead of forwarding them.",
+        "recurrence edits only for targetKind=series; changes must declare the series effect explicitly.",
+        "Do not modify organizer or another attendee response through changes; use dedicated respond.",
+        "On 412 return version conflict and latest identity, do not silently overwrite."
+      ],
+      "fixtures": [
+        {
+          "id": "conditional-summary-edit",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "changes": {
+              "summary": "Fixture planning updated"
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  }
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "PATCH",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {
+                  "sendUpdates": "none"
+                },
+                "headers": {
+                  "If-Match": "\"fixture-event-1\""
+                },
+                "body": {
+                  "summary": "Fixture planning updated"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-2\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning updated",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "fixtureevent001",
+              "etag": "\"fixture-event-2\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning updated",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-user@example.test",
+                "self": true
+              }
+            },
+            "outcome": "succeeded"
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "changes": {
+              "summary": "Fixture planning updated"
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "representation": "projection-of-authoritative-upstream-resource",
+        "credentialFieldsExcluded": true,
+        "sourceIdentity": "backend binds owner+space+connectionId+authGeneration; these are not business input properties",
+        "requiredResourceFields": ["id"],
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "status",
+          "eventType",
+          "summary",
+          "description",
+          "location",
+          "start",
+          "end",
+          "recurrence",
+          "recurringEventId",
+          "originalStartTime",
+          "organizer",
+          "creator",
+          "attendees",
+          "attendeesOmitted",
+          "iCalUID",
+          "htmlLink",
+          "updated",
+          "visibility",
+          "transparency",
+          "reminders",
+          "conferenceData",
+          "hangoutLink"
+        ],
+        "completeness": [
+          "Sparse cancelled events are valid and must not be dropped.",
+          "Missing private event fields are visibility-limited, not an empty fully-readable event.",
+          "Do not assert complete attendee lists when upstream attendeesOmitted=true."
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": [
+          {
+            "http": 412,
+            "kind": "version_conflict",
+            "mutationSucceeded": false
+          }
+        ]
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.events.patch", "gcal.etags", "gcal.events.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "changes": {
+              "summary": "Fixture planning updated"
+            },
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "changes": {
+              "summary": "Fixture planning updated"
+            },
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.delete",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "DELETE",
+        "path": "/calendars/{calendarId}/events/{eventId}",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "targetKind": {
+            "type": "string",
+            "enum": ["single", "series", "instance"]
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^\"[^\"\\r\\n]+\"$"
+          },
+          "sendUpdates": {
+            "type": "string",
+            "enum": ["all", "externalOnly", "none"]
+          },
+          "expectedSemantics": {
+            "type": "string",
+            "enum": ["cancel_for_everyone", "remove_calendar_copy"],
+            "description": "Frozen approval intent. Authoritative organizer.self must be true for cancel_for_everyone and false for remove_calendar_copy; unknown identity fails closed."
+          }
+        },
+        "required": [
+          "calendarId",
+          "eventId",
+          "targetKind",
+          "expectedEtag",
+          "sendUpdates",
+          "expectedSemantics"
+        ],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership of every affected calendar."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for operations whose method accepts the scope and app-created resources are proven."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "delete",
+        "existingApprovalPolicy": true,
+        "remoteMutation": true,
+        "freeze": [
+          "owner",
+          "space",
+          "connectionId",
+          "authGeneration",
+          "actionId",
+          "resourceIds",
+          "normalizedArguments",
+          "expectedSemantics"
+        ],
+        "recovery": "Use exact eventId and If-Match. After response loss, GET the same target; report observed absent/cancelled separately from notification delivery. No new resource or alternate calendar.",
+        "noAccountFallback": true
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId",
+          "eventId": "input.eventId"
+        },
+        "query": {
+          "sendUpdates": "input.sendUpdates"
+        },
+        "headers": {
+          "If-Match": "input.expectedEtag"
+        },
+        "body": null,
+        "preflightOnly": ["targetKind"]
+      },
+      "runtimeRequirements": [
+        "Preflight GET and exact targetKind/etag validation as for update.",
+        "Deleting a recurring parent affects its series; deleting an instance affects that instance. Do not interpret a series ID as an instance.",
+        "sendUpdates is explicit and frozen in the existing approval.",
+        "Use the authoritative organizer and calendar role to distinguish cancelling an organizer event from removing an attendee calendar copy. A removal from a non-organizer calendar must not be reported as cancellation for every guest. Global-cancellation intent without organizer authority is rejected; never silently downgrade it to removing a local copy.",
+        "expectedSemantics is required and frozen by the existing approval. Authoritative organizer.self=true only permits cancel_for_everyone; organizer.self=false only permits remove_calendar_copy. Missing/unknown organizer.self fails closed. Never downgrade cancellation to copy removal or turn copy removal into cancellation."
+      ],
+      "fixtures": [
+        {
+          "id": "conditional-delete-empty-response",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "expectedSemantics": "cancel_for_everyone"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  }
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "DELETE",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {
+                  "sendUpdates": "none"
+                },
+                "headers": {
+                  "If-Match": "\"fixture-event-1\""
+                }
+              },
+              "response": {
+                "status": 204,
+                "body": null
+              }
+            }
+          ],
+          "expectedOutput": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "outcome": "deleted",
+            "notificationDelivery": "not-observed",
+            "semantics": "cancel_for_everyone"
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "expectedSemantics": "cancel_for_everyone"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        },
+        {
+          "id": "explicit-attendee-copy-removal",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "expectedSemantics": "remove_calendar_copy"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-other-organizer@example.test",
+                    "self": false
+                  }
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "DELETE",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {
+                  "sendUpdates": "none"
+                },
+                "headers": {
+                  "If-Match": "\"fixture-event-1\""
+                }
+              },
+              "response": {
+                "status": 204,
+                "body": null
+              }
+            }
+          ],
+          "expectedOutput": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "outcome": "deleted",
+            "notificationDelivery": "not-observed",
+            "semantics": "remove_calendar_copy"
+          }
+        },
+        {
+          "id": "non-organizer-cannot-cancel-everyone",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "expectedSemantics": "cancel_for_everyone"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": false
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "invalid_input",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        },
+        {
+          "id": "organizer-cannot-silently-remove-only-copy",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "expectedSemantics": "remove_calendar_copy"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "invalid_input",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        },
+        {
+          "id": "unknown-organizer-fails-closed",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "expectedSemantics": "cancel_for_everyone"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "invalid_input",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "fields": ["calendarId", "eventId", "outcome", "notificationDelivery", "semantics"],
+        "success": "Empty upstream body is expected; do not JSON.parse it.",
+        "absenceAfterUncertainty": "404 may mean inaccessible and is not proof of this effect sending a cancellation. Preserve uncertainty when exact outcome cannot be established.",
+        "organizerSemantics": "Report whether the selected calendar operation was organizer cancellation or local copy removal when that fact can be established; do not claim cancellation for all guests from an attendee-copy deletion."
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.events.delete", "gcal.etags", "gcal.events.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none",
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        },
+        {
+          "id": "deletion-semantic-intent-required",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "sendUpdates": "none"
+          },
+          "reason": "Existing approval must explicitly freeze global cancellation versus selected-calendar copy removal."
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.instances",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "GET",
+        "path": "/calendars/{calendarId}/events/{eventId}/instances",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "timeMin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "timeMax": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "timeZone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+          },
+          "showDeleted": {
+            "type": "boolean",
+            "default": false
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2500,
+            "default": 100
+          },
+          "pageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        },
+        "required": ["calendarId", "eventId", "timeMin", "timeMax"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events.readonly"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events.readonly",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned.readonly",
+            "condition": "Only after backend verifies this calendar is owned by the authenticated subject."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for calendars proven created by this app."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": true,
+      "effect": {
+        "kind": "read",
+        "existingApprovalPolicy": true,
+        "remoteMutation": false
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId",
+          "eventId": "input.eventId"
+        },
+        "query": {
+          "timeMin": "input.timeMin when present/materialized",
+          "timeMax": "input.timeMax when present/materialized",
+          "timeZone": "input.timeZone when present/materialized",
+          "showDeleted": "input.showDeleted when present/materialized",
+          "maxResults": "input.maxResults when present/materialized",
+          "pageToken": "input.pageToken when present/materialized"
+        },
+        "body": null
+      },
+      "runtimeRequirements": [
+        "timeMin < timeMax; explicit window required for this action.",
+        "Preserve recurringEventId, originalStartTime, cancellations and sparse cancelled instances."
+      ],
+      "fixtures": [
+        {
+          "id": "recurring-instances-page",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureseries001",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-27T00:00:00Z",
+            "showDeleted": true,
+            "maxResults": 100
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureseries001/instances",
+                "query": {
+                  "timeMin": "2026-10-20T00:00:00Z",
+                  "timeMax": "2026-10-27T00:00:00Z",
+                  "showDeleted": true,
+                  "maxResults": 100
+                },
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "kind": "calendar#events",
+                  "items": [
+                    {
+                      "id": "fixtureinstance001",
+                      "etag": "\"fixture-event-1\"",
+                      "status": "confirmed",
+                      "eventType": "default",
+                      "summary": "Fixture planning",
+                      "start": {
+                        "dateTime": "2026-10-20T09:00:00+08:00",
+                        "timeZone": "Asia/Taipei"
+                      },
+                      "end": {
+                        "dateTime": "2026-10-20T09:30:00+08:00",
+                        "timeZone": "Asia/Taipei"
+                      },
+                      "organizer": {
+                        "email": "fixture-user@example.test",
+                        "self": true
+                      },
+                      "recurringEventId": "fixtureseries001",
+                      "originalStartTime": {
+                        "dateTime": "2026-10-20T09:00:00+08:00",
+                        "timeZone": "Asia/Taipei"
+                      }
+                    },
+                    {
+                      "id": "fixturecancelled001",
+                      "status": "cancelled",
+                      "recurringEventId": "fixtureseries001",
+                      "originalStartTime": {
+                        "date": "2026-10-21"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "items": [
+              {
+                "id": "fixtureinstance001",
+                "etag": "\"fixture-event-1\"",
+                "status": "confirmed",
+                "eventType": "default",
+                "summary": "Fixture planning",
+                "start": {
+                  "dateTime": "2026-10-20T09:00:00+08:00",
+                  "timeZone": "Asia/Taipei"
+                },
+                "end": {
+                  "dateTime": "2026-10-20T09:30:00+08:00",
+                  "timeZone": "Asia/Taipei"
+                },
+                "organizer": {
+                  "email": "fixture-user@example.test",
+                  "self": true
+                },
+                "recurringEventId": "fixtureseries001",
+                "originalStartTime": {
+                  "dateTime": "2026-10-20T09:00:00+08:00",
+                  "timeZone": "Asia/Taipei"
+                }
+              },
+              {
+                "id": "fixturecancelled001",
+                "status": "cancelled",
+                "recurringEventId": "fixtureseries001",
+                "originalStartTime": {
+                  "date": "2026-10-21"
+                }
+              }
+            ],
+            "nextPageToken": null,
+            "hasMore": false,
+            "allPagesRead": true
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureseries001",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-27T00:00:00Z",
+            "showDeleted": true
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureseries001/instances",
+                "query": {
+                  "timeMin": "2026-10-20T00:00:00Z",
+                  "timeMax": "2026-10-27T00:00:00Z",
+                  "showDeleted": true,
+                  "maxResults": 100
+                },
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "representation": "projection-of-authoritative-upstream-resource",
+        "credentialFieldsExcluded": true,
+        "sourceIdentity": "backend binds owner+space+connectionId+authGeneration; these are not business input properties",
+        "requiredResourceFields": ["id"],
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "status",
+          "eventType",
+          "summary",
+          "description",
+          "location",
+          "start",
+          "end",
+          "recurrence",
+          "recurringEventId",
+          "originalStartTime",
+          "organizer",
+          "creator",
+          "attendees",
+          "attendeesOmitted",
+          "iCalUID",
+          "htmlLink",
+          "updated",
+          "visibility",
+          "transparency",
+          "reminders",
+          "conferenceData",
+          "hangoutLink"
+        ],
+        "completeness": [
+          "Sparse cancelled events are valid and must not be dropped.",
+          "Missing private event fields are visibility-limited, not an empty fully-readable event.",
+          "Do not assert complete attendee lists when upstream attendeesOmitted=true."
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "opaque-page-token",
+        "input": "pageToken",
+        "upstreamNext": "nextPageToken",
+        "outputNext": "nextPageToken",
+        "scope": "Identical accepted query and exact connection/auth generation; never move a cursor to another account.",
+        "completeMeaning": "hasMore is Boolean(nextPageToken); a page with no next token is the terminal page. allPagesRead may be true only when the adapter read from the first page through the terminal page in this same frozen query.",
+        "limits": "Return nextPageToken when bounded reading stops. Never call a truncated prefix complete."
+      },
+      "sourceIds": ["gcal.events.instances", "gcal.events.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureseries001",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-27T00:00:00Z",
+            "showDeleted": true,
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureseries001",
+            "timeMin": "2026-10-20T00:00:00Z",
+            "timeMax": "2026-10-27T00:00:00Z",
+            "showDeleted": true,
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.respond",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "PATCH",
+        "path": "/calendars/{calendarId}/events/{eventId}",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "const": "primary"
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "targetKind": {
+            "type": "string",
+            "enum": ["single", "series", "instance"]
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^\"[^\"\\r\\n]+\"$"
+          },
+          "responseStatus": {
+            "type": "string",
+            "enum": ["accepted", "declined", "tentative", "needsAction"]
+          },
+          "comment": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 1024
+          },
+          "sendUpdates": {
+            "type": "string",
+            "enum": ["all", "externalOnly", "none"]
+          }
+        },
+        "required": [
+          "calendarId",
+          "eventId",
+          "targetKind",
+          "expectedEtag",
+          "responseStatus",
+          "sendUpdates"
+        ],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership of every affected calendar."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for operations whose method accepts the scope and app-created resources are proven."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "respond",
+        "existingApprovalPolicy": true,
+        "remoteMutation": true,
+        "freeze": [
+          "owner",
+          "space",
+          "connectionId",
+          "authGeneration",
+          "actionId",
+          "resourceIds",
+          "normalizedArguments"
+        ],
+        "recovery": "Preflight exact primary-calendar event, then If-Match participant-only PATCH. On uncertainty GET same event and inspect only the authenticated primary-calendar participant; never respond for another attendee.",
+        "noAccountFallback": true
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "literal primary",
+          "eventId": "input.eventId"
+        },
+        "query": {
+          "sendUpdates": "input.sendUpdates"
+        },
+        "headers": {
+          "If-Match": "input.expectedEtag"
+        },
+        "body": {
+          "attendees": [
+            {
+              "email": "trusted primary-calendar self participant returned by GET",
+              "responseStatus": "input.responseStatus",
+              "comment": "input.comment when present"
+            }
+          ],
+          "attendeesOmitted": true
+        },
+        "preflightOnly": ["targetKind"]
+      },
+      "runtimeRequirements": [
+        "Product guard: calendarId is primary only. On a shared calendar attendees.self refers to that calendar, not necessarily the signed-in natural person.",
+        "Preflight GET /calendars/primary/events/{eventId}, compare expectedEtag and targetKind, require exactly one self attendee with a platform-returned email.",
+        "Use that trusted email in the participant-only payload and attendeesOmitted=true. Do not accept email/attendeeId/organizer/token in input.",
+        "Reject when own participant is absent/ambiguous; no inferred email aliases or proxy RSVP.",
+        "Postflight response may not propagate to all guests for large invitations; report actual readback, not guaranteed propagation."
+      ],
+      "fixtures": [
+        {
+          "id": "own-primary-calendar-rsvp",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "responseStatus": "accepted",
+            "sendUpdates": "all"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "attendees": [
+                    {
+                      "email": "fixture-user@example.test",
+                      "self": true,
+                      "responseStatus": "needsAction"
+                    },
+                    {
+                      "email": "fixture-other@example.test",
+                      "self": false,
+                      "responseStatus": "accepted"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "PATCH",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {
+                  "sendUpdates": "all"
+                },
+                "headers": {
+                  "If-Match": "\"fixture-event-1\""
+                },
+                "body": {
+                  "attendees": [
+                    {
+                      "email": "fixture-user@example.test",
+                      "responseStatus": "accepted"
+                    }
+                  ],
+                  "attendeesOmitted": true
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-rsvp-2\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "attendees": [
+                    {
+                      "email": "fixture-user@example.test",
+                      "self": true,
+                      "responseStatus": "accepted"
+                    }
+                  ],
+                  "attendeesOmitted": true
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "eventId": "fixtureevent001",
+            "calendarId": "primary",
+            "responseStatus": "accepted",
+            "outcome": "succeeded",
+            "notificationDelivery": "not-observed"
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "responseStatus": "accepted",
+            "sendUpdates": "all"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "fields": ["eventId", "calendarId", "responseStatus", "outcome", "notificationDelivery"],
+        "readback": "Return the observed own response only; do not claim all guests were updated or notification delivered."
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.events.patch", "gcal.events.resource", "gcal.etags"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "responseStatus": "accepted",
+            "sendUpdates": "all",
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "responseStatus": "accepted",
+            "sendUpdates": "all",
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.move",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "POST",
+        "path": "/calendars/{calendarId}/events/{eventId}/move",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "targetKind": {
+            "type": "string",
+            "enum": ["single", "series", "instance"]
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^\"[^\"\\r\\n]+\"$"
+          },
+          "destination": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "sendUpdates": {
+            "type": "string",
+            "enum": ["all", "externalOnly", "none"]
+          }
+        },
+        "required": [
+          "calendarId",
+          "eventId",
+          "targetKind",
+          "expectedEtag",
+          "destination",
+          "sendUpdates"
+        ],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only if ownership of both calendars is proven."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "move",
+        "existingApprovalPolicy": true,
+        "remoteMutation": true,
+        "freeze": [
+          "owner",
+          "space",
+          "connectionId",
+          "authGeneration",
+          "actionId",
+          "resourceIds",
+          "normalizedArguments"
+        ],
+        "recovery": "Persist exact source/destination/event ID and approved prior fingerprint. A timeout requires reading both locations and matching the known event/organizer; otherwise return unknown. Never move a new copy or retry against a sibling account.",
+        "noAccountFallback": true
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId",
+          "eventId": "input.eventId"
+        },
+        "query": {
+          "destination": "input.destination",
+          "sendUpdates": "input.sendUpdates"
+        },
+        "headers": {},
+        "body": null,
+        "preflightOnly": ["targetKind", "expectedEtag"]
+      },
+      "runtimeRequirements": [
+        "Verify source/destination IDs are distinct and refer to the explicit authorized operation. Preflight GET source and compare exact targetKind and expectedEtag. The move endpoint enforces permissions to both calendars at execution; do not assume read access implies write access.",
+        "Only eventType=default is supported; reject birthday/focusTime/fromGmail/outOfOffice/workingLocation rather than stripping properties.",
+        "expectedEtag is a product preflight comparison only. This contract DOES NOT invent If-Match support for the move POST; a race after preflight remains and must be reported honestly.",
+        "No request body. Organizer changes, which must be in approval/result.",
+        "A move of a recurrence series/instance must match explicit targetKind; platform rejection is a supported result, never rewrite the target."
+      ],
+      "fixtures": [
+        {
+          "id": "move-default-event",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "destination": "fixture-destination@example.test",
+            "sendUpdates": "none"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "purpose": "mandatory-authoritative-preflight",
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-event-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  }
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events/fixtureevent001/move",
+                "query": {
+                  "destination": "fixture-destination@example.test",
+                  "sendUpdates": "none"
+                },
+                "headers": {}
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureevent001",
+                  "etag": "\"fixture-moved-2\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-destination@example.test",
+                    "self": true
+                  }
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "fixtureevent001",
+              "etag": "\"fixture-moved-2\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-destination@example.test",
+                "self": true
+              }
+            },
+            "sourceCalendarId": "primary",
+            "destinationCalendarId": "fixture-destination@example.test",
+            "outcome": "succeeded",
+            "atomicVersionPrecondition": false
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "destination": "fixture-destination@example.test",
+            "sendUpdates": "none"
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "GET",
+                "path": "/calendars/primary/events/fixtureevent001",
+                "query": {},
+                "headers": {}
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "representation": "projection-of-authoritative-upstream-resource",
+        "credentialFieldsExcluded": true,
+        "sourceIdentity": "backend binds owner+space+connectionId+authGeneration; these are not business input properties",
+        "requiredResourceFields": ["id"],
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "status",
+          "eventType",
+          "summary",
+          "description",
+          "location",
+          "start",
+          "end",
+          "recurrence",
+          "recurringEventId",
+          "originalStartTime",
+          "organizer",
+          "creator",
+          "attendees",
+          "attendeesOmitted",
+          "iCalUID",
+          "htmlLink",
+          "updated",
+          "visibility",
+          "transparency",
+          "reminders",
+          "conferenceData",
+          "hangoutLink"
+        ],
+        "completeness": [
+          "Sparse cancelled events are valid and must not be dropped.",
+          "Missing private event fields are visibility-limited, not an empty fully-readable event.",
+          "Do not assert complete attendee lists when upstream attendeesOmitted=true."
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.events.move", "gcal.events.resource"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "destination": "fixture-destination@example.test",
+            "sendUpdates": "none",
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "eventId": "fixtureevent001",
+            "targetKind": "single",
+            "expectedEtag": "\"fixture-event-1\"",
+            "destination": "fixture-destination@example.test",
+            "sendUpdates": "none",
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    },
+    {
+      "id": "calendar.events.import",
+      "upstream": {
+        "baseUrl": "https://www.googleapis.com/calendar/v3",
+        "method": "POST",
+        "path": "/calendars/{calendarId}/events/import",
+        "authentication": "Bearer token injected only by backend from the exact bound grant"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "iCalUID": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "event": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 16384
+              },
+              "location": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2048
+              },
+              "start": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 10,
+                        "format": "date",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      }
+                    },
+                    "required": ["date"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "format": "date-time",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+                      }
+                    },
+                    "required": ["dateTime"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "end": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 10,
+                        "format": "date",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      }
+                    },
+                    "required": ["date"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "format": "date-time",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "IANA timezone validated by the backend timezone library, including UTC; never infer an unqualified local time."
+                      }
+                    },
+                    "required": ["dateTime"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "recurrence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "pattern": "^(RRULE|EXRULE|RDATE|EXDATE):"
+                },
+                "minItems": 1,
+                "maxItems": 20
+              },
+              "organizer": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 254,
+                    "format": "email"
+                  },
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": ["email"],
+                "additionalProperties": false
+              },
+              "attendees": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 254,
+                      "format": "email"
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "optional": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["email"],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 200
+              }
+            },
+            "required": ["summary", "start", "end"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["calendarId", "iCalUID", "event"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/calendar.events"],
+        "acceptedAnyOfScopes": [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar"
+        ],
+        "actualGrantedScopesRequired": true,
+        "resourceAccessRequired": true,
+        "conditionalScopeGuards": [
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+            "condition": "Only after backend verifies ownership of every affected calendar."
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/calendar.app.created",
+            "condition": "Only for operations whose method accepts the scope and app-created resources are proven."
+          }
+        ],
+        "credentialSource": "server-side exact native grant only; authentication parameters are rejected from business input"
+      },
+      "readOnly": false,
+      "effect": {
+        "kind": "import",
+        "existingApprovalPolicy": true,
+        "remoteMutation": true,
+        "freeze": [
+          "owner",
+          "space",
+          "connectionId",
+          "authGeneration",
+          "actionId",
+          "resourceIds",
+          "normalizedArguments"
+        ],
+        "recovery": "Persist approved calendarId/iCalUID/body and returned eventId before follow-up. After response loss use events.list?iCalUID=... on the same calendar and compare all candidates against the frozen imported request. Existing identical-looking candidates do not prove causation; if not provable return unknown. Do not invent Idempotency-Key support or retry import blindly.",
+        "noAccountFallback": true
+      },
+      "requestMapping": {
+        "path": {
+          "calendarId": "input.calendarId"
+        },
+        "query": {},
+        "body": "input.event plus iCalUID=input.iCalUID and eventType=default; no id and no sendUpdates"
+      },
+      "runtimeRequirements": [
+        "Validate date/date or dateTime/dateTime and exclusive end; recurrence timezone as for create.",
+        "iCalUID is not eventId. Do not accept raw ICS and claim full synchronization.",
+        "Force eventType=default; only the explicitly declared writable event fields are copied.",
+        "Do not add a sendUpdates query parameter: the import method does not declare it.",
+        "This operation creates a private copy, not an invitation workflow; existing organizer/attendees are imported data."
+      ],
+      "fixtures": [
+        {
+          "id": "private-copy-import",
+          "input": {
+            "calendarId": "primary",
+            "iCalUID": "fixture-import-001@example.test",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events/import",
+                "query": {},
+                "headers": {},
+                "body": {
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "iCalUID": "fixture-import-001@example.test",
+                  "eventType": "default"
+                }
+              },
+              "response": {
+                "status": 200,
+                "body": {
+                  "id": "fixtureimported001",
+                  "etag": "\"fixture-import-1\"",
+                  "status": "confirmed",
+                  "eventType": "default",
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "organizer": {
+                    "email": "fixture-user@example.test",
+                    "self": true
+                  },
+                  "iCalUID": "fixture-import-001@example.test",
+                  "privateCopy": true
+                }
+              }
+            }
+          ],
+          "expectedOutput": {
+            "event": {
+              "id": "fixtureimported001",
+              "etag": "\"fixture-import-1\"",
+              "status": "confirmed",
+              "eventType": "default",
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "organizer": {
+                "email": "fixture-user@example.test",
+                "self": true
+              },
+              "iCalUID": "fixture-import-001@example.test",
+              "privateCopy": true
+            },
+            "outcome": "succeeded",
+            "semantics": "private-copy-import",
+            "notificationDelivery": "not-requested-by-this-contract"
+          }
+        },
+        {
+          "id": "insufficient-scope-no-refresh-loop",
+          "input": {
+            "calendarId": "primary",
+            "iCalUID": "fixture-import-001@example.test",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            }
+          },
+          "context": {
+            "synthetic": true,
+            "userId": "fixture-user",
+            "spaceId": "fixture-space",
+            "connectionId": "fixture-native-calendar",
+            "subject": "fixture-google-sub",
+            "authGeneration": "fixture-auth-1"
+          },
+          "upstream": [
+            {
+              "request": {
+                "method": "POST",
+                "path": "/calendars/primary/events/import",
+                "query": {},
+                "headers": {},
+                "body": {
+                  "summary": "Fixture planning",
+                  "start": {
+                    "dateTime": "2026-10-20T09:00:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "end": {
+                    "dateTime": "2026-10-20T09:30:00+08:00",
+                    "timeZone": "Asia/Taipei"
+                  },
+                  "iCalUID": "fixture-import-001@example.test",
+                  "eventType": "default"
+                }
+              },
+              "response": {
+                "status": 403,
+                "body": {
+                  "error": {
+                    "code": 403,
+                    "message": "Fixture insufficient permission",
+                    "errors": [
+                      {
+                        "domain": "global",
+                        "reason": "insufficientPermissions",
+                        "message": "Fixture insufficient permission"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "expectedError": {
+            "kind": "insufficient_scope",
+            "retryable": false,
+            "connectionFallback": false
+          }
+        }
+      ],
+      "outputContract": {
+        "representation": "projection-of-authoritative-upstream-resource",
+        "credentialFieldsExcluded": true,
+        "sourceIdentity": "backend binds owner+space+connectionId+authGeneration; these are not business input properties",
+        "requiredResourceFields": ["id"],
+        "mustPreserveWhenPresent": [
+          "id",
+          "etag",
+          "status",
+          "eventType",
+          "summary",
+          "description",
+          "location",
+          "start",
+          "end",
+          "recurrence",
+          "recurringEventId",
+          "originalStartTime",
+          "organizer",
+          "creator",
+          "attendees",
+          "attendeesOmitted",
+          "iCalUID",
+          "htmlLink",
+          "updated",
+          "visibility",
+          "transparency",
+          "reminders",
+          "conferenceData",
+          "hangoutLink"
+        ],
+        "completeness": [
+          "Sparse cancelled events are valid and must not be dropped.",
+          "Missing private event fields are visibility-limited, not an empty fully-readable event.",
+          "Do not assert complete attendee lists when upstream attendeesOmitted=true."
+        ]
+      },
+      "errorContract": {
+        "sharedContractRef": "#/sharedContracts/errors",
+        "specific": []
+      },
+      "pagination": {
+        "mode": "none",
+        "completeMeaning": "One named resource or one mutation result, not all account resources."
+      },
+      "sourceIds": ["gcal.events.import", "gcal.events.resource", "gcal.events.list"],
+      "rejectedInputFixtures": [
+        {
+          "id": "auth-field-in-business-input",
+          "input": {
+            "calendarId": "primary",
+            "iCalUID": "fixture-import-001@example.test",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            },
+            "access_token": "fixture-never-use-token"
+          },
+          "reason": "additionalProperties=false; credentials belong to injected server context"
+        },
+        {
+          "id": "arbitrary-upstream-url",
+          "input": {
+            "calendarId": "primary",
+            "iCalUID": "fixture-import-001@example.test",
+            "event": {
+              "summary": "Fixture planning",
+              "start": {
+                "dateTime": "2026-10-20T09:00:00+08:00",
+                "timeZone": "Asia/Taipei"
+              },
+              "end": {
+                "dateTime": "2026-10-20T09:30:00+08:00",
+                "timeZone": "Asia/Taipei"
+              }
+            },
+            "url": "https://unexpected.example.test/"
+          },
+          "reason": "additionalProperties=false; upstream base/path is fixed"
+        }
+      ]
+    }
+  ]
+}

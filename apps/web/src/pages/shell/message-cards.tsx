@@ -1,16 +1,23 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { MessageBlock } from "@rakazo/contracts";
+import { NativeAppIdSchema } from "@rakazo/contracts";
 import { abortableDelay } from "@rakazo/core";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { BuiCard, SuccessPop } from "../../components/ai/primitives";
+import { lazyOverlay } from "../../components/ErrorBoundary";
 import type { ArtifactTarget } from "../../lib/artifact-open";
 import { chartViewport } from "../../lib/chart-viewport";
 import { connectMcpOauth } from "../../lib/mcp-connect";
 import { rpc } from "../../lib/rpc";
 import { useArtifactImage } from "../../lib/use-artifact-image";
 import { errorText } from "../../lib/user-error";
+import { McpServersOverlay } from "../McpServersOverlay";
+
+const NativeAppsOverlay = lazyOverlay(() =>
+  import("../PluginsOverlay").then((module) => module.PluginsOverlay),
+);
 
 export function ChoiceCard({
   botId,
@@ -145,12 +152,17 @@ function OnboardingFocusOptionLabel({
 export function AppConnectCard({
   botId,
   block,
+  onConnectionsChanged,
 }: {
   botId: string;
   block: Extract<MessageBlock, { kind: "app_connect" }>;
+  onConnectionsChanged: () => void;
 }) {
   const { t } = useLingui();
   const [busy, setBusy] = useState(false);
+  const [nativeAppsOpen, setNativeAppsOpen] = useState(false);
+  const nativeApp =
+    block.connectorId === "native" ? NativeAppIdSchema.safeParse(block.provider) : null;
   const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
   const [error, setError] = useState<string | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
@@ -158,6 +170,15 @@ export function AppConnectCard({
   useEffect(() => () => connectionAttempt.current?.abort(), []);
 
   async function authorize() {
+    if (block.connectorId === "native") {
+      if (!nativeApp?.success) {
+        setError(t`This application is not available for direct connection.`);
+        return;
+      }
+      setError(null);
+      setNativeAppsOpen(true);
+      return;
+    }
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;
@@ -180,6 +201,7 @@ export function AppConnectCard({
         if (row?.status === "connected") {
           if (controller.signal.aborted) return;
           setLocalStatus("connected");
+          onConnectionsChanged();
           await rpc.onboarding
             .appConnected({ botId, provider: block.provider, connectorId: block.connectorId })
             .catch(() => undefined);
@@ -232,11 +254,25 @@ export function AppConnectCard({
             disabled={busy}
             onClick={() => void authorize()}
           >
-            {busy ? t`Waiting…` : t`Authorize`}
+            {busy ? t`Waiting…` : block.connectorId === "native" ? t`Connect` : t`Authorize`}
           </Button>
         )}
       </div>
       {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+      {nativeAppsOpen && nativeApp?.success ? (
+        <Suspense fallback={null}>
+          <NativeAppsOverlay
+            activeBotId={botId}
+            initialNativeApp={nativeApp.data}
+            onClose={() => setNativeAppsOpen(false)}
+            onConnectionsChanged={onConnectionsChanged}
+            onConnected={(item) => {
+              if (item.connectorId === "native" && item.slug === nativeApp.data)
+                setLocalStatus("connected");
+            }}
+          />
+        </Suspense>
+      ) : null}
     </BuiCard>
   );
 }
@@ -345,6 +381,7 @@ export function McpApprovalCard({
   const [localStatus, setLocalStatus] = useState<McpApprovalState>("pending");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // A removal repaints the block to pending. Drop an in-session connected
   // override so the card does not keep the old decision.
   useEffect(() => {
@@ -366,14 +403,27 @@ export function McpApprovalCard({
     setLocalStatus("connecting");
     setError(null);
     try {
+      if (block.serverRevision === undefined) {
+        setLocalStatus("pending");
+        setSettingsOpen(true);
+        return;
+      }
       if (needsOAuth) {
         const result = await connectMcpOauth(serverId);
         if (result === "cancelled") {
           setLocalStatus("pending");
           return;
         }
+        setLocalStatus("pending");
+        setSettingsOpen(true);
+        return;
       }
-      await rpc.mcp.assignments.approve({ botId, serverId, threadId });
+      await rpc.mcp.assignments.approve({
+        botId,
+        serverId,
+        threadId,
+        revision: block.serverRevision,
+      });
       setLocalStatus("connected");
     } catch (err) {
       setError(errorText(err, t`Could not approve this server`));
@@ -417,7 +467,7 @@ export function McpApprovalCard({
           <p className="mt-2 text-[13px] leading-[1.5] text-foreground/75">
             {needsOAuth
               ? t`Authorize this server so agents can use its tools. A popup opens.`
-              : t`Approve this server to let your agent use its tools.`}
+              : t`Share this server's tools with all bots in this space.`}
           </p>
           {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
           <div className="mt-3 flex gap-2">
@@ -426,7 +476,13 @@ export function McpApprovalCard({
               disabled={state !== "pending" || busy}
               onClick={() => void authorize()}
             >
-              {state === "connecting" ? t`Connecting…` : needsOAuth ? t`Authorize` : t`Approve`}
+              {state === "connecting"
+                ? t`Connecting…`
+                : block.serverRevision === undefined
+                  ? t`Review tool access`
+                  : needsOAuth
+                    ? t`Authorize`
+                    : t`Share tools`}
             </Button>
             <Button
               variant="secondary"
@@ -437,6 +493,11 @@ export function McpApprovalCard({
               <Trans>Not now</Trans>
             </Button>
           </div>
+          {error ? (
+            <Button variant="link" onClick={() => setSettingsOpen(true)}>
+              <Trans>Review tool access</Trans>
+            </Button>
+          ) : null}
         </>
       ) : null}
       {state === "connected" ? (
@@ -449,6 +510,7 @@ export function McpApprovalCard({
           <Trans>Dismissed. Reconnect anytime from MCP settings.</Trans>
         </p>
       ) : null}
+      {settingsOpen ? <McpServersOverlay onClose={() => setSettingsOpen(false)} /> : null}
     </BuiCard>
   );
 }

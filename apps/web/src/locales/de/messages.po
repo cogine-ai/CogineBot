@@ -18,6 +18,11 @@ msgstr ""
 msgid "{0, plural, one {# model} other {# models}}"
 msgstr "{0, plural, one {# Modell} other {# Modelle}}"
 
+#. placeholder {0}: tools.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0, plural, one {# tool} other {# tools}}"
+msgstr "{0, plural, one {# Tool} other {# Tools}}"
+
 #. placeholder {0}: Math.ceil(oauth.expiresInSeconds / 60)
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -65,6 +70,16 @@ msgstr "{0} KB"
 msgid "{0} MB"
 msgstr "{0} MB"
 
+#. placeholder {0}: summary.errors.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} need attention"
+msgstr "{0} erfordern Aufmerksamkeit"
+
+#. placeholder {0}: summary.pending.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} pending"
+msgstr "{0} ausstehend"
+
 #. placeholder {0}: sender.name
 #: src/pages/ExternalConversationSettings.tsx
 msgid "{0} rollup hours"
@@ -75,6 +90,11 @@ msgstr ""
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "{0} runs · {1} tokens"
 msgstr "{0} Läufe · {1} Tokens"
+
+#. placeholder {0}: server.allowedTools.length
+#: src/components/integrations/McpToolAccess.tsx
+msgid "{0} tools shared in this space"
+msgstr "{0} Tools für diesen Bereich freigegeben"
 
 #. placeholder {0}: bot.name
 #: src/pages/ExternalConversationSettings.tsx
@@ -176,13 +196,13 @@ msgstr ""
 msgid "{stepCount, plural, one {Working… · # tool} other {Working… · # tools}}"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "{stopped} accounts disconnected locally"
+msgstr "{stopped} Konten lokal getrennt"
+
 #: src/pages/ActivityList.tsx
 msgid "{title}, {label}"
 msgstr "{title}, {label}"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "{toolCount, plural, one {# tool} other {# tools}}"
-msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "{workingBotName} is working"
@@ -193,8 +213,16 @@ msgstr "{workingBotName} arbeitet"
 msgid "@{0}"
 msgstr "@{0}"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "1 account disconnected locally"
+msgstr "1 Konto lokal getrennt"
+
 #: src/pages/shell/message-cards.tsx
 msgid "A bit of everything"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "A public HTTPS address is required to receive Notion webhooks."
 msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
@@ -225,12 +253,26 @@ msgid "Access token (optional)"
 msgstr "Zugriffstoken (optional)"
 
 #: src/pages/AccountSettingsOverlay.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Account"
 msgstr "Konto"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Account authorization"
+msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Account default"
 msgstr "Kontostandard"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account details"
+msgstr "Kontodetails"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account disconnected."
+msgstr "Konto getrennt."
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -244,6 +286,14 @@ msgstr ""
 #: src/pages/PluginsOverlay.tsx
 msgid "Accounts"
 msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts changed. Review them before disconnecting."
+msgstr "Konten wurden geändert. Vor dem Trennen erneut prüfen."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts that need attention are kept. Manage them individually."
+msgstr "Konten mit Handlungsbedarf bleiben erhalten. Einzeln verwalten."
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Action confirmations"
@@ -290,11 +340,11 @@ msgid "Add a run time for this one-shot."
 msgstr ""
 
 #: src/pages/Shell.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger"
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger to run this routine."
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger to run this routine."
 msgstr ""
 
 #: src/pages/McpServersOverlay.tsx
@@ -305,12 +355,24 @@ msgstr "Gib einen Servernamen ein."
 msgid "Add a stdio command."
 msgstr "Gib einen stdio-Befehl ein."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Add account"
+msgstr "Konto hinzufügen"
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "Gib eine HTTPS-Server-URL ein."
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Add another"
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add and reprocess knowledge"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add comments"
 msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
@@ -366,6 +428,10 @@ msgstr ""
 msgid "Add someone…"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Add this URL in your Notion integration’s Webhooks tab."
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
 msgstr "Zur Routine hinzufügen"
@@ -378,12 +444,7 @@ msgstr "Treg hinzufügen"
 msgid "Add trigger"
 msgstr ""
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Added"
-msgstr ""
-
 #: src/pages/McpServersOverlay.tsx
-#: src/pages/PluginsOverlay.tsx
 msgid "Adding…"
 msgstr "Wird hinzugefügt…"
 
@@ -409,9 +470,9 @@ msgstr "Agent-Computer"
 msgid "Agent connections"
 msgstr ""
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Agents:"
-msgstr "Agents:"
+#: src/pages/PluginsOverlay.tsx
+msgid "All apps"
+msgstr "Alle Apps"
 
 #: src/pages/Artifacts.tsx
 msgid "All bots"
@@ -428,6 +489,10 @@ msgstr ""
 #: src/pages/Artifacts.tsx
 msgid "All time"
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "All tools shared in this space"
+msgstr "Alle Tools für diesen Bereich freigegeben"
 
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
@@ -460,6 +525,10 @@ msgstr "Kaufaktionen ohne Nachfrage erlauben"
 msgid "Allow writing"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed knowledge base IDs"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Allowed once"
 msgstr "Einmal erlaubt"
@@ -483,6 +552,10 @@ msgstr "Immer erlaubt"
 #: src/lib/model-connection-preflight.ts
 msgid "An API key is stored for this provider, not a subscription sign-in."
 msgstr "Für diesen Anbieter ist ein API-Schlüssel gespeichert, keine Anmeldung per Abonnement."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Anchor block ID"
+msgstr ""
 
 #: src/components/AskCard.tsx
 msgid "Answer"
@@ -522,6 +595,10 @@ msgstr "API-Schlüssel"
 msgid "API key header"
 msgstr "API-Schlüssel-Header"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "API origin"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "App"
 msgstr ""
@@ -530,18 +607,46 @@ msgstr ""
 msgid "Appearance"
 msgstr "Erscheinungsbild"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application credentials"
+msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application events"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Application filter"
+msgstr "Apps filtern"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application owner"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application saved"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Application settings changed"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
 msgstr "Bestätigungsgrenzen"
 
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/shell/message-cards.tsx
 msgid "Approve"
 msgstr "Genehmigen"
-
-#: src/pages/shell/message-cards.tsx
-msgid "Approve this server to let your agent use its tools."
-msgstr "Genehmige diesen Server, damit dein Agent seine Tools verwenden kann."
 
 #: src/pages/BotContextMenu.tsx
 msgid "Archive"
@@ -594,8 +699,16 @@ msgstr "Vor Käufen nachfragen"
 msgid "Ask before sending external email"
 msgstr "Vor dem Senden externer E-Mails nachfragen"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ask questions"
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Ask the server owner to configure this provider."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Ask your administrator to enable a connection method."
 msgstr ""
 
 #. placeholder {0}: preset.time
@@ -624,10 +737,27 @@ msgstr "Anhang"
 msgid "Authentication failed."
 msgstr "Authentifizierung fehlgeschlagen."
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Authorization"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Authorization code or callback URL"
 msgstr "Autorisierungscode oder Callback-URL"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization did not complete. You can authorize again."
+msgstr "Autorisierung nicht abgeschlossen. Erneute Autorisierung möglich."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization is still pending."
+msgstr "Autorisierung steht noch aus."
+
+#. placeholder {0}: row.remoteAccountId
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization record: {0}"
+msgstr "Autorisierungseintrag: {0}"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorization timed out. Please try again."
@@ -636,6 +766,14 @@ msgstr "Zeitüberschreitung bei der Autorisierung. Versuche es erneut."
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "Autorisieren"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Authorize account"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorize again"
+msgstr "Erneut autorisieren"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize this server so agents can use its tools. A popup opens."
@@ -662,10 +800,15 @@ msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 msgid "Back"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Back to applications"
 msgstr ""
 
 #: src/pages/Auth.tsx
@@ -702,8 +845,20 @@ msgstr ""
 msgid "Bearer token"
 msgstr "Bearer-Token"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Before a Calendar event"
+msgstr ""
+
 #: src/pages/SettingsOverlay.tsx
 msgid "Billing"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block ID"
 msgstr ""
 
 #: src/lib/ticket-status.ts
@@ -779,6 +934,30 @@ msgstr "Browser"
 msgid "Built-in"
 msgstr "Integriert"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "By Cogine"
+msgstr "Von Cogine"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Calendar event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar event changed"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar ID"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar target"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Callback URL"
+msgstr ""
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "Server nicht erreichbar."
@@ -786,6 +965,8 @@ msgstr "Server nicht erreichbar."
 #: src/components/AskCard.tsx
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -797,6 +978,10 @@ msgstr "Server nicht erreichbar."
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "Abbrechen"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Cancel connection"
+msgstr "Verbindung abbrechen"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -827,6 +1012,10 @@ msgstr ""
 msgid "Change password"
 msgstr "Passwort ändern"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Changing authorization settings requires accounts to authorize again."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Changing…"
 msgstr "Wird geändert…"
@@ -852,8 +1041,17 @@ msgid "Chat Settings"
 msgstr "Chat-Einstellungen"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx
 msgid "Check again"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check calendar availability"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check event availability"
 msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
@@ -869,13 +1067,25 @@ msgstr ""
 msgid "Check in."
 msgstr "Melde dich."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Check status"
+msgstr "Status prüfen"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the API key or sign-in, then test again."
 msgstr "Prüfe den API-Schlüssel oder die Anmeldung und teste erneut."
 
+#: src/pages/Shell.tsx
+msgid "Check the application event accounts and fields."
+msgstr ""
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "Prüfe die Server-URL und das Netzwerk und teste erneut."
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Check this ID against your Notion integration before enabling events."
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Check your email"
@@ -900,12 +1110,28 @@ msgstr ""
 msgid "Choose a bot…"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose a connected account to change this event."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Choose a connection method"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "Wähle ein neues Passwort"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose account"
+msgstr ""
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose an image file"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose event"
 msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
@@ -939,10 +1165,12 @@ msgid "Clearing…"
 msgstr "Wird geleert…"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client ID"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client secret"
 msgstr ""
 
@@ -1061,6 +1289,10 @@ msgstr ""
 msgid "Complete"
 msgstr "Abschließen"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Complete the required application settings"
+msgstr ""
+
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -1124,6 +1356,7 @@ msgstr "Prüfe, ob die URL aus dieser Browsersitzung erreichbar ist, und teste e
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connect"
 msgstr "Verbinden"
@@ -1136,6 +1369,14 @@ msgstr "Modell verbinden"
 msgid "Connect a provider to add backups."
 msgstr "Verbinde einen Anbieter, um Backups hinzuzufügen."
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect account"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect an account"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Connect API key"
 msgstr "API-Schlüssel verbinden"
@@ -1143,6 +1384,14 @@ msgstr "API-Schlüssel verbinden"
 #: src/pages/PluginsOverlay.tsx
 msgid "Connect Executor"
 msgstr "Executor verbinden"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect machine"
+msgstr ""
 
 #: src/pages/shell/message-cards.tsx
 msgid "Connect MCP server “{name}”"
@@ -1164,6 +1413,7 @@ msgstr "Treg verbinden"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
@@ -1191,6 +1441,7 @@ msgid "Connected. Its tools are available from your next message."
 msgstr "Verbunden. Die Tools sind ab deiner nächsten Nachricht verfügbar."
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
@@ -1198,6 +1449,30 @@ msgstr "Verbunden. Die Tools sind ab deiner nächsten Nachricht verfügbar."
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "Verbindung wird hergestellt…"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connection method"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method enabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method name"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection source"
+msgstr "Verbindungsquelle"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection status unconfirmed. Refresh status."
+msgstr "Verbindungsstatus unbestätigt. Status aktualisieren."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
@@ -1217,6 +1492,10 @@ msgstr "Kontextlimit"
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "Weiter"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Continue authorization"
+msgstr ""
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Continue in Background"
@@ -1271,6 +1550,10 @@ msgstr "Passwort konnte nicht geändert werden"
 msgid "Could not change the default model"
 msgstr "Standardmodell konnte nicht geändert werden"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not check connection"
+msgstr "Verbindung konnte nicht geprüft werden"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Could not check stored credentials."
 msgstr "Gespeicherte Zugangsdaten konnten nicht geprüft werden."
@@ -1295,7 +1578,12 @@ msgstr "OAuth konnte nicht abgeschlossen werden"
 msgid "Could not complete the update. Try again."
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not confirm cancellation. Check the pending account."
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not connect"
 msgstr "Verbindung fehlgeschlagen"
@@ -1420,8 +1708,16 @@ msgstr "Dateien konnten nicht geladen werden"
 msgid "Could not load"
 msgstr "Laden fehlgeschlagen"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Could not load accounts"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Could not load activity"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not load applications"
 msgstr ""
 
 #: src/components/ApprovalRulesSettings.tsx
@@ -1448,8 +1744,16 @@ msgstr ""
 msgid "Could not load commands"
 msgstr "Befehle konnten nicht geladen werden"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Could not load connection methods"
+msgstr ""
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "Could not load credentials."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not load event subscriptions"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -1489,6 +1793,10 @@ msgstr "Dieser Chat konnte nicht geladen werden."
 #: src/components/ArtifactFileCard.tsx
 msgid "Could not load this file."
 msgstr "Datei konnte nicht geladen werden."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not load tools"
+msgstr "Tools konnten nicht geladen werden"
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Could not load update status"
@@ -1574,10 +1882,6 @@ msgstr "Diagramm konnte nicht angezeigt werden"
 msgid "Could not reset password"
 msgstr "Passwort konnte nicht zurückgesetzt werden"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Could not revoke connection"
-msgstr "Verbindung konnte nicht widerrufen werden"
-
 #: src/pages/Shell.tsx
 msgid "Could not run routine"
 msgstr ""
@@ -1587,6 +1891,10 @@ msgstr ""
 #: src/pages/shell/bot-panel.tsx
 msgid "Could not save"
 msgstr "Speichern fehlgeschlagen"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not save application"
+msgstr ""
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not save Auto Review"
@@ -1638,6 +1946,10 @@ msgstr ""
 msgid "Could not save this choice"
 msgstr "Diese Auswahl konnte nicht gespeichert werden"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Could not save tool access"
+msgstr "Tool-Berechtigungen konnten nicht gespeichert werden"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not search catalog"
 msgstr ""
@@ -1670,12 +1982,12 @@ msgstr "Kontrolle konnte nicht übernommen werden"
 msgid "Could not update"
 msgstr "Aktualisierung fehlgeschlagen"
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Could not update agent access"
-msgstr "Agent-Zugriff konnte nicht aktualisiert werden"
-
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Could not update computer"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not update event subscription"
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -1718,6 +2030,10 @@ msgstr "Erstelle einen Abschnitt und verschiebe {0} dorthin."
 msgid "Create account"
 msgstr "Konto erstellen"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create and change events"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Create Bot"
 msgstr ""
@@ -1738,6 +2054,10 @@ msgstr "Neue Gruppe erstellen"
 #: src/pages/shell/bot-picker.tsx
 msgid "Create new Space"
 msgstr "Neuen Space erstellen"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create pages and blocks"
+msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Create Routine"
@@ -1807,6 +2127,14 @@ msgstr "Bot-Avatar anpassen"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Dark"
 msgstr "Dunkel"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source ID"
+msgstr ""
 
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
@@ -1939,6 +2267,14 @@ msgstr ""
 msgid "Direct MCP"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled methods cannot be used. Connected accounts are kept."
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
 msgstr ""
@@ -1946,6 +2282,7 @@ msgstr ""
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnect"
 msgstr "Trennen"
@@ -1954,16 +2291,46 @@ msgstr "Trennen"
 msgid "Disconnect {disconnectName}?"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect account"
+msgstr "Konto trennen"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect did not complete. Review the remaining accounts before trying again."
+msgstr "Trennen nicht abgeschlossen. Verbleibende Konten vor erneutem Versuch prüfen."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect this account?"
+msgstr "Dieses Konto trennen?"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected"
+msgstr "Getrennt"
+
 #. placeholder {0}: selected.providerName ?? selected.provider
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Disconnected {0}."
 msgstr ""
 
+#. placeholder {0}: history.length
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected accounts ({0})"
+msgstr "Getrennte Konten ({0})"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnecting…"
 msgstr "Verbindung wird getrennt…"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion ID"
+msgstr ""
 
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
@@ -2052,9 +2419,21 @@ msgstr "Duplizieren"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "z. B. Hivenet Agent, Presales, Zeiterfassungs-Bot"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit application"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Edit first"
 msgstr "Zuerst bearbeiten"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit pages and blocks"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 msgid "Edit Profile"
@@ -2072,6 +2451,19 @@ msgstr "Diese E-Mail-Adresse ist nicht zur Registrierung zugelassen"
 msgid "Email verification required"
 msgstr "E-Mail-Verifizierung erforderlich"
 
+#. placeholder {0}: entry.label
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enable {0}"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enable events"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enabled"
+msgstr ""
+
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
 msgstr ""
@@ -2086,6 +2478,10 @@ msgstr "Gib ein Passwort ein"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Enter a username and password"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Enter a valid credential"
 msgstr ""
 
 #: src/lib/user-error.ts
@@ -2111,8 +2507,24 @@ msgstr "Gib eine ganze Zahl von 1 bis 1000 für das Bilderlimit ein."
 msgid "Enter an API key before testing."
 msgstr "Gib vor dem Test einen API-Schlüssel ein."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter the integration ID and verify the subscription in Notion first."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter your integration ID, or make a change in Notion to receive it."
+msgstr ""
+
 #: src/lib/roster-status.ts
 msgid "Error"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event ID"
 msgstr ""
 
 #: src/pages/ExternalConversationSettings.tsx
@@ -2268,6 +2680,10 @@ msgstr "MCP-Verbindung wird abgeschlossen…"
 msgid "Flag unexpected actions"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "For example, Company Calendar"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Forgot password?"
 msgstr "Passwort vergessen?"
@@ -2377,6 +2793,10 @@ msgstr "Hallo, so klinge ich, wenn ich Antworten vorlese."
 msgid "Hide password"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Hide token"
+msgstr ""
+
 #: src/components/call/VoiceChatCard.tsx
 msgid "Hide transcript"
 msgstr "Transkript ausblenden"
@@ -2408,6 +2828,10 @@ msgstr "Wie oft"
 #: src/components/teach/SkillDraftCard.tsx
 msgid "How to check"
 msgstr "So wird geprüft"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "I verified this subscription in Notion"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "I’m done"
@@ -2461,8 +2885,16 @@ msgstr "Instanz-API-Schlüssel"
 msgid "Instruction"
 msgstr "Anweisung"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Integration domain"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration ID in Notion"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -2473,6 +2905,16 @@ msgstr ""
 #: src/pages/Shell.tsx
 msgid "Integrations"
 msgstr "Integrationen"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration token"
+msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 #: src/pages/RoutineSchedule.tsx
@@ -2541,6 +2983,10 @@ msgstr "{app} gestartet"
 msgid "Leave"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Leave blank to keep the saved secret."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Light"
 msgstr "Hell"
@@ -2556,6 +3002,10 @@ msgstr ""
 #: src/components/AccountAccess.tsx
 msgid "Link SSO"
 msgstr "SSO verknüpfen"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "List calendars"
+msgstr ""
 
 #: src/pages/Artifacts.tsx
 msgid "List view"
@@ -2585,9 +3035,21 @@ msgstr "Ältere Ausführungen laden"
 msgid "Load web images automatically"
 msgstr "Webbilder automatisch laden"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Loading accounts…"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "Aktivität wird geladen…"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Loading applications…"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Loading connection methods…"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
@@ -2608,6 +3070,10 @@ msgstr "Vorschau wird geladen…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Loading rules…"
 msgstr "Regeln werden geladen…"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Loading subscriptions…"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading tools…"
@@ -2637,6 +3103,10 @@ msgstr "Lokal"
 msgid "Local access lets bots run commands without asking. Avoid it on shared or public servers."
 msgstr "Mit lokalem Zugriff können Bots ohne Rückfrage Befehle ausführen. Vermeide dies auf gemeinsam genutzten oder öffentlichen Servern."
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Local access stopped · Provider confirmation pending"
+msgstr "Lokaler Zugriff deaktiviert · Anbieterbestätigung ausstehend"
+
 #: src/pages/LocalSettings.tsx
 msgid "Local Server Settings"
 msgstr ""
@@ -2661,11 +3131,21 @@ msgstr ""
 msgid "Lowercase letters, numbers, hyphens and underscores, starting with a letter."
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Machine API key"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Make a change in Notion to confirm event delivery."
+msgstr ""
+
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Make sure nothing is still running on this computer."
 msgstr "Stelle sicher, dass auf diesem Computer nichts mehr läuft."
 
 #: src/pages/BillingSettingsPanel.tsx
+#: src/pages/PluginsOverlay.tsx
 msgid "Manage"
 msgstr ""
 
@@ -2701,6 +3181,10 @@ msgstr "Als gelesen markieren"
 msgid "Mark as Unread"
 msgstr "Als ungelesen markieren"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Match the capabilities enabled in your Notion integration."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Max"
@@ -2729,6 +3213,7 @@ msgstr "Maximal 10 Backup-Modelle."
 msgid "Maximum output tokens"
 msgstr "Maximale Ausgabetokens"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "MCP endpoint"
 msgstr ""
@@ -2750,6 +3235,10 @@ msgstr ""
 #: src/pages/GroupPanel.tsx
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "Mitglieder ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Members enter their credentials when connecting from Apps."
+msgstr ""
 
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
@@ -2844,6 +3333,10 @@ msgstr "Minute"
 #: src/pages/RoutineSchedule.tsx
 msgid "minutes"
 msgstr "Minuten"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Minutes before"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -2953,6 +3446,10 @@ msgstr ""
 msgid "Needs an answer"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Needs attention"
+msgstr "Handlungsbedarf"
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -3000,6 +3497,10 @@ msgstr ""
 msgid "New ticket"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No active accounts."
+msgstr "Keine aktiven Konten."
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No agent connections yet."
 msgstr ""
@@ -3037,6 +3538,22 @@ msgstr ""
 msgid "No chat apps linked yet."
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected apps."
+msgstr "Keine verbundenen Apps."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "No connected Calendar or Notion accounts"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected or pending accounts remain for this source."
+msgstr "Für diese Quelle sind keine verbundenen oder ausstehenden Konten mehr vorhanden."
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "No connection method is configured."
+msgstr ""
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3048,10 +3565,6 @@ msgstr ""
 #: src/components/AskCard.tsx
 msgid "No longer active"
 msgstr "Nicht mehr aktiv"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "No managed app catalog is configured on this deployment."
-msgstr "Für diese Bereitstellung ist kein verwalteter App-Katalog konfiguriert."
 
 #: src/pages/Artifacts.tsx
 msgid "No matching artifacts on this page."
@@ -3119,6 +3632,10 @@ msgstr ""
 msgid "No tools available."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "No tools shared in this space"
+msgstr "Keine Tools für diesen Bereich freigegeben"
+
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr ""
@@ -3135,10 +3652,6 @@ msgstr ""
 msgid "Not connected"
 msgstr "Nicht verbunden"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Not in the plugin catalog"
-msgstr ""
-
 #: src/pages/shell/message-cards.tsx
 msgid "Not now"
 msgstr "Jetzt nicht"
@@ -3154,6 +3667,34 @@ msgstr "Noch nichts gemerkt"
 #: src/pages/shell/bot-panel.tsx
 msgid "Notifications"
 msgstr "Benachrichtigungen"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion comments changed"
+msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+msgid "Notion event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion page content changed"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion properties or data source changed"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion setup instructions"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion target"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion webhooks"
+msgstr ""
 
 #: src/pages/ActivityList.tsx
 msgid "Now"
@@ -3180,6 +3721,11 @@ msgstr "OAuth-Verbindung fehlgeschlagen"
 msgid "OAuth expired"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Official application"
+msgstr ""
+
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
 msgid "On a call with {0}"
@@ -3196,6 +3742,10 @@ msgstr "am 1. um {0}"
 
 #: src/pages/Shell.tsx
 msgid "Only empty spaces can be deleted. Delete its bots and groups first."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Only pages shared with this integration are available."
 msgstr ""
 
 #: src/components/markdown-link-prompt.tsx
@@ -3235,10 +3785,6 @@ msgstr "In vollständigem Fenster öffnen"
 #: src/pages/Shell.tsx
 msgid "Open navigation"
 msgstr "Navigation öffnen"
-
-#: src/components/computer/TerminalApp.tsx
-msgid "Open shell"
-msgstr "Shell öffnen"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Open work"
@@ -3296,8 +3842,20 @@ msgstr "Originalnachricht nicht verfügbar"
 msgid "Other model…"
 msgstr "Anderes Modell…"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Other sources stay connected. Operations already sent may still finish."
+msgstr "Andere Quellen bleiben verbunden. Bereits gesendete Vorgänge können noch abgeschlossen werden."
+
 #: src/pages/Board.tsx
 msgid "Owner"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page ID"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
@@ -3342,6 +3900,10 @@ msgstr "Ersatzschlüssel einfügen"
 msgid "Paste the OpenAI-compatible address from your server. CogineBot adds /v1 if needed."
 msgstr "Füge die OpenAI-kompatible Adresse deines Servers ein. CogineBot ergänzt /v1 bei Bedarf."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Paste the verification token into Notion and verify the subscription."
+msgstr ""
+
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Paste your API key"
 msgstr "Füge deinen API-Schlüssel ein"
@@ -3352,6 +3914,19 @@ msgstr "Füge deinen API-Schlüssel ein und teste erneut."
 
 #: src/pages/RoutineEditor.tsx
 msgid "Paused"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Pending authorization"
+msgstr "Autorisierung ausstehend"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Permissions"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Personal access token"
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -3392,6 +3967,10 @@ msgstr "Vorschau von {0}"
 msgid "Preview isn't available for this file type — download it to view it."
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Previous account"
+msgstr ""
+
 #: src/pages/Board.tsx
 msgid "Priority"
 msgstr ""
@@ -3406,6 +3985,10 @@ msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Project ID"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Property IDs (optional, one per line)"
 msgstr ""
 
 #: src/components/teach/TeachRecordingChrome.tsx
@@ -3442,9 +4025,25 @@ msgstr "Reagieren"
 msgid "Reactions"
 msgstr "Reaktionen"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read comments"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read events"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read pages"
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Read replies aloud"
 msgstr "Antworten vorlesen"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ready for accounts"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3459,12 +4058,20 @@ msgstr ""
 msgid "Recall only"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Receiving events"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Recent"
 msgstr "Kürzlich"
 
 #: src/pages/shell/chat-recipients.tsx
 msgid "Recipients"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Reconnect account"
 msgstr ""
 
 #: src/pages/McpServersOverlay.tsx
@@ -3532,27 +4139,41 @@ msgstr "Einen nicht funktionierenden Computer neu erstellen."
 msgid "Recreating the computer"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring instance"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring series"
+msgstr ""
+
 #: src/App.tsx
 #: src/components/ErrorBoundary.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/pages/RoutineRunHistory.tsx
 msgid "Refresh"
 msgstr "Aktualisieren"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Refresh status"
+msgstr "Status aktualisieren"
 
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refresh view"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Register this exact URL in the application’s OAuth settings."
 msgstr ""
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
 msgstr "Registrierung ist geschlossen"
-
-#: src/pages/Shell.tsx
-msgid "Release"
-msgstr "Freigeben"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Release computer"
@@ -3583,6 +4204,10 @@ msgstr "{full} entfernen"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Remove {secretName}? This bot will no longer be able to use it."
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Remove application event"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
@@ -3757,6 +4382,10 @@ msgstr "Rev. {0}"
 msgid "Review provider settings and test again."
 msgstr "Prüfe die Anbietereinstellungen und teste erneut."
 
+#: src/pages/shell/message-cards.tsx
+msgid "Review tool access"
+msgstr "Tool-Berechtigungen prüfen"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr "Widerrufen"
@@ -3827,12 +4456,20 @@ msgstr ""
 msgid "Save"
 msgstr "Speichern"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Save application"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "Backups speichern"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Save credential"
+msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+msgid "Save event changes"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
@@ -3846,6 +4483,10 @@ msgstr ""
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Save the workspace and install current software."
 msgstr "Den Arbeitsbereich speichern und aktuelle Software installieren."
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Save tool access"
+msgstr "Tool-Berechtigungen speichern"
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
@@ -3874,6 +4515,7 @@ msgid "Saving..."
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/ModelBackupsSettings.tsx
@@ -3898,6 +4540,10 @@ msgstr "Suchen"
 
 #: src/pages/ActivityList.tsx
 msgid "Search activity"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Search and read knowledge"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -3983,15 +4629,27 @@ msgstr "Wird gesendet…"
 msgid "Sentry alert"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Separate IDs with commas"
+msgstr ""
+
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Serenity endpoint is required."
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Server changed. Close and reopen tool access to review it."
+msgstr "Server geändert. Tool-Berechtigungen zur Prüfung schließen und erneut öffnen."
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/LocalSettings.tsx
 msgid "Server integrations"
 msgstr ""
+
+#: src/components/integrations/IntegrationSetup.tsx
+msgid "Server is no longer available"
+msgstr "Server ist nicht mehr verfügbar"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Server name"
@@ -4003,6 +4661,18 @@ msgstr "Servername"
 #: src/pages/Onboarding.tsx
 msgid "Server URL"
 msgstr "Server-URL"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Set up an application here. Members connect their accounts from Apps."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Set up application"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Set up subscription"
+msgstr ""
 
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -4019,10 +4689,31 @@ msgstr "Einstellungen: Allgemein"
 msgid "Settings: Usage"
 msgstr "Einstellungen: Nutzung"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Setup expired"
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "Einrichtungshilfe"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Setup incomplete"
+msgstr ""
+
+#: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Share all tools with this space"
+msgstr "Alle Tools für diesen Bereich freigeben"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share this server's tools with all bots in this space."
+msgstr "Tools dieses Servers für alle Bots in diesem Bereich freigeben."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share tools"
+msgstr "Tools freigeben"
 
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -4044,6 +4735,10 @@ msgstr "Geteilte Skills"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "Shell"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Show account email"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4077,6 +4772,10 @@ msgstr ""
 msgid "Show transcript"
 msgstr "Transkript anzeigen"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Show verification token"
+msgstr ""
+
 #: src/lib/localized-provider-hint.ts
 #: src/pages/Auth.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4107,6 +4806,10 @@ msgstr "Melde dich mit dem Abonnement an oder teste stattdessen den API-Schlüss
 #: src/pages/Welcome.tsx
 msgid "Sign up"
 msgstr "Registrieren"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Single event"
+msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Site"
@@ -4147,6 +4850,10 @@ msgstr ""
 #: src/lib/user-error.ts
 msgid "Something went wrong. Try again."
 msgstr "Etwas ist schiefgelaufen. Versuche es erneut."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Source accounts disconnected."
+msgstr "Konten dieser Quelle getrennt."
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Space changed. Reopen Models to load its backup list."
@@ -4228,9 +4935,25 @@ msgstr "Stoppen"
 msgid "Stop speaking"
 msgstr "Vorlesen stoppen"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop subscription"
+msgstr ""
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Stop teaching"
 msgstr "Anlernen beenden"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop the existing subscription here before enabling this one."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop this subscription?"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stopped"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -4292,6 +5015,11 @@ msgstr "Wird gewechselt…"
 msgid "System"
 msgstr "System"
 
+#: src/components/computer/TerminalApp.tsx
+#: src/pages/Shell.tsx
+msgid "Take control"
+msgstr "Steuerung übernehmen"
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Teach a task"
 msgstr "Aufgabe anlernen"
@@ -4318,6 +5046,10 @@ msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Teams not enabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Tenant ID"
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
@@ -4372,6 +5104,11 @@ msgstr "Denkmodus"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Thinking: {activeThinkingLabel}"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/message-cards.tsx
+msgid "This application is not available for direct connection."
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -4443,6 +5180,10 @@ msgstr "Dieser Server hat keine Browserautorisierung angefordert."
 msgid "This server is already connected. Disconnect it first to authorize again."
 msgstr "Dieser Server ist bereits verbunden. Trenne zuerst die Verbindung, um ihn erneut zu autorisieren."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "This setup has expired. Refresh to check its status."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "This subscription sign-in is not available in CogineBot yet. Use a deployment credential or choose another provider."
 msgstr "Diese Abonnementanmeldung ist in CogineBot noch nicht verfügbar. Verwende Zugangsdaten der Bereitstellung oder wähle einen anderen Anbieter."
@@ -4483,6 +5224,14 @@ msgstr "An:"
 msgid "Today"
 msgstr "Heute"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool access"
+msgstr "Tool-Berechtigungen"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool names, one per line"
+msgstr "Tool-Namen, einer pro Zeile"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Tool sources"
 msgstr "Toolquellen"
@@ -4511,8 +5260,11 @@ msgstr ""
 msgid "Trial ends {day}"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Try again"
 msgstr "Erneut versuchen"
 
@@ -4537,12 +5289,17 @@ msgid "Unassigned"
 msgstr "Nicht zugewiesen"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Unavailable"
 msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
-msgid "Uninstall"
-msgstr ""
+msgid "Uninstall source"
+msgstr "Quelle deinstallieren"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Uninstall this source?"
+msgstr "Diese Quelle deinstallieren?"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Unknown tool"
@@ -4657,6 +5414,10 @@ msgstr "Nutze Verbinden, um den Schlüssel zu prüfen."
 msgid "Use default guidance"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Use ID from received event"
+msgstr ""
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."
 msgstr ""
@@ -4674,6 +5435,10 @@ msgstr "Eigenen Schlüssel verwenden"
 msgid "Username"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Uses a machine identity restricted to the configured knowledge bases."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Uses this server's own {hostCredentialSource} credentials to access {selectedProviderName}."
 msgstr "Verwendet die eigenen {hostCredentialSource}-Zugangsdaten dieses Servers für den Zugriff auf {selectedProviderName}."
@@ -4686,9 +5451,17 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "Werte werden verschlüsselt und nicht erneut angezeigt."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verification token"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "Prüfen und hinzufügen"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verify in Notion"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Verifying…"
@@ -4717,6 +5490,14 @@ msgstr "Sprachchat"
 msgid "Wait a moment and test again."
 msgstr "Warte kurz und teste erneut."
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for first signed event"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for Notion"
+msgstr ""
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Waiting for the API to come back…"
 msgstr ""
@@ -4729,12 +5510,32 @@ msgstr "Wartet in der Warteschlange…"
 msgid "Waiting…"
 msgstr "Warten…"
 
+#: src/pages/Shell.tsx
+msgid "Watching"
+msgstr "Zuschauen"
+
 #: src/pages/Paywall.tsx
 msgid "Web, desktop and mobile apps"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Webhook"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook deliveries will be ignored. Routines continue checking Notion for changes."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook stopped here. Remove the subscription in Notion separately."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook URL"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Webhooks"
 msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
@@ -4790,6 +5591,10 @@ msgstr "Einsatzzeitpunkt"
 msgid "Where should bots run?"
 msgstr "Wo sollen Bots ausgeführt werden?"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Whole calendar"
+msgstr ""
+
 #: src/lib/ticket-status.ts
 msgid "Won't do"
 msgstr ""
@@ -4826,6 +5631,11 @@ msgstr "Du kannst dieses Fenster schließen."
 #: src/pages/Shell.tsx
 msgid "You have control"
 msgstr "Du hast die Kontrolle"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Your application"
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Your email address"

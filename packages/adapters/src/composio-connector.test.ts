@@ -30,7 +30,9 @@ const composioSdkState = vi.hoisted(() => ({
   failTools: null as null | string[],
   logIds: null as null | string[],
   connectedAccounts: {
-    list: async (_query?: Record<string, unknown>) => ({ items: [] as Array<{ id: string }> }),
+    list: async (_query?: Record<string, unknown>) => ({
+      items: [] as Array<{ id: string; alias?: string }>,
+    }),
     waitForConnection: async (id: string, _timeout?: number) => ({ id: `resolved-${id}` }),
     get: async (id: string) => ({ id, userId: "user-1" }),
     delete: async (_id: string) => undefined,
@@ -117,6 +119,17 @@ vi.mock("@composio/core", () => ({
                     name: "GITHUB_GET_REPOS",
                     description: "List GitHub repositories",
                     parameters: { type: "object", properties: {} },
+                  },
+                },
+                {
+                  type: "function",
+                  function: {
+                    name: "COMPOSIO_MULTI_EXECUTE_TOOL",
+                    description: "Execute explicit tools",
+                    parameters: {
+                      type: "object",
+                      properties: { tools: { type: "array", items: { type: "object" } } },
+                    },
                   },
                 },
               ]
@@ -347,6 +360,161 @@ describe("composio tool mapping", () => {
     };
   }
 
+  it.each(["ca-work", "work-github"])(
+    "freezes authorized Tool Router selector %s as its concrete account id",
+    async (selector) => {
+      composioSdkState.created.length = 0;
+      composioSdkState.executions.length = 0;
+      composioSdkState.sessions.clear();
+      composioToolkitDirectory.invalidate();
+      const previous = composioSdkState.connectedAccounts.list;
+      composioSdkState.connectedAccounts.list = async () => ({
+        items: [
+          { id: "ca-work", alias: "work-github" },
+          { id: "ca-personal", alias: "personal-github" },
+        ],
+      });
+      const context: AdapterContext = {
+        operationId: "explicit",
+        traceId: "explicit",
+        spaceId: "space",
+        userId: "user-1",
+        signal: new AbortController().signal,
+        connectedConnections: [
+          {
+            id: "work",
+            connectorId: "composio",
+            externalId: "github",
+            providerRef: "ca-work",
+            displayName: "Work",
+            revision: "auth-1",
+          },
+          {
+            id: "personal",
+            connectorId: "composio",
+            externalId: "github",
+            providerRef: "ca-personal",
+            displayName: "Personal",
+            revision: "auth-2",
+          },
+        ],
+      };
+      try {
+        const connector = new ComposioConnector();
+        const tool = (await connector.discoverTools(context)).find(
+          (candidate) => candidate.name === "COMPOSIO_MULTI_EXECUTE_TOOL",
+        )!;
+        const call = {
+          tool: tool.name,
+          route: tool.route,
+          args: {
+            tools: [
+              {
+                tool_slug: "GITHUB_GET_REPOS",
+                account: selector,
+                arguments: { account: "business-account" },
+              },
+            ],
+          },
+          executionId: "explicit",
+        };
+        const resolved = await connector.resolveCall(call, context);
+        expect(resolved!.call.args).toEqual({
+          tools: [
+            {
+              tool_slug: "GITHUB_GET_REPOS",
+              account: "ca-work",
+              arguments: { account: "business-account" },
+            },
+          ],
+        });
+        const events = [];
+        for await (const event of connector.execute(resolved!.call, context)) events.push(event);
+        expect(events).toMatchObject([{ type: "result" }]);
+        expect(composioSdkState.executions).toEqual([
+          { tool: tool.name, args: resolved!.call.args },
+        ]);
+        // Moving the alias cannot redirect the persisted concrete selection.
+        composioSdkState.connectedAccounts.list = async () => ({
+          items: [
+            { id: "ca-work", alias: "old-work" },
+            { id: "ca-personal", alias: "work-github" },
+          ],
+        });
+        for await (const _event of connector.execute(resolved!.call, context)) {
+          /* consume */
+        }
+        expect(composioSdkState.executions.at(-1)?.args).toEqual(resolved!.call.args);
+        const reauthorized = {
+          ...context,
+          connectedConnections: context.connectedConnections!.map((connection) =>
+            connection.id === "work" ? { ...connection, revision: "auth-new" } : connection,
+          ),
+        };
+        const before = composioSdkState.executions.length;
+        const stale = [];
+        for await (const event of connector.execute(resolved!.call, reauthorized))
+          stale.push(event);
+        expect(stale).toMatchObject([{ type: "error" }]);
+        expect(composioSdkState.executions).toHaveLength(before);
+      } finally {
+        composioSdkState.connectedAccounts.list = previous;
+      }
+    },
+  );
+
+  it.each(["ca-foreign", "foreign-alias", "ca-dead"])(
+    "rejects explicit unauthorized or inactive selector %s without executing a sibling",
+    async (selector) => {
+      const previous = composioSdkState.connectedAccounts.list;
+      composioSdkState.executions.length = 0;
+      composioToolkitDirectory.invalidate();
+      composioSdkState.connectedAccounts.list = async () => ({
+        items: [{ id: "ca-work" }, { id: "ca-foreign", alias: "foreign-alias" }],
+      });
+      const context: AdapterContext = {
+        operationId: "reject",
+        traceId: "reject",
+        spaceId: "space",
+        userId: "user-1",
+        signal: new AbortController().signal,
+        connectedConnections: [
+          {
+            id: "work",
+            connectorId: "composio",
+            externalId: "github",
+            providerRef: "ca-work",
+            displayName: "Work",
+          },
+          {
+            id: "dead",
+            connectorId: "composio",
+            externalId: "github",
+            providerRef: "ca-dead",
+            displayName: "Dead",
+          },
+        ],
+      };
+      try {
+        const connector = new ComposioConnector();
+        const events = [];
+        for await (const event of connector.execute(
+          {
+            tool: "COMPOSIO_MULTI_EXECUTE_TOOL",
+            args: { tools: [{ tool_slug: "GITHUB_GET_REPOS", account: selector, arguments: {} }] },
+            executionId: "reject",
+          },
+          context,
+        ))
+          events.push(event);
+        expect(events).toMatchObject([{ type: "error" }]);
+        expect(composioSdkState.executions).toEqual([]);
+      } finally {
+        composioSdkState.connectedAccounts.list = previous;
+      }
+    },
+  );
+
   it("pins every connected account into multi-account execute sessions", async () => {
     composioSdkState.created.length = 0;
     composioSdkState.sessions.clear();
@@ -460,7 +628,7 @@ describe("composio tool mapping", () => {
     }
   });
 
-  it("omits stale account ids when the provider lists no ACTIVE accounts", async () => {
+  it("never opens an unpinned session when every concrete authorization is inactive", async () => {
     composioSdkState.created.length = 0;
     composioSdkState.sessions.clear();
     composioToolkitDirectory.invalidate();
@@ -468,31 +636,27 @@ describe("composio tool mapping", () => {
 
     try {
       const connector = new ComposioConnector();
-      await connector.discoverTools({
-        operationId: "composio-empty-active",
-        traceId: "composio-empty-active",
-        spaceId: "workspace",
-        userId: "user-1",
-        signal: new AbortController().signal,
-        connectedConnections: [
-          {
-            id: "connection-revoked",
-            connectorId: "composio",
-            externalId: "github",
-            displayName: "GitHub",
-            providerRef: "ca_old",
-          },
-        ],
-      });
-
-      expect(composioSdkState.created.at(-1)).toEqual({
-        userId: "user-1",
-        config: {
-          manageConnections: false,
-          sandbox: { enable: false },
-          toolkits: ["GITHUB"],
-        },
-      });
+      await expect(
+        connector.discoverTools({
+          operationId: "composio-empty-active",
+          traceId: "composio-empty-active",
+          spaceId: "workspace",
+          userId: "user-1",
+          signal: new AbortController().signal,
+          connectedConnections: [
+            {
+              id: "connection-revoked",
+              connectorId: "composio",
+              externalId: "github",
+              displayName: "GitHub",
+              providerRef: "ca_old",
+            },
+          ],
+        }),
+      ).rejects.toThrow("No authorized Composio accounts");
+      expect(
+        composioSdkState.created.filter((item) => Array.isArray(item.config.toolkits)),
+      ).toEqual([]);
     } finally {
       restore();
     }
@@ -1141,6 +1305,32 @@ describe("composio tool mapping", () => {
       { provider: "gmail", displayName: "Gmail" },
     ]);
   });
+
+  it.each(["pending", "error", "revoked"])(
+    "does not use a live slug to replace an explicit %s authorization or revive its legacy sibling",
+    (status) => {
+      const rows = [
+        { id: "old-error", provider: "gmail", status: "error", displayName: "Old Gmail" },
+        {
+          id: "new-explicit",
+          provider: "gmail",
+          status,
+          displayName: "New Gmail",
+          metadata: { authRevision: "authorization-new" },
+        },
+        { id: "legacy-slack", provider: "slack", status: "pending", displayName: "Slack" },
+      ];
+      expect(planLiveConnectionSync(rows, ["gmail", "slack"])).toEqual({
+        connectIds: ["legacy-slack"],
+        revokeIds: [],
+      });
+      expect(mergeConnectedPlugins(rows, ["gmail", "slack"])).toEqual([
+        { provider: "slack", displayName: "Slack" },
+      ]);
+      expect(needsLivePluginSync(rows.slice(0, 2))).toBe(false);
+      expect(needsLivePluginSync(rows)).toBe(true);
+    },
+  );
 
   it("reconciles Composio slugs without case sensitivity", () => {
     expect(

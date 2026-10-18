@@ -28,6 +28,11 @@ type Row = {
   botId?: string;
   endpoint?: string;
   secretId?: string | null;
+  enabled?: boolean;
+  allowAllTools?: boolean;
+  allowedTools?: string[];
+  revision?: number;
+  secretRecordId?: string;
   organizationId?: string;
 };
 type Args = { where?: Record<string, unknown>; data?: Row; create?: Row; update?: Row };
@@ -42,6 +47,8 @@ function database() {
     ["secret", []],
     ["botSecret", []],
     ["integrationProviderConfig", []],
+    ["nativeAppConfig", []],
+    ["nativeNotionHook", []],
     ["user", [{ id: "user" }]],
     ["space", [{ id: "space", organizationId: "organization" }]],
     ["organization", [{ id: "organization" }]],
@@ -122,11 +129,21 @@ function database() {
   }
   client.$queryRaw = async (query: { sql: string; values: unknown[] }) => {
     if (!query.sql) return [];
+    if (query.sql.includes("native-hook:credential-reference"))
+      return [
+        {
+          referenced: tables
+            .get("nativeNotionHook")!
+            .some((row) => row.ciphertext === query.values[0]),
+        },
+      ];
     const table = query.sql.match(/FROM "([^"]+)"/)?.[1];
     const names: Record<string, string> = {
       secrets: "secret",
       bot_secrets: "botSecret",
       integration_provider_configs: "integrationProviderConfig",
+      native_app_configs: "nativeAppConfig",
+      native_notion_hooks: "nativeNotionHook",
       user: "user",
       spaces: "space",
       bots: "bot",
@@ -287,6 +304,93 @@ describe("secret persistence cleanup", () => {
       await store.close();
     }
   });
+  it("keeps native application material through User/Space deletion and retires it with its configuration", async () => {
+    const fake = infisicalFake();
+    const store = new InfisicalSecretStore(fake.options);
+    await store.start();
+    const db = database();
+    const prisma = withSecretPersistence(db.prisma, store);
+    const first = await store.put("first-app-secret", context, { recordId: "app-material-1" });
+    try {
+      await prisma.nativeAppConfig.create({
+        data: {
+          id: "app-config",
+          appId: "notion",
+          label: "Synthetic application",
+          ownership: "byo",
+          credentialKind: "oauth",
+          callbackUri: "https://api.example.test/api/connectors/oauth/callback",
+          ciphertext: first.ciphertext,
+          secretRecordId: "app-material-1",
+        },
+      });
+      await prisma.space.deleteMany({ where: { id: "space" } });
+      await prisma.user.deleteMany({ where: { id: "user" } });
+      await expect(store.load(first.ciphertext, "app-material-1")).resolves.toBe(
+        "first-app-secret",
+      );
+      expect(fake.values.size).toBe(1);
+      const next = await store.put("next-app-secret", context, { recordId: "app-material-2" });
+      await prisma.nativeAppConfig.update({
+        where: { id: "app-config" },
+        data: {
+          ciphertext: next.ciphertext,
+          secretRecordId: "app-material-2",
+        },
+      });
+      expect(fake.values.size).toBe(1);
+      await expect(store.load(first.ciphertext, "app-material-1")).rejects.toThrow();
+      await expect(store.load(next.ciphertext, "app-material-2")).resolves.toBe("next-app-secret");
+      await prisma.nativeAppConfig.deleteMany({ where: { id: "app-config" } });
+      expect(fake.values.size).toBe(0);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("keeps global Notion hook material through User/Space deletion, rotates by AAD and cleans deletion", async () => {
+    const fake = infisicalFake(),
+      store = new InfisicalSecretStore(fake.options);
+    await store.start();
+    const db = database(),
+      prisma = withSecretPersistence(db.prisma, store);
+    const hook = Reflect.get(prisma, "nativeNotionHook") as {
+      create(args: Args): Promise<unknown>;
+      update(args: Args): Promise<unknown>;
+      deleteMany(args: Args): Promise<unknown>;
+    };
+    const first = await store.put("synthetic-first-hook-token", context, {
+      recordId: "hook-material-1",
+    });
+    try {
+      await hook.create({
+        data: { id: "hook-row", ciphertext: first.ciphertext, secretRecordId: "hook-material-1" },
+      });
+      await prisma.space.deleteMany({ where: { id: "space" } });
+      await prisma.user.deleteMany({ where: { id: "user" } });
+      await expect(store.load(first.ciphertext, { recordId: "hook-material-1" })).resolves.toBe(
+        "synthetic-first-hook-token",
+      );
+      expect(fake.values.size).toBe(1);
+      const next = await store.put("synthetic-next-hook-token", context, {
+        recordId: "hook-material-2",
+      });
+      await hook.update({
+        where: { id: "hook-row" },
+        data: { id: "hook-row", ciphertext: next.ciphertext, secretRecordId: "hook-material-2" },
+      });
+      expect(fake.values.size).toBe(1);
+      await expect(store.load(first.ciphertext, { recordId: "hook-material-1" })).rejects.toThrow();
+      await expect(store.load(next.ciphertext, { recordId: "hook-material-2" })).resolves.toBe(
+        "synthetic-next-hook-token",
+      );
+      await hook.deleteMany({ where: { id: "hook-row" } });
+      expect(fake.values.size).toBe(0);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("captures organization cascades and cleans only after the enclosing transaction commits", async () => {
     const fake = infisicalFake();
     const store = new InfisicalSecretStore(fake.options);
@@ -352,20 +456,23 @@ describe("MCP OAuth prepared persistence", () => {
         secretId: initial.id,
         spaceId: "space",
         userId: "user",
-      });
-      const assignment = () => ({
-        serverId: "server",
+        enabled: true,
         allowAllTools: true,
-        server: {
-          ...db.tables.get("mcpServer")![0],
-          slug: "demo",
-          transport: "streamable_http",
-          revision: 1,
-          args: [],
-        },
+        allowedTools: [],
+        revision: 1,
       });
-      Object.assign(prisma, {
-        botMcpServer: { findMany: async () => [assignment()], findFirst: async () => assignment() },
+      const server = () => ({
+        ...db.tables.get("mcpServer")![0],
+        slug: "demo",
+        transport: "streamable_http",
+        revision: 1,
+        args: [],
+        enabled: true,
+        allowAllTools: true,
+        allowedTools: [],
+      });
+      Object.assign(prisma.mcpServer, {
+        findMany: async () => [server()],
       });
       const broker = new McpOAuthBroker(prisma, store);
       const held = new Map<McpSession, OAuthClientProvider>();

@@ -64,6 +64,19 @@ describeWithDatabase("API authorization and resource isolation", () => {
   it("rejects unauthenticated calls to every protected RPC family", async () => {
     const calls = exhaustiveProtectedCalls([
       ["me"],
+      ["nativeConnectors/status"],
+      ["nativeConnectors/configuration", { id: "missing-config" }],
+      [
+        "nativeConnectors/save",
+        {
+          appId: "coginex",
+          label: "Synthetic unauthorized application",
+          ownership: "byo",
+          credentialKind: "mcp_oauth",
+          endpoint: "https://mcp.example.test/mcp",
+        },
+      ],
+      ["nativeConnectors/begin", { configId: "missing-config" }],
       ["deployment/get"],
       ["deployment/update", { signupsEnabled: true }],
       ["updater/status"],

@@ -105,6 +105,24 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
+import {
+  NativeBeginInputSchema,
+  NativeConfigEditableSchema,
+  NativeConfigInputSchema,
+  NativeConfigStatusSchema,
+  NativeSetupStateSchema,
+} from "./native-connectors.js";
+import {
+  BeginNativeNotionHookSetupInputSchema,
+  ConfirmNativeNotionHookSetupInputSchema,
+  DisableNativeNotionHookInputSchema,
+  NativeNotionHookSchema,
+  NativeNotionHookStatusInputSchema,
+  NativeNotionHookStatusSchema,
+  RevealNativeNotionHookTokenInputSchema,
+  RevealNativeNotionHookTokenSchema,
+} from "./native-event-hooks.js";
+import { NativeRoutineTriggersInputSchema } from "./native-events.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { RoutineHistorySchema, RoutineRunCursorSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -505,6 +523,7 @@ export const appContract = {
         z
           .object({
             routineId: Id,
+            nativeTriggers: NativeRoutineTriggersInputSchema.optional(),
             name: z.string().optional(),
             prompt: z.string().optional(),
             crons: z.array(z.string().min(1)).optional(),
@@ -529,11 +548,12 @@ export const appContract = {
               value.crons.length === 0 &&
               value.webhookEnabled === false &&
               value.githubEnabled === false &&
-              value.messageProvider === null
+              value.messageProvider === null &&
+              value.nativeTriggers?.length === 0
             ) {
               ctx.addIssue({
                 code: "custom",
-                message: "Add a schedule, webhook, GitHub, or message trigger",
+                message: "Add a schedule, webhook, GitHub, message, or native event trigger",
                 path: ["crons"],
               });
             }
@@ -670,6 +690,16 @@ export const appContract = {
     servers: {
       list: oc.output(z.array(McpServerSchema)),
       create: oc.input(McpServerConfigInput).output(McpServerSchema),
+      setTools: oc
+        .input(
+          z.object({
+            id: Id,
+            revision: z.number().int().positive(),
+            allowAllTools: z.boolean(),
+            allowedTools: z.array(z.string().min(1).max(200)).max(500),
+          }),
+        )
+        .output(McpServerSchema),
       update: oc
         .input(
           z.union([
@@ -684,7 +714,14 @@ export const appContract = {
       list: oc.input(botId).output(z.array(BotMcpServerSchema)),
       all: oc.output(z.array(BotMcpServerSchema)),
       approve: oc
-        .input(z.object({ botId: Id, serverId: Id, threadId: Id.optional() }))
+        .input(
+          z.object({
+            botId: Id,
+            serverId: Id,
+            threadId: Id.optional(),
+            revision: z.number().int().positive().optional(),
+          }),
+        )
         .output(BotMcpServerSchema),
       dismiss: oc
         .input(z.object({ botId: Id, serverId: Id, threadId: Id.optional() }))
@@ -745,6 +782,29 @@ export const appContract = {
     get: oc.output(IntegrationSetupStateSchema),
     save: oc.input(IntegrationProviderConfigSchema).output(z.object({ ok: z.literal(true) })),
   },
+  nativeConnectors: {
+    notionWebhookStatus: oc
+      .input(NativeNotionHookStatusInputSchema)
+      .output(NativeNotionHookStatusSchema),
+    beginNotionWebhookSetup: oc
+      .input(BeginNativeNotionHookSetupInputSchema)
+      .output(NativeNotionHookSchema),
+    revealNotionWebhookToken: oc
+      .input(RevealNativeNotionHookTokenInputSchema)
+      .output(RevealNativeNotionHookTokenSchema),
+    confirmNotionWebhookSetup: oc
+      .input(ConfirmNativeNotionHookSetupInputSchema)
+      .output(NativeNotionHookSchema),
+    disableNotionWebhook: oc
+      .input(DisableNativeNotionHookInputSchema)
+      .output(NativeNotionHookSchema),
+    status: oc.output(NativeSetupStateSchema),
+    configuration: oc.input(z.object({ id: Id })).output(NativeConfigEditableSchema),
+    save: oc.input(NativeConfigInputSchema).output(NativeConfigStatusSchema),
+    begin: oc
+      .input(NativeBeginInputSchema)
+      .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),
+  },
   connections: {
     catalog: oc
       .input(z.object({ query: z.string().optional(), connectorId: z.string().optional() }))
@@ -756,6 +816,8 @@ export const appContract = {
           connectorId: z.string().default("composio"),
           provider: z.string(),
           displayName: z.string(),
+          /** Derive a new authorization from this unavailable connection; never replace its identity. */
+          connectionId: Id.optional(),
         }),
       )
       .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),

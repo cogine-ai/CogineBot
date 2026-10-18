@@ -38,6 +38,8 @@ export function requestLogging(logger?: Logger): MiddlewareHandler {
 }
 
 function matchedRoute(path: string, routePath: string): string {
+  if (path.startsWith("/api/connectors/events/notion/"))
+    return "/api/connectors/events/notion/:hookId";
   if (routePath && routePath !== "/*") return routePath;
   return path;
 }

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isApprovalPausedResult } from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
+import { connectorAccountRevision } from "./connector-account-binding.js";
 import { createRunExecutor } from "./executor.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
 
@@ -42,6 +43,18 @@ type Effect = {
   runId?: string;
 };
 
+type TestConnection = {
+  id: string;
+  connectorId: string;
+  provider: string;
+  providerRef: string;
+  displayName: string;
+  status: string;
+  userId: string;
+  spaceId: string;
+  metadata: { authRevision: string };
+};
+
 function fixture({
   name = "demo_get_item",
   catalog = false,
@@ -61,6 +74,9 @@ function fixture({
   disabledBuiltinTools = [],
   existingSharedMemory,
   advanceRevisionAfterRead = false,
+  connections = [],
+  connectionIds = [],
+  onConnectionRead,
 }: {
   builtin?: boolean;
   disabledBuiltinTools?: string[];
@@ -77,6 +93,9 @@ function fixture({
   prompt?: string;
   bot?: { name: string; title: string; description: string };
   shutdownSignal?: AbortSignal;
+  connections?: TestConnection[];
+  connectionIds?: string[];
+  onConnectionRead?: (count: number) => void;
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -164,6 +183,7 @@ function fixture({
       },
     ),
   };
+  let connectionReadCount = 0;
   const prisma = {
     run: {
       findUnique: vi.fn(async () => run),
@@ -192,8 +212,15 @@ function fixture({
     },
     thread: { findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId: null })) },
     message: { findMany: vi.fn(async () => []) },
-    task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt })) },
-    connection: { findMany: vi.fn(async () => []) },
+    task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt, connectionIds })) },
+    connection: {
+      findMany: vi.fn(async () => {
+        onConnectionRead?.(++connectionReadCount);
+        return connections.filter(
+          (row) => row.userId === run.userId && row.spaceId === run.spaceId,
+        );
+      }),
+    },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     userModelCredential: { findFirst: vi.fn(async () => null) },
     deploymentSettings: {
@@ -288,6 +315,8 @@ function fixture({
     shutdownSignal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
+    tool,
+    prisma,
     effects,
     results,
     execute,
@@ -297,12 +326,23 @@ function fixture({
     setCalls(next: typeof calls) {
       calls = next;
     },
-    async run() {
+    async run(expectedOutcome: "completed" | "failed" = "completed") {
       run.status = "queued";
       await executor.continueRun(run.id, "worker-1");
       expect(runtimeRun).toHaveBeenCalled();
       expect(prisma.attempt.update).not.toHaveBeenCalled();
-      expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
+      if (expectedOutcome === "failed") {
+        expect(finalizeRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            outcome: "failed",
+            error: "Approved tool requests were not fully replayed",
+          }),
+        );
+      } else {
+        expect(finalizeRun).not.toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: "failed" }),
+        );
+      }
     },
   };
 }
@@ -321,6 +361,110 @@ describe("disabled builtins", () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.effects).toEqual([]);
   });
+});
+
+describe("executor connector account revalidation", () => {
+  const account = (): TestConnection => ({
+    id: "selected",
+    connectorId: "demo",
+    provider: "gmail",
+    providerRef: "upstream-selected",
+    displayName: "Selected",
+    status: "connected",
+    userId: "user-1",
+    spaceId: "space-1",
+    metadata: { authRevision: "auth-1" },
+  });
+  const bind = (f: ReturnType<typeof fixture>, row: TestConnection) => {
+    f.tool.route = {
+      connectorId: row.connectorId,
+      resourceId: row.provider,
+      toolName: f.tool.name,
+      connectionId: row.id,
+      resourceRevision: connectorAccountRevision({
+        id: row.id,
+        connectorId: row.connectorId,
+        externalId: row.provider,
+        providerRef: row.providerRef,
+        displayName: row.displayName,
+        revision: row.metadata.authRevision,
+      }),
+    };
+  };
+
+  it("executes a still-authorized account with the freshly scoped context", async () => {
+    const row = account();
+    const f = fixture({ connections: [row], connectionIds: [row.id] });
+    bind(f, row);
+    await f.run();
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.prisma.connection.findMany).toHaveBeenCalledTimes(3);
+    expect(f.prisma.task.findUniqueOrThrow).toHaveBeenCalledTimes(3);
+    expect(f.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ route: expect.objectContaining({ connectionId: row.id }) }),
+      expect.objectContaining({
+        userId: row.userId,
+        spaceId: row.spaceId,
+        connectedConnections: [
+          expect.objectContaining({ id: row.id, providerRef: row.providerRef, revision: "auth-1" }),
+        ],
+      }),
+    );
+  });
+
+  it.each(["revoked", "ref", "generation", "intent"])(
+    "blocks a %s change between resolution and the outbound execute",
+    async (change) => {
+      const row = account();
+      const sibling = { ...account(), id: "sibling", providerRef: "upstream-sibling" };
+      const connectionIds = [row.id];
+      const f = fixture({
+        connections: [row, sibling],
+        connectionIds,
+        onConnectionRead: (count) => {
+          if (count !== 3) return;
+          if (change === "revoked") row.status = "revoked";
+          if (change === "ref") row.providerRef = "new-upstream-account";
+          if (change === "generation") row.metadata.authRevision = "auth-2";
+          if (change === "intent") connectionIds.splice(0, 1, sibling.id);
+        },
+      });
+      bind(f, row);
+      await f.run();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toMatchObject({
+        error: expect.stringMatching(/selected|authorization|unavailable/i),
+      });
+      expect(f.effects.at(-1)?.status).toBe("completed");
+    },
+  );
+
+  it.each([false, true])(
+    "rejects an old account approval after reauthorization (catalog %s)",
+    async (catalog) => {
+      const row = account();
+      const f = fixture({
+        catalog,
+        connections: [row],
+        connectionIds: [row.id],
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "demo_get_item" }],
+      });
+      bind(f, row);
+      // Keep the fixture's existing catalog id stable while its route is account-bound.
+      f.tool.route!.resourceId = "resource-1";
+      row.provider = "resource-1";
+      await f.run();
+      expect(f.effects).toHaveLength(1);
+      f.effects[0]!.status = "approved";
+      row.metadata.authRevision = "auth-2";
+      bind(f, row);
+      await f.run("failed");
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toMatchObject({
+        error: expect.stringContaining("different connector resource"),
+      });
+    },
+  );
 });
 
 describe("connector read-only metadata and approval enforcement", () => {

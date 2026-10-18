@@ -83,6 +83,8 @@ jobs:
           images: ${{ steps.namespace.outputs.image }}/${{ matrix.name }}
           tags: type=sha,prefix=sha-
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}

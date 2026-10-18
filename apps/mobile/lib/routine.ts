@@ -4,6 +4,12 @@ import { t } from "./i18n";
 
 export function routineStatusLine(routine: Routine): string {
   const triggers = [
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("calendar."))
+      ? [t("Calendar event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("notion."))
+      ? [t("Notion event")]
+      : []),
     ...routine.crons.map(formatCron),
     ...(routine.webhookEnabled ? [t("Webhook")] : []),
     ...(routine.githubEnabled ? [t("Git event")] : []),

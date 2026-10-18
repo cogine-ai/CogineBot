@@ -471,3 +471,26 @@ describe("schedule tool persistence", () => {
     );
   });
 });
+
+it("lists many AI schedules with one Native batch read", async () => {
+  const rows = Array.from({ length: 20 }, (_, index) => ({
+    id: `routine-${index}`,
+    name: "Synthetic",
+    prompt: "Synthetic prompt",
+    crons: ["0 9 * * *"],
+    active: true,
+    nextRunAt: null,
+  }));
+  const findMany = vi.fn(async () => rows);
+  const query = vi.fn(async () => rows.map((row) => ({ ownedRoutineId: row.id, id: null })));
+  const result = await listSchedulesFromTool(
+    { prisma: { routine: { findMany }, $queryRaw: query } } as unknown as Parameters<
+      typeof listSchedulesFromTool
+    >[0],
+    { spaceId: "space", botId: "bot", userId: "owner" },
+  );
+  expect(findMany).toHaveBeenCalledOnce();
+  expect(query).toHaveBeenCalledOnce();
+  expect(result.routines).toHaveLength(20);
+  expect(result.routines.every((routine) => routine.nativeTriggers.length === 0)).toBe(true);
+});

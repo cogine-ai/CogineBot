@@ -1,6 +1,8 @@
 import type {
   CacheCapabilities as ConnectionCacheCapabilities,
   ConnectionCatalogItem,
+  NativeNotionSignalJobPayload,
+  NativeSourceJobPayload,
   SandboxKind,
 } from "@rakazo/contracts";
 
@@ -28,6 +30,8 @@ export interface ConnectedConnector {
   externalId: string;
   displayName: string;
   providerRef?: string;
+  /** Authorization generation; routine token refresh and display-name changes leave it unchanged. */
+  revision?: string;
 }
 
 export interface AdapterDescriptor<TCapabilities> {
@@ -240,6 +244,8 @@ export interface ConnectorRoute {
   toolName: string;
   resourceId?: string;
   resourceRevision?: string | number;
+  /** Local authorized account selected outside the upstream tool's business arguments. */
+  connectionId?: string;
   /** Source label for lazy catalog name indexes. Never exposed as a model schema field. */
   catalogGroup?: string;
 }
@@ -255,7 +261,14 @@ export interface ConnectorCall {
 export type ConnectorEvent =
   | { type: "log"; message: string }
   | { type: "result"; data: unknown }
-  | { type: "error"; message: string; logIds?: string[] };
+  | {
+      type: "error";
+      message: string;
+      logIds?: string[];
+      code?: string;
+      uncertain?: boolean;
+      recovery?: Record<string, unknown>;
+    };
 
 export interface ConnectorCapabilities {
   discover: boolean;
@@ -625,6 +638,8 @@ export interface VoiceTranscribeRequest {
 }
 
 export interface BackgroundJobPayloads {
+  "native.source.poll": NativeSourceJobPayload;
+  "native.notion.signal": NativeNotionSignalJobPayload;
   "run.continue": { runId: string };
   "routine.wakeup": { routineId: string; scheduledFor: string };
   "computer.sleep": { computerId: string };

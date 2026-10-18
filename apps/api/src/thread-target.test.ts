@@ -1083,6 +1083,171 @@ function groupTarget() {
 }
 
 describe("sendThreadMessage", () => {
+  it.each(["bot", "group"] as const)(
+    "answers a waiting %s question before applying an explicit @account intent",
+    async (kind) => {
+      const answer = "Paris";
+      const waitingAsk = {
+        id: "ask-1",
+        blocks: [{ kind: "ask", text: "Which city should I use?", status: "pending" }],
+      };
+      const references = [
+        {
+          id: "gmail-old",
+          connectorId: "pipedream",
+          provider: "gmail",
+          displayName: "Personal Gmail",
+        },
+        {
+          id: "gmail-work",
+          connectorId: "composio",
+          provider: "googlemail",
+          displayName: "Work Gmail",
+        },
+        {
+          id: "calendar",
+          connectorId: "pipedream",
+          provider: "googlecalendar",
+          displayName: "Calendar",
+        },
+      ];
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: kind === "bot" ? "thread-1" : "group-1" }]),
+        thread: {
+          update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
+            data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
+          ),
+        },
+        message: {
+          create: vi.fn().mockResolvedValue({
+            id: "msg-1",
+            threadId: "thread-1",
+            seq: 1,
+            role: "user",
+            blocks: [{ kind: "text", text: answer }],
+            botId: null,
+            replyToMessageId: null,
+            runId: null,
+            createdAt: new Date(),
+          }),
+          findMany: vi.fn().mockResolvedValue([waitingAsk]),
+          findFirst: vi.fn().mockResolvedValue(waitingAsk),
+          update: vi.fn(),
+        },
+        run: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: "run-waiting",
+              taskId: "task-1",
+              botId: "bot-1",
+              status: "waiting_input",
+              trigger: "user",
+            },
+          ]),
+          findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+          create: vi.fn(),
+        },
+        connection: {
+          findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+            references.filter((row) => where.id.in.includes(row.id)),
+          ),
+        },
+        task: {
+          findFirst: vi.fn().mockResolvedValue({ connectionIds: ["gmail-old", "calendar"] }),
+          create: vi.fn(),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        steeringMessage: { create: vi.fn() },
+        event: { create: vi.fn().mockResolvedValue({ seq: 2, threadId: "thread-1" }) },
+        chatGroup: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "group-1",
+            members: [
+              { bot: { id: "bot-1", name: "Alpha", color: null } },
+              { bot: { id: "bot-2", name: "Beta", color: null } },
+            ],
+          }),
+          update: vi.fn().mockResolvedValue({ id: "group-1" }),
+        },
+      };
+      const prisma = {
+        message: { findUnique: vi.fn().mockResolvedValue(null) },
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+      const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
+      const target = (
+        kind === "bot"
+          ? { kind, botId: "bot-1", threadId: "thread-1", bot: { computer: null } }
+          : {
+              kind,
+              groupId: "group-1",
+              groupName: "Group",
+              threadId: "thread-1",
+              members: [],
+              memberBotIds: ["bot-1", "bot-2"],
+            }
+      ) as ThreadTarget;
+      const enqueue = vi.fn().mockResolvedValue(undefined);
+      await expect(
+        sendThreadMessage(
+          {
+            prisma,
+            events: { notify: vi.fn().mockResolvedValue(undefined) } as never,
+            jobs: { enqueue } as never,
+          },
+          actor,
+          target,
+          {
+            text: answer,
+            mentions: [{ kind: "connector", id: "gmail-work" }],
+            clientNonce: `nonce-waiting-account-${kind}`,
+          },
+        ),
+      ).resolves.toMatchObject({ runId: "run-waiting", taskId: "task-1", runIds: ["run-waiting"] });
+      expect(tx.task.updateMany).toHaveBeenNthCalledWith(1, {
+        where: { runs: { some: { id: "run-waiting" } } },
+        data: { prompt: answer },
+      });
+      expect(tx.task.updateMany).toHaveBeenNthCalledWith(2, {
+        where: { id: "task-1", spaceId: actor.spaceId, userId: actor.userId },
+        data: { connectionIds: ["calendar", "gmail-work"] },
+      });
+      expect(tx.task.findFirst).toHaveBeenCalledWith({
+        where: { id: "task-1", spaceId: actor.spaceId, userId: actor.userId },
+        select: { connectionIds: true },
+      });
+      expect(tx.connection.findMany).toHaveBeenNthCalledWith(1, {
+        where: {
+          id: { in: ["gmail-work"] },
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          status: "connected",
+        },
+        select: { id: true, displayName: true },
+      });
+      expect(tx.run.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ status: "waiting_input" }),
+          data: { status: "queued" },
+        }),
+      );
+      expect(tx.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ blocks: [{ kind: "text", text: answer }] }),
+        }),
+      );
+      expect(tx.steeringMessage.create).not.toHaveBeenCalled();
+      expect(tx.task.create).not.toHaveBeenCalled();
+      expect(tx.run.create).not.toHaveBeenCalled();
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect(enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "run.continue", payload: { runId: "run-waiting" } }),
+      );
+    },
+  );
+
   it("answers a waiting question with a free-text chat message", async () => {
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),

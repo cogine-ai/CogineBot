@@ -28,8 +28,13 @@ function attentionDb(input: {
   messages?: ReturnType<typeof card>[];
   runs?: Array<{ id: string; threadId: string; botId: string; spaceId: string; userId: string }>;
   effects?: Array<{ id: string; runId: string; spaceId: string }>;
-  servers?: Array<{ id: string; spaceId: string; userId: string }>;
-  assignments?: Array<{ botId: string; serverId: string; spaceId: string; userId: string }>;
+  servers?: Array<{
+    id: string;
+    spaceId: string;
+    userId: string;
+    allowAllTools?: boolean;
+    allowedTools?: unknown;
+  }>;
 }) {
   const prisma = {
     thread: { findMany: vi.fn(async () => [thread]) },
@@ -38,7 +43,6 @@ function attentionDb(input: {
     externalEffect: { findMany: vi.fn(async () => input.effects ?? []) },
     bot: { findMany: vi.fn(async () => [bot]) },
     mcpServer: { findMany: vi.fn(async () => input.servers ?? []) },
-    botMcpServer: { findMany: vi.fn(async () => input.assignments ?? []) },
   };
   return { prisma, client: prisma as unknown as PrismaClient };
 }
@@ -129,7 +133,7 @@ describe("loadThreadAttention", () => {
     expect(prisma.externalEffect.findMany).not.toHaveBeenCalled();
   });
 
-  it("uses current owned enabled MCP requests independently of Run activity and existing assignments", async () => {
+  it("uses current owned enabled MCP requests independently of Run activity and the shared server policy", async () => {
     const mcp = (serverId: string): MessageBlock => ({
       kind: "mcp_approval",
       serverId,
@@ -150,11 +154,10 @@ describe("loadThreadAttention", () => {
         ]),
       ],
       servers: [
-        { id: "server-assigned", ...owner },
+        { id: "server-assigned", ...owner, allowAllTools: true },
         { id: "server-foreign", ...owner, userId: "other-user" },
         { id: "server-open", ...owner },
       ],
-      assignments: [{ botId: bot.id, serverId: "server-assigned", ...owner }],
     });
     expect((await loadThreadAttention(client, [thread.id])).get(thread.id)).toEqual({
       attentionMessageId: "request",

@@ -10,6 +10,7 @@ import {
 import { ThreadMessageSchema } from "./events.js";
 import { Id, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
 import { McpHeadersSchema, McpRemoteEndpointSchema, McpTransportSchema } from "./mcp.js";
+import { NativeRoutineTriggerSchema, NativeRoutineTriggersInputSchema } from "./native-events.js";
 import { RunTriggerSchema } from "./runs.js";
 
 export const ComputerModeSchema = z.enum(["team", "dedicated"]);
@@ -378,6 +379,7 @@ export const UpdateBotInput = z
   });
 
 export const RoutineSchema = z.object({
+  nativeTriggers: z.array(NativeRoutineTriggerSchema).optional(),
   id: Id,
   botId: Id,
   name: z.string(),
@@ -407,6 +409,7 @@ export type Routine = z.infer<typeof RoutineSchema>;
 export const CreateRoutineInput = z
   .object({
     botId: Id,
+    nativeTriggers: NativeRoutineTriggersInputSchema.default([]),
     name: z.string().min(1).max(80),
     prompt: z.string().min(1),
     crons: z.array(z.string().min(1)).default([]),
@@ -428,11 +431,12 @@ export const CreateRoutineInput = z
       value.crons.length === 0 &&
       !value.webhookEnabled &&
       !value.githubEnabled &&
-      !value.messageProvider
+      !value.messageProvider &&
+      value.nativeTriggers.length === 0
     ) {
       ctx.addIssue({
         code: "custom",
-        message: "Add a schedule, webhook, GitHub, or message trigger",
+        message: "Add a schedule, webhook, GitHub, message, or native event trigger",
         path: ["crons"],
       });
     }
@@ -598,6 +602,7 @@ export const ConnectionSchema = z.object({
   connectorId: z.string(),
   provider: z.string(),
   displayName: z.string(),
+  remoteAccountId: z.string().nullable().optional(),
   status: z.enum(["pending", "connected", "revoked", "error"]),
   capabilities: z.array(z.string()),
   createdAt: z.string(),
@@ -721,6 +726,8 @@ export const McpServerSchema = z.object({
   hasSecret: z.boolean(),
   oauthStatus: z.enum(["none", "connected", "reconnect"]),
   enabled: z.boolean(),
+  allowAllTools: z.boolean(),
+  allowedTools: z.array(z.string().min(1).max(200)),
   revision: z.number().int().positive(),
   createdAt: z.string(),
   updatedAt: z.string(),

@@ -268,6 +268,7 @@ import {
   RoutineListRow,
   routineNeedsOneShotArm,
 } from "./RoutineEditor";
+import { nativeRoutineTriggerInputs } from "./routine-native-events";
 import type { SettingsSection } from "./SettingsOverlay";
 import { SpaceSearchResults } from "./SpaceSearch";
 import { BotSettings, CreateBotForm } from "./shell/bot-panel";
@@ -553,6 +554,8 @@ export function ShellPage() {
     commitSnapshot(update(snapshotRef.current));
   }
   const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [connectionsRevision, setConnectionsRevision] = useState(0);
+  const connectionsChanged = useCallback(() => setConnectionsRevision((value) => value + 1), []);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -2138,7 +2141,7 @@ export function ShellPage() {
     return () => {
       cancelled = true;
     };
-  }, [initialBotsLoaded, mentionBotsKey]);
+  }, [initialBotsLoaded, mentionBotsKey, pluginsOpen, connectionsRevision]);
 
   useLayoutEffect(() => {
     if (initialBotsLoaded) {
@@ -4077,6 +4080,7 @@ export function ShellPage() {
               mentionTargets={composerMentionTargets}
               onRefresh={refreshActiveThread}
               onBotChanged={refreshBots}
+              onConnectionsChanged={connectionsChanged}
               onAddRoutine={addSkillRoutine}
               voiceReady={Boolean(voiceStatus?.ready)}
               speakingMessageId={speakingMessageId}
@@ -4433,6 +4437,9 @@ export function ShellPage() {
                     : `/api/v1/bots/${active.id}/github`
                 }
                 messageProviders={messagingProviders}
+                connectionsRevision={connectionsRevision}
+                scopeKey={active.id}
+                onOpenApplications={() => setPluginsOpen(true)}
                 saving={savingRoutine}
                 running={runningRoutine}
                 error={routineError}
@@ -4450,9 +4457,12 @@ export function ShellPage() {
                     !routineDraft.schedules.length &&
                     !routineDraft.webhookEnabled &&
                     !routineDraft.githubEnabled &&
-                    !routineDraft.messageProvider
+                    !routineDraft.messageProvider &&
+                    !routineDraft.nativeTriggers.length
                   ) {
-                    setRoutineError(t`Add a schedule, webhook, GitHub, or message trigger`);
+                    setRoutineError(
+                      t`Add a schedule, application event, webhook, GitHub, or message trigger`,
+                    );
                     return;
                   }
                   const saveRequest = ++routineSaveRequest.current;
@@ -4460,6 +4470,13 @@ export function ShellPage() {
                   setSavingRoutine(true);
                   setRoutineError(null);
                   try {
+                    const nativeResult = routineDraft.nativeTriggersDirty
+                      ? nativeRoutineTriggerInputs(routineDraft.nativeTriggers)
+                      : undefined;
+                    if (nativeResult && !nativeResult.success) {
+                      setRoutineError(t`Check the application event accounts and fields.`);
+                      return;
+                    }
                     if (
                       (routineDraft.webhookEnabled || routineDraft.githubEnabled) &&
                       !active.webhookConfigured &&
@@ -4486,6 +4503,7 @@ export function ShellPage() {
                       }
                       saved = await rpc.routines.update({
                         routineId: targetRoutine.id,
+                        ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
@@ -4498,6 +4516,7 @@ export function ShellPage() {
                     } else {
                       saved = await rpc.routines.create({
                         botId: targetBotId,
+                        ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
@@ -4951,6 +4970,7 @@ export function ShellPage() {
         {pluginsOpen ? (
           <PluginsOverlay
             activeBotId={activeBotId.current}
+            onConnectionsChanged={connectionsChanged}
             onClose={() => setPluginsOpen(false)}
             onOpenMcp={() => {
               setPluginsOpen(false);
@@ -5220,6 +5240,7 @@ const Transcript = memo(function Transcript({
   mentionTargets,
   onRefresh,
   onBotChanged,
+  onConnectionsChanged,
   onAddRoutine,
   voiceReady,
   speakingMessageId,
@@ -5253,6 +5274,7 @@ const Transcript = memo(function Transcript({
   mentionTargets: readonly ComposerMention[];
   onRefresh: () => Promise<void>;
   onBotChanged: () => Promise<void>;
+  onConnectionsChanged: () => void;
   onAddRoutine: (name: string, prompt: string) => void;
   voiceReady: boolean;
   speakingMessageId: string | null;
@@ -5619,6 +5641,7 @@ const Transcript = memo(function Transcript({
                         onJumpToMessage={onJumpToMessage}
                         onRefresh={onRefresh}
                         onBotChanged={onBotChanged}
+                        onConnectionsChanged={onConnectionsChanged}
                         onAddRoutine={onAddRoutine}
                         voiceReady={voiceReady}
                         speaking={speakingMessageId === message.id}
@@ -6881,6 +6904,7 @@ const MessageView = memo(function MessageView({
   onJumpToMessage,
   onRefresh,
   onBotChanged,
+  onConnectionsChanged,
   onAddRoutine,
   voiceReady,
   speaking,
@@ -6903,6 +6927,7 @@ const MessageView = memo(function MessageView({
   onJumpToMessage?: (messageId: string) => void;
   onRefresh: () => Promise<void>;
   onBotChanged: () => Promise<void>;
+  onConnectionsChanged: () => void;
   onAddRoutine: (name: string, prompt: string) => void;
   voiceReady: boolean;
   speaking: boolean;
@@ -7212,7 +7237,11 @@ const MessageView = memo(function MessageView({
             if (!botId) return null;
             return (
               <div key={i} className="flex justify-start py-1">
-                <AppConnectCard botId={botId} block={block} />
+                <AppConnectCard
+                  botId={botId}
+                  block={block}
+                  onConnectionsChanged={onConnectionsChanged}
+                />
               </div>
             );
           }

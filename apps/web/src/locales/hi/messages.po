@@ -18,6 +18,11 @@ msgstr ""
 msgid "{0, plural, one {# model} other {# models}}"
 msgstr "{0, plural, one {# मॉडल} other {# मॉडल}}"
 
+#. placeholder {0}: tools.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0, plural, one {# tool} other {# tools}}"
+msgstr "{0, plural, one {# टूल} other {# टूल}}"
+
 #. placeholder {0}: Math.ceil(oauth.expiresInSeconds / 60)
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -65,6 +70,16 @@ msgstr "{0} KB"
 msgid "{0} MB"
 msgstr "{0} MB"
 
+#. placeholder {0}: summary.errors.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} need attention"
+msgstr "{0} पर ध्यान दें"
+
+#. placeholder {0}: summary.pending.length
+#: src/pages/PluginsOverlay.tsx
+msgid "{0} pending"
+msgstr "{0} लंबित"
+
 #. placeholder {0}: sender.name
 #: src/pages/ExternalConversationSettings.tsx
 msgid "{0} rollup hours"
@@ -75,6 +90,11 @@ msgstr ""
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "{0} runs · {1} tokens"
 msgstr "{0} रन · {1} टोकन"
+
+#. placeholder {0}: server.allowedTools.length
+#: src/components/integrations/McpToolAccess.tsx
+msgid "{0} tools shared in this space"
+msgstr "इस स्पेस में {0} टूल साझा हैं"
 
 #. placeholder {0}: bot.name
 #: src/pages/ExternalConversationSettings.tsx
@@ -176,13 +196,13 @@ msgstr ""
 msgid "{stepCount, plural, one {Working… · # tool} other {Working… · # tools}}"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "{stopped} accounts disconnected locally"
+msgstr "{stopped} खाते स्थानीय रूप से डिस्कनेक्ट हुए"
+
 #: src/pages/ActivityList.tsx
 msgid "{title}, {label}"
 msgstr "{title}, {label}"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "{toolCount, plural, one {# tool} other {# tools}}"
-msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "{workingBotName} is working"
@@ -193,8 +213,16 @@ msgstr "{workingBotName} काम कर रहा है"
 msgid "@{0}"
 msgstr "@{0}"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "1 account disconnected locally"
+msgstr "1 खाता स्थानीय रूप से डिस्कनेक्ट हुआ"
+
 #: src/pages/shell/message-cards.tsx
 msgid "A bit of everything"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "A public HTTPS address is required to receive Notion webhooks."
 msgstr ""
 
 #. placeholder {0}: oauth.verificationUri.replace(/^https:\/\//, "")
@@ -225,12 +253,26 @@ msgid "Access token (optional)"
 msgstr "एक्सेस टोकन (वैकल्पिक)"
 
 #: src/pages/AccountSettingsOverlay.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Account"
 msgstr "खाता"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Account authorization"
+msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Account default"
 msgstr "खाता डिफ़ॉल्ट"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account details"
+msgstr "खाते का विवरण"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Account disconnected."
+msgstr "खाता डिस्कनेक्ट हो गया।"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -244,6 +286,14 @@ msgstr ""
 #: src/pages/PluginsOverlay.tsx
 msgid "Accounts"
 msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts changed. Review them before disconnecting."
+msgstr "खाते बदल गए हैं। डिस्कनेक्ट करने से पहले जाँचें।"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Accounts that need attention are kept. Manage them individually."
+msgstr "ध्यान देने योग्य खाते रखे गए हैं। उन्हें अलग-अलग प्रबंधित करें।"
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Action confirmations"
@@ -290,11 +340,11 @@ msgid "Add a run time for this one-shot."
 msgstr ""
 
 #: src/pages/Shell.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger"
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
-msgid "Add a schedule, webhook, GitHub, or message trigger to run this routine."
+msgid "Add a schedule, application event, webhook, GitHub, or message trigger to run this routine."
 msgstr ""
 
 #: src/pages/McpServersOverlay.tsx
@@ -305,12 +355,24 @@ msgstr "सर्वर का नाम दर्ज करें।"
 msgid "Add a stdio command."
 msgstr "एक stdio कमांड दर्ज करें।"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Add account"
+msgstr "खाता जोड़ें"
+
 #: src/pages/McpServersOverlay.tsx
 msgid "Add an HTTPS server URL."
 msgstr "एक HTTPS सर्वर URL दर्ज करें।"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Add another"
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add and reprocess knowledge"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Add comments"
 msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
@@ -366,6 +428,10 @@ msgstr ""
 msgid "Add someone…"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Add this URL in your Notion integration’s Webhooks tab."
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Add to routine"
 msgstr "रूटीन में जोड़ें"
@@ -378,12 +444,7 @@ msgstr "Treg जोड़ें"
 msgid "Add trigger"
 msgstr ""
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Added"
-msgstr ""
-
 #: src/pages/McpServersOverlay.tsx
-#: src/pages/PluginsOverlay.tsx
 msgid "Adding…"
 msgstr "जोड़ा जा रहा है…"
 
@@ -409,9 +470,9 @@ msgstr "एजेंट कंप्यूटर"
 msgid "Agent connections"
 msgstr ""
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Agents:"
-msgstr "एजेंट:"
+#: src/pages/PluginsOverlay.tsx
+msgid "All apps"
+msgstr "सभी ऐप"
 
 #: src/pages/Artifacts.tsx
 msgid "All bots"
@@ -428,6 +489,10 @@ msgstr ""
 #: src/pages/Artifacts.tsx
 msgid "All time"
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "All tools shared in this space"
+msgstr "इस स्पेस में सभी टूल साझा हैं"
 
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx
@@ -460,6 +525,10 @@ msgstr "खरीद कार्रवाइयों को बिना प�
 msgid "Allow writing"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed knowledge base IDs"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Allowed once"
 msgstr "एक बार अनुमति दी गई"
@@ -483,6 +552,10 @@ msgstr "हमेशा अनुमत"
 #: src/lib/model-connection-preflight.ts
 msgid "An API key is stored for this provider, not a subscription sign-in."
 msgstr "इस प्रोवाइडर के लिए API कुंजी संग्रहीत है, सब्सक्रिप्शन साइन-इन नहीं।"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Anchor block ID"
+msgstr ""
 
 #: src/components/AskCard.tsx
 msgid "Answer"
@@ -522,6 +595,10 @@ msgstr "API कुंजी"
 msgid "API key header"
 msgstr "API कुंजी हेडर"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "API origin"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "App"
 msgstr ""
@@ -530,18 +607,46 @@ msgstr ""
 msgid "Appearance"
 msgstr "रूप"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application credentials"
+msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Application events"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Application filter"
+msgstr "ऐप फ़िल्टर"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application owner"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Application saved"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Application settings changed"
+msgstr ""
+
 #: src/components/teach/SkillDraftCard.tsx
 msgid "Approval boundaries"
 msgstr "अनुमोदन सीमाएं"
 
 #: src/pages/MessagingSettingsOverlay.tsx
-#: src/pages/shell/message-cards.tsx
 msgid "Approve"
 msgstr "अनुमोदित करें"
-
-#: src/pages/shell/message-cards.tsx
-msgid "Approve this server to let your agent use its tools."
-msgstr "अपने एजेंट को इसके टूल उपयोग करने देने के लिए इस सर्वर को अनुमोदित करें।"
 
 #: src/pages/BotContextMenu.tsx
 msgid "Archive"
@@ -594,8 +699,16 @@ msgstr "खरीद से पहले पूछें"
 msgid "Ask before sending external email"
 msgstr "बाहरी ईमेल भेजने से पहले पूछें"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ask questions"
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Ask the server owner to configure this provider."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Ask your administrator to enable a connection method."
 msgstr ""
 
 #. placeholder {0}: preset.time
@@ -624,10 +737,27 @@ msgstr "अटैचमेंट"
 msgid "Authentication failed."
 msgstr "प्रमाणीकरण विफल रहा।"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Authorization"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Authorization code or callback URL"
 msgstr "ऑथराइज़ेशन कोड या कॉलबैक URL"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization did not complete. You can authorize again."
+msgstr "अनुमति देने की प्रक्रिया पूरी नहीं हुई। फिर से अनुमति दें।"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization is still pending."
+msgstr "अनुमति की प्रक्रिया अभी लंबित है।"
+
+#. placeholder {0}: row.remoteAccountId
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorization record: {0}"
+msgstr "अनुमति रिकॉर्ड: {0}"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorization timed out. Please try again."
@@ -636,6 +766,14 @@ msgstr "ऑथराइज़ेशन का समय समाप्त ह�
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize"
 msgstr "ऑथराइज़ करें"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Authorize account"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Authorize again"
+msgstr "फिर से अनुमति दें"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Authorize this server so agents can use its tools. A popup opens."
@@ -662,10 +800,15 @@ msgid "Avatar image"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 msgid "Back"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Back to applications"
 msgstr ""
 
 #: src/pages/Auth.tsx
@@ -702,8 +845,20 @@ msgstr ""
 msgid "Bearer token"
 msgstr "बियरर टोकन"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Before a Calendar event"
+msgstr ""
+
 #: src/pages/SettingsOverlay.tsx
 msgid "Billing"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Block ID"
 msgstr ""
 
 #: src/lib/ticket-status.ts
@@ -779,6 +934,30 @@ msgstr ""
 msgid "Built-in"
 msgstr "अंतर्निहित"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "By Cogine"
+msgstr "Cogine द्वारा"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Calendar event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar event changed"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar ID"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Calendar target"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Callback URL"
+msgstr ""
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "सर्वर तक नहीं पहुंचा जा सका।"
@@ -786,6 +965,8 @@ msgstr "सर्वर तक नहीं पहुंचा जा सका�
 #: src/components/AskCard.tsx
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
@@ -797,6 +978,10 @@ msgstr "सर्वर तक नहीं पहुंचा जा सका�
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "रद्द करें"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Cancel connection"
+msgstr "कनेक्शन रद्द करें"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -827,6 +1012,10 @@ msgstr ""
 msgid "Change password"
 msgstr "पासवर्ड बदलें"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Changing authorization settings requires accounts to authorize again."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Changing…"
 msgstr "बदला जा रहा है…"
@@ -852,8 +1041,17 @@ msgid "Chat Settings"
 msgstr "चैट सेटिंग्स"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx
 msgid "Check again"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check calendar availability"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Check event availability"
 msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
@@ -869,13 +1067,25 @@ msgstr ""
 msgid "Check in."
 msgstr "जांच करें।"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Check status"
+msgstr "स्थिति जाँचें"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the API key or sign-in, then test again."
 msgstr "API कुंजी या साइन-इन जाँचें, फिर फिर से परीक्षण करें।"
 
+#: src/pages/Shell.tsx
+msgid "Check the application event accounts and fields."
+msgstr ""
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "सर्वर URL और नेटवर्क जाँचें, फिर फिर से परीक्षण करें।"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Check this ID against your Notion integration before enabling events."
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Check your email"
@@ -900,12 +1110,28 @@ msgstr ""
 msgid "Choose a bot…"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose a connected account to change this event."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Choose a connection method"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "नया पासवर्ड चुनें"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose account"
+msgstr ""
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose an image file"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Choose event"
 msgstr ""
 
 #: src/pages/shell/avatar-studio-popover.tsx
@@ -939,10 +1165,12 @@ msgid "Clearing…"
 msgstr "साफ़ किया जा रहा है…"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client ID"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Client secret"
 msgstr ""
 
@@ -1061,6 +1289,10 @@ msgstr ""
 msgid "Complete"
 msgstr "पूर्ण"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Complete the required application settings"
+msgstr ""
+
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -1124,6 +1356,7 @@ msgstr "पुष्टि करें कि यह URL इस ब्राउ
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connect"
 msgstr "कनेक्ट करें"
@@ -1136,6 +1369,14 @@ msgstr "एक मॉडल कनेक्ट करें"
 msgid "Connect a provider to add backups."
 msgstr "बैकअप जोड़ने के लिए किसी प्रदाता को कनेक्ट करें।"
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect account"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect an account"
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Connect API key"
 msgstr "API कुंजी कनेक्ट करें"
@@ -1143,6 +1384,14 @@ msgstr "API कुंजी कनेक्ट करें"
 #: src/pages/PluginsOverlay.tsx
 msgid "Connect Executor"
 msgstr "Executor कनेक्ट करें"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connect machine"
+msgstr ""
 
 #: src/pages/shell/message-cards.tsx
 msgid "Connect MCP server “{name}”"
@@ -1164,6 +1413,7 @@ msgstr "Treg कनेक्ट करें"
 #: src/pages/McpOAuthCallback.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/message-cards.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
@@ -1191,6 +1441,7 @@ msgid "Connected. Its tools are available from your next message."
 msgstr "कनेक्टेड। इसके टूल आपके अगले संदेश से उपलब्ध हैं।"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
@@ -1198,6 +1449,30 @@ msgstr "कनेक्टेड। इसके टूल आपके अग�
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Connecting…"
 msgstr "कनेक्ट हो रहा है…"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Connection method"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method enabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connection method name"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection source"
+msgstr "कनेक्शन स्रोत"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Connection status unconfirmed. Refresh status."
+msgstr "कनेक्शन की स्थिति स्पष्ट नहीं है। स्थिति रीफ़्रेश करें।"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
@@ -1217,6 +1492,10 @@ msgstr "कॉन्टेक्स्ट सीमा"
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "जारी रखें"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Continue authorization"
+msgstr ""
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Continue in Background"
@@ -1271,6 +1550,10 @@ msgstr "पासवर्ड बदला नहीं जा सका"
 msgid "Could not change the default model"
 msgstr "डिफ़ॉल्ट मॉडल बदला नहीं जा सका"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not check connection"
+msgstr "कनेक्शन जाँचा नहीं जा सका"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Could not check stored credentials."
 msgstr "संग्रहीत क्रेडेंशियल जाँचे नहीं जा सके।"
@@ -1295,7 +1578,12 @@ msgstr "OAuth पूरा नहीं हो सका"
 msgid "Could not complete the update. Try again."
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not confirm cancellation. Check the pending account."
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not connect"
 msgstr "कनेक्ट नहीं हो सका"
@@ -1420,8 +1708,16 @@ msgstr ""
 msgid "Could not load"
 msgstr "लोड नहीं हो सका"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Could not load accounts"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Could not load activity"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not load applications"
 msgstr ""
 
 #: src/components/ApprovalRulesSettings.tsx
@@ -1448,8 +1744,16 @@ msgstr ""
 msgid "Could not load commands"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Could not load connection methods"
+msgstr ""
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "Could not load credentials."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not load event subscriptions"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -1489,6 +1793,10 @@ msgstr "यह चैट लोड नहीं हो सकी."
 #: src/components/ArtifactFileCard.tsx
 msgid "Could not load this file."
 msgstr "यह फ़ाइल लोड नहीं हो सकी।"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Could not load tools"
+msgstr "टूल लोड नहीं हो सके"
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Could not load update status"
@@ -1574,10 +1882,6 @@ msgstr "चार्ट रेंडर नहीं हो सका"
 msgid "Could not reset password"
 msgstr "पासवर्ड रीसेट नहीं किया जा सका"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Could not revoke connection"
-msgstr "कनेक्शन रद्द नहीं किया जा सका"
-
 #: src/pages/Shell.tsx
 msgid "Could not run routine"
 msgstr ""
@@ -1587,6 +1891,10 @@ msgstr ""
 #: src/pages/shell/bot-panel.tsx
 msgid "Could not save"
 msgstr "सहेजा नहीं जा सका"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Could not save application"
+msgstr ""
 
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Could not save Auto Review"
@@ -1638,6 +1946,10 @@ msgstr ""
 msgid "Could not save this choice"
 msgstr "यह विकल्प सहेजा नहीं जा सका"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Could not save tool access"
+msgstr "टूल की अनुमति सहेजी नहीं जा सकी"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Could not search catalog"
 msgstr ""
@@ -1670,13 +1982,13 @@ msgstr "नियंत्रण नहीं लिया जा सका"
 msgid "Could not update"
 msgstr "अपडेट नहीं हो सका"
 
-#: src/pages/McpServersOverlay.tsx
-msgid "Could not update agent access"
-msgstr "एजेंट एक्सेस अपडेट नहीं हो सका"
-
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Could not update computer"
 msgstr "कंप्यूटर अपडेट नहीं हो सका"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Could not update event subscription"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Could not update reaction"
@@ -1718,6 +2030,10 @@ msgstr "एक सेक्शन बनाएं और {0} को उसमे
 msgid "Create account"
 msgstr "खाता बनाएं"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create and change events"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Create Bot"
 msgstr ""
@@ -1738,6 +2054,10 @@ msgstr "नया समूह बनाएं"
 #: src/pages/shell/bot-picker.tsx
 msgid "Create new Space"
 msgstr "नया स्पेस बनाएं"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Create pages and blocks"
+msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Create Routine"
@@ -1807,6 +2127,14 @@ msgstr "बॉट अवतार अनुकूलित करें"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Dark"
 msgstr "डार्क"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Data source ID"
+msgstr ""
 
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
@@ -1939,6 +2267,14 @@ msgstr ""
 msgid "Direct MCP"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Disabled methods cannot be used. Connected accounts are kept."
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
 msgstr ""
@@ -1946,6 +2282,7 @@ msgstr ""
 #: src/pages/McpServersOverlay.tsx
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnect"
 msgstr "डिस्कनेक्ट करें"
@@ -1954,16 +2291,46 @@ msgstr "डिस्कनेक्ट करें"
 msgid "Disconnect {disconnectName}?"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect account"
+msgstr "खाता डिस्कनेक्ट करें"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect did not complete. Review the remaining accounts before trying again."
+msgstr "डिस्कनेक्ट नहीं हुआ। दोबारा कोशिश करने से पहले बचे हुए खाते जाँचें।"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnect this account?"
+msgstr "यह खाता डिस्कनेक्ट करें?"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected"
+msgstr "डिस्कनेक्ट किया गया"
+
 #. placeholder {0}: selected.providerName ?? selected.provider
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Disconnected {0}."
 msgstr ""
 
+#. placeholder {0}: history.length
+#: src/pages/PluginsOverlay.tsx
+msgid "Disconnected accounts ({0})"
+msgstr "डिस्कनेक्ट किए गए खाते ({0})"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Disconnecting…"
 msgstr "डिस्कनेक्ट हो रहा है…"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discussion ID"
+msgstr ""
 
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
@@ -2052,9 +2419,21 @@ msgstr "डुप्लिकेट"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "उदा. Hivenet Agent, Presales, टाइमशीट बॉट"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit application"
+msgstr ""
+
 #: src/components/AskCard.tsx
 msgid "Edit first"
 msgstr "पहले संपादित करें"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit pages and blocks"
+msgstr ""
 
 #: src/pages/BotContextMenu.tsx
 msgid "Edit Profile"
@@ -2072,6 +2451,19 @@ msgstr "इस ईमेल को पंजीकरण की अनुमत�
 msgid "Email verification required"
 msgstr "ईमेल सत्यापन आवश्यक है"
 
+#. placeholder {0}: entry.label
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enable {0}"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enable events"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Enabled"
+msgstr ""
+
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
 msgstr ""
@@ -2086,6 +2478,10 @@ msgstr "पासवर्ड दर्ज करें"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Enter a username and password"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Enter a valid credential"
 msgstr ""
 
 #: src/lib/user-error.ts
@@ -2111,8 +2507,24 @@ msgstr "इमेज सीमा के लिए 1 से 1000 के बी�
 msgid "Enter an API key before testing."
 msgstr "परीक्षण से पहले API कुंजी दर्ज करें।"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter the integration ID and verify the subscription in Notion first."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Enter your integration ID, or make a change in Notion to receive it."
+msgstr ""
+
 #: src/lib/roster-status.ts
 msgid "Error"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event ID"
 msgstr ""
 
 #: src/pages/ExternalConversationSettings.tsx
@@ -2268,6 +2680,10 @@ msgstr "MCP कनेक्शन पूरा हो रहा है…"
 msgid "Flag unexpected actions"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "For example, Company Calendar"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Forgot password?"
 msgstr "पासवर्ड भूल गए?"
@@ -2377,6 +2793,10 @@ msgstr "नमस्ते, उत्तर पढ़कर सुनाते �
 msgid "Hide password"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Hide token"
+msgstr ""
+
 #: src/components/call/VoiceChatCard.tsx
 msgid "Hide transcript"
 msgstr "ट्रांसक्रिप्ट छिपाएँ"
@@ -2408,6 +2828,10 @@ msgstr "कितनी बार"
 #: src/components/teach/SkillDraftCard.tsx
 msgid "How to check"
 msgstr "जांच कैसे करें"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "I verified this subscription in Notion"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "I’m done"
@@ -2461,8 +2885,16 @@ msgstr "इंस्टेंस API कुंजी"
 msgid "Instruction"
 msgstr "निर्देश"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Integration domain"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Integration ID in Notion"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -2473,6 +2905,16 @@ msgstr ""
 #: src/pages/Shell.tsx
 msgid "Integrations"
 msgstr "इंटीग्रेशन"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Internal integration token"
+msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 #: src/pages/RoutineSchedule.tsx
@@ -2541,6 +2983,10 @@ msgstr ""
 msgid "Leave"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Leave blank to keep the saved secret."
+msgstr ""
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Light"
 msgstr "लाइट"
@@ -2556,6 +3002,10 @@ msgstr ""
 #: src/components/AccountAccess.tsx
 msgid "Link SSO"
 msgstr "SSO लिंक करें"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "List calendars"
+msgstr ""
 
 #: src/pages/Artifacts.tsx
 msgid "List view"
@@ -2585,9 +3035,21 @@ msgstr "पुराने रन लोड करें"
 msgid "Load web images automatically"
 msgstr "वेब छवियाँ अपने-आप लोड करें"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Loading accounts…"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Loading activity…"
 msgstr "गतिविधि लोड हो रही है…"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Loading applications…"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Loading connection methods…"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
@@ -2608,6 +3070,10 @@ msgstr "प्रीव्यू लोड हो रहा है…"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Loading rules…"
 msgstr "नियम लोड हो रहे हैं…"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Loading subscriptions…"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading tools…"
@@ -2637,6 +3103,10 @@ msgstr "लोकल"
 msgid "Local access lets bots run commands without asking. Avoid it on shared or public servers."
 msgstr "स्थानीय पहुँच मिलने पर बॉट्स बिना पूछे कमांड चला सकते हैं। साझा या सार्वजनिक सर्वर पर इससे बचें।"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Local access stopped · Provider confirmation pending"
+msgstr "स्थानीय पहुँच बंद · प्रदाता की पुष्टि लंबित"
+
 #: src/pages/LocalSettings.tsx
 msgid "Local Server Settings"
 msgstr ""
@@ -2661,11 +3131,21 @@ msgstr ""
 msgid "Lowercase letters, numbers, hyphens and underscores, starting with a letter."
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Machine API key"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Make a change in Notion to confirm event delivery."
+msgstr ""
+
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Make sure nothing is still running on this computer."
 msgstr "सुनिश्चित करें कि इस कंप्यूटर पर कुछ भी चल नहीं रहा है।"
 
 #: src/pages/BillingSettingsPanel.tsx
+#: src/pages/PluginsOverlay.tsx
 msgid "Manage"
 msgstr ""
 
@@ -2701,6 +3181,10 @@ msgstr "पढ़ा हुआ चिह्नित करें"
 msgid "Mark as Unread"
 msgstr "अपठित चिह्नित करें"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Match the capabilities enabled in your Notion integration."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Max"
@@ -2729,6 +3213,7 @@ msgstr "अधिकतम 10 बैकअप मॉडल।"
 msgid "Maximum output tokens"
 msgstr "अधिकतम आउटपुट टोकन"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "MCP endpoint"
 msgstr ""
@@ -2750,6 +3235,10 @@ msgstr ""
 #: src/pages/GroupPanel.tsx
 msgid "Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
 msgstr "सदस्य ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Members enter their credentials when connecting from Apps."
+msgstr ""
 
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/MemorySettingsOverlay.tsx
@@ -2844,6 +3333,10 @@ msgstr "मिनट"
 #: src/pages/RoutineSchedule.tsx
 msgid "minutes"
 msgstr "मिनट"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Minutes before"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -2953,6 +3446,10 @@ msgstr ""
 msgid "Needs an answer"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Needs attention"
+msgstr "ध्यान दें"
+
 #: src/pages/Shell.tsx
 msgid "Needs auth"
 msgstr ""
@@ -3000,6 +3497,10 @@ msgstr ""
 msgid "New ticket"
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No active accounts."
+msgstr "कोई सक्रिय खाता नहीं है।"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No agent connections yet."
 msgstr ""
@@ -3037,6 +3538,22 @@ msgstr ""
 msgid "No chat apps linked yet."
 msgstr ""
 
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected apps."
+msgstr "कोई ऐप कनेक्ट नहीं है।"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "No connected Calendar or Notion accounts"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "No connected or pending accounts remain for this source."
+msgstr "इस स्रोत में कोई कनेक्टेड या अनुमति की प्रतीक्षा वाला खाता नहीं बचा है।"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "No connection method is configured."
+msgstr ""
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
@@ -3048,10 +3565,6 @@ msgstr ""
 #: src/components/AskCard.tsx
 msgid "No longer active"
 msgstr "अब सक्रिय नहीं"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "No managed app catalog is configured on this deployment."
-msgstr "इस डिप्लॉयमेंट पर कोई प्रबंधित ऐप कैटलॉग कॉन्फ़िगर नहीं है।"
 
 #: src/pages/Artifacts.tsx
 msgid "No matching artifacts on this page."
@@ -3119,6 +3632,10 @@ msgstr ""
 msgid "No tools available."
 msgstr ""
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "No tools shared in this space"
+msgstr "इस स्पेस में कोई टूल साझा नहीं है"
+
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr ""
@@ -3135,10 +3652,6 @@ msgstr ""
 msgid "Not connected"
 msgstr "कनेक्ट नहीं है"
 
-#: src/pages/PluginsOverlay.tsx
-msgid "Not in the plugin catalog"
-msgstr ""
-
 #: src/pages/shell/message-cards.tsx
 msgid "Not now"
 msgstr "अभी नहीं"
@@ -3154,6 +3667,34 @@ msgstr "अभी तक कुछ याद नहीं किया गया
 #: src/pages/shell/bot-panel.tsx
 msgid "Notifications"
 msgstr "सूचनाएं"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion comments changed"
+msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+msgid "Notion event"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion page content changed"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion properties or data source changed"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion setup instructions"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Notion target"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Notion webhooks"
+msgstr ""
 
 #: src/pages/ActivityList.tsx
 msgid "Now"
@@ -3180,6 +3721,11 @@ msgstr "OAuth कनेक्शन विफल"
 msgid "OAuth expired"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Official application"
+msgstr ""
+
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
 msgid "On a call with {0}"
@@ -3196,6 +3742,10 @@ msgstr "1 तारीख को {0} बजे"
 
 #: src/pages/Shell.tsx
 msgid "Only empty spaces can be deleted. Delete its bots and groups first."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Only pages shared with this integration are available."
 msgstr ""
 
 #: src/components/markdown-link-prompt.tsx
@@ -3235,10 +3785,6 @@ msgstr "पूरी विंडो में खोलें"
 #: src/pages/Shell.tsx
 msgid "Open navigation"
 msgstr "नेविगेशन खोलें"
-
-#: src/components/computer/TerminalApp.tsx
-msgid "Open shell"
-msgstr "शेल खोलें"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Open work"
@@ -3296,8 +3842,20 @@ msgstr "मूल संदेश उपलब्ध नहीं है"
 msgid "Other model…"
 msgstr "अन्य मॉडल…"
 
+#: src/pages/PluginsOverlay.tsx
+msgid "Other sources stay connected. Operations already sent may still finish."
+msgstr "अन्य स्रोत कनेक्ट रहेंगे। भेजे गए ऑपरेशन अब भी पूरे हो सकते हैं।"
+
 #: src/pages/Board.tsx
 msgid "Owner"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Page ID"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
@@ -3342,6 +3900,10 @@ msgstr "बदलने के लिए नई कुंजी पेस्ट 
 msgid "Paste the OpenAI-compatible address from your server. CogineBot adds /v1 if needed."
 msgstr "अपने सर्वर से OpenAI-संगत पता पेस्ट करें। ज़रूरत होने पर CogineBot /v1 जोड़ देता है।"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Paste the verification token into Notion and verify the subscription."
+msgstr ""
+
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Paste your API key"
 msgstr "अपनी API कुंजी पेस्ट करें"
@@ -3352,6 +3914,19 @@ msgstr "अपनी API कुंजी पेस्ट करें, फिर
 
 #: src/pages/RoutineEditor.tsx
 msgid "Paused"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Pending authorization"
+msgstr "अनुमति की प्रतीक्षा"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Permissions"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Personal access token"
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -3392,6 +3967,10 @@ msgstr "{0} का प्रीव्यू"
 msgid "Preview isn't available for this file type — download it to view it."
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Previous account"
+msgstr ""
+
 #: src/pages/Board.tsx
 msgid "Priority"
 msgstr ""
@@ -3406,6 +3985,10 @@ msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Project ID"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Property IDs (optional, one per line)"
 msgstr ""
 
 #: src/components/teach/TeachRecordingChrome.tsx
@@ -3442,9 +4025,25 @@ msgstr "प्रतिक्रिया दें"
 msgid "Reactions"
 msgstr "प्रतिक्रियाएँ"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read comments"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read events"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read pages"
+msgstr ""
+
 #: src/pages/shell/bot-panel.tsx
 msgid "Read replies aloud"
 msgstr "उत्तर पढ़कर सुनाएं"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Ready for accounts"
+msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -3459,12 +4058,20 @@ msgstr ""
 msgid "Recall only"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Receiving events"
+msgstr ""
+
 #: src/pages/ActivityList.tsx
 msgid "Recent"
 msgstr "हाल के"
 
 #: src/pages/shell/chat-recipients.tsx
 msgid "Recipients"
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Reconnect account"
 msgstr ""
 
 #: src/pages/McpServersOverlay.tsx
@@ -3532,27 +4139,41 @@ msgstr "काम न कर रहे कंप्यूटर को फिर
 msgid "Recreating the computer"
 msgstr ""
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring instance"
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Recurring series"
+msgstr ""
+
 #: src/App.tsx
 #: src/components/ErrorBoundary.tsx
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/pages/RoutineRunHistory.tsx
 msgid "Refresh"
 msgstr "रीफ़्रेश करें"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Refresh status"
+msgstr "स्थिति रीफ़्रेश करें"
 
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refresh view"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Register this exact URL in the application’s OAuth settings."
 msgstr ""
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
 msgstr "पंजीकरण बंद है"
-
-#: src/pages/Shell.tsx
-msgid "Release"
-msgstr "नियंत्रण छोड़ें"
 
 #: src/components/ComputerUpdateProgress.tsx
 msgid "Release computer"
@@ -3583,6 +4204,10 @@ msgstr "{full} हटाएँ"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Remove {secretName}? This bot will no longer be able to use it."
+msgstr ""
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Remove application event"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
@@ -3757,6 +4382,10 @@ msgstr "रिवीज़न {0}"
 msgid "Review provider settings and test again."
 msgstr "प्रोवाइडर सेटिंग्स की समीक्षा करें और फिर से परीक्षण करें।"
 
+#: src/pages/shell/message-cards.tsx
+msgid "Review tool access"
+msgstr "टूल की अनुमति जाँचें"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Revoke"
 msgstr ""
@@ -3827,12 +4456,20 @@ msgstr ""
 msgid "Save"
 msgstr "सहेजें"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Save application"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "बैकअप सहेजें"
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Save credential"
+msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+msgid "Save event changes"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
@@ -3846,6 +4483,10 @@ msgstr ""
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Save the workspace and install current software."
 msgstr "कार्यक्षेत्र सहेजें और नवीनतम सॉफ़्टवेयर इंस्टॉल करें।"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Save tool access"
+msgstr "टूल की अनुमति सहेजें"
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
@@ -3874,6 +4515,7 @@ msgid "Saving..."
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/ModelBackupsSettings.tsx
@@ -3898,6 +4540,10 @@ msgstr "खोजें"
 
 #: src/pages/ActivityList.tsx
 msgid "Search activity"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Search and read knowledge"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -3983,15 +4629,27 @@ msgstr "भेजा जा रहा है…"
 msgid "Sentry alert"
 msgstr ""
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Separate IDs with commas"
+msgstr ""
+
 #: src/pages/memory-providers/SerenitySettingsForm.tsx
 msgid "Serenity endpoint is required."
 msgstr ""
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Server changed. Close and reopen tool access to review it."
+msgstr "सर्वर बदल गया है। जाँचने के लिए टूल की अनुमति बंद करके फिर खोलें।"
 
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/LocalSettings.tsx
 msgid "Server integrations"
 msgstr ""
+
+#: src/components/integrations/IntegrationSetup.tsx
+msgid "Server is no longer available"
+msgstr "सर्वर अब उपलब्ध नहीं है"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Server name"
@@ -4003,6 +4661,18 @@ msgstr "सर्वर का नाम"
 #: src/pages/Onboarding.tsx
 msgid "Server URL"
 msgstr "सर्वर URL"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Set up an application here. Members connect their accounts from Apps."
+msgstr ""
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Set up application"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Set up subscription"
+msgstr ""
 
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -4019,10 +4689,31 @@ msgstr "सेटिंग्स: सामान्य"
 msgid "Settings: Usage"
 msgstr "सेटिंग्स: उपयोग"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Setup expired"
+msgstr ""
+
 #: src/components/integrations/IntegrationSetup.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Setup help"
 msgstr "सेटअप सहायता"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Setup incomplete"
+msgstr ""
+
+#: src/components/integrations/IntegrationSetup.tsx
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Share all tools with this space"
+msgstr "इस स्पेस में सभी टूल साझा करें"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share this server's tools with all bots in this space."
+msgstr "इस सर्वर के टूल इस स्पेस के सभी बॉट से साझा करें।"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Share tools"
+msgstr "टूल साझा करें"
 
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
@@ -4044,6 +4735,10 @@ msgstr "साझा स्किल्स"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "शेल"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Show account email"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4077,6 +4772,10 @@ msgstr ""
 msgid "Show transcript"
 msgstr "ट्रांसक्रिप्ट दिखाएँ"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Show verification token"
+msgstr ""
+
 #: src/lib/localized-provider-hint.ts
 #: src/pages/Auth.tsx
 #: src/pages/ModelSettingsOverlay.tsx
@@ -4107,6 +4806,10 @@ msgstr "सब्सक्रिप्शन से साइन इन कर�
 #: src/pages/Welcome.tsx
 msgid "Sign up"
 msgstr "साइन अप करें"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Single event"
+msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
 msgid "Site"
@@ -4147,6 +4850,10 @@ msgstr ""
 #: src/lib/user-error.ts
 msgid "Something went wrong. Try again."
 msgstr "कुछ गलत हो गया। फिर से कोशिश करें।"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Source accounts disconnected."
+msgstr "इस स्रोत के खाते डिस्कनेक्ट हो गए।"
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Space changed. Reopen Models to load its backup list."
@@ -4228,9 +4935,25 @@ msgstr "रोकें"
 msgid "Stop speaking"
 msgstr "बोलना रोकें"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop subscription"
+msgstr ""
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Stop teaching"
 msgstr "सिखाना रोकें"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop the existing subscription here before enabling this one."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stop this subscription?"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Stopped"
+msgstr ""
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -4292,6 +5015,11 @@ msgstr "बदला जा रहा है…"
 msgid "System"
 msgstr "सिस्टम"
 
+#: src/components/computer/TerminalApp.tsx
+#: src/pages/Shell.tsx
+msgid "Take control"
+msgstr "नियंत्रण लें"
+
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Teach a task"
 msgstr "कोई कार्य सिखाएं"
@@ -4318,6 +5046,10 @@ msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Teams not enabled"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Tenant ID"
 msgstr ""
 
 #: src/components/computer/ComputerWorkspace.tsx
@@ -4372,6 +5104,11 @@ msgstr "सोच रहा है"
 
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Thinking: {activeThinkingLabel}"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx
+#: src/pages/shell/message-cards.tsx
+msgid "This application is not available for direct connection."
 msgstr ""
 
 #: src/pages/Shell.tsx
@@ -4443,6 +5180,10 @@ msgstr "इस सर्वर ने ब्राउज़र ऑथराइ�
 msgid "This server is already connected. Disconnect it first to authorize again."
 msgstr "यह सर्वर पहले से कनेक्टेड है। पुनः ऑथराइज़ करने के लिए पहले इसे डिस्कनेक्ट करें।"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "This setup has expired. Refresh to check its status."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "This subscription sign-in is not available in CogineBot yet. Use a deployment credential or choose another provider."
 msgstr "यह सब्सक्रिप्शन साइन-इन अभी CogineBot में उपलब्ध नहीं है। किसी डिप्लॉयमेंट क्रेडेंशियल का उपयोग करें या दूसरा प्रोवाइडर चुनें।"
@@ -4483,6 +5224,14 @@ msgstr "प्रति:"
 msgid "Today"
 msgstr "आज"
 
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool access"
+msgstr "टूल की अनुमति"
+
+#: src/components/integrations/McpToolAccess.tsx
+msgid "Tool names, one per line"
+msgstr "टूल के नाम, हर पंक्ति में एक"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Tool sources"
 msgstr "टूल स्रोत"
@@ -4511,8 +5260,11 @@ msgstr ""
 msgid "Trial ends {day}"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Try again"
 msgstr "फिर से कोशिश करें"
 
@@ -4537,12 +5289,17 @@ msgid "Unassigned"
 msgstr "असाइन नहीं किया गया"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/RoutineNativeEvents.tsx
 msgid "Unavailable"
 msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
-msgid "Uninstall"
-msgstr ""
+msgid "Uninstall source"
+msgstr "स्रोत अनइंस्टॉल करें"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Uninstall this source?"
+msgstr "यह स्रोत अनइंस्टॉल करें?"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Unknown tool"
@@ -4657,6 +5414,10 @@ msgstr "कुंजी जाँचने के लिए कनेक्ट �
 msgid "Use default guidance"
 msgstr ""
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Use ID from received event"
+msgstr ""
+
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."
 msgstr ""
@@ -4674,6 +5435,10 @@ msgstr "अपनी कुंजी इस्तेमाल करें"
 msgid "Username"
 msgstr ""
 
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Uses a machine identity restricted to the configured knowledge bases."
+msgstr ""
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Uses this server's own {hostCredentialSource} credentials to access {selectedProviderName}."
 msgstr "{selectedProviderName} तक पहुँचने के लिए इस सर्वर के अपने {hostCredentialSource} क्रेडेंशियल का उपयोग करता है।"
@@ -4686,9 +5451,17 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "मान एन्क्रिप्ट किए जाते हैं और दोबारा नहीं दिखाए जाते।"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verification token"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "पुष्टि करके जोड़ें"
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Verify in Notion"
+msgstr ""
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Verifying…"
@@ -4717,6 +5490,14 @@ msgstr "वॉइस चैट"
 msgid "Wait a moment and test again."
 msgstr "थोड़ी देर रुकें और फिर से परीक्षण करें।"
 
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for first signed event"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Waiting for Notion"
+msgstr ""
+
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Waiting for the API to come back…"
 msgstr ""
@@ -4729,12 +5510,32 @@ msgstr "कतार में प्रतीक्षा…"
 msgid "Waiting…"
 msgstr "प्रतीक्षा…"
 
+#: src/pages/Shell.tsx
+msgid "Watching"
+msgstr "देख रहे हैं"
+
 #: src/pages/Paywall.tsx
 msgid "Web, desktop and mobile apps"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx
 msgid "Webhook"
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook deliveries will be ignored. Routines continue checking Notion for changes."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook stopped here. Remove the subscription in Notion separately."
+msgstr ""
+
+#: src/components/integrations/NativeNotionWebhookSetup.tsx
+msgid "Webhook URL"
+msgstr ""
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Webhooks"
 msgstr ""
 
 #: src/pages/shell/bot-credentials.tsx
@@ -4790,6 +5591,10 @@ msgstr "कब उपयोग करें"
 msgid "Where should bots run?"
 msgstr "बॉट कहां चलने चाहिए?"
 
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Whole calendar"
+msgstr ""
+
 #: src/lib/ticket-status.ts
 msgid "Won't do"
 msgstr ""
@@ -4826,6 +5631,11 @@ msgstr "आप यह विंडो बंद कर सकते हैं।
 #: src/pages/Shell.tsx
 msgid "You have control"
 msgstr "नियंत्रण आपके पास है"
+
+#: src/components/integrations/NativeAccountConnect.tsx
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Your application"
+msgstr ""
 
 #: src/pages/Auth.tsx
 msgid "Your email address"

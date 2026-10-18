@@ -21,6 +21,7 @@ import { getLogger } from "@rakazo/logging";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
+import { ownedConnectionSelection, updateTaskConnectionSelection } from "./connection-selection.js";
 import {
   assertRunCanWriteHistory,
   assertRunIsCancelled,
@@ -526,7 +527,14 @@ export async function claimSteering(
         leaseOwner: input.leaseOwner,
         leaseFence: input.leaseFence,
       },
-      select: { id: true, trigger: true, sourceMessage: { select: { blocks: true } } },
+      select: {
+        id: true,
+        trigger: true,
+        taskId: true,
+        spaceId: true,
+        userId: true,
+        sourceMessage: { select: { blocks: true } },
+      },
     });
     if (!run || run.trigger === "created") return [];
     const channelId =
@@ -563,6 +571,8 @@ export async function claimSteering(
       orderBy: [{ message: { seq: "asc" } }, { id: "asc" }],
     });
     if (steering.length === 0) return [];
+    const selections = steering.map((item) => item.connectionIds ?? []);
+    await updateTaskConnectionSelection(tx, run, run.taskId, selections);
     await tx.steeringMessage.updateMany({
       where: { id: { in: steering.map((item) => item.id) }, claimedAt: null },
       data: { runId: input.runId, claimedAt: new Date() },
@@ -1280,12 +1290,25 @@ export async function createPendingSteeringRun(
   const batch = pending.filter((item) => steeringOrigin(item) === origin);
   const source = batch.at(-1)!;
   const modelPin = continuationModelPin(batch);
+  const selections = batch.map((item) => item.connectionIds ?? []);
+  const connectionIds = selections.some((ids) => ids.length)
+    ? await ownedConnectionSelection(
+        tx,
+        {
+          spaceId: input.spaceId,
+          userId: batch[0]!.userId,
+        },
+        [],
+        selections,
+      )
+    : [];
   const task = await tx.task.create({
     data: {
       spaceId: input.spaceId,
       botId: input.botId,
       threadId: input.threadId,
       userId: batch[0]!.userId,
+      ...(connectionIds.length ? { connectionIds } : {}),
       prompt: "Respond to the user's steering context.",
       status: "queued",
     },

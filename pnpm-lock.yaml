@@ -601,6 +601,12 @@ importers:
       '@rakazo/logging':
         specifier: workspace:*
         version: link:../logging
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: 3.0.1
+        version: 3.0.1(ajv@8.20.0)
       chat:
         specifier: 4.40.0
         version: 4.40.0(zod@4.6.2)

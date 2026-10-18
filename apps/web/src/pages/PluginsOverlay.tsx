@@ -5,15 +5,35 @@ import type {
   ConnectionCatalogItem,
   IntegrationCatalogResult,
   IntegrationCatalogSurface,
+  NativeAppId,
+  NativeBeginInput,
 } from "@rakazo/contracts";
+import { NativeAppIdSchema } from "@rakazo/contracts";
+import type { ConnectionApp } from "@rakazo/core";
 import {
   abortableDelay,
-  buildFeaturedConnectorTiles,
   CONNECTION_CATALOG_PAGE_SIZE,
-  filterConnectionCatalogItems,
+  catalogAccounts,
+  catalogItemConnected,
+  catalogUninstallAccounts,
+  connectionAppSummary,
+  connectionCatalogKey,
+  connectionMatchesCatalog,
+  connectionRemovalState,
+  filterConnectionApps,
+  groupConnectionCatalog,
   humanizeToolName,
 } from "@rakazo/core";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Badge,
   Button,
   Card,
   CardContent,
@@ -27,20 +47,30 @@ import {
   Input,
   NativeSelect,
   NativeSelectOption,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
 } from "@rakazo/ui-web";
 import { ChevronDown, ChevronLeft, ChevronUp, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IntegrationSetup } from "../components/integrations/IntegrationSetup";
+import { NativeAccountConnect } from "../components/integrations/NativeAccountConnect";
 import { optionalCatalogFeedProbe } from "../lib/optional-catalog-feed";
-import { rpc } from "../lib/rpc";
+import { rpc, selectedSpaceId } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 
 type SourceKind = "treg" | "executor" | "mcp" | "api" | "graphql";
 
 type ConnectionTool = { name: string; description: string };
+type NativeAttempt = {
+  controller: AbortController;
+  connectionId: string | null;
+  spaceId: string | null;
+};
 
 function itemKey(item: Pick<ConnectionCatalogItem, "connectorId" | "slug">) {
-  return `${item.connectorId}:${item.slug}`;
+  return connectionCatalogKey(item);
 }
 
 function markConnected(
@@ -60,10 +90,18 @@ function activeAccounts(
 ) {
   return connections.filter(
     (row) =>
-      row.connectorId === item.connectorId &&
-      row.provider === item.slug &&
+      connectionMatchesCatalog(row, item) &&
       (row.status === "connected" || row.status === "pending"),
   );
+}
+
+function sourceLabel(item: Pick<ConnectionCatalogItem, "connectorId">) {
+  const labels: Record<string, string> = {
+    native: "Cogine",
+    composio: "Composio",
+    pipedream: "Pipedream",
+  };
+  return labels[item.connectorId] ?? item.connectorId;
 }
 
 function nextAccountLabel(itemName: string, existingCount: number) {
@@ -73,10 +111,16 @@ export function PluginsOverlay({
   onClose,
   onOpenMcp,
   activeBotId,
+  initialNativeApp,
+  onConnected,
+  onConnectionsChanged,
 }: {
   onClose: () => void;
   onOpenMcp?: () => void;
   activeBotId?: string;
+  initialNativeApp?: NativeAppId;
+  onConnected?: (item: ConnectionCatalogItem) => void;
+  onConnectionsChanged?: () => void;
 }) {
   const { t } = useLingui();
   const [setupOpen, setSetupOpen] = useState(false);
@@ -103,28 +147,50 @@ export function PluginsOverlay({
   const [catalogFeedPending, setCatalogFeedPending] = useState(false);
   const [catalogFeedSearched, setCatalogFeedSearched] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [catalogFilter, setCatalogFilter] = useState<"all" | "connected">("all");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [unconfirmedRemovalId, setUnconfirmedRemovalId] = useState<string | null>(null);
+  const [removal, setRemoval] = useState<{
+    item: ConnectionCatalogItem;
+    targets: Connection[];
+    account: boolean;
+  } | null>(null);
   const [detailKey, setDetailKey] = useState<{ connectorId: string; slug: string } | null>(null);
+  const [nativeAccount, setNativeAccount] = useState<{
+    appId: NativeAppId;
+    previous?: Connection;
+  } | null>(null);
+  const [nativeAuthorizationUrl, setNativeAuthorizationUrl] = useState<string>();
   const [tools, setTools] = useState<ConnectionTool[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
+  const [toolsError, setToolsError] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(true);
   const [toolsTick, setToolsTick] = useState(0);
   const connectionAttempt = useRef<AbortController | null>(null);
+  const nativeAttempt = useRef<NativeAttempt | null>(null);
+  const initialSelection = useRef(initialNativeApp);
 
   async function refresh() {
+    const spaceId = selectedSpaceId();
     const [items, installs, rows, catalogFeed] = await Promise.all([
       rpc.connections.catalog({}),
       rpc.capabilities.list(),
       rpc.connections.list(),
       optionalCatalogFeedProbe(rpc.capabilities.catalogSearch({ query: "" })),
     ]);
+    if (initialSelection.current) {
+      const item = items.find(
+        (entry) => entry.connectorId === "native" && entry.slug === initialSelection.current,
+      );
+      initialSelection.current = undefined;
+      if (item) setDetailKey({ connectorId: item.connectorId, slug: item.slug });
+    }
     setCatalog(items);
     setConnections(rows);
     setLabelDrafts((current) => {
       const next: Record<string, string> = {};
       for (const row of rows) {
-        if (row.status === "connected" || row.status === "pending") {
-          next[row.id] = current[row.id] ?? row.displayName;
-        }
+        next[row.id] = current[row.id] ?? row.displayName;
       }
       return next;
     });
@@ -134,14 +200,18 @@ export function PluginsOverlay({
       ),
     );
     setCatalogFeedEnabled(catalogFeed.enabled);
-    return items;
+    if (selectedSpaceId() === spaceId) onConnectionsChanged?.();
+    return { items, rows };
   }
 
   useEffect(() => {
     void refresh()
       .catch((err: unknown) => setCatalogError(errorText(err, t`Could not load integrations`)))
       .finally(() => setLoading(false));
-    return () => connectionAttempt.current?.abort();
+    return () => {
+      connectionAttempt.current?.abort();
+      cancelNativeAttempt(false);
+    };
   }, []);
 
   const detailItem = useMemo(() => {
@@ -161,13 +231,17 @@ export function PluginsOverlay({
     }
     let cancelled = false;
     setToolsLoading(true);
+    setToolsError(null);
     void rpc.connections
       .tools({ connectorId: detailKey.connectorId, provider: detailKey.slug })
       .then((list) => {
         if (!cancelled) setTools(list);
       })
-      .catch(() => {
-        if (!cancelled) setTools([]);
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setTools([]);
+          setToolsError(errorText(err, t`Could not load tools`));
+        }
       })
       .finally(() => {
         if (!cancelled) setToolsLoading(false);
@@ -177,33 +251,64 @@ export function PluginsOverlay({
     };
   }, [detailKey, toolsTick]);
 
-  const featuredTiles = useMemo(() => buildFeaturedConnectorTiles(catalog), [catalog]);
-  const showFeatured = !query.trim();
-
-  const visible = useMemo(() => filterConnectionCatalogItems(catalog, query), [catalog, query]);
+  const apps = useMemo(() => groupConnectionCatalog(catalog), [catalog]);
+  const detailApp = apps.find((app) =>
+    app.sources.some(
+      (item) =>
+        detailKey && item.connectorId === detailKey.connectorId && item.slug === detailKey.slug,
+    ),
+  );
+  const visible = filterConnectionApps(apps, query).filter(
+    (app) => catalogFilter === "all" || connectionAppSummary(app, connections).isConnected,
+  );
   const rendered = visible.slice(0, visibleCount);
 
   function openDetail(item: ConnectionCatalogItem) {
+    initialSelection.current = undefined;
+    setNativeAccount(null);
     setCatalogError(null);
+    setNotice(null);
     setToolsOpen(true);
     setDetailKey({ connectorId: item.connectorId, slug: item.slug });
   }
 
   function closeDetail() {
+    if (nativeAccount) {
+      cancelNativeAttempt();
+      setNativeAccount(null);
+      return;
+    }
     setDetailKey(null);
     setTools([]);
   }
 
   function itemConnected(item: ConnectionCatalogItem) {
-    return (
-      item.connected || activeAccounts(connections, item).some((row) => row.status === "connected")
-    );
+    return catalogItemConnected(connections, item);
   }
 
-  async function notifyAppConnected(item: ConnectionCatalogItem) {
+  function openApp(app: ConnectionApp) {
+    const preferred =
+      app.sources.find((item) => itemConnected(item)) ??
+      app.sources.find((item) =>
+        catalogAccounts(connections, item).some((row) => row.status === "pending"),
+      ) ??
+      app.sources[0];
+    if (preferred) openDetail(preferred);
+  }
+
+  async function notifyAppConnected(
+    item: ConnectionCatalogItem,
+    spaceId: string | null = selectedSpaceId(),
+  ) {
+    if (selectedSpaceId() !== spaceId) return;
+    onConnectionsChanged?.();
+    onConnected?.(item);
     if (!activeBotId) return;
     await rpc.onboarding
-      .appConnected({ botId: activeBotId, provider: item.slug, connectorId: item.connectorId })
+      .appConnected(
+        { botId: activeBotId, provider: item.slug, connectorId: item.connectorId },
+        { context: { spaceId } },
+      )
       .catch(() => undefined);
   }
 
@@ -211,28 +316,100 @@ export function PluginsOverlay({
     setCatalog((prev) => markConnected(prev, item.connectorId, item.slug, connected));
   }
 
-  async function connect(item: ConnectionCatalogItem) {
+  function revokeNativeAttempt(attempt: NativeAttempt, report: boolean) {
+    const connectionId = attempt.connectionId;
+    attempt.connectionId = null;
+    if (!connectionId) return;
+    // Only the new connection returned by this attempt may be cancelled.
+    void rpc.connections
+      .revoke({ connectionId }, { context: { spaceId: attempt.spaceId } })
+      .then(async () => {
+        if (report) await refresh();
+        else if (selectedSpaceId() === attempt.spaceId) onConnectionsChanged?.();
+      })
+      .catch((err: unknown) => {
+        if (report)
+          setCatalogError(
+            errorText(err, t`Could not confirm cancellation. Check the pending account.`),
+          );
+      });
+  }
+
+  function cancelNativeAttempt(report = true) {
+    if (report) setNativeAuthorizationUrl(undefined);
+    const attempt = nativeAttempt.current;
+    if (!attempt) return;
+    nativeAttempt.current = null;
+    attempt.controller.abort();
+    if (connectionAttempt.current === attempt.controller) {
+      connectionAttempt.current = null;
+      if (report) setPending(null);
+    }
+    revokeNativeAttempt(attempt, report);
+  }
+
+  function abandonedNativeAttempt(attempt: NativeAttempt): boolean {
+    if (!attempt.controller.signal.aborted && selectedSpaceId() === attempt.spaceId) return false;
+    attempt.controller.abort();
+    revokeNativeAttempt(attempt, false);
+    return true;
+  }
+
+  async function connect(
+    item: ConnectionCatalogItem,
+    previous?: Connection,
+    nativeInput?: NativeBeginInput,
+  ) {
+    if (item.connectorId === "native" && !nativeInput) {
+      const parsed = NativeAppIdSchema.safeParse(item.slug);
+      if (!parsed.success) {
+        setCatalogError(t`This application is not available for direct connection.`);
+        return;
+      }
+      openDetail(item);
+      setNativeAccount({ appId: parsed.data, previous });
+      return;
+    }
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;
+    const attempt: NativeAttempt | null = nativeInput
+      ? { controller, connectionId: null, spaceId: selectedSpaceId() }
+      : null;
+    if (attempt) {
+      nativeAttempt.current = attempt;
+      setNativeAuthorizationUrl(undefined);
+    }
+    let nativeStarted = false;
     setCatalogError(null);
+    setNotice(null);
     const key = itemKey(item);
     setPending(key);
     try {
       const existing = activeAccounts(connections, item).filter(
         (row) => row.status === "connected",
       );
-      const started = await rpc.connections.begin({
-        connectorId: item.connectorId,
-        provider: item.slug,
-        displayName: nextAccountLabel(item.name, existing.length),
-      });
+      const started = nativeInput
+        ? await rpc.nativeConnectors.begin(nativeInput, { context: { spaceId: attempt!.spaceId } })
+        : await rpc.connections.begin({
+            connectorId: item.connectorId,
+            provider: item.slug,
+            displayName: previous?.displayName ?? nextAccountLabel(item.name, existing.length),
+            ...(previous ? { connectionId: previous.id } : {}),
+          });
+      if (attempt) {
+        nativeStarted = true;
+        attempt.connectionId = started.connectionId;
+        // Begin is allowed to return its ID after Back; that late attempt is stopped too.
+        if (abandonedNativeAttempt(attempt)) return;
+        setNativeAuthorizationUrl(started.authorizationUrl ?? undefined);
+      }
       if (started.authorizationUrl)
         window.open(started.authorizationUrl, "rakazo-plugin-connect", "noopener,noreferrer");
       if (item.noAuth && !started.authorizationUrl) {
         if (controller.signal.aborted) return;
         setItemConnected(item, true);
-        void notifyAppConnected(item);
+        void notifyAppConnected(item, attempt?.spaceId);
         await refresh().catch(() => undefined);
         setToolsTick((tick) => tick + 1);
         return;
@@ -240,27 +417,55 @@ export function PluginsOverlay({
       for (let i = 0; i < 45; i += 1) {
         if (controller.signal.aborted) return;
         const row = await rpc.connections
-          .complete({ connectionId: started.connectionId })
+          .complete(
+            { connectionId: started.connectionId },
+            attempt ? { context: { spaceId: attempt.spaceId } } : undefined,
+          )
           .catch(() => undefined);
+        if (attempt && abandonedNativeAttempt(attempt)) return;
         if (row?.status === "connected") {
           if (controller.signal.aborted) return;
+          setConnections((rows) => [...rows.filter((entry) => entry.id !== row.id), row]);
+          if (attempt) {
+            attempt.connectionId = null;
+            setNativeAccount(null);
+          }
           setItemConnected(item, true);
-          void notifyAppConnected(item);
+          void notifyAppConnected(item, attempt?.spaceId);
           await refresh().catch(() => undefined);
           setToolsTick((tick) => tick + 1);
+          return;
+        }
+        if (row?.status === "error" || row?.status === "revoked") {
+          if (attempt) {
+            attempt.connectionId = null;
+            setNativeAccount(null);
+          }
+          await refresh();
+          setCatalogError(t`Authorization did not complete. You can authorize again.`);
           return;
         }
         await abortableDelay(2_000, controller.signal);
       }
       if (controller.signal.aborted) return;
+      if (attempt) {
+        attempt.connectionId = null;
+        setNativeAccount(null);
+      }
       setCatalogError(
         t`Connection to ${item.name} is still pending. You can close this and check again.`,
       );
       await refresh().catch(() => undefined);
     } catch (err) {
       if (controller.signal.aborted) return;
+      if (attempt && !nativeStarted) throw err;
+      if (attempt) {
+        setNativeAccount(null);
+        await refresh().catch(() => undefined);
+      }
       setCatalogError(errorText(err, t`Could not connect`));
     } finally {
+      if (nativeAttempt.current === attempt) nativeAttempt.current = null;
       if (connectionAttempt.current === controller) {
         connectionAttempt.current = null;
         setPending(null);
@@ -268,51 +473,167 @@ export function PluginsOverlay({
     }
   }
 
-  async function revokeAccount(row: Connection, item: ConnectionCatalogItem) {
+  async function checkAccount(row: Connection, item: ConnectionCatalogItem) {
+    const spaceId = selectedSpaceId();
+    setPending(`check:${row.id}`);
     setCatalogError(null);
-    setPending(row.id);
+    setNotice(null);
     try {
-      await rpc.connections.revoke({ connectionId: row.id });
-      const remaining = activeAccounts(connections, item).filter((entry) => entry.id !== row.id);
-      if (remaining.every((entry) => entry.status !== "connected")) {
-        setItemConnected(item, false);
+      const updated = await rpc.connections.complete(
+        { connectionId: row.id },
+        { context: { spaceId } },
+      );
+      setConnections((rows) => rows.map((entry) => (entry.id === updated.id ? updated : entry)));
+      if (updated.status === "connected") {
+        setItemConnected(item, true);
+        void notifyAppConnected(item, spaceId);
       }
-      await refresh().catch(() => undefined);
+      await refresh();
+      if (updated.status === "pending") setNotice(t`Authorization is still pending.`);
       setToolsTick((tick) => tick + 1);
     } catch (err) {
-      setCatalogError(errorText(err, t`Could not revoke connection`));
+      setCatalogError(errorText(err, t`Could not check connection`));
     } finally {
       setPending(null);
     }
   }
 
-  async function uninstall(item: ConnectionCatalogItem) {
-    const matches = activeAccounts(connections, item);
-    if (matches.length === 0) {
-      setItemConnected(item, false);
-      closeDetail();
-      return;
-    }
+  async function prepareRemoval(item: ConnectionCatalogItem, row?: Connection) {
     setCatalogError(null);
-    setPending(`uninstall:${itemKey(item)}`);
+    setNotice(null);
     try {
-      for (const row of matches) {
-        await rpc.connections.revoke({ connectionId: row.id });
+      const rows = await rpc.connections.list();
+      setConnections(rows);
+      const targets = row
+        ? rows.filter(
+            (entry) =>
+              entry.id === row.id &&
+              connectionMatchesCatalog(entry, item) &&
+              entry.status !== "revoked",
+          )
+        : catalogUninstallAccounts(rows, item);
+      if (!targets.length) {
+        setNotice(t`No connected or pending accounts remain for this source.`);
+        return;
       }
-      setItemConnected(item, false);
-      await refresh().catch(() => undefined);
-      closeDetail();
+      setRemoval({ item, targets, account: !!row });
     } catch (err) {
-      setCatalogError(errorText(err, t`Could not revoke connection`));
-      await refresh().catch(() => undefined);
+      setCatalogError(errorText(err, t`Could not check connection`));
+    }
+  }
+
+  async function runRemoval() {
+    if (!removal) return;
+    const operation = removal;
+    const spaceId = selectedSpaceId();
+    setPending("remove");
+    setCatalogError(null);
+    let failedId: string | null = null;
+    let failure: unknown;
+    try {
+      const current = await rpc.connections.list();
+      const targets = operation.account
+        ? current.filter(
+            (entry) =>
+              entry.id === operation.targets[0]?.id &&
+              connectionMatchesCatalog(entry, operation.item) &&
+              entry.status !== "revoked",
+          )
+        : catalogUninstallAccounts(current, operation.item);
+      if (
+        targets.length !== operation.targets.length ||
+        targets.some(
+          (row) =>
+            !operation.targets.some(
+              (original) =>
+                original.id === row.id &&
+                original.status === row.status &&
+                original.remoteAccountId === row.remoteAccountId,
+            ),
+        )
+      ) {
+        setConnections(current);
+        setNotice(t`Accounts changed. Review them before disconnecting.`);
+        return;
+      }
+      for (const row of targets) {
+        try {
+          await rpc.connections.revoke({ connectionId: row.id });
+          setConnections((rows) =>
+            rows.map((entry) =>
+              entry.id === row.id ? { ...entry, status: "revoked", remoteAccountId: null } : entry,
+            ),
+          );
+        } catch (err) {
+          failedId = row.id;
+          failure = err;
+          break;
+        }
+      }
+      const remaining = await rpc.connections.list().catch(() => null);
+      if (remaining) {
+        setConnections(remaining);
+        setItemConnected(
+          operation.item,
+          catalogAccounts(remaining, operation.item).some((row) => row.status === "connected"),
+        );
+      }
+      if (failedId) {
+        const state = connectionRemovalState(remaining, failedId);
+        if (state === "revoked") setUnconfirmedRemovalId(failedId);
+        const stopped = operation.targets.filter(
+          (row) => connectionRemovalState(remaining, row.id) === "revoked",
+        ).length;
+        if (stopped)
+          setNotice(
+            stopped === 1
+              ? t`1 account disconnected locally`
+              : t`${stopped} accounts disconnected locally`,
+          );
+        setCatalogError(
+          state === "revoked"
+            ? t`Local access stopped · Provider confirmation pending`
+            : state === "unverified"
+              ? t`Connection status unconfirmed. Refresh status.`
+              : errorText(
+                  failure,
+                  t`Disconnect did not complete. Review the remaining accounts before trying again.`,
+                ),
+        );
+      } else if (
+        !remaining ||
+        operation.targets.some((row) => connectionRemovalState(remaining, row.id) !== "revoked")
+      ) {
+        setCatalogError(t`Connection status unconfirmed. Refresh status.`);
+      } else
+        setNotice(operation.account ? t`Account disconnected.` : t`Source accounts disconnected.`);
+      setToolsTick((tick) => tick + 1);
+    } catch (err) {
+      setCatalogError(errorText(err, t`Could not check connection`));
     } finally {
+      if (selectedSpaceId() === spaceId) onConnectionsChanged?.();
+      setRemoval(null);
       setPending(null);
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const { rows } = await refresh();
+      setCatalogError(
+        unconfirmedRemovalId && connectionRemovalState(rows, unconfirmedRemovalId) === "revoked"
+          ? t`Local access stopped · Provider confirmation pending`
+          : null,
+      );
+    } catch (err) {
+      setCatalogError(errorText(err, t`Could not load integrations`));
     }
   }
 
   async function renameAccount(row: Connection) {
     const displayName = (labelDrafts[row.id] ?? row.displayName).trim();
     if (!displayName || displayName === row.displayName) return;
+    const spaceId = selectedSpaceId();
     setPending(`rename:${row.id}`);
     setCatalogError(null);
     try {
@@ -323,6 +644,7 @@ export function PluginsOverlay({
         ),
       );
       setLabelDrafts((current) => ({ ...current, [row.id]: updated.displayName }));
+      if (selectedSpaceId() === spaceId) onConnectionsChanged?.();
     } catch (err) {
       setCatalogError(errorText(err, t`Could not rename connection`));
     } finally {
@@ -429,234 +751,295 @@ export function PluginsOverlay({
     }
   }
 
-  function renderCatalogActions(item: ConnectionCatalogItem) {
-    const key = itemKey(item);
-    const connected = itemConnected(item);
-    const connecting = pending === key;
-    if (connected) {
-      return (
-        <Button
-          type="button"
-          variant="secondary"
-          className="rounded-full"
-          size="sm"
-          disabled={connecting}
-          onClick={(event) => {
-            event.stopPropagation();
-            openDetail(item);
-          }}
-        >
-          {connecting ? <Trans>Adding…</Trans> : <Trans>Added</Trans>}
-        </Button>
-      );
+  function statusLabel(status: Connection["status"]) {
+    return status === "connected"
+      ? t`Connected`
+      : status === "pending"
+        ? t`Pending authorization`
+        : status === "error"
+          ? t`Needs attention`
+          : t`Disconnected`;
+  }
+
+  function renderCatalogTile(app: ConnectionApp) {
+    const summary = connectionAppSummary(app, connections);
+    const waiting = summary.pending[0];
+    const old = summary.errors[0] ?? summary.revoked[0];
+    const label = summary.isConnected
+      ? t`Manage`
+      : waiting
+        ? t`Check status`
+        : old
+          ? t`Authorize again`
+          : t`Add`;
+    function act() {
+      if (summary.isConnected || app.sources.length > 1) {
+        openApp(app);
+        return;
+      }
+      const item = app.sources[0];
+      if (!item) return;
+      if (waiting) void checkAccount(waiting, item);
+      else void connect(item, old);
     }
     return (
-      <Button
-        type="button"
-        variant="secondary"
-        className="rounded-full"
-        size="sm"
-        disabled={connecting}
-        onClick={(event) => {
-          event.stopPropagation();
-          void connect(item);
-        }}
+      <div
+        key={app.id}
+        data-testid={`connection-tile-${app.sources[0]?.slug.toLowerCase()}`}
+        className="flex min-w-0 items-center gap-3 rounded-xl border border-border p-4"
       >
-        {connecting ? <Trans>Adding…</Trans> : <Trans>Add</Trans>}
-      </Button>
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-3 text-start"
+          onClick={() => openApp(app)}
+        >
+          {app.logo ? (
+            <img
+              src={app.logo}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              className="size-9 shrink-0 rounded-xl bg-accent object-contain"
+            />
+          ) : (
+            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-accent font-semibold">
+              {app.name[0]}
+            </span>
+          )}
+          <span className="flex min-w-0 flex-col gap-1">
+            <span className="truncate font-medium">{app.name}</span>
+            {summary.status ? (
+              <span className="text-xs text-muted-foreground">
+                {statusLabel(summary.status)}
+                {summary.isConnected && summary.errors.length ? (
+                  <>
+                    {" "}
+                    · <Trans>{summary.errors.length} need attention</Trans>
+                  </>
+                ) : null}
+                {summary.isConnected && summary.pending.length ? (
+                  <>
+                    {" "}
+                    · <Trans>{summary.pending.length} pending</Trans>
+                  </>
+                ) : null}
+              </span>
+            ) : null}
+          </span>
+        </button>
+        <Button variant="secondary" size="sm" disabled={pending !== null} onClick={act}>
+          {label}
+        </Button>
+      </div>
     );
   }
 
-  function renderCatalogTile(
-    item: ConnectionCatalogItem,
-    label: string,
-    logo?: string | null,
-    opts?: { tileTestId?: boolean },
-  ) {
-    const connected = itemConnected(item);
-    const tileTestId = opts?.tileTestId !== false && connected;
-    const icon = logo ? (
-      <img
-        src={logo}
-        alt=""
-        loading="lazy"
-        decoding="async"
-        className="h-9 w-9 shrink-0 rounded-xl bg-accent object-contain"
-      />
-    ) : (
-      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-sm font-semibold text-foreground">
-        {label[0]}
-      </div>
-    );
-    const title = (
-      <div className="min-w-0 flex-1 text-start">
-        <div className="truncate text-[15px] font-medium text-foreground">{label}</div>
-      </div>
-    );
+  function renderAccount(row: Connection, item: ConnectionCatalogItem) {
+    const editable = row.status === "connected" || row.status === "pending";
     return (
       <div
-        key={itemKey(item)}
-        data-testid={tileTestId ? `connection-tile-${item.slug.toLowerCase()}` : undefined}
-        className="flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-2"
+        key={row.id}
+        data-testid={`connection-account-${row.id}`}
+        className="flex flex-col gap-2 rounded-xl border border-border p-3"
       >
-        {connected ? (
-          <button
-            type="button"
-            className="flex min-w-0 flex-1 items-center gap-3 rounded-xl text-start hover:bg-accent/60"
-            onClick={() => openDetail(item)}
-          >
-            {icon}
-            {title}
-          </button>
-        ) : (
-          <>
-            {icon}
-            {title}
-          </>
-        )}
-        {renderCatalogActions(item)}
+        <div className="flex flex-wrap items-center gap-2">
+          {editable ? (
+            <Input
+              value={labelDrafts[row.id] ?? row.displayName}
+              aria-label={t`Account label`}
+              className="min-w-0 flex-1"
+              disabled={pending !== null}
+              onChange={(event) =>
+                setLabelDrafts((current) => ({ ...current, [row.id]: event.target.value }))
+              }
+              onBlur={() => void renameAccount(row)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+            />
+          ) : (
+            <span className="min-w-0 flex-1 truncate font-medium">{row.displayName}</span>
+          )}
+          <Badge variant={row.status === "error" ? "destructive" : "secondary"}>
+            {statusLabel(row.status)}
+          </Badge>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">{sourceLabel(item)}</span>
+          <div className="flex flex-wrap gap-2">
+            {row.status === "pending" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending !== null}
+                onClick={() => void checkAccount(row, item)}
+              >
+                <Trans>Check status</Trans>
+              </Button>
+            ) : null}
+            {row.status === "error" || row.status === "revoked" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending !== null}
+                onClick={() => void connect(item, row)}
+              >
+                <Trans>Authorize again</Trans>
+              </Button>
+            ) : null}
+            {row.status !== "revoked" ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={pending !== null}
+                onClick={() => void prepareRemoval(item, row)}
+              >
+                {row.status === "pending" ? (
+                  <Trans>Cancel connection</Trans>
+                ) : (
+                  <Trans>Disconnect</Trans>
+                )}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        {row.status === "connected" && row.remoteAccountId ? (
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer">
+              <Trans>Account details</Trans>
+            </summary>
+            <p className="mt-2 break-all">
+              <Trans>Authorization record: {row.remoteAccountId}</Trans>
+            </p>
+          </details>
+        ) : null}
       </div>
     );
   }
 
   function renderDetail(item: ConnectionCatalogItem) {
-    const accounts = activeAccounts(connections, item);
-    const key = itemKey(item);
-    const connecting = pending === key;
-    const uninstalling = pending === `uninstall:${key}`;
-    const toolCount = tools.length;
-
+    const accounts = catalogAccounts(connections, item);
+    const current = accounts.filter((row) => row.status !== "revoked");
+    const history = accounts.filter((row) => row.status === "revoked");
+    const uninstallable = catalogUninstallAccounts(connections, item);
     return (
-      <div data-testid="connection-detail" className="space-y-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground"
-              aria-label={t`Back`}
-              onClick={closeDetail}
+      <div data-testid="connection-detail" className="flex flex-col gap-5">
+        {detailApp && detailApp.sources.length > 1 ? (
+          <div className="flex flex-col gap-2">
+            <label htmlFor="connection-source" className="text-sm font-medium">
+              <Trans>Connection source</Trans>
+            </label>
+            <NativeSelect
+              id="connection-source"
+              value={itemKey(item)}
+              disabled={pending !== null}
+              onChange={(event) => {
+                const source = detailApp.sources.find(
+                  (entry) => itemKey(entry) === event.target.value,
+                );
+                if (source) openDetail(source);
+              }}
             >
-              <ChevronLeft />
-            </Button>
-            {item.logo ? (
-              <img
-                src={item.logo}
-                alt=""
-                loading="lazy"
-                decoding="async"
-                className="h-9 w-9 shrink-0 rounded-xl bg-accent object-contain"
-              />
-            ) : (
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-sm font-semibold text-foreground">
-                {item.name[0]}
-              </div>
-            )}
-            <div className="truncate text-[17px] font-medium text-foreground">{item.name}</div>
+              {detailApp.sources.map((source) => (
+                <NativeSelectOption key={itemKey(source)} value={itemKey(source)}>
+                  {sourceLabel(source)} · {source.slug}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
           </div>
-          <Button
-            type="button"
-            variant="secondary"
-            className="rounded-full"
-            size="sm"
-            disabled={uninstalling || connecting}
-            onClick={() => void uninstall(item)}
-          >
-            {uninstalling ? <Trans>Removing…</Trans> : <Trans>Uninstall</Trans>}
-          </Button>
-        </div>
-
+        ) : (
+          <p className="text-sm text-muted-foreground">{sourceLabel(item)}</p>
+        )}
         <Card data-testid="connection-accounts">
-          <CardHeader>
+          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
             <CardTitle>
               <Trans>Accounts</Trans>
             </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {accounts.map((row) => (
-              <div key={row.id} className="flex items-center gap-2">
-                <Input
-                  value={labelDrafts[row.id] ?? row.displayName}
-                  aria-label={t`Account label`}
-                  className="h-9 rounded-lg px-3 text-[13px]"
-                  onChange={(event) =>
-                    setLabelDrafts((current) => ({ ...current, [row.id]: event.target.value }))
-                  }
-                  onBlur={() => void renameAccount(row)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.currentTarget.blur();
-                    }
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-9 shrink-0 rounded-full px-2 text-[12px]"
-                  size="sm"
-                  disabled={pending === row.id || uninstalling}
-                  onClick={() => void revokeAccount(row, item)}
-                >
-                  {pending === row.id ? <Trans>Removing…</Trans> : <Trans>Remove</Trans>}
-                </Button>
-              </div>
-            ))}
             <Button
-              type="button"
               variant="secondary"
-              className="rounded-full"
               size="sm"
-              disabled={connecting || uninstalling}
+              disabled={pending !== null}
               onClick={() => void connect(item)}
             >
-              {connecting ? <Trans>Adding…</Trans> : <Trans>Add another</Trans>}
+              <Trans>Add account</Trans>
             </Button>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {current.length ? (
+              current.map((row) => renderAccount(row, item))
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                <Trans>No active accounts.</Trans>
+              </p>
+            )}
+            {history.length ? (
+              <details>
+                <summary className="cursor-pointer text-sm text-muted-foreground">
+                  <Trans>Disconnected accounts ({history.length})</Trans>
+                </summary>
+                <div className="mt-3 flex flex-col gap-3">
+                  {history.map((row) => renderAccount(row, item))}
+                </div>
+              </details>
+            ) : null}
           </CardContent>
         </Card>
-
         <Card data-testid="connection-tools">
-          <button
-            type="button"
-            className="flex w-full items-center justify-between gap-3 px-6 py-4 text-left"
-            onClick={() => setToolsOpen((open) => !open)}
-            aria-expanded={toolsOpen}
-          >
-            <span className="text-base font-medium text-foreground">
-              {toolsLoading ? (
-                <Trans>Tools</Trans>
-              ) : (
-                <Plural value={toolCount} one="# tool" other="# tools" />
-              )}
-            </span>
-            {toolsOpen ? (
-              <ChevronUp className="size-4 text-muted-foreground" />
-            ) : (
-              <ChevronDown className="size-4 text-muted-foreground" />
-            )}
-          </button>
+          <CardHeader>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-3 text-left"
+              aria-expanded={toolsOpen}
+              onClick={() => setToolsOpen((open) => !open)}
+            >
+              <CardTitle>
+                {toolsLoading ? (
+                  <Trans>Tools</Trans>
+                ) : (
+                  <Plural value={tools.length} one="# tool" other="# tools" />
+                )}
+              </CardTitle>
+              {toolsOpen ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+            </button>
+          </CardHeader>
           {toolsOpen ? (
-            <CardContent className="border-t border-border pt-3">
+            <CardContent>
               {toolsLoading ? (
                 <p className="text-sm text-muted-foreground">
                   <Trans>Loading tools…</Trans>
                 </p>
-              ) : tools.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  <Trans>No tools available.</Trans>
+              ) : toolsError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {toolsError}
                 </p>
-              ) : (
-                <ul className="space-y-2">
+              ) : tools.length ? (
+                <ul className="flex flex-col gap-2">
                   {tools.map((tool) => (
-                    <li key={tool.name} className="text-sm text-foreground">
+                    <li key={tool.name} className="text-sm">
                       {humanizeToolName(tool.name)}
                     </li>
                   ))}
                 </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  <Trans>No tools available.</Trans>
+                </p>
               )}
             </CardContent>
           ) : null}
         </Card>
+        {uninstallable.length ? (
+          <div className="flex justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending !== null}
+              onClick={() => void prepareRemoval(item)}
+            >
+              <Trans>Uninstall source</Trans>
+            </Button>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -665,17 +1048,30 @@ export function PluginsOverlay({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open) {
+          cancelNativeAttempt(false);
+          onClose();
+        }
       }}
     >
       <DialogContent
         showCloseButton={false}
         className="flex h-[760px] max-h-[calc(100%-2rem)] w-[1080px] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-2xl bg-card p-0 sm:max-w-[1080px]"
       >
-        <DialogHeader className="flex-row items-start justify-between px-8 pt-7">
-          <DialogTitle className="text-2xl text-foreground">
-            <Trans>Integrations</Trans>
-          </DialogTitle>
+        <DialogHeader className="flex-row items-center justify-between px-6 pt-6 sm:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            {detailItem ? (
+              <Button variant="ghost" size="icon-sm" aria-label={t`Back`} onClick={closeDetail}>
+                <ChevronLeft />
+              </Button>
+            ) : null}
+            {detailApp?.logo ? (
+              <img src={detailApp.logo} alt="" className="size-9 rounded-xl object-contain" />
+            ) : null}
+            <DialogTitle className="truncate">
+              {detailApp ? detailApp.name : <Trans>Integrations</Trans>}
+            </DialogTitle>
+          </div>
           <DialogClose
             render={<Button variant="ghost" size="icon-sm" aria-label={t`Close integrations`} />}
           >
@@ -699,14 +1095,16 @@ export function PluginsOverlay({
         ) : null}
 
         <div id="integration-list" className="rk-scroll flex-1 overflow-y-auto px-8 py-6">
-          <Button
-            variant="outline"
-            className="mb-4"
-            onClick={() => setSetupOpen((current) => !current)}
-          >
-            <Trans>Browse MCP servers</Trans>
-          </Button>
-          {setupOpen ? (
+          {!detailItem ? (
+            <Button
+              variant="outline"
+              className="mb-4"
+              onClick={() => setSetupOpen((current) => !current)}
+            >
+              <Trans>Browse MCP servers</Trans>
+            </Button>
+          ) : null}
+          {setupOpen && !detailItem ? (
             <div className="mb-6">
               <IntegrationSetup
                 botId={activeBotId}
@@ -719,97 +1117,112 @@ export function PluginsOverlay({
               />
             </div>
           ) : null}
-          {catalogError ? <p className="mb-4 text-sm text-destructive">{catalogError}</p> : null}
+          {catalogError ? (
+            <div className="mb-4 flex flex-col gap-2">
+              <p role="alert" className="text-sm text-destructive">
+                {catalogError}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending !== null}
+                onClick={() => void refreshStatus()}
+              >
+                <Trans>Refresh status</Trans>
+              </Button>
+            </div>
+          ) : null}
+          {notice ? (
+            <p role="status" className="mb-4 text-sm text-muted-foreground">
+              {notice}
+            </p>
+          ) : null}
 
           {detailItem ? (
-            renderDetail(detailItem)
+            nativeAccount ? (
+              <NativeAccountConnect
+                key={`${itemKey(detailItem)}:${nativeAccount.previous?.id ?? "new"}`}
+                appId={nativeAccount.appId}
+                previousConnectionId={nativeAccount.previous?.id}
+                onSubmit={(input) => connect(detailItem, nativeAccount.previous, input)}
+                onCancel={closeDetail}
+                authorizationUrl={nativeAuthorizationUrl}
+              />
+            ) : (
+              renderDetail(detailItem)
+            )
           ) : (
             <>
-              {loading ? (
-                <p className="text-muted-foreground/80">
-                  <Trans>Loading integrations…</Trans>
-                </p>
-              ) : null}
-
-              {showFeatured ? (
-                <div className="mb-6" data-testid="featured-connectors">
-                  {!loading && catalog.length === 0 ? (
-                    <p className="text-[13.5px] leading-6 text-muted-foreground/80">
+              <Tabs
+                value={catalogFilter}
+                onValueChange={(value) => {
+                  setCatalogFilter(value as "all" | "connected");
+                  setVisibleCount(CONNECTION_CATALOG_PAGE_SIZE);
+                }}
+              >
+                <TabsList aria-label={t`Application filter`}>
+                  <TabsTrigger value="all">
+                    <Trans>All apps</Trans> · {apps.length}
+                  </TabsTrigger>
+                  <TabsTrigger value="connected">
+                    <Trans>Connected</Trans> ·{" "}
+                    {
+                      apps.filter((app) => connectionAppSummary(app, connections).isConnected)
+                        .length
+                    }
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value={catalogFilter} className="mt-5 flex flex-col gap-5">
+                  {loading ? (
+                    <p className="text-muted-foreground">
+                      <Trans>Loading integrations…</Trans>
+                    </p>
+                  ) : null}
+                  {!loading && !catalog.length ? (
+                    <p className="text-muted-foreground">
                       <Trans>Configure a plugin catalog on the server to connect apps.</Trans>
                     </p>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2">
-                      {featuredTiles.map((tile) => {
-                        const item = tile.item;
-                        const key = item ? itemKey(item) : tile.id;
-                        const disabled = tile.missing || !item;
-                        if (item && !tile.missing) {
-                          // Featured is the stable hit target for connection-tile-* in E2E.
-                          return renderCatalogTile(item, tile.label, item.logo, {
-                            tileTestId: true,
-                          });
-                        }
-                        return (
-                          <div
-                            key={key}
-                            className={`flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-2 ${
-                              disabled ? "opacity-70" : ""
-                            }`}
-                          >
-                            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-sm font-semibold text-foreground">
-                              {tile.label[0]}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[15px] font-medium text-foreground">
-                                {tile.label}
-                              </div>
-                              {disabled ? (
-                                <div className="truncate text-[12.5px] text-muted-foreground">
-                                  <Trans>Not in the plugin catalog</Trans>
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-
-              {!loading && catalog.length === 0 && !showFeatured ? (
-                <p className="text-muted-foreground/80">
-                  <Trans>No managed app catalog is configured on this deployment.</Trans>
-                </p>
-              ) : null}
-              {!loading && catalog.length > 0 && visible.length === 0 && !showFeatured ? (
-                <p className="text-muted-foreground/80">
-                  <Trans>No apps match your search.</Trans>
-                </p>
-              ) : null}
-              {visible.length > 0 ? (
-                <div className="grid grid-cols-2 gap-2">
-                  {rendered.map((item) =>
-                    renderCatalogTile(item, item.name, item.logo, {
-                      // Avoid duplicate connection-tile-* ids while featured is also shown.
-                      tileTestId: !showFeatured,
-                    }),
-                  )}
-                </div>
-              ) : null}
-              {rendered.length < visible.length ? (
-                <div className="mt-4 flex justify-center">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="rounded-full"
-                    size="sm"
-                    onClick={() => setVisibleCount((count) => count + CONNECTION_CATALOG_PAGE_SIZE)}
+                  ) : null}
+                  {!loading && catalog.length > 0 && !visible.length ? (
+                    <p className="text-muted-foreground">
+                      {query.trim() ? (
+                        <Trans>No apps match your search.</Trans>
+                      ) : (
+                        <Trans>No connected apps.</Trans>
+                      )}
+                    </p>
+                  ) : null}
+                  {rendered.some((app) => app.firstParty) ? (
+                    <section className="flex flex-col gap-3">
+                      <h2 className="text-sm font-medium text-muted-foreground">
+                        <Trans>By Cogine</Trans>
+                      </h2>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        {rendered.filter((app) => app.firstParty).map(renderCatalogTile)}
+                      </div>
+                    </section>
+                  ) : null}
+                  <div
+                    data-testid="featured-connectors"
+                    className="grid grid-cols-1 gap-3 sm:grid-cols-2"
                   >
-                    <Trans>Show more</Trans>
-                  </Button>
-                </div>
-              ) : null}
+                    {rendered.filter((app) => !app.firstParty).map(renderCatalogTile)}
+                  </div>
+                  {rendered.length < visible.length ? (
+                    <div className="flex justify-center">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          setVisibleCount((count) => count + CONNECTION_CATALOG_PAGE_SIZE)
+                        }
+                      >
+                        <Trans>Show more</Trans>
+                      </Button>
+                    </div>
+                  ) : null}
+                </TabsContent>
+              </Tabs>
 
               <details
                 data-testid="integrations-advanced"
@@ -1162,6 +1575,64 @@ export function PluginsOverlay({
           )}
         </div>
       </DialogContent>
+      <AlertDialog
+        open={removal !== null}
+        onOpenChange={(open) => {
+          if (!open && pending !== "remove") setRemoval(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {removal?.account ? (
+                <Trans>Disconnect this account?</Trans>
+              ) : (
+                <Trans>Uninstall this source?</Trans>
+              )}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {removal ? (
+                <>
+                  {removal.item.name} · {sourceLabel(removal.item)} · {removal.item.slug}
+                </>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="flex flex-col gap-2 text-sm">
+            {removal?.targets.map((row) => (
+              <li key={row.id}>{row.displayName}</li>
+            ))}
+          </ul>
+          {!removal?.account &&
+          removal &&
+          catalogAccounts(connections, removal.item).some((row) => row.status === "error") ? (
+            <p className="text-sm text-muted-foreground">
+              <Trans>Accounts that need attention are kept. Manage them individually.</Trans>
+            </p>
+          ) : null}
+          <p className="text-sm text-muted-foreground">
+            <Trans>Other sources stay connected. Operations already sent may still finish.</Trans>
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending === "remove"}>
+              <Trans>Cancel</Trans>
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={pending === "remove"}
+              onClick={() => void runRemoval()}
+            >
+              {pending === "remove" ? (
+                <Trans>Disconnecting…</Trans>
+              ) : removal?.account ? (
+                <Trans>Disconnect account</Trans>
+              ) : (
+                <Trans>Uninstall source</Trans>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

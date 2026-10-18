@@ -36,6 +36,7 @@ import {
   loadThreadAttention,
   lockOwnedGroup,
   touchGroupUpdatedAt,
+  updateTaskConnectionSelection,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import {
@@ -738,6 +739,9 @@ export async function sendThreadMessage(
                 message: "Answer the pending ask first.",
               });
             }
+            await updateTaskConnectionSelection(tx, actor, run.taskId, [
+              mentionTargets.connectorMentionIds,
+            ]);
           }
           const answered = waitingRuns.map((run) => ({ ...run, status: "queued" }));
           const primary = answered[0];
@@ -779,6 +783,9 @@ export async function sendThreadMessage(
               botId: target.botId,
               userId: actor.userId,
               runId: steersUserMessage(active) ? active.id : null,
+              ...(mentionTargets.connectorMentionIds.length
+                ? { connectionIds: mentionTargets.connectorMentionIds }
+                : {}),
             },
           });
           await tx.message.update({ where: { id: message.id }, data: { runId: active.id } });
@@ -807,6 +814,9 @@ export async function sendThreadMessage(
             threadId: target.threadId,
             userId: actor.userId,
             prompt: buildSendPrompt(input.text, artifacts, connectorNames),
+            ...(mentionTargets.connectorMentionIds.length
+              ? { connectionIds: mentionTargets.connectorMentionIds }
+              : {}),
             status: "queued",
           },
         });
@@ -912,6 +922,9 @@ export async function sendThreadMessage(
               message: "Answer the pending ask first.",
             });
           }
+          await updateTaskConnectionSelection(tx, actor, run.taskId, [
+            mentionTargets.connectorMentionIds,
+          ]);
           const queuedRun = { ...run, status: "queued" };
           const queuedForBot = answeredByBotId.get(run.botId);
           if (queuedForBot) queuedForBot.push(queuedRun);
@@ -943,6 +956,9 @@ export async function sendThreadMessage(
               botId,
               userId: actor.userId,
               runId: steersUserMessage(active) ? active.id : null,
+              ...(mentionTargets.connectorMentionIds.length
+                ? { connectionIds: mentionTargets.connectorMentionIds }
+                : {}),
             },
           });
           runs.push(active);
@@ -955,6 +971,9 @@ export async function sendThreadMessage(
             threadId: target.threadId,
             userId: actor.userId,
             prompt: buildSendPrompt(input.text, artifacts, connectorNames),
+            ...(mentionTargets.connectorMentionIds.length
+              ? { connectionIds: mentionTargets.connectorMentionIds }
+              : {}),
             status: "queued",
           },
         });

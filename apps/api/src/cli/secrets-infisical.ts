@@ -9,14 +9,20 @@ import {
 import { resolveEncryptionKey } from "@rakazo/core";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import { createDb } from "@rakazo/db";
-import { createSecretMigrationRepository } from "../secret-migration.js";
+import {
+  createSecretMigrationRepository,
+  secretMigrationReportIdentity,
+} from "../secret-migration.js";
 
 loadRootEnv();
 
 const args = process.argv.slice(2);
 if (args.some((arg) => !["--dry-run", "--reverse"].includes(arg)))
   throw new Error("Usage: secrets:infisical [--dry-run] [--reverse]");
-const options = secretStoreOptionsFromEnv({ ...process.env, SECRET_STORE: "infisical" });
+const options = secretStoreOptionsFromEnv({
+  ...process.env,
+  SECRET_STORE: "infisical",
+});
 if (!options || !process.env.DATABASE_URL)
   throw new Error("Secret storage and database configuration are required");
 const { prisma, pool } = createDb(process.env.DATABASE_URL);
@@ -56,7 +62,8 @@ try {
     {
       direction: args.includes("--reverse") ? "reverse" : "forward",
       dryRun: args.includes("--dry-run"),
-      report: (row, status) => process.stdout.write(`${row.label} ${row.id}: ${status}\n`),
+      report: (row, status) =>
+        process.stdout.write(`${secretMigrationReportIdentity(row)}: ${status}\n`),
     },
   );
   if (result.failed || controller.signal.aborted) process.exitCode = 1;

@@ -1,5 +1,7 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { NativeAppIdSchema } from "@rakazo/contracts";
 import { abortableDelay } from "@rakazo/core";
+import { router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import type { ViewProps } from "react-native";
 import { Linking, Text, View } from "react-native";
@@ -36,6 +38,19 @@ export function AppConnectCard({
 
   async function authorize() {
     if (readOnly) return;
+    if (block.connectorId === "native") {
+      const appId = NativeAppIdSchema.safeParse(block.provider);
+      if (!appId.success) {
+        setError(t("This app is not available."));
+        return;
+      }
+      setError(null);
+      router.push({
+        pathname: "/(settings)/integrations",
+        params: { app: appId.data, botId },
+      });
+      return;
+    }
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;
@@ -127,8 +142,12 @@ export function AppConnectCard({
         </View>
         {view.showAuthorize && !readOnly ? (
           <NativeActionButton
-            label={view.actionLabel}
-            accessibilityLabel={t("Authorize {name}", { name: block.name })}
+            label={block.connectorId === "native" ? t("Connect") : view.actionLabel}
+            accessibilityLabel={
+              block.connectorId === "native"
+                ? t("Connect {name}", { name: block.name })
+                : t("Authorize {name}", { name: block.name })
+            }
             fill={false}
             busy={busy}
             style={{ alignSelf: "center" }}

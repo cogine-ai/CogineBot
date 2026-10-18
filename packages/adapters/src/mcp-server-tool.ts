@@ -21,6 +21,7 @@ export type ParsedMcpServerArgs = {
   env: Record<string, string>;
   headers: Record<string, string>;
   secret?: string;
+  /** Legacy argument name; requests a shared-policy approval card, never a Bot assignment. */
   assignToSelf: boolean;
 };
 

@@ -170,6 +170,10 @@ describe("the images compose file", () => {
     for (const key of ["BETTER_AUTH_URL", "WEB_ORIGIN", "API_URL"]) {
       expect(compose.services.api?.environment?.[key]).toBe(`\${${key}:-http://127.0.0.1:5173}`);
     }
+    // Native grants are validated against the same trusted callback origin in both processes.
+    expect(compose.services.worker?.environment?.API_URL).toBe(
+      compose.services.api?.environment?.API_URL,
+    );
     expect(compose.services.postgres?.ports).toBeUndefined();
     expect(compose.services.supervisor?.ports).toBeUndefined();
   });

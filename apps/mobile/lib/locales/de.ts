@@ -1,4 +1,70 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "No connected apps.": "Keine verbundenen Apps.",
+  "Share tools": "Tools teilen",
+  "Review tool access": "Tool-Zugriff prüfen",
+  "No OAuth connection": "Keine OAuth-Verbindung",
+  "Credential saved": "Zugangsdaten gespeichert",
+  "OAuth expired": "OAuth abgelaufen",
+  "OAuth connected": "OAuth verbunden",
+  "No MCP servers yet.": "Noch keine MCP-Server.",
+  "Open the web app to manage server configuration and OAuth.":
+    "Serverkonfiguration und OAuth in der Web-App verwalten.",
+  "Server configuration and OAuth": "Serverkonfiguration und OAuth",
+  "Server changed. Reload settings to review it.":
+    "Server geändert. Einstellungen neu laden und prüfen.",
+  "Reload settings": "Einstellungen neu laden",
+  "Tool access saved.": "Tool-Zugriff gespeichert.",
+  "Save tool access": "Tool-Zugriff speichern",
+  "Could not save tool access": "Tool-Zugriff konnte nicht gespeichert werden",
+  "Tool names, one per line": "Tool-Namen, einer pro Zeile",
+  "Share all tools with this space": "Alle Tools mit diesem Space teilen",
+  "Could not load MCP servers": "MCP-Server konnten nicht geladen werden",
+  "Choose a server": "Server auswählen",
+  "MCP server": "MCP-Server",
+  "MCP servers": "MCP-Server",
+  "Disconnect did not complete. Review the remaining accounts before trying again.":
+    "Trennen nicht abgeschlossen. Verbleibende Konten vor erneutem Versuch prüfen.",
+  "{count} accounts disconnected locally": "{count} Konten lokal getrennt",
+  "1 account disconnected locally": "1 Konto lokal getrennt",
+  "Source accounts disconnected.": "Konten dieser Quelle getrennt.",
+  "Account disconnected.": "Konto getrennt.",
+  "Accounts changed. Review them before disconnecting.":
+    "Konten geändert. Vor dem Trennen erneut prüfen.",
+  "Connection status unconfirmed. Refresh status.":
+    "Verbindungsstatus unbestätigt. Status aktualisieren.",
+  "Local access stopped · Provider confirmation pending":
+    "Lokaler Zugriff gestoppt · Anbieterbestätigung ausstehend",
+  "Authorization is still pending.": "Autorisierung steht noch aus.",
+  "Authorization did not complete. You can authorize again.":
+    "Autorisierung nicht abgeschlossen. Erneut versuchen.",
+  "Could not load tools": "Tools konnten nicht geladen werden",
+  "Uninstall source": "Quelle entfernen",
+  "Disconnect account": "Konto trennen",
+  "Cancel connection": "Verbindung abbrechen",
+  "Authorization record": "Autorisierungsdatensatz",
+  "Account details": "Kontodetails",
+  "Disconnected accounts": "Getrennte Konten",
+  "No active accounts.": "Keine aktiven Konten.",
+  "Add account": "Konto hinzufügen",
+  "Connection source": "Verbindungsquelle",
+  Disconnected: "Getrennt",
+  "Pending authorization": "Autorisierung ausstehend",
+  "Authorize again": "Erneut autorisieren",
+  "Check status": "Status prüfen",
+  Manage: "Verwalten",
+  "By Cogine": "Von Cogine",
+  "Application filter": "App-Filter",
+  "All apps": "Alle Apps",
+  "Uninstall this source?": "Diese Quelle entfernen?",
+  "Share this server's tools with all bots in this space.":
+    "Tools dieses Servers mit allen Bots in diesem Space teilen.",
+  "No connected or pending accounts remain for this source.":
+    "Für diese Quelle sind keine verbundenen oder wartenden Konten übrig.",
+  "MCP settings": "MCP-Einstellungen",
+  "Disconnect this account?": "Dieses Konto trennen?",
+  "Could not check connection": "Verbindung konnte nicht geprüft werden",
+  "Accounts that need attention are kept. Manage them individually.":
+    "Konten mit Problemen bleiben erhalten. Einzeln verwalten.",
   "Couldn't refresh — showing the last loaded messages.":
     "Aktualisierung fehlgeschlagen – die zuletzt geladenen Nachrichten werden angezeigt.",
   "Try Again": "Erneut versuchen",
@@ -789,4 +855,49 @@ export const DE_MESSAGES: Record<string, string> = {
     "Melde dich bei deinem bestehenden Konto an, um SSO zu verknüpfen",
   "SSO is temporarily unavailable. Try again.":
     "SSO ist vorübergehend nicht verfügbar. Versuche es erneut.",
+  "Application credentials and connection methods are managed in the web app. Account connections remain available in Apps.":
+    "Anwendungszugangsdaten und Verbindungsmethoden verwaltest du in der Web-App. Konten verbindest du weiterhin unter Apps.",
+  "Application settings on the web": "Anwendungseinstellungen im Web",
+  "Could not confirm cancellation. Check the pending account.":
+    "Der Abbruch konnte nicht bestätigt werden. Prüfe das ausstehende Konto.",
+  "This application is not available for direct connection.":
+    "Diese Anwendung kann nicht direkt verbunden werden.",
+  "Finish authorization in the browser, then return here to check the result.":
+    "Schließe die Autorisierung im Browser ab und kehre hierher zurück, um das Ergebnis zu prüfen.",
+  "This app is not available.": "Diese App ist nicht verfügbar.",
+  "Connect {name}": "{name} verbinden",
+  "Could not load connection methods": "Verbindungsmethoden konnten nicht geladen werden",
+  "Machine API key": "Maschinen-API-Schlüssel",
+  "Internal integration": "Interne Integration",
+  "Personal access token": "Persönliches Zugriffstoken",
+  "Account authorization": "Kontoautorisierung",
+  "Could not open the web app": "Die Web-App konnte nicht geöffnet werden",
+  "The server or space changed. Return and open this application again.":
+    "Server oder Arbeitsbereich wurde gewechselt. Gehe zurück und öffne diese Anwendung erneut.",
+  "Enter a valid credential": "Gib gültige Zugangsdaten ein",
+  "Reconnect account": "Konto erneut verbinden",
+  "Connect account": "Konto verbinden",
+  "Set up a connection method in the web app first.":
+    "Richte zuerst eine Verbindungsmethode in der Web-App ein.",
+  "Ask your administrator to enable a connection method.":
+    "Bitte deinen Administrator, eine Verbindungsmethode zu aktivieren.",
+  "Connection method": "Verbindungsmethode",
+  "Choose a connection method": "Verbindungsmethode auswählen",
+  "Official application": "Offizielle Anwendung",
+  "Your application": "Deine Anwendung",
+  "Internal integration token": "Token der internen Integration",
+  "Uses a machine identity restricted to the configured knowledge bases.":
+    "Verwendet eine Maschinenidentität mit Zugriff nur auf die konfigurierten Wissensdatenbanken.",
+  "Only pages shared with this integration are available.":
+    "Nur Seiten, die für diese Integration freigegeben wurden, sind verfügbar.",
+  "Authorization opens in your system browser. If asked, sign in to this CogineBot instance to continue. Then return here to check the result.":
+    "Die Autorisierung öffnet sich im Systembrowser. Melde dich bei Aufforderung bei dieser CogineBot-Instanz an, um fortzufahren. Kehre danach hierher zurück, um das Ergebnis zu prüfen.",
+  "Open web settings": "Web-Einstellungen öffnen",
+  "Back to application": "Zurück zur Anwendung",
+  "Try again": "Erneut versuchen",
+  "Authorize account": "Konto autorisieren",
+  "Connect machine": "Maschinenkonto verbinden",
+  "Connect integration": "Integration verbinden",
+  "Calendar event": "Kalenderereignis",
+  "Notion event": "Notion-Ereignis",
 };

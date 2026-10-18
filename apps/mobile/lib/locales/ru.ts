@@ -1,4 +1,70 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "No connected apps.": "Нет подключённых приложений.",
+  "Share tools": "Предоставить инструменты",
+  "Review tool access": "Проверить доступ к инструментам",
+  "No OAuth connection": "Нет подключения OAuth",
+  "Credential saved": "Учётные данные сохранены",
+  "OAuth expired": "Срок OAuth истёк",
+  "OAuth connected": "OAuth подключён",
+  "No MCP servers yet.": "Серверов MCP пока нет.",
+  "Open the web app to manage server configuration and OAuth.":
+    "Управляйте настройками сервера и OAuth в веб-приложении.",
+  "Server configuration and OAuth": "Настройки сервера и OAuth",
+  "Server changed. Reload settings to review it.":
+    "Сервер изменился. Перезагрузите и проверьте настройки.",
+  "Reload settings": "Перезагрузить настройки",
+  "Tool access saved.": "Доступ к инструментам сохранён.",
+  "Save tool access": "Сохранить доступ к инструментам",
+  "Could not save tool access": "Не удалось сохранить доступ к инструментам",
+  "Tool names, one per line": "Названия инструментов, по одному в строке",
+  "Share all tools with this space": "Предоставить все инструменты этому пространству",
+  "Could not load MCP servers": "Не удалось загрузить серверы MCP",
+  "Choose a server": "Выберите сервер",
+  "MCP server": "Сервер MCP",
+  "MCP servers": "Серверы MCP",
+  "Disconnect did not complete. Review the remaining accounts before trying again.":
+    "Отключение не завершено. Проверьте оставшиеся аккаунты перед повтором.",
+  "{count} accounts disconnected locally": "Локально отключено аккаунтов: {count}",
+  "1 account disconnected locally": "1 аккаунт отключён локально",
+  "Source accounts disconnected.": "Аккаунты источника отключены.",
+  "Account disconnected.": "Аккаунт отключён.",
+  "Accounts changed. Review them before disconnecting.":
+    "Аккаунты изменились. Проверьте их перед отключением.",
+  "Connection status unconfirmed. Refresh status.":
+    "Статус подключения не подтверждён. Обновите статус.",
+  "Local access stopped · Provider confirmation pending":
+    "Локальный доступ отключён · Ожидается подтверждение провайдера",
+  "Authorization is still pending.": "Авторизация ещё ожидается.",
+  "Authorization did not complete. You can authorize again.":
+    "Авторизация не завершена. Можно авторизовать заново.",
+  "Could not load tools": "Не удалось загрузить инструменты",
+  "Uninstall source": "Удалить источник",
+  "Disconnect account": "Отключить аккаунт",
+  "Cancel connection": "Отменить подключение",
+  "Authorization record": "Запись авторизации",
+  "Account details": "Сведения об аккаунте",
+  "Disconnected accounts": "Отключённые аккаунты",
+  "No active accounts.": "Нет активных аккаунтов.",
+  "Add account": "Добавить аккаунт",
+  "Connection source": "Источник подключения",
+  Disconnected: "Отключено",
+  "Pending authorization": "Ожидание авторизации",
+  "Authorize again": "Авторизовать заново",
+  "Check status": "Проверить статус",
+  Manage: "Управление",
+  "By Cogine": "От Cogine",
+  "Application filter": "Фильтр приложений",
+  "All apps": "Все приложения",
+  "Uninstall this source?": "Удалить этот источник?",
+  "Share this server's tools with all bots in this space.":
+    "Предоставить инструменты сервера всем ботам в этом пространстве.",
+  "No connected or pending accounts remain for this source.":
+    "У этого источника нет подключённых или ожидающих аккаунтов.",
+  "MCP settings": "Настройки MCP",
+  "Disconnect this account?": "Отключить этот аккаунт?",
+  "Could not check connection": "Не удалось проверить подключение",
+  "Accounts that need attention are kept. Manage them individually.":
+    "Проблемные аккаунты сохраняются. Управляйте ими отдельно.",
   "Couldn't refresh — showing the last loaded messages.":
     "Не удалось обновить — показаны последние загруженные сообщения.",
   "Try Again": "Повторить",
@@ -792,4 +858,49 @@ export const RU_MESSAGES: Record<string, string> = {
   "Sign in to your existing account to link SSO":
     "Войдите в существующий аккаунт, чтобы привязать SSO",
   "SSO is temporarily unavailable. Try again.": "SSO временно недоступен. Попробуйте снова.",
+  "Application credentials and connection methods are managed in the web app. Account connections remain available in Apps.":
+    "Учётные данные приложений и способы подключения управляются в веб-приложении. Подключать аккаунты по-прежнему можно в разделе «Приложения».",
+  "Application settings on the web": "Настройки приложений в веб-версии",
+  "Could not confirm cancellation. Check the pending account.":
+    "Не удалось подтвердить отмену. Проверьте аккаунт, ожидающий авторизации.",
+  "This application is not available for direct connection.":
+    "Это приложение нельзя подключить напрямую.",
+  "Finish authorization in the browser, then return here to check the result.":
+    "Завершите авторизацию в браузере, затем вернитесь сюда, чтобы проверить результат.",
+  "This app is not available.": "Это приложение недоступно.",
+  "Connect {name}": "Подключить {name}",
+  "Could not load connection methods": "Не удалось загрузить способы подключения",
+  "Machine API key": "Машинный API-ключ",
+  "Internal integration": "Внутренняя интеграция",
+  "Personal access token": "Персональный токен доступа",
+  "Account authorization": "Авторизация аккаунта",
+  "Could not open the web app": "Не удалось открыть веб-приложение",
+  "The server or space changed. Return and open this application again.":
+    "Сервер или пространство изменились. Вернитесь назад и откройте это приложение снова.",
+  "Enter a valid credential": "Введите действительные учётные данные",
+  "Reconnect account": "Переподключить аккаунт",
+  "Connect account": "Подключить аккаунт",
+  "Set up a connection method in the web app first.":
+    "Сначала настройте способ подключения в веб-приложении.",
+  "Ask your administrator to enable a connection method.":
+    "Попросите администратора включить способ подключения.",
+  "Connection method": "Способ подключения",
+  "Choose a connection method": "Выберите способ подключения",
+  "Official application": "Официальное приложение",
+  "Your application": "Ваше приложение",
+  "Internal integration token": "Токен внутренней интеграции",
+  "Uses a machine identity restricted to the configured knowledge bases.":
+    "Используется машинная учётная запись с доступом только к настроенным базам знаний.",
+  "Only pages shared with this integration are available.":
+    "Доступны только страницы, предоставленные этой интеграции.",
+  "Authorization opens in your system browser. If asked, sign in to this CogineBot instance to continue. Then return here to check the result.":
+    "Авторизация откроется в системном браузере. При необходимости войдите в этот экземпляр CogineBot и продолжите. Затем вернитесь сюда, чтобы проверить результат.",
+  "Open web settings": "Открыть веб-настройки",
+  "Back to application": "Назад к приложению",
+  "Try again": "Повторить",
+  "Authorize account": "Авторизовать аккаунт",
+  "Connect machine": "Подключить машинную учётную запись",
+  "Connect integration": "Подключить интеграцию",
+  "Calendar event": "Событие календаря",
+  "Notion event": "Событие Notion",
 };

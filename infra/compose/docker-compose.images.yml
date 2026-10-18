@@ -206,6 +206,7 @@ services:
       OIDC_CLIENT_SECRET: ""
       AUTH_PASSWORD_ENABLED: "true"
       NODE_ENV: production
+      API_URL: ${API_URL:-http://127.0.0.1:5173}
       DATABASE_URL: postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
       DATA_DIR: /data
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-docker}

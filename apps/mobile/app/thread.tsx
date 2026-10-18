@@ -560,6 +560,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   const activeThreadId = useRef<string | undefined>(undefined);
   const [agentSkills, setAgentSkills] = useState<AgentSkillCatalogEntry[]>([]);
   const [mentionBots, setMentionBots] = useState<MobileBot[]>([]);
+  const [mentionConnectionsRevision, setMentionConnectionsRevision] = useState(0);
   // The call outlives renders, so its switch check reads the newest bot list from here.
   const mentionBotsRef = useRef<MobileBot[]>([]);
   mentionBotsRef.current = mentionBots;
@@ -820,7 +821,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
     return () => {
       cancelled = true;
     };
-  }, [mentionBots]);
+  }, [mentionBots, mentionConnectionsRevision]);
 
   function isCurrentTarget(targetBotId: string | undefined, targetGroupId: string | undefined) {
     return activeBotId.current === targetBotId && activeGroupId.current === targetGroupId;
@@ -1324,6 +1325,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
         cancelFocusPrompt();
       }
       void refreshMentionBots();
+      setMentionConnectionsRevision((revision) => revision + 1);
       markReadIfVisible();
       if (!readOnly) speakFinishedReplyRef.current();
     }, [botId, readOnly, markReadIfVisible, refreshMentionBots]),

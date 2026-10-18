@@ -38,6 +38,8 @@ model User {
   modelCredentials            UserModelCredential[]
   voiceCredentials            UserVoiceCredential[]
   secrets                     Secret[]
+  nativeOAuthSessions         NativeOAuthSession[]
+  nativeOAuthGrants           NativeOAuthGrant[]
   mcpServers                  McpServer[]
   botSections                 BotSection[]
   actionApprovalRules         ActionApprovalRule[]
@@ -236,6 +238,8 @@ model Space {
   actionAutoReviewPreferences ActionAutoReviewPreference[]
   memoryConfig                SpaceMemoryConfig?
   secrets                     Secret[]
+  nativeOAuthSessions         NativeOAuthSession[]
+  nativeOAuthGrants           NativeOAuthGrant[]
   chatGroups                  ChatGroup[]
   botSecrets BotSecret[]
   externalConversations       ExternalConversation[]
@@ -606,6 +610,7 @@ model Task {
   userId    String
   prompt    String
   status    String
+  connectionIds String[] @default([])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   runs      Run[]
@@ -676,6 +681,7 @@ model SteeringMessage {
   botId     String
   bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
   userId    String
+  connectionIds String[] @default([])
   runId     String?
   run       Run?     @relation(fields: [runId], references: [id], onDelete: SetNull)
   /// Set when a pending row must resume as this trigger so its reply can be delivered.
@@ -767,6 +773,7 @@ model ExternalEffect {
 }
 
 model Routine {
+  nativeEventTriggers NativeRoutineTrigger[]
   id             String    @id @default(cuid())
   spaceId        String
   space          Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -863,6 +870,7 @@ model AgentSkill {
 }
 
 model Connection {
+  nativeEventTriggers NativeRoutineTrigger[]
   id          String   @id @default(cuid())
   spaceId     String
   space       Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -873,6 +881,14 @@ model Connection {
   status      String
   secretId    String?
   providerRef String?
+  nativeConfigId String?
+  nativeConfig NativeAppConfig? @relation(fields: [nativeConfigId], references: [id], onDelete: SetNull)
+  nativeConfigRevision Int?
+  oauthGrantId String?
+  oauthGrant NativeOAuthGrant? @relation(fields: [oauthGrantId], references: [id], onDelete: SetNull)
+  mcpServerId String? @unique
+  nativeMcpServer McpServer? @relation(fields: [mcpServerId], references: [id], onDelete: SetNull)
+  nativeOAuthSession NativeOAuthSession?
   metadata    Json     @default("{}")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -1146,6 +1162,8 @@ model Secret {
   mcpServers        McpServer[]
   spaceMemoryConfig SpaceMemoryConfig?
   agentSecret       AgentSecret?
+  nativeOAuthSessions NativeOAuthSession[]
+  nativeOAuthGrants NativeOAuthGrant[]
 
   @@index([userId, spaceId])
   @@map("secrets")
@@ -1169,11 +1187,15 @@ model McpServer {
   secretId      String?
   secret        Secret?           @relation(fields: [secretId], references: [id], onDelete: SetNull)
   enabled       Boolean           @default(true)
+  allowAllTools Boolean           @default(false)
+  allowedTools  Json              @default("[]")
   revision      Int               @default(1)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   assignments   BotMcpServer[]
   oauthSessions McpOAuthSession[]
+  nativeAppId String?
+  nativeConnections Connection[]
 
   @@unique([spaceId, userId, slug])
   @@index([spaceId, userId])
@@ -1478,4 +1500,144 @@ model TicketComment {
 
   @@index([ticketId, createdAt])
   @@map("ticket_comments")
+}
+
+
+// Application configuration belongs to this deployment, not to a model or Bot.
+model NativeAppConfig {
+  nativeNotionHooks NativeNotionHook[]
+  id String @id @default(cuid())
+  appId String
+  label String
+  ownership String
+  credentialKind String
+  enabled Boolean @default(true)
+  config Json @default("{}")
+  ciphertext String?
+  // SecretStore AAD identity; unlike a Secret row this has no User/Space lifecycle.
+  secretRecordId String?
+  callbackUri String
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sessions NativeOAuthSession[]
+  grants NativeOAuthGrant[]
+  connections Connection[]
+
+  @@index([appId, enabled])
+  @@map("native_app_configs")
+}
+
+model NativeOAuthSession {
+  id String @id
+  stateHash String @unique
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  connectionId String @unique
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  configId String
+  config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  configRevision Int
+  requestedScopes String[] @default([])
+  secretId String?
+  secret Secret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  expiresAt DateTime
+  consumedAt DateTime?
+  cancelledAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, spaceId, expiresAt])
+  @@map("native_oauth_sessions")
+}
+
+model NativeOAuthGrant {
+  nativeEventTriggers NativeRoutineTrigger[]
+  id String @id
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  configId String
+  config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Restrict)
+  configRevision Int
+  authority String
+  subject String
+  tenant String?
+  principal Json @default("{}")
+  scopes String[] @default([])
+  secretId String?
+  secret Secret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  accessExpiresAt DateTime?
+  authGeneration Int @default(1)
+  tokenVersion Int @default(1)
+  revokedAt DateTime?
+  refreshLeaseId String?
+  refreshLeaseUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  connections Connection[]
+
+  @@index([userId, spaceId, authority])
+  @@map("native_oauth_grants")
+}
+
+model NativeRoutineTrigger {
+  id String @id @default(cuid())
+  routineId String
+  routine Routine @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  connectionId String
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  authorizationRevision String
+  grantId String
+  grant NativeOAuthGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  authGeneration Int
+  configId String
+  configRevision Int
+  kind String
+  resourceType String
+  resourceId String
+  spec Json
+  version Int @default(1)
+  armedAt DateTime @default(now())
+  state Json @default("{}")
+  nextPollAt DateTime?
+  leaseId String?
+  leaseUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([routineId])
+  @@index([connectionId, authorizationRevision])
+  @@index([nextPollAt])
+  @@map("native_routine_triggers")
+}
+
+model NativeNotionHook {
+  id String @id
+  configId String
+  config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  configRevision Int
+  revision Int @default(1)
+  integrationId String?
+  candidateIntegrationId String?
+  subscriptionId String?
+  // Deployment-level SecretStore AAD; independent of the setup owner's User/Space lifecycle.
+  secretRecordId String? @unique
+  ciphertext String?
+  enabled Boolean @default(false)
+  disabledAt DateTime?
+  // Pending-setup provenance only; deliberately no User or Space FK/authority inheritance.
+  setupOwnerUserId String
+  setupSpaceId String
+  setupExpiresAt DateTime
+  ownerConfirmedAt DateTime?
+  lastVerifiedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([integrationId, subscriptionId])
+  @@index([configId])
+  // SQL enforces one enabled hook per config with a partial unique index.
+  @@map("native_notion_hooks")
 }

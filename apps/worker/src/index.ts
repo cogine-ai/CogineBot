@@ -1,5 +1,10 @@
 import type { JobPublisher, JobWorkerHost } from "@rakazo/adapter-kit";
-import { ComposioConnector, IntegrationProviderSettings } from "@rakazo/adapters";
+import {
+  ComposioConnector,
+  IntegrationProviderSettings,
+  NativeConnectorProvider,
+  NativeRoutineEventService,
+} from "@rakazo/adapters";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import { createWorkerSecretStore } from "./secret-store.js";
 
@@ -154,7 +159,15 @@ async function main() {
       pipedream,
     },
   );
+  const artifacts = new LocalArtifactStore(dataDir);
+  const native = new NativeConnectorProvider(
+    prisma,
+    secrets,
+    process.env.API_URL ?? "http://127.0.0.1:3100",
+    { artifacts, allowPrivateEndpoint },
+  );
   const stack = createConnectorStack(false, undefined, [
+    native,
     new InstalledConnectorProvider(prisma, secrets, {}, allowPrivateEndpoint),
     ...integrationSettings.providers(),
     mcp,
@@ -164,7 +177,6 @@ async function main() {
   integrationSettings.warmDirectories();
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const home = new LocalAgentHomeStore(dataDir);
-  const artifacts = new LocalArtifactStore(dataDir);
   const inMemoryJobs = process.env.WAKEUP_DRIVER === "memory" ? new InMemoryJobQueue() : undefined;
   const jobs: JobPublisher = inMemoryJobs ?? new GraphileJobPublisher(pool);
   const ticketChanges = createTicketChangeNotifier({
@@ -228,7 +240,16 @@ async function main() {
     cloudAgent,
   });
 
+  const nativeEvents = new NativeRoutineEventService(
+    prisma,
+    native.oauth,
+    native.eventHooks,
+    jobs,
+    events,
+    process.env.API_URL ?? "http://127.0.0.1:3100",
+  );
   const jobHandlers = createBackgroundJobHandlers({
+    nativeEvents,
     executor,
     prisma,
     sandbox,
@@ -271,6 +292,7 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+    reconcileNativeEvents: () => nativeEvents.reconcile(),
   });
   reconciler.start();
 
@@ -286,6 +308,7 @@ async function main() {
       await realtime.close();
       await connector.stop();
       await mcp.close();
+      await native.close();
       await prisma.$disconnect().catch(() => undefined);
       await pool.end().catch(() => undefined);
     } finally {
