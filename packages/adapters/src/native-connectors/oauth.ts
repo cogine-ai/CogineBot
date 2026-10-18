@@ -584,6 +584,7 @@ export class NativeOAuthStore {
     context: AdapterContext,
     forceRefresh = false,
     figmaLocked = false,
+    figmaLease?: { id: string; version: number; refreshStarted: boolean },
   ): Promise<{
     connection: Connection;
     config: NativeAppConfig;
@@ -592,9 +593,15 @@ export class NativeOAuthStore {
   }> {
     const deadline = Date.now() + 12_000;
     let refreshVersion: number | undefined;
+    let ownedLease = figmaLease;
     while (true) {
       context.signal.throwIfAborted();
       const { connection, config, grant } = await this.bound(connectionId, context);
+      if (
+        ownedLease &&
+        (grant.tokenVersion !== ownedLease.version || grant.refreshLeaseId !== ownedLease.id)
+      )
+        throw unavailable();
       const reissuableEnterprise =
         (["feishu-lark", "dingtalk", "wecom"].includes(config.appId) &&
           config.credentialKind === "machine_key") ||
@@ -644,10 +651,6 @@ export class NativeOAuthStore {
         (!grant.accessExpiresAt || grant.accessExpiresAt.getTime() > Date.now() + 60_000)
       )
         return { connection, config, grant, auth };
-      if (config.appId === "figma" && config.credentialKind === "oauth" && !figmaLocked)
-        return this.withFigmaTokenLock(config, context.signal, (store) =>
-          store.authorizationWithTokenLock(connectionId, context, forceRefresh, true),
-        );
       if (!auth.tokens.refreshToken && !auth.tokens.githubInstallation && !reissuableEnterprise) {
         await this.failGrant(connection, grant);
         throw new NativeActionError(
@@ -658,31 +661,33 @@ export class NativeOAuthStore {
       // Failures reading deployment material happen before any refresh request;
       // they must not retire a working user grant or occupy its refresh lease.
       const clientSecret = await this.clientSecret(config);
-      const leaseId = randomUUID();
-      const claimed = await this.prisma.nativeOAuthGrant.updateMany({
-        where: {
-          id: grant.id,
-          tokenVersion: grant.tokenVersion,
-          authGeneration: grant.authGeneration,
-          revokedAt: null,
-          refreshLeaseId: null,
-          refreshLeaseUntil: null,
-          refreshRecoveryUntil: grant.refreshRecoveryUntil,
-          connections: {
-            some: { id: connectionId, status: "connected", ...scope(context) },
-          },
-        },
-        data: {
-          refreshLeaseId: leaseId,
-          refreshLeaseUntil: new Date(Date.now() + 60_000),
-          ...(config.appId === "linear"
-            ? {
-                refreshRecoveryUntil:
-                  grant.refreshRecoveryUntil ?? new Date(Date.now() + 30 * 60_000),
-              }
-            : {}),
-        },
-      });
+      const leaseId = ownedLease?.id ?? randomUUID();
+      const claimed = ownedLease
+        ? { count: 1 }
+        : await this.prisma.nativeOAuthGrant.updateMany({
+            where: {
+              id: grant.id,
+              tokenVersion: grant.tokenVersion,
+              authGeneration: grant.authGeneration,
+              revokedAt: null,
+              refreshLeaseId: null,
+              refreshLeaseUntil: null,
+              refreshRecoveryUntil: grant.refreshRecoveryUntil,
+              connections: {
+                some: { id: connectionId, status: "connected", ...scope(context) },
+              },
+            },
+            data: {
+              refreshLeaseId: leaseId,
+              refreshLeaseUntil: new Date(Date.now() + 60_000),
+              ...(config.appId === "linear"
+                ? {
+                    refreshRecoveryUntil:
+                      grant.refreshRecoveryUntil ?? new Date(Date.now() + 30 * 60_000),
+                  }
+                : {}),
+            },
+          });
       if (!claimed.count) {
         if (Date.now() >= deadline)
           throw new NativeActionError(
@@ -697,14 +702,39 @@ export class NativeOAuthStore {
         if (current && current.tokenVersion > grant.tokenVersion) forceRefresh = false;
         continue;
       }
+      if (config.appId === "figma" && config.credentialKind === "oauth" && !figmaLocked) {
+        // Commit the lease before entering the token-lock transaction. A lost
+        // transaction after a remote refresh must not make the old token reusable,
+        // and waiting on HTTP must not hold a grant row ahead of disconnect's connection lock.
+        const lease = { id: leaseId, version: grant.tokenVersion, refreshStarted: false };
+        try {
+          return await this.withFigmaTokenLock(config, context.signal, (store) =>
+            store.authorizationWithTokenLock(connectionId, context, forceRefresh, true, lease),
+          );
+        } catch (error) {
+          if (!lease.refreshStarted)
+            await this.prisma.nativeOAuthGrant.updateMany({
+              where: {
+                id: grant.id,
+                tokenVersion: grant.tokenVersion,
+                refreshLeaseId: leaseId,
+                revokedAt: null,
+              },
+              data: { refreshLeaseId: null, refreshLeaseUntil: null },
+            });
+          throw error;
+        }
+      }
       let next: NativeAuthorization;
       try {
+        const allowPrivateEndpoint = await this.privateEndpoint(context.userId);
+        if (ownedLease) ownedLease.refreshStarted = true;
         next = await this.authorities.refresh(
           config,
           clientSecret,
           auth,
           context.signal,
-          await this.privateEndpoint(context.userId),
+          allowPrivateEndpoint,
         );
       } catch (error) {
         // A lost rotating-token response cannot safely be retried with the old
@@ -805,6 +835,7 @@ export class NativeOAuthStore {
           });
         throw error;
       }
+      ownedLease = undefined;
       forceRefresh = false;
     }
   }
@@ -1195,6 +1226,25 @@ export class NativeOAuthStore {
       },
       include: { config: true },
     });
+    if (config.appId === "figma") {
+      const replaced = peers.filter((peer) => {
+        if (
+          !peer.config.enabled ||
+          peer.configRevision !== peer.config.revision ||
+          peer.config.credentialKind !== "oauth"
+        )
+          return false;
+        return NativeConfigSettingsSchema.parse(peer.config.config).clientId === settings.clientId;
+      });
+      const connections = await tx.connection.findMany({
+        where: { oauthGrantId: { in: replaced.map((peer) => peer.id) } },
+        select: { id: true, userId: true, spaceId: true },
+        orderBy: { id: "asc" },
+      });
+      // Match disconnect's connection-before-grant order when replacing old tokens.
+      for (const connection of connections)
+        await this.lockConnections(tx, [connection.id], connection);
+    }
     for (const peer of peers) {
       if (!peer.config.enabled || peer.configRevision !== peer.config.revision) continue;
       const peerSettings = NativeConfigSettingsSchema.parse(peer.config.config);
