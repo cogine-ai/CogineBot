@@ -1,7 +1,89 @@
 import type { MenuAction } from "@expo/ui/community/menu";
-import type { BotSection } from "@rakazo/contracts";
+import type { Bot, BotSection, RemovedBotSection } from "@rakazo/contracts";
 import { BotSectionNameSchema } from "@rakazo/contracts";
+import type { MobileBot, MobileGroup, MobileSpace } from "./api";
 import { t } from "./i18n";
+
+export type InboxOrganizationState = {
+  spaceId: string | null;
+  bots: MobileBot[];
+  groups: MobileGroup[];
+  botSections: BotSection[];
+  spaces: MobileSpace[];
+};
+
+type ChatPatch = Partial<
+  Pick<Bot, "pinned" | "sectionId" | "unread" | "notifyOnFinish" | "updatedAt">
+>;
+type ChatTarget = { kind: "bot" | "group"; id: string };
+export type InboxOrganizationChange = { spaceId: string } & (
+  | ({ type: "chat"; patch: ChatPatch } & ChatTarget)
+  | { type: "section"; section: BotSection; target?: ChatTarget }
+  | { type: "sections"; sections: BotSection[] }
+  | { type: "remove"; snapshot: RemovedBotSection }
+  | { type: "restore"; snapshot: RemovedBotSection; section: BotSection }
+);
+
+/** Reconcile only fields confirmed by an organization write, keeping later chat choices intact. */
+export function reconcileInboxOrganization(
+  state: InboxOrganizationState,
+  change: InboxOrganizationChange,
+): InboxOrganizationState {
+  const botIds = new Set("snapshot" in change ? change.snapshot.botIds : []);
+  const groupIds = new Set("snapshot" in change ? change.snapshot.groupIds : []);
+  function chats<T extends { id: string; sectionId: string | null; pinned: boolean }>(
+    rows: T[],
+    kind: "bot" | "group",
+  ): T[] {
+    return rows.map((chat) => {
+      if (change.type === "chat" && change.kind === kind && change.id === chat.id)
+        return { ...chat, ...change.patch };
+      if (change.type === "section" && change.target?.kind === kind && change.target.id === chat.id)
+        return { ...chat, sectionId: change.section.id, pinned: false };
+      const member = (kind === "bot" ? botIds : groupIds).has(chat.id);
+      if (change.type === "remove" && member && chat.sectionId === change.snapshot.section.id)
+        return { ...chat, sectionId: null };
+      if (change.type === "restore" && member && chat.sectionId === null)
+        return { ...chat, sectionId: change.section.id };
+      return chat;
+    });
+  }
+  function sections(current: BotSection[]): BotSection[] {
+    if (change.type === "sections") return change.sections;
+    if (change.type === "remove")
+      return current.filter((section) => section.id !== change.snapshot.section.id);
+    if (change.type !== "section" && change.type !== "restore") return current;
+    const found = current.some((section) => section.id === change.section.id);
+    const next = current.map((section) => {
+      if (section.id === change.section.id) return change.section;
+      return change.type === "restore" && !found && section.position >= change.section.position
+        ? { ...section, position: section.position + 1 }
+        : section;
+    });
+    if (!found) next.push(change.section);
+    return next.sort((a, b) => a.position - b.position);
+  }
+  return {
+    ...state,
+    ...(state.spaceId === change.spaceId
+      ? {
+          bots: chats(state.bots, "bot"),
+          groups: chats(state.groups, "group"),
+          botSections: sections(state.botSections),
+        }
+      : {}),
+    spaces: state.spaces.map((space) =>
+      space.id === change.spaceId
+        ? {
+            ...space,
+            bots: chats(space.bots, "bot"),
+            groups: chats(space.groups, "group"),
+            botSections: sections(space.botSections),
+          }
+        : space,
+    ),
+  };
+}
 
 export function sectionNameValidationError(value: string, initialName?: string): string | null {
   const name = value.trim();

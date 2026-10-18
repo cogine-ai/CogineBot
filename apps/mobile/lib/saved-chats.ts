@@ -6,7 +6,6 @@ import type {
   MobileMe,
   MobileSnapshot,
   MobileSpace,
-  MobileSpaceNavigation,
 } from "./api";
 import { currentApiBase, selectedSpaceId } from "./api";
 import { artifactCacheSession } from "./artifact-cache-session";
@@ -27,6 +26,11 @@ export type SavedInbox = {
   botSections: MobileBotSection[];
   spaces: MobileSpace[];
   me: Pick<MobileMe, "userId" | "spaceId" | "name">;
+};
+
+type InboxForSave = {
+  current: Pick<SavedInbox, "bots" | "groups" | "botSections"> & { id: string };
+  spaces: MobileSpace[];
 };
 
 export const SAVED_CHAT_MESSAGES = 100;
@@ -98,8 +102,8 @@ export function readSavedInbox(scope: SavedChatsScope): SavedInbox | null {
 
 export function writeSavedInbox(
   scope: SavedChatsScope,
-  navigation: MobileSpaceNavigation,
-  me: MobileMe,
+  navigation: InboxForSave,
+  me: SavedInbox["me"],
 ): void {
   try {
     const inbox: SavedInbox = {
@@ -205,16 +209,19 @@ export async function loadSavedInbox(): Promise<SavedInbox | null> {
   return scope ? readSavedInbox(scope) : null;
 }
 
+let inboxSaveRevision = 0;
+
 export function saveInbox(
   verifiedLoad: IntegrationsCacheScope,
-  navigation: MobileSpaceNavigation,
-  me: MobileMe,
+  navigation: InboxForSave,
+  me: SavedInbox["me"],
 ): void {
   if (!isIntegrationsScopeCurrent(verifiedLoad) || verifiedLoad.userId !== me.userId) return;
+  const revision = ++inboxSaveRevision;
   const { sessionGeneration, ...verified } = verifiedLoad;
   void saveVerifiedIntegrationsScope(sessionGeneration, verified);
   void withSessionNamespace(verifiedLoad).then((scope) => {
-    if (scope) writeSavedInbox(scope, navigation, me);
+    if (scope && revision === inboxSaveRevision) writeSavedInbox(scope, navigation, me);
   });
 }
 

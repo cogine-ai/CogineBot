@@ -69,8 +69,10 @@ import { mobileBotAvatarPresentation } from "../lib/bot-avatar";
 import { allowFocusPrompt, scheduleFocusPrompt } from "../lib/focus-prompt";
 import { t, useI18n } from "../lib/i18n";
 import { botTag, filterBots, formatThreadTime, userInitials } from "../lib/inbox";
+import type { InboxOrganizationChange, InboxOrganizationState } from "../lib/inbox-organization";
 import {
   chatOrganizationActions,
+  reconcileInboxOrganization,
   reorderedSectionIds,
   sectionOrganizationActions,
 } from "../lib/inbox-organization";
@@ -179,6 +181,14 @@ function Home() {
     : null;
   const organizationScopeRef = useRef(organizationScope);
   organizationScopeRef.current = organizationScope;
+  const inboxState = useRef<InboxOrganizationState>({
+    spaceId: me?.spaceId ?? null,
+    bots,
+    groups,
+    botSections,
+    spaces,
+  });
+  inboxState.current = { spaceId: me?.spaceId ?? null, bots, groups, botSections, spaces };
   const [activityMode, setActivityMode] = useState(false);
   const [activity, setActivity] = useState<{ active: RunActivityRow[]; recent: RunActivityRow[] }>({
     active: [],
@@ -235,11 +245,22 @@ function Home() {
     });
   }, []);
 
-  const loadBots = useCallback(async () => {
-    if (spaceActionRef.current.busy || spaceActionRef.current.recoveryId) return;
+  const loadBots = useCallback(async (duringOrganization = false) => {
+    if (
+      spaceActionRef.current.busy ||
+      spaceActionRef.current.recoveryId ||
+      (organizationBusyRef.current && !duringOrganization)
+    )
+      return;
     const requestId = ++inboxRequestId.current;
     const apiBase = currentApiBase();
     const generation = currentSessionGeneration();
+    let requestSpaceId = selectedSpaceId();
+    const current = () =>
+      requestId === inboxRequestId.current &&
+      generation === currentSessionGeneration() &&
+      apiBase === currentApiBase() &&
+      requestSpaceId === selectedSpaceId();
     setError(null);
     try {
       const [navigation, nextMe] = await Promise.all([
@@ -247,20 +268,23 @@ function Home() {
         rpc<MobileMe>("me"),
       ]);
       if (
-        requestId !== inboxRequestId.current ||
-        generation !== currentSessionGeneration() ||
-        apiBase !== currentApiBase()
+        !current() ||
+        navigation.current.id !== nextMe.spaceId ||
+        (requestSpaceId !== null && requestSpaceId !== nextMe.spaceId)
       )
         return;
       if (!(await selectInitialSpace(nextMe.spaceId))) {
         throw new Error(t("Could not save the default space"));
       }
-      if (
-        requestId !== inboxRequestId.current ||
-        generation !== currentSessionGeneration() ||
-        apiBase !== currentApiBase()
-      )
-        return;
+      requestSpaceId ??= nextMe.spaceId;
+      if (!current()) return;
+      inboxState.current = {
+        spaceId: nextMe.spaceId,
+        bots: navigation.current.bots,
+        groups: navigation.current.groups,
+        botSections: navigation.current.botSections,
+        spaces: navigation.spaces,
+      };
       setBots((current) => retainInboxValue(current, navigation.current.bots));
       setBotSections((current) => retainInboxValue(current, navigation.current.botSections));
       setGroups((current) => retainInboxValue(current, navigation.current.groups));
@@ -279,12 +303,7 @@ function Home() {
         nextMe,
       );
     } catch (err) {
-      if (
-        requestId !== inboxRequestId.current ||
-        generation !== currentSessionGeneration() ||
-        apiBase !== currentApiBase()
-      )
-        return;
+      if (!current()) return;
       setError(errorText(err, t("Could not load bots")));
     }
   }, []);
@@ -316,6 +335,13 @@ function Home() {
     let cancelled = false;
     void loadSavedInbox().then((saved) => {
       if (cancelled || !saved || inboxLoaded.current) return;
+      inboxState.current = {
+        spaceId: saved.me.spaceId,
+        bots: saved.bots,
+        groups: saved.groups,
+        botSections: saved.botSections,
+        spaces: saved.spaces,
+      };
       setBots(saved.bots);
       setBotSections(saved.botSections);
       setGroups(saved.groups);
@@ -737,23 +763,69 @@ function Home() {
     },
     [router],
   );
+  const applyOrganization = useCallback(
+    (change: InboxOrganizationChange) => {
+      if (!me) return;
+      const next = reconcileInboxOrganization(inboxState.current, change);
+      inboxState.current = next;
+      inboxLoaded.current = true;
+      setBots(next.bots);
+      setGroups(next.groups);
+      setBotSections(next.botSections);
+      setSpaces(next.spaces);
+      saveInbox(
+        {
+          apiBase: currentApiBase(),
+          userId: me.userId,
+          spaceId: me.spaceId,
+          sessionGeneration: currentSessionGeneration(),
+          selectionId: selectedSpaceId(),
+        },
+        {
+          current: {
+            id: me.spaceId,
+            bots: next.bots,
+            groups: next.groups,
+            botSections: next.botSections,
+          },
+          spaces: next.spaces,
+        },
+        me,
+      );
+    },
+    [me],
+  );
   const saveOrganization = useCallback(
-    async (scope: string, spaceId: string, request: () => Promise<unknown>) => {
+    async <T,>(
+      scope: string,
+      spaceId: string,
+      request: () => Promise<T>,
+      confirmed: (result: T) => void | Promise<void>,
+    ) => {
+      const current = () =>
+        organizationScopeRef.current === scope &&
+        scope ===
+          `${currentApiBase()}:${currentSessionGeneration()}:${me?.userId}:${me?.spaceId}` &&
+        (selectedSpaceId() ?? me?.spaceId) === spaceId;
       if (
         organizationBusyRef.current ||
         spaceActionRef.current.busy ||
         spaceActionRef.current.recoveryId ||
-        organizationScopeRef.current !== scope ||
-        scope !==
-          `${currentApiBase()}:${currentSessionGeneration()}:${me?.userId}:${me?.spaceId}` ||
-        (selectedSpaceId() ?? me?.spaceId) !== spaceId
+        !current()
       )
         throw new Error(t("Could not update chat"));
       organizationBusyRef.current = true;
+      inboxRequestId.current += 1;
       setOrganizationBusy(true);
       try {
-        await request();
-        await loadBots();
+        const result = await request();
+        if (!current()) return;
+        inboxRequestId.current += 1;
+        await confirmed(result);
+        if (!current()) return;
+        await loadBots(true);
+      } catch (cause) {
+        if (current()) throw cause;
       } finally {
         organizationBusyRef.current = false;
         setOrganizationBusy(false);
@@ -787,8 +859,19 @@ function Home() {
         return;
       }
       if (action === "unread") {
-        void saveOrganization(organizationScope, spaceId, () =>
-          rpc(`threads/${chat.unread ? "markRead" : "markUnread"}`, { [`${kind}Id`]: chat.id }),
+        void saveOrganization(
+          organizationScope,
+          spaceId,
+          () =>
+            rpc(`threads/${chat.unread ? "markRead" : "markUnread"}`, { [`${kind}Id`]: chat.id }),
+          () =>
+            applyOrganization({
+              type: "chat",
+              spaceId,
+              kind,
+              id: chat.id,
+              patch: { unread: !chat.unread },
+            }),
         ).catch(reportOrganizationError);
         return;
       }
@@ -804,25 +887,49 @@ function Home() {
                 }
               : null;
       if (!update) return;
-      void saveOrganization(organizationScope, spaceId, async () => {
-        await rpc(`${kind}s/update`, { [`${kind}Id`]: chat.id, ...update });
-        if (kind === "bot" && "notifyOnFinish" in update) {
-          await resumeLiveNotifications(
-            currentApiBase(),
-            await loadSessionToken(),
-            selectedSpaceId() ?? "",
-          ).catch(() => undefined);
-          if (!update.notifyOnFinish && "threadId" in chat) {
-            await dismissThreadNotifications({ threadId: chat.threadId }).catch(() => undefined);
+      void saveOrganization(
+        organizationScope,
+        spaceId,
+        () =>
+          rpc<MobileBot | MobileGroup>(`${kind}s/update`, { [`${kind}Id`]: chat.id, ...update }),
+        async (updated) => {
+          applyOrganization({
+            type: "chat",
+            spaceId,
+            kind,
+            id: chat.id,
+            patch: {
+              pinned: updated.pinned,
+              sectionId: updated.sectionId,
+              unread: updated.unread,
+              updatedAt: updated.updatedAt,
+              ...("notifyOnFinish" in updated ? { notifyOnFinish: updated.notifyOnFinish } : {}),
+            },
+          });
+          if (chat.pinned && !updated.pinned && "sectionId" in update)
+            setOrganizationNotice(t("Unpinned"));
+          if (kind === "bot" && "notifyOnFinish" in update) {
+            const apiBase = currentApiBase(),
+              generation = currentSessionGeneration();
+            try {
+              const token = await loadSessionToken();
+              if (
+                apiBase !== currentApiBase() ||
+                generation !== currentSessionGeneration() ||
+                selectedSpaceId() !== spaceId
+              )
+                return;
+              await resumeLiveNotifications(apiBase, token, spaceId).catch(() => undefined);
+              if ("notifyOnFinish" in updated && !updated.notifyOnFinish && "threadId" in chat)
+                await dismissThreadNotifications({ threadId: chat.threadId });
+            } catch {
+              // The preference was saved even if native notification maintenance fails.
+            }
           }
-        }
-      })
-        .then(() => {
-          if (chat.pinned && "sectionId" in update) setOrganizationNotice(t("Unpinned"));
-        })
-        .catch(reportOrganizationError);
+        },
+      ).catch(reportOrganizationError);
     },
-    [me, organizationScope, reportOrganizationError, saveOrganization, t],
+    [applyOrganization, me, organizationScope, reportOrganizationError, saveOrganization, t],
   );
   const handleSectionAction = useCallback(
     (section: MobileBotSection, action: string) => {
@@ -836,19 +943,35 @@ function Home() {
         });
         return;
       }
-      void saveOrganization(organizationScope, me.spaceId, async () => {
-        if (action === "delete") {
-          const snapshot = await rpc<RemovedBotSection>("botSections/remove", {
-            sectionId: section.id,
-          });
-          setDeletedSection({ scope: organizationScope, spaceId: me.spaceId, snapshot });
-        } else if (action === "up" || action === "down") {
-          const sectionIds = reorderedSectionIds(botSections, section.id, action);
-          if (sectionIds) await rpc("botSections/reorder", { sectionIds });
-        }
-      }).catch(reportOrganizationError);
+      if (action === "delete") {
+        void saveOrganization(
+          organizationScope,
+          me.spaceId,
+          () => rpc<RemovedBotSection>("botSections/remove", { sectionId: section.id }),
+          (snapshot) => {
+            applyOrganization({ type: "remove", spaceId: me.spaceId, snapshot });
+            setDeletedSection({ scope: organizationScope, spaceId: me.spaceId, snapshot });
+          },
+        ).catch(reportOrganizationError);
+      } else if (action === "up" || action === "down") {
+        const sectionIds = reorderedSectionIds(botSections, section.id, action);
+        if (sectionIds)
+          void saveOrganization(
+            organizationScope,
+            me.spaceId,
+            () => rpc<MobileBotSection[]>("botSections/reorder", { sectionIds }),
+            (sections) => applyOrganization({ type: "sections", spaceId: me.spaceId, sections }),
+          ).catch(reportOrganizationError);
+      }
     },
-    [botSections, me, organizationScope, reportOrganizationError, saveOrganization],
+    [
+      applyOrganization,
+      botSections,
+      me,
+      organizationScope,
+      reportOrganizationError,
+      saveOrganization,
+    ],
   );
 
   const renderItem = useCallback(
@@ -1146,11 +1269,20 @@ function Home() {
             disabled={organizationBusy}
             onPress={() => {
               const deleted = deletedSection;
-              void saveOrganization(deleted.scope, deleted.spaceId, () =>
-                rpc("botSections/restore", deleted.snapshot),
-              )
-                .then(() => setDeletedSection((current) => (current === deleted ? null : current)))
-                .catch(reportOrganizationError);
+              void saveOrganization(
+                deleted.scope,
+                deleted.spaceId,
+                () => rpc<MobileBotSection>("botSections/restore", deleted.snapshot),
+                (section) => {
+                  applyOrganization({
+                    type: "restore",
+                    spaceId: deleted.spaceId,
+                    snapshot: deleted.snapshot,
+                    section,
+                  });
+                  setDeletedSection((current) => (current === deleted ? null : current));
+                },
+              ).catch(reportOrganizationError);
             }}
           />
         </View>
@@ -1160,20 +1292,41 @@ function Home() {
           key={sectionPrompt.kind === "rename" ? sectionPrompt.section.id : sectionPrompt.targetId}
           title={sectionPrompt.kind === "rename" ? t("Rename section") : t("Create section")}
           initialName={sectionPrompt.kind === "rename" ? sectionPrompt.section.name : undefined}
-          onClose={() => setSectionPrompt(null)}
+          onClose={() =>
+            setSectionPrompt((current) => (current === sectionPrompt ? null : current))
+          }
           onSave={async (name) => {
             if (sectionPrompt.kind === "rename" && name === sectionPrompt.section.name.trim())
               return;
-            await saveOrganization(sectionPrompt.scope, sectionPrompt.spaceId, () =>
-              sectionPrompt.kind === "rename"
-                ? rpc("botSections/update", { sectionId: sectionPrompt.section.id, name })
-                : rpc("botSections/create", {
-                    [`${sectionPrompt.targetKind}Id`]: sectionPrompt.targetId,
-                    name,
-                  }),
+            const target = sectionPrompt;
+            await saveOrganization(
+              target.scope,
+              target.spaceId,
+              () =>
+                target.kind === "rename"
+                  ? rpc<MobileBotSection>("botSections/update", {
+                      sectionId: target.section.id,
+                      name,
+                    })
+                  : rpc<MobileBotSection>("botSections/create", {
+                      [`${target.targetKind}Id`]: target.targetId,
+                      name,
+                    }),
+              (section) => {
+                applyOrganization({
+                  type: "section",
+                  spaceId: target.spaceId,
+                  section,
+                  target:
+                    target.kind === "create"
+                      ? { kind: target.targetKind, id: target.targetId }
+                      : undefined,
+                });
+                if (target.kind === "create" && target.wasPinned)
+                  setOrganizationNotice(t("Unpinned"));
+                setSectionPrompt((current) => (current === target ? null : current));
+              },
             );
-            if (sectionPrompt.kind === "create" && sectionPrompt.wasPinned)
-              setOrganizationNotice(t("Unpinned"));
           }}
         />
       ) : null}

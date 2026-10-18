@@ -11,9 +11,11 @@ import {
   SAVED_CHATS,
   SAVED_CHATS_MAX_BYTES,
   savedChatsScope,
+  saveInbox,
   writeSavedInbox,
   writeSavedThread,
 } from "./saved-chats";
+import { loadSessionToken } from "./session";
 
 const state = vi.hoisted(() => ({
   files: new Map<string, string>(),
@@ -36,7 +38,7 @@ vi.mock("./integrations-cache", () => ({
 }));
 vi.mock("./session", () => ({
   currentSessionGeneration: () => 1,
-  loadSessionToken: async () => "fake-token",
+  loadSessionToken: vi.fn(async () => "fake-token"),
   loadVerifiedIntegrationsScope: async () => state.verified,
   saveVerifiedIntegrationsScope: vi.fn(),
 }));
@@ -159,9 +161,32 @@ beforeEach(() => {
   state.verified = null;
   state.selection = "space-a";
   state.namespace = "ns-1";
+  vi.mocked(loadSessionToken).mockReset().mockResolvedValue("fake-token");
 });
 
 const verified = { ...scope };
+it("keeps the confirmed inbox when an older asynchronous cache save finishes later", async () => {
+  let finishOld!: (token: string) => void;
+  vi.mocked(loadSessionToken).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishOld = resolve;
+      }),
+  );
+  const confirmed = {
+    ...navigation,
+    current: {
+      ...navigation.current,
+      bots: navigation.current.bots.map((row) => ({ ...row, sectionId: null })),
+    },
+  };
+  saveInbox(scope, navigation, me);
+  saveInbox(scope, confirmed, me);
+  await vi.waitFor(() => expect(readSavedInbox(scope)?.bots[0]?.sectionId).toBeNull());
+  finishOld("fake-token");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(readSavedInbox(scope)?.bots[0]?.sectionId).toBeNull();
+});
 it("round trips only what the inbox shows", () => {
   expect(readSavedInbox(scope)).toBeNull();
   writeSavedInbox(scope, navigation, me);
