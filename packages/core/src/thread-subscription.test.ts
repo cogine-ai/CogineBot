@@ -55,6 +55,143 @@ function setup(committed: typeof head | null = head) {
 afterEach(() => vi.useRealTimers());
 
 describe("thread subscription recovery", () => {
+  it.each([false, true])(
+    "recovers missing messages after a stale-snapshot head fallback with observer %s",
+    async (observed) => {
+      vi.useFakeTimers();
+      const { abort, channel, state, callbacks } = setup();
+      const latest = { ...head, cursor: 15 };
+      const timeout = new DOMException("Snapshot read timed out", "TimeoutError");
+      let messages = ["seen-before-disconnect"];
+      callbacks.loadInitial.mockRejectedValueOnce(timeout);
+      callbacks.loadHead.mockResolvedValue(latest);
+      callbacks.refresh
+        .mockRejectedValueOnce(timeout)
+        .mockImplementationOnce(async () => {
+          state.committed = { ...head, cursor: 14 };
+          messages = ["seen-before-disconnect", "missed-during-outage"];
+        })
+        .mockImplementation(async () => {
+          state.committed = { ...head, cursor: 16 };
+          messages = ["seen-before-disconnect", "missed-during-outage", "already-in-snapshot"];
+        });
+      callbacks.applyEvent.mockImplementation((item) => {
+        messages.push(String(item.payload.messageId));
+        state.committed = { ...head, cursor: item.seq };
+      });
+      const onStatus = vi.fn();
+      const running = runThreadSubscription({
+        ...callbacks,
+        ...(observed ? { onStatus } : {}),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callbacks.subscribe).toHaveBeenCalledWith(15);
+        channel.send(heartbeat());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onStatus.mock.calls.some(([status]) => status === "ready")).toBe(false);
+        channel.send({
+          ...event(16),
+          type: "thread.message.created",
+          payload: { messageId: "already-in-snapshot", role: "bot", blocks: [] },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        channel.send({
+          ...event(17),
+          type: "thread.message.created",
+          payload: { messageId: "buffered-after-snapshot", role: "bot", blocks: [] },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callbacks.applyEvent).not.toHaveBeenCalled();
+        expect(messages).toEqual(["seen-before-disconnect"]);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(callbacks.refresh).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(callbacks.refresh).toHaveBeenCalledTimes(2);
+        expect(callbacks.applyEvent).not.toHaveBeenCalled();
+        expect(onStatus.mock.calls.some(([status]) => status === "ready")).toBe(false);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(callbacks.refresh).toHaveBeenCalledTimes(3);
+        expect(messages).toEqual([
+          "seen-before-disconnect",
+          "missed-during-outage",
+          "already-in-snapshot",
+          "buffered-after-snapshot",
+        ]);
+        expect(callbacks.applyEvent.mock.calls.map(([item]) => item.seq)).toEqual([17]);
+        // Existing onEvent effects retain the head boundary and run once per live event.
+        expect(callbacks.onEvent.mock.calls.map(([item]) => item.seq)).toEqual([16, 17]);
+        expect(callbacks.onEvent.mock.calls.every(([, initial]) => initial === latest)).toBe(true);
+        if (observed) expect(onStatus).toHaveBeenLastCalledWith("ready");
+      } finally {
+        abort.abort();
+        channel.end();
+        await running;
+      }
+    },
+  );
+
+  it.each([16, 17])(
+    "does not resurrect messages while catching up across a clear at event %s",
+    async (clearSeq) => {
+      vi.useFakeTimers();
+      const { abort, channel, state, callbacks } = setup();
+      let messages = ["before-clear"];
+      callbacks.loadInitial.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      callbacks.loadHead.mockResolvedValue({ ...head, cursor: 15 });
+      callbacks.refresh.mockImplementation(async () => {
+        state.committed = { ...head, cursor: 16 };
+        messages = clearSeq === 16 ? [] : ["before-clear", "from-snapshot"];
+      });
+      callbacks.applyEvent.mockImplementation((item) => {
+        if (item.type === "thread.cleared") messages = [];
+        else messages.push(String(item.payload.messageId));
+        state.committed = { ...head, cursor: item.seq };
+      });
+      const running = runThreadSubscription(callbacks);
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        channel.send({ ...event(clearSeq), type: "thread.cleared" });
+        await vi.advanceTimersByTimeAsync(0);
+        channel.send({
+          ...event(18),
+          type: "thread.message.created",
+          payload: { messageId: "after-clear", role: "bot", blocks: [] },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(messages).toEqual(["before-clear"]);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(messages).toEqual(["after-clear"]);
+        expect(callbacks.applyEvent.mock.calls.map(([item]) => item.seq)).toEqual(
+          clearSeq === 16 ? [18] : [17, 18],
+        );
+      } finally {
+        abort.abort();
+        channel.end();
+        await running;
+      }
+    },
+  );
+
+  it("retains a same-thread snapshot already newer than the fallback head", async () => {
+    vi.useFakeTimers();
+    const newer = { ...head, cursor: 20 };
+    const { abort, channel, state, callbacks } = setup(newer);
+    callbacks.loadInitial.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    callbacks.loadHead.mockResolvedValue({ ...head, cursor: 15 });
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(0);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    expect(state.committed).toBe(newer);
+    expect(callbacks.refresh).not.toHaveBeenCalled();
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
   it("falls back to head with backoff and buffers until a snapshot commits", async () => {
     vi.useFakeTimers();
     const { abort, channel, state, callbacks } = setup(null);
@@ -138,20 +275,25 @@ describe("thread subscription recovery", () => {
     await running;
   });
 
-  it("does not refresh or replay a buffered event after cancellation during snapshot delay", async () => {
-    vi.useFakeTimers();
-    const { abort, channel, callbacks } = setup(null);
-    const running = runThreadSubscription(callbacks);
-    await vi.advanceTimersByTimeAsync(0);
-    channel.send(event(11));
-    await vi.advanceTimersByTimeAsync(0);
-    abort.abort();
-    channel.end();
-    await running;
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(callbacks.refresh).not.toHaveBeenCalled();
-    expect(callbacks.applyEvent).not.toHaveBeenCalled();
-  });
+  it.each([null, head])(
+    "does not replay after cancellation with a retained snapshot %j",
+    async (snapshot) => {
+      vi.useFakeTimers();
+      const { abort, channel, callbacks } = setup(snapshot);
+      callbacks.loadInitial.mockResolvedValue(null);
+      callbacks.loadHead.mockResolvedValue({ ...head, cursor: 15 });
+      const running = runThreadSubscription(callbacks);
+      await vi.advanceTimersByTimeAsync(0);
+      channel.send(event(11));
+      await vi.advanceTimersByTimeAsync(0);
+      abort.abort();
+      channel.end();
+      await running;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(callbacks.refresh).not.toHaveBeenCalled();
+      expect(callbacks.applyEvent).not.toHaveBeenCalled();
+    },
+  );
 
   it("ignores a late initial response after switching away", async () => {
     const { abort, callbacks } = setup();

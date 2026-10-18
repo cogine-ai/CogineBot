@@ -56,11 +56,15 @@ export async function runThreadSubscription(options: {
   if (!initial || signal.aborted) return;
   const head = initial;
   let cursor = head.cursor;
-  let snapshotReady = options.currentSnapshot()?.threadId === head.threadId;
+  // A retained reader can be older than a successful head fallback. Until a snapshot
+  // covers that cursor, keep recovering rather than skip the gap and trust a heartbeat.
+  const coversHead = (snapshot: ThreadHead | null) =>
+    snapshot?.threadId === head.threadId && snapshot.cursor >= head.cursor;
+  let snapshotReady = coversHead(options.currentSnapshot());
   let snapshotHealthy = snapshotReady;
   let streamReady = false;
   const reportReady = () => {
-    if (snapshotHealthy && streamReady && options.currentSnapshot()?.threadId === head.threadId) {
+    if (snapshotHealthy && streamReady && coversHead(options.currentSnapshot())) {
       notify("ready");
     }
   };
@@ -71,7 +75,7 @@ export async function runThreadSubscription(options: {
       try {
         await options.refresh();
         if (signal.aborted) return;
-        snapshotHealthy = options.currentSnapshot()?.threadId === head.threadId;
+        snapshotHealthy = coversHead(options.currentSnapshot());
         reportReady();
       } catch (error) {
         snapshotHealthy = false;
@@ -96,7 +100,7 @@ export async function runThreadSubscription(options: {
           await refreshSnapshot();
           if (signal.aborted) return;
           const committed = options.currentSnapshot();
-          if (!snapshotReady && committed?.threadId === head.threadId) {
+          if (!snapshotReady && committed && coversHead(committed)) {
             snapshotReady = true;
             for (const event of pendingSnapshotEvents.splice(0)) {
               if (event.seq > committed.cursor) options.applyEvent(event);

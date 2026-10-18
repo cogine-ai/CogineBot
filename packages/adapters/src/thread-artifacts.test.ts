@@ -1,3 +1,6 @@
+import { mkdtemp, open, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type {
   AdapterContext,
   ArtifactStore,
@@ -8,6 +11,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import {
   attachWorkspaceFileToThread,
   currentTurnFilesInstruction,
@@ -243,63 +247,100 @@ describe("recent thread files", () => {
     },
     { name: "network failure", error: new Error("network connection reset"), recover: false },
     { name: "unknown read failure", error: new Error("read failed"), recover: false },
-  ])("only replaces confirmed missing historical files: $name", async ({ error, recover }) => {
-    const get = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
-    const writeFile = vi.fn();
-    const files = await materializeRecentThreadFiles(
-      {
-        prisma: {
-          artifact: {
-            findMany: vi.fn().mockResolvedValue([
+    {
+      name: "provider bounded read",
+      error: new Error("computer file exceeds 1 bytes"),
+      recover: false,
+      preserve: true,
+    },
+    {
+      name: "Docker bounded read",
+      error: new Error('sandbox file read failed: 413 {"error":"computer file exceeds 1 bytes"}'),
+      recover: false,
+      preserve: true,
+    },
+    {
+      name: "unrelated provider limit",
+      error: new Error("computer file exceeds 2 bytes"),
+      recover: false,
+    },
+    {
+      name: "unknown Docker 413",
+      error: new Error('sandbox file read failed: 413 {"error":"request body too large"}'),
+      recover: false,
+    },
+    {
+      name: "unrelated Docker 413 with missing-file text",
+      error: new Error('sandbox file read failed: 413 {"error":"file not found"}'),
+      recover: false,
+    },
+    {
+      name: "malformed Docker 413",
+      error: new Error('sandbox file read failed: 413 {"error":"computer file exceeds 1 bytes"'),
+      recover: false,
+    },
+  ])(
+    "only replaces confirmed missing historical files: $name",
+    async ({ error, recover, preserve = false }) => {
+      const get = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
+      const writeFile = vi.fn();
+      const files = await materializeRecentThreadFiles(
+        {
+          prisma: {
+            artifact: {
+              findMany: vi.fn().mockResolvedValue([
+                {
+                  id: "notes",
+                  name: "notes.txt",
+                  mimeType: "text/plain",
+                  size: 3,
+                  storageKey: "stored",
+                },
+              ]),
+            },
+          } as unknown as PrismaClient,
+          artifacts: { get } as unknown as ArtifactStore,
+          sandbox: {
+            readFile: vi.fn().mockRejectedValue(error),
+            writeFile,
+          } as unknown as SandboxProvider,
+        },
+        [{ id: "earlier", role: "user" }],
+        [
+          {
+            id: "earlier",
+            blocks: [
               {
-                id: "notes",
+                kind: "file",
+                artifactId: "notes",
                 name: "notes.txt",
                 mimeType: "text/plain",
                 size: 3,
-                storageKey: "stored",
               },
-            ]),
+            ],
           },
-        } as unknown as PrismaClient,
-        artifacts: { get } as unknown as ArtifactStore,
-        sandbox: {
-          readFile: vi.fn().mockRejectedValue(error),
-          writeFile,
-        } as unknown as SandboxProvider,
-      },
-      [{ id: "earlier", role: "user" }],
-      [
+        ],
         {
-          id: "earlier",
-          blocks: [
-            {
-              kind: "file",
-              artifactId: "notes",
-              name: "notes.txt",
-              mimeType: "text/plain",
-              size: 3,
-            },
-          ],
+          context: {
+            operationId: "run",
+            traceId: "run",
+            spaceId: "space",
+            userId: "user",
+            botId: "bot",
+            signal: new AbortController().signal,
+          },
+          computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
+          computerMode: "dedicated",
+          maxTurns: 3,
         },
-      ],
-      {
-        context: {
-          operationId: "run",
-          traceId: "run",
-          spaceId: "space",
-          userId: "user",
-          botId: "bot",
-          signal: new AbortController().signal,
-        },
-        computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
-        computerMode: "dedicated",
-        maxTurns: 3,
-      },
-    );
-    expect(files.map((file) => file.path)).toEqual(recover ? ["attachments/notes.txt"] : []);
-    expect(get).toHaveBeenCalledTimes(recover ? 1 : 0);
-    expect(writeFile).toHaveBeenCalledTimes(recover ? 1 : 0);
-  });
+      );
+      expect(files.map((file) => file.path)).toEqual(
+        recover || preserve ? ["attachments/notes.txt"] : [],
+      );
+      expect(get).toHaveBeenCalledTimes(recover ? 1 : 0);
+      expect(writeFile).toHaveBeenCalledTimes(recover ? 1 : 0);
+    },
+  );
 
   it("keeps user and Space scope and skips oversized history files without blocking readable ones", async () => {
     const block = (id: string): MessageBlock => ({
@@ -463,6 +504,80 @@ describe("recent thread files", () => {
 });
 
 describe("recent history attachment selection and preservation", () => {
+  it.each([0, 1, 12 * 1024 * 1024])(
+    "uses a bounded probe to preserve an edited Desktop file of %s bytes",
+    async (editedSize) => {
+      const root = await mkdtemp(path.join(tmpdir(), "thread-file-probe-"));
+      try {
+        const context = {
+          operationId: "run",
+          traceId: "run",
+          spaceId: "space",
+          userId: "user",
+          botId: "bot",
+          signal: new AbortController().signal,
+        };
+        const sandbox = new DesktopSandboxProvider({ root });
+        const computer = await sandbox.provision({ botId: "bot", homePath: "unused" }, context);
+        await sandbox.writeFile(computer, {
+          path: "attachments/notes.txt",
+          content: new Uint8Array(),
+        });
+        const filePath = path.join(computer.providerRef, "attachments/notes.txt");
+        const handle = await open(filePath, "r+");
+        await handle.truncate(editedSize);
+        await handle.close();
+        const readFile = vi.spyOn(sandbox, "readFile");
+        const writeFile = vi.spyOn(sandbox, "writeFile");
+        const get = vi.fn().mockRejectedValue(new Error("original unavailable"));
+        const block = {
+          kind: "file" as const,
+          artifactId: "notes",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          size: 8,
+        };
+        const files = await materializeRecentThreadFiles(
+          {
+            prisma: {
+              artifact: {
+                findMany: vi
+                  .fn()
+                  .mockResolvedValue([{ ...block, id: "notes", storageKey: "stored" }]),
+              },
+            } as unknown as PrismaClient,
+            artifacts: { get } as unknown as ArtifactStore,
+            sandbox,
+          },
+          [{ id: "earlier", role: "user" }],
+          [{ id: "earlier", blocks: [block] }],
+          { context, computer, computerMode: "dedicated", maxTurns: 3 },
+        );
+        expect(readFile).toHaveBeenCalledExactlyOnceWith(
+          computer,
+          "attachments/notes.txt",
+          context,
+          {
+            maxBytes: 1,
+          },
+        );
+        if (editedSize > 1) {
+          await expect(readFile.mock.results[0]?.value).rejects.toThrow(
+            "computer file exceeds 1 bytes",
+          );
+        } else {
+          await expect(readFile.mock.results[0]?.value).resolves.toHaveLength(editedSize);
+        }
+        expect(files.map((file) => file.path)).toEqual(["attachments/notes.txt"]);
+        expect(get).not.toHaveBeenCalled();
+        expect(writeFile).not.toHaveBeenCalled();
+        expect((await stat(filePath)).size).toBe(editedSize);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(["team", "dedicated"] as const)(
     "preserves edited recent files and lists them in %s mode",
     async (computerMode) => {
@@ -510,6 +625,7 @@ describe("recent history attachment selection and preservation", () => {
         expect.anything(),
         computerMode === "team" ? "bots/bot/attachments/notes.txt" : "attachments/notes.txt",
         expect.anything(),
+        { maxBytes: 1 },
       );
       expect(get).not.toHaveBeenCalled();
       expect(writeFile).not.toHaveBeenCalled();

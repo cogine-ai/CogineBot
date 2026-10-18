@@ -165,24 +165,48 @@ async function materializeThreadFiles(
       input.context.botId,
       relativePath,
     );
+    const probeMaxBytes = 1;
     const exists = preserveExisting
-      ? await deps.sandbox.readFile(input.computer, workspacePath, input.context).then(
-          () => true,
-          (error: unknown) => {
-            if (
-              (typeof error === "object" &&
-                error !== null &&
-                "code" in error &&
-                error.code === "ENOENT") ||
-              (error instanceof Error &&
-                /\bfile not found\b|\bno such file or directory\b/i.test(error.message))
-            ) {
-              return false;
-            }
-            // An unreadable existing file may contain edits; do not replace it.
-            throw error;
-          },
-        )
+      ? await deps.sandbox
+          .readFile(input.computer, workspacePath, input.context, { maxBytes: probeMaxBytes })
+          .then(
+            () => true,
+            (error: unknown) => {
+              if (error instanceof Error) {
+                const limitMessage = `computer file exceeds ${probeMaxBytes} bytes`;
+                // Existing provider limits confirm the file without reading its contents.
+                if (error.message === limitMessage) return true;
+                const dockerLimitPrefix = "sandbox file read failed: 413 ";
+                if (error.message.startsWith(dockerLimitPrefix)) {
+                  try {
+                    const body: unknown = JSON.parse(error.message.slice(dockerLimitPrefix.length));
+                    if (
+                      typeof body === "object" &&
+                      body !== null &&
+                      "error" in body &&
+                      body.error === limitMessage
+                    )
+                      return true;
+                  } catch {
+                    // An unrelated or malformed 413 cannot establish file existence.
+                  }
+                  throw error;
+                }
+              }
+              if (
+                (typeof error === "object" &&
+                  error !== null &&
+                  "code" in error &&
+                  error.code === "ENOENT") ||
+                (error instanceof Error &&
+                  /\bfile not found\b|\bno such file or directory\b/i.test(error.message))
+              ) {
+                return false;
+              }
+              // An unreadable existing file may contain edits; do not replace it.
+              throw error;
+            },
+          )
       : false;
     if (preserveExisting) input.context.signal.throwIfAborted();
     if (!exists) {
