@@ -1,0 +1,1475 @@
+[
+  {
+    "app": "excel",
+    "id": "excel.worksheets.list",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/worksheets",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "excel",
+    "id": "excel.ranges.get",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture",
+      "worksheetId": "sheet-fixture",
+      "address": "A1:B1"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/worksheets/sheet-fixture/range(address='A1%3AB1')",
+        "body": {
+          "address": "Sheet1!A1:B1",
+          "rowCount": 1,
+          "columnCount": 2,
+          "values": [["Fixture", 1]],
+          "formulas": [["Fixture", 1]],
+          "numberFormat": [["General", "General"]]
+        },
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "excel",
+    "id": "excel.ranges.update",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture",
+      "worksheetId": "sheet-fixture",
+      "address": "A1:B1",
+      "values": [["Fixture", 1]]
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "PATCH",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/worksheets/sheet-fixture/range(address='A1%3AB1')",
+        "body": {
+          "address": "Sheet1!A1:B1",
+          "rowCount": 1,
+          "columnCount": 2,
+          "values": [["Fixture", 1]],
+          "formulas": [["Fixture", 1]],
+          "numberFormat": [["General", "General"]]
+        },
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "excel",
+    "id": "excel.tables.list",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/tables",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "excel",
+    "id": "excel.rows.list",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture",
+      "tableId": "table-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/tables/table-fixture/rows",
+        "body": {
+          "value": [
+            {
+              "index": 0,
+              "values": [["Fixture", 1]]
+            }
+          ]
+        },
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "excel",
+    "id": "excel.rows.append",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture",
+      "tableId": "table-fixture",
+      "values": [["Fixture", 1]]
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/tables/table-fixture/rows/add",
+        "body": {
+          "index": 3,
+          "values": [["Fixture", 1]]
+        },
+        "status": 201
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "excel",
+    "id": "excel.tables.create",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture",
+      "worksheetId": "sheet-fixture",
+      "address": "A1:B1",
+      "hasHeaders": true
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/worksheets/sheet-fixture/tables/add",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "excel",
+    "id": "excel.worksheets.create",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture",
+      "name": "Fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/createSession",
+        "body": {
+          "id": "session-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/worksheets/add",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      },
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/workbook/closeSession",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.lists.list",
+    "input": {},
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/todo/lists",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.lists.create",
+    "input": {
+      "displayName": "Fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/todo/lists",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.tasks.list",
+    "input": {
+      "listId": "list-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/todo/lists/list-fixture/tasks",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.tasks.get",
+    "input": {
+      "listId": "list-fixture",
+      "taskId": "task-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/todo/lists/list-fixture/tasks/task-fixture",
+        "body": {
+          "id": "task-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.tasks.create",
+    "input": {
+      "listId": "list-fixture",
+      "title": "Fixture task"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/todo/lists/list-fixture/tasks",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.tasks.update",
+    "input": {
+      "listId": "list-fixture",
+      "taskId": "task-fixture",
+      "expectedEtag": "\"fixture-etag\"",
+      "title": "Fixture updated"
+    },
+    "steps": [
+      {
+        "method": "PATCH",
+        "path": "/me/todo/lists/list-fixture/tasks/task-fixture",
+        "body": {
+          "id": "task-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.checklist.list",
+    "input": {
+      "listId": "list-fixture",
+      "taskId": "task-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/todo/lists/list-fixture/tasks/task-fixture/checklistItems",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "microsoft-todo",
+    "id": "microsoft_todo.checklist.create",
+    "input": {
+      "listId": "list-fixture",
+      "taskId": "task-fixture",
+      "displayName": "Fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/todo/lists/list-fixture/tasks/task-fixture/checklistItems",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.children.list",
+    "input": {
+      "driveId": "drive-fixture",
+      "itemId": "item-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/items/item-fixture/children",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.items.get",
+    "input": {
+      "itemId": "item-fixture",
+      "driveId": "drive-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/items/item-fixture",
+        "body": {
+          "id": "item-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.items.search",
+    "input": {
+      "query": "Fixture",
+      "driveId": "drive-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/root/search(q='Fixture')",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.files.download",
+    "input": {
+      "itemId": "item-fixture",
+      "driveId": "drive-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/drives/drive-fixture/items/item-fixture",
+        "body": {
+          "id": "item-fixture",
+          "size": 3,
+          "name": "Fixture.bin",
+          "file": {
+            "mimeType": "application/octet-stream"
+          },
+          "@microsoft.graph.downloadUrl": "https://fixture.sharepoint.com/download?sig=fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.files.upload",
+    "input": {
+      "parentId": "parent-fixture",
+      "name": "Fixture",
+      "artifactId": "artifact-fixture",
+      "driveId": "drive-fixture"
+    },
+    "steps": [
+      {
+        "method": "PUT",
+        "path": "/drives/drive-fixture/items/parent-fixture:/Fixture:/content",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.folders.create",
+    "input": {
+      "parentId": "parent-fixture",
+      "name": "Fixture",
+      "driveId": "drive-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/parent-fixture/children",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.items.move",
+    "input": {
+      "itemId": "item-fixture",
+      "parentId": "parent-fixture",
+      "expectedEtag": "\"fixture-etag\"",
+      "driveId": "drive-fixture"
+    },
+    "steps": [
+      {
+        "method": "PATCH",
+        "path": "/drives/drive-fixture/items/item-fixture",
+        "body": {
+          "id": "item-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "onedrive",
+    "id": "onedrive.links.create",
+    "input": {
+      "itemId": "item-fixture",
+      "type": "view",
+      "scope": "organization",
+      "driveId": "drive-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/drives/drive-fixture/items/item-fixture/createLink",
+        "body": {
+          "id": "permission-fixture",
+          "link": {
+            "type": "view",
+            "scope": "organization",
+            "webUrl": "https://example.test/shared"
+          }
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.calendars.list",
+    "input": {},
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/calendars",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.events.list",
+    "input": {
+      "calendarId": "calendar-fixture",
+      "startDateTime": "2026-10-18T01:00:00Z",
+      "endDateTime": "2026-10-18T02:00:00Z"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/calendars/calendar-fixture/calendarView",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.events.get",
+    "input": {
+      "eventId": "event-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/events/event-fixture",
+        "body": {
+          "id": "event-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.events.create",
+    "input": {
+      "calendarId": "calendar-fixture",
+      "subject": "Fixture subject",
+      "start": {
+        "dateTime": "2026-10-18T01:00:00",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-10-18T02:00:00",
+        "timeZone": "UTC"
+      }
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/calendars/calendar-fixture/events",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.events.update",
+    "input": {
+      "eventId": "event-fixture",
+      "expectedEtag": "\"fixture-etag\"",
+      "subject": "Fixture updated"
+    },
+    "steps": [
+      {
+        "method": "PATCH",
+        "path": "/me/events/event-fixture",
+        "body": {
+          "id": "event-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.events.cancel",
+    "input": {
+      "eventId": "event-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/events/event-fixture/cancel",
+        "body": null,
+        "status": 202
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.events.delete",
+    "input": {
+      "eventId": "event-fixture",
+      "expectedEtag": "\"fixture-etag\""
+    },
+    "steps": [
+      {
+        "method": "DELETE",
+        "path": "/me/events/event-fixture",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-calendar",
+    "id": "outlook_calendar.schedule.get",
+    "input": {
+      "schedules": ["person@example.test"],
+      "startTime": {
+        "dateTime": "2026-10-18T01:00:00",
+        "timeZone": "UTC"
+      },
+      "endTime": {
+        "dateTime": "2026-10-18T02:00:00",
+        "timeZone": "UTC"
+      }
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/calendar/getSchedule",
+        "body": {
+          "value": [
+            {
+              "scheduleId": "person@example.test",
+              "availabilityView": "0"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.messages.list",
+    "input": {},
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/messages",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.messages.get",
+    "input": {
+      "messageId": "message-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/messages/message-fixture",
+        "body": {
+          "id": "message-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.drafts.create",
+    "input": {
+      "subject": "Fixture subject",
+      "body": {
+        "contentType": "text",
+        "content": "Fixture body"
+      },
+      "to": ["person@example.test"]
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/messages",
+        "body": {
+          "id": "draft-created-fixture",
+          "isDraft": true
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.drafts.send",
+    "input": {
+      "messageId": "message-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/messages/message-fixture/send",
+        "body": null,
+        "status": 202
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.messages.reply",
+    "input": {
+      "messageId": "message-fixture",
+      "comment": "Fixture comment"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/messages/message-fixture/reply",
+        "body": null,
+        "status": 202
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.messages.move",
+    "input": {
+      "messageId": "message-fixture",
+      "destinationId": "folder-fixture"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/me/messages/message-fixture/move",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.attachments.list",
+    "input": {
+      "messageId": "message-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/messages/message-fixture/attachments",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "outlook-mail",
+    "id": "outlook.attachments.download",
+    "input": {
+      "messageId": "message-fixture",
+      "attachmentId": "attachment-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/messages/message-fixture/attachments/attachment-fixture",
+        "body": {
+          "id": "attachment-fixture",
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          "size": 3,
+          "name": "Fixture.bin",
+          "contentType": "application/octet-stream"
+        },
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/me/messages/message-fixture/attachments/attachment-fixture/$value",
+        "bodyBytes": [1, 2, 3],
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "planner",
+    "id": "planner.plans.list",
+    "input": {
+      "groupId": "group-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/groups/group-fixture/planner/plans",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "planner",
+    "id": "planner.buckets.list",
+    "input": {
+      "planId": "plan-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/planner/plans/plan-fixture/buckets",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "planner",
+    "id": "planner.tasks.list",
+    "input": {
+      "planId": "plan-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/planner/plans/plan-fixture/tasks",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "planner",
+    "id": "planner.tasks.get",
+    "input": {
+      "taskId": "task-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/planner/tasks/task-fixture",
+        "body": {
+          "id": "task-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "planner",
+    "id": "planner.details.get",
+    "input": {
+      "taskId": "task-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/planner/tasks/task-fixture/details",
+        "body": {
+          "id": "task-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "planner",
+    "id": "planner.tasks.create",
+    "input": {
+      "planId": "plan-fixture",
+      "title": "Fixture task"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/planner/tasks",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "planner",
+    "id": "planner.tasks.update",
+    "input": {
+      "taskId": "task-fixture",
+      "expectedEtag": "\"fixture-etag\"",
+      "title": "Fixture updated"
+    },
+    "steps": [
+      {
+        "method": "PATCH",
+        "path": "/planner/tasks/task-fixture",
+        "body": {
+          "id": "task-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "planner",
+    "id": "planner.tasks.delete",
+    "input": {
+      "taskId": "task-fixture",
+      "expectedEtag": "\"fixture-etag\""
+    },
+    "steps": [
+      {
+        "method": "DELETE",
+        "path": "/planner/tasks/task-fixture",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.sites.get",
+    "input": {
+      "siteId": "site-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/sites/site-fixture",
+        "body": {
+          "id": "site-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.drives.list",
+    "input": {
+      "siteId": "site-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/sites/site-fixture/drives",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.lists.list",
+    "input": {
+      "siteId": "site-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/sites/site-fixture/lists",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.items.list",
+    "input": {
+      "siteId": "site-fixture",
+      "listId": "list-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/sites/site-fixture/lists/list-fixture/items",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.items.get",
+    "input": {
+      "siteId": "site-fixture",
+      "listId": "list-fixture",
+      "itemId": "item-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/sites/site-fixture/lists/list-fixture/items/item-fixture",
+        "body": {
+          "id": "item-fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.items.create",
+    "input": {
+      "siteId": "site-fixture",
+      "listId": "list-fixture",
+      "fields": {
+        "Title": "Fixture"
+      }
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/sites/site-fixture/lists/list-fixture/items",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.items.update",
+    "input": {
+      "siteId": "site-fixture",
+      "listId": "list-fixture",
+      "itemId": "item-fixture",
+      "fields": {
+        "Title": "Fixture"
+      },
+      "expectedEtag": "\"fixture-etag\""
+    },
+    "steps": [
+      {
+        "method": "PATCH",
+        "path": "/sites/site-fixture/lists/list-fixture/items/item-fixture/fields",
+        "body": {
+          "Title": "Fixture"
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "sharepoint",
+    "id": "sharepoint.items.delete",
+    "input": {
+      "siteId": "site-fixture",
+      "listId": "list-fixture",
+      "itemId": "item-fixture",
+      "expectedEtag": "\"fixture-etag\""
+    },
+    "steps": [
+      {
+        "method": "DELETE",
+        "path": "/sites/site-fixture/lists/list-fixture/items/item-fixture",
+        "body": null,
+        "status": 204
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "teams",
+    "id": "teams.teams.list",
+    "input": {},
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/joinedTeams",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "teams",
+    "id": "teams.channels.list",
+    "input": {
+      "teamId": "team-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/teams/team-fixture/channels",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "teams",
+    "id": "teams.channel_messages.list",
+    "input": {
+      "teamId": "team-fixture",
+      "channelId": "channel-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/teams/team-fixture/channels/channel-fixture/messages",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "teams",
+    "id": "teams.chats.list",
+    "input": {},
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/me/chats",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "teams",
+    "id": "teams.chat_messages.list",
+    "input": {
+      "chatId": "chat-fixture"
+    },
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/chats/chat-fixture/messages",
+        "body": {
+          "value": [
+            {
+              "id": "resource-fixture"
+            }
+          ]
+        },
+        "status": 200
+      }
+    ],
+    "readOnly": true
+  },
+  {
+    "app": "teams",
+    "id": "teams.channel_messages.send",
+    "input": {
+      "teamId": "team-fixture",
+      "channelId": "channel-fixture",
+      "content": "Fixture message"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/teams/team-fixture/channels/channel-fixture/messages",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "teams",
+    "id": "teams.channel_messages.reply",
+    "input": {
+      "teamId": "team-fixture",
+      "channelId": "channel-fixture",
+      "messageId": "message-fixture",
+      "content": "Fixture message"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/teams/team-fixture/channels/channel-fixture/messages/message-fixture/replies",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  },
+  {
+    "app": "teams",
+    "id": "teams.chat_messages.send",
+    "input": {
+      "chatId": "chat-fixture",
+      "content": "Fixture message"
+    },
+    "steps": [
+      {
+        "method": "POST",
+        "path": "/chats/chat-fixture/messages",
+        "body": {
+          "id": "created-fixture"
+        },
+        "status": 201
+      }
+    ],
+    "readOnly": false
+  }
+]

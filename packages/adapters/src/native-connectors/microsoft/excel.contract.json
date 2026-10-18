@@ -1,0 +1,478 @@
+{
+  "slug": "excel",
+  "name": "Excel Graph",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "excel.worksheets.list",
+      "description": "List workbook worksheets",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["driveId", "itemId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/worksheets",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/worksheetcollection-list?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      }
+    },
+    {
+      "id": "excel.ranges.get",
+      "description": "Read values, formulas and formats from an explicit range",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "worksheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "address": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["driveId", "itemId", "worksheetId", "address"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/worksheets/{worksheetId}/range(address='{OData-single-quote-escaped-A1-range}')",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/range-get?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      },
+      "boundedRange": "A1 rectangle within one selected worksheet, <=10000 cells; whole-column and whole-sheet unsupported"
+    },
+    {
+      "id": "excel.ranges.update",
+      "description": "Write explicit values or formulas to a bounded range",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "worksheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "address": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": ["string", "number", "boolean", "null"]
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "minItems": 1,
+            "maxItems": 1000
+          },
+          "formulas": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": ["string", "number", "boolean", "null"]
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "minItems": 1,
+            "maxItems": 1000
+          }
+        },
+        "required": ["driveId", "itemId", "worksheetId", "address"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "PATCH",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/worksheets/{worksheetId}/range(address='{OData-single-quote-escaped-A1-range}')",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/range-update?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      },
+      "boundedRange": "A1 rectangle within one selected worksheet, <=10000 cells; whole-column and whole-sheet unsupported"
+    },
+    {
+      "id": "excel.tables.list",
+      "description": "List workbook tables",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["driveId", "itemId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/tables",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/workbook-list-tables?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      }
+    },
+    {
+      "id": "excel.rows.list",
+      "description": "Read table rows with bounded paging",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["driveId", "itemId", "tableId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/tables/{tableId}/rows",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/tablerowcollection-list?view=graph-rest-1.0"
+      },
+      "output": {
+        "items": "workbookTableRow[]; each row has safe nonnegative index and rectangular values, no id required",
+        "nextCursor": "validated same collection @odata.nextLink or null"
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      }
+    },
+    {
+      "id": "excel.rows.append",
+      "description": "Append an explicit matrix to a selected table once",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": ["string", "number", "boolean", "null"]
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "minItems": 1,
+            "maxItems": 1000
+          }
+        },
+        "required": ["driveId", "itemId", "tableId", "values"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/tables/{tableId}/rows/add",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/tablerowcollection-add?view=graph-rest-1.0"
+      },
+      "output": {
+        "index": "safe nonnegative index",
+        "values": "acknowledged row matrix",
+        "resource_id": "selected workbook ID; no invented row id"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      }
+    },
+    {
+      "id": "excel.tables.create",
+      "description": "Create a table over an explicit worksheet range",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "worksheetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "address": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "hasHeaders": {
+            "type": "boolean"
+          }
+        },
+        "required": ["driveId", "itemId", "worksheetId", "address", "hasHeaders"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/worksheets/{worksheetId}/tables/add",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/tablecollection-add?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      }
+    },
+    {
+      "id": "excel.worksheets.create",
+      "description": "Add one worksheet to a workbook",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 31
+          }
+        },
+        "required": ["driveId", "itemId", "name"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/drives/{driveId}/items/{itemId}/workbook/worksheets/add",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/worksheetcollection-add?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "workbookSession": {
+        "open": "POST createSession persistChanges=!readOnly; only 201 id accepted synchronously, 202 without session is temporarily unavailable and no cell write",
+        "use": "workbook-session-id on every same-workbook request",
+        "close": "POST closeSession finally; never overwrite primary write receipt"
+      }
+    }
+  ],
+  "contractRevision": 2
+}

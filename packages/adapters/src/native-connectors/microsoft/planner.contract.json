@@ -1,0 +1,445 @@
+{
+  "slug": "planner",
+  "name": "Microsoft Planner",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "planner.plans.list",
+      "description": "List basic plans of an explicit Microsoft 365 group",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "groupId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["groupId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Tasks.Read",
+          "Tasks.ReadWrite",
+          "Group.Read.All",
+          "Group.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/groups/{groupId}/planner/plans",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/plannergroup-list-plans?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "planner.buckets.list",
+      "description": "List buckets of a selected basic plan",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["planId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Tasks.Read",
+          "Tasks.ReadWrite",
+          "Group.Read.All",
+          "Group.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/planner/plans/{planId}/buckets",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/plannerplan-list-buckets?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "planner.tasks.list",
+      "description": "List tasks of a selected basic plan",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["planId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Tasks.Read",
+          "Tasks.ReadWrite",
+          "Group.Read.All",
+          "Group.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/planner/plans/{planId}/tasks",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/plannerplan-list-tasks?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "planner.tasks.get",
+      "description": "Read a planner task including its ETag",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["taskId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Tasks.Read",
+          "Tasks.ReadWrite",
+          "Group.Read.All",
+          "Group.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/planner/tasks/{taskId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/plannertask-get?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "planner.details.get",
+      "description": "Read planner task details including a separate details ETag",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["taskId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Tasks.Read",
+          "Tasks.ReadWrite",
+          "Group.Read.All",
+          "Group.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/planner/tasks/{taskId}/details",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/plannertaskdetails-get?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "planner.tasks.create",
+      "description": "Create a task in an explicit basic plan",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "bucketId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "percentComplete": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "dueDateTime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "startDateTime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "assignments": {
+            "type": "object",
+            "maxProperties": 20,
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "additionalProperties": {
+              "type": ["boolean", "null"]
+            }
+          }
+        },
+        "required": ["planId", "title"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.ReadWrite", "Group.ReadWrite.All"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/planner/tasks",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/planner-post-tasks?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "planner.tasks.update",
+      "description": "Update assignments and completion with required task ETag",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "bucketId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "percentComplete": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "dueDateTime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "startDateTime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "assignments": {
+            "type": "object",
+            "maxProperties": 20,
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "additionalProperties": {
+              "type": ["boolean", "null"]
+            }
+          }
+        },
+        "required": ["taskId", "expectedEtag"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.ReadWrite", "Group.ReadWrite.All"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "PATCH",
+        "path": "/planner/tasks/{taskId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/plannertask-update?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below.",
+        "empty204": "exact request resource_id and acknowledged mutation; no fabricated snapshot"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "planner.tasks.delete",
+      "description": "Delete a selected task with required task ETag",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["taskId", "expectedEtag"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.ReadWrite", "Group.ReadWrite.All"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "DELETE",
+        "path": "/planner/tasks/{taskId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/plannertask-delete?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below.",
+        "empty204": "exact request resource_id and acknowledged mutation; no fabricated snapshot"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    }
+  ],
+  "contractRevision": 2
+}
