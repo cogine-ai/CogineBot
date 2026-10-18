@@ -64,6 +64,19 @@ function deferred() {
 async function json(route: Route, value: unknown) {
   await route.fulfill({ json: { json: value } });
 }
+async function internalReadFailure(route: Route) {
+  return route.fulfill({
+    status: 500,
+    json: {
+      json: {
+        defined: false,
+        code: "INTERNAL_SERVER_ERROR",
+        status: 500,
+        message: "Temporary read failure",
+      },
+    },
+  });
+}
 function account(id: string, name: string): Connection {
   return {
     id,
@@ -378,7 +391,8 @@ async function controlledStream(page: Page) {
         return nativeFetch(input, init);
       requests += 1;
       if (typeof failed === "number") {
-        const code = failed === 401 ? "UNAUTHORIZED" : "FORBIDDEN";
+        const code =
+          failed === 401 ? "UNAUTHORIZED" : failed === 403 ? "FORBIDDEN" : "INTERNAL_SERVER_ERROR";
         return Response.json(
           { json: { defined: false, code, status: failed, message: "Chat access interrupted" } },
           { status: failed },
@@ -537,57 +551,60 @@ test("connected account highlight survives refreshed candidates without altering
   expect(errors).toEqual([]);
 });
 
-test("bootstrap failure followed by a rejected fallback refresh is handled and can recover", async ({
-  page,
-}, testInfo) => {
-  const { state, errors, unknown } = await mockChat(page);
-  state.bootstrap = (route) => route.abort("failed");
-  state.list = (route) => route.abort("failed");
-  await page.goto("/app/chief");
-  await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
-  await expect(page.locator('[data-testid="composer-bar"] [role="combobox"]:enabled')).toHaveCount(
-    0,
-  );
-  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "false");
-  await captureScreenshot(page, testInfo, "initial-waiting-for-connection");
-  expect(errors).toEqual([]);
-  state.bootstrap = null;
-  state.list = null;
-  const attempts = state.bootstrapRequests;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(attempts);
-  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
-  await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
-  const recovered = page.getByRole("combobox", { name: "Message Chief", exact: true });
-  await expect(recovered).toBeEnabled();
-  await recovered.fill("@Research");
-  await page.getByRole("option", { name: "@Research Two", exact: true }).click();
-  await recovered.fill("Recovered in the correct Space.\nThe attachment stays scoped.");
-  await page
-    .getByTestId("composer-bar")
-    .locator('input[type="file"]')
-    .setInputFiles({
-      name: "recovery-notes.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from("isolated recovery attachment"),
+for (const failure of ["network", 500] as const) {
+  test(`bootstrap ${failure} failure followed by a rejected fallback refresh can recover`, async ({
+    page,
+  }, testInfo) => {
+    const { state, errors, unknown } = await mockChat(page);
+    state.bootstrap = (route) =>
+      failure === 500 ? internalReadFailure(route) : route.abort("failed");
+    state.list = (route) => route.abort("failed");
+    await page.goto("/app/chief");
+    await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+    await expect(
+      page.locator('[data-testid="composer-bar"] [role="combobox"]:enabled'),
+    ).toHaveCount(0);
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "false");
+    await captureScreenshot(page, testInfo, "initial-waiting-for-connection");
+    expect(errors).toEqual([]);
+    state.bootstrap = null;
+    state.list = null;
+    const attempts = state.bootstrapRequests;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(attempts);
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+    const recovered = page.getByRole("combobox", { name: "Message Chief", exact: true });
+    await expect(recovered).toBeEnabled();
+    await recovered.fill("@Research");
+    await page.getByRole("option", { name: "@Research Two", exact: true }).click();
+    await recovered.fill("Recovered in the correct Space.\nThe attachment stays scoped.");
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "recovery-notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("isolated recovery attachment"),
+      });
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
+    await recovered.press("Enter");
+    await expect.poll(() => state.sends.length).toBe(1);
+    expect(state.sends[0]).toMatchObject({
+      botId: "chief",
+      mentions: [{ kind: "bot", id: "research-two" }],
+      artifactIds: ["synthetic-attachment"],
     });
-  await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
-  await recovered.press("Enter");
-  await expect.poll(() => state.sends.length).toBe(1);
-  expect(state.sends[0]).toMatchObject({
-    botId: "chief",
-    mentions: [{ kind: "bot", id: "research-two" }],
-    artifactIds: ["synthetic-attachment"],
+    expect(state.sends[0].text).toContain("Recovered in the correct Space.");
+    expect(state.sendSpaces).toEqual(["space-primary"]);
+    expect(state.uploads[0].botId).toBe("chief");
+    await expect(recovered).toHaveValue("");
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(0);
+    await expect(page.getByTestId("composer-error")).toHaveCount(0);
+    expect(errors).toEqual([]);
+    expect(unknown).toEqual([]);
   });
-  expect(state.sends[0].text).toContain("Recovered in the correct Space.");
-  expect(state.sendSpaces).toEqual(["space-primary"]);
-  expect(state.uploads[0].botId).toBe("chief");
-  await expect(recovered).toHaveValue("");
-  await expect(page.getByTestId("attachment-preview")).toHaveCount(0);
-  await expect(page.getByTestId("composer-error")).toHaveCount(0);
-  expect(errors).toEqual([]);
-  expect(unknown).toEqual([]);
-});
+}
 
 test("Chinese initial connection feedback fits the 800px desktop layout", async ({
   page,
@@ -819,41 +836,111 @@ test("a lost send receipt is never replayed automatically, and manual retry reta
   expect(errors).toEqual([]);
 });
 
-test("an interrupted stream preserves editing and sending while reconnecting, then clears its hint", async ({
+for (const failure of ["network", 500] as const) {
+  test(`an interrupted ${failure} stream preserves editing and sending while reconnecting, then clears its hint`, async ({
+    page,
+  }, testInfo) => {
+    const { state, errors } = await mockChat(page);
+    const failStream = await controlledStream(page);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.emulateMedia({ colorScheme: "light" });
+    await ready(page);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+    await composer.fill("An existing draft remains editable.\nThe second line stays intact.");
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "stream-notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("keep while the separate reading channel reconnects"),
+      });
+    await failStream(failure === "network" ? true : failure);
+    await expect(page.getByTestId("connection-status")).toContainText("Reconnecting");
+    await expect(composer).toBeEnabled();
+    await expect(composer).toHaveValue(
+      "An existing draft remains editable.\nThe second line stays intact.",
+    );
+    await expect(page.getByRole("button", { name: "Remove stream-notes.txt" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      800,
+    );
+    await captureScreenshot(page, testInfo, "stream-reconnecting-light-800-keeps-editing");
+    await composer.press("Enter");
+    await expect.poll(() => state.sends.length).toBe(1);
+    await expect(composer).toHaveValue("");
+    await expect(page.getByTestId("composer-error")).toHaveCount(0);
+    await failStream(false);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    expect(state.sends).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("HTTP 500 snapshot and head reads recover automatically with the draft and attachment intact", async ({
   page,
-}, testInfo) => {
+}) => {
   const { state, errors } = await mockChat(page);
   const failStream = await controlledStream(page);
-  await page.setViewportSize({ width: 800, height: 900 });
-  await page.emulateMedia({ colorScheme: "light" });
   await ready(page);
   await expect(page.getByTestId("connection-status")).toHaveCount(0);
   const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
-  await composer.fill("An existing draft remains editable.\nThe second line stays intact.");
+  const text = "Keep this draft while chat reads fail.\nKeep its attachment too.";
+  await composer.fill(text);
   await page
     .getByTestId("composer-bar")
     .locator('input[type="file"]')
     .setInputFiles({
-      name: "stream-notes.txt",
+      name: "read-recovery.txt",
       mimeType: "text/plain",
-      buffer: Buffer.from("keep while the separate reading channel reconnects"),
+      buffer: Buffer.from("scoped attachment during read-only server failure"),
     });
-  await failStream(true);
+  let unavailable = true;
+  let headFailures = 0;
+  const recoveredMessage: ThreadMessage = {
+    id: "read-recovery-message",
+    threadId: "thread-chief",
+    botId: "chief",
+    seq: 1,
+    role: "bot",
+    blocks: [{ kind: "text", text: "New reply completed while the chat was reconnecting." }],
+    createdAt: stamp,
+  };
+  state.thread = (route, data) =>
+    unavailable
+      ? internalReadFailure(route)
+      : json(route, { ...data, cursor: 5, messages: [recoveredMessage] });
+  await page.route("**/rpc/threads/head", async (route) => {
+    if (unavailable) {
+      headFailures += 1;
+      return internalReadFailure(route);
+    }
+    return json(route, { threadId: "thread-chief", cursor: 5 });
+  });
+  await failStream(500);
   await expect(page.getByTestId("connection-status")).toContainText("Reconnecting");
+  // Restart the reader once to exercise both initial snapshot and head fallback failures.
+  await page
+    .getByTestId("connection-status")
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await expect.poll(() => headFailures).toBeGreaterThanOrEqual(2);
+  await expect(composer).toHaveValue(text);
+  await expect(page.getByRole("button", { name: "Remove read-recovery.txt" })).toBeVisible();
   await expect(composer).toBeEnabled();
-  await expect(composer).toHaveValue(
-    "An existing draft remains editable.\nThe second line stays intact.",
-  );
-  await expect(page.getByRole("button", { name: "Remove stream-notes.txt" })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(800);
-  await captureScreenshot(page, testInfo, "stream-reconnecting-light-800-keeps-editing");
-  await composer.press("Enter");
-  await expect.poll(() => state.sends.length).toBe(1);
-  await expect(composer).toHaveValue("");
-  await expect(page.getByTestId("composer-error")).toHaveCount(0);
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  unavailable = false;
   await failStream(false);
+  await expect(
+    page.getByText("New reply completed while the chat was reconnecting.", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByTestId("connection-status")).toHaveCount(0);
-  expect(state.sends).toHaveLength(1);
+  await expect(composer).toHaveValue(text);
+  await expect(page.getByRole("button", { name: "Remove read-recovery.txt" })).toBeVisible();
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
   expect(errors).toEqual([]);
 });
 
@@ -1140,7 +1227,10 @@ test("switching Space during post-create onboarding leaves the other Space isola
   await form.getByRole("button", { name: "Create", exact: true }).click();
   await onboardingStarted.promise;
   await page.getByTestId("space-menu-trigger").click();
-  await page.getByRole("button", { name: "Other Space", exact: true }).click();
+  const spaceMenu = page.locator('[data-slot="popover-content"]').filter({
+    has: page.getByTestId("create-new-space"),
+  });
+  await spaceMenu.getByRole("button", { name: "Other Space", exact: true }).click();
   releaseOnboarding.resolve();
   await expect(page).toHaveURL(/\/app\/other-chief$/);
   await expect(page.getByTestId("sidebar-current-space")).toHaveText("Other Space");

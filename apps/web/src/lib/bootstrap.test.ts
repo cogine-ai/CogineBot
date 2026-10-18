@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+
+import { ORPCError } from "@orpc/client";
 import type { AppBootstrap } from "@rakazo/contracts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -21,6 +23,41 @@ afterEach(() => {
 function bootstrapWithCapability(enabled: boolean) {
   return { me: { ticketBoardEnabled: enabled } } as AppBootstrap;
 }
+
+it.each(["direct", "cause"])("recovers an HTTP 500 read error from %s", async (kind) => {
+  window.history.replaceState({}, "", "/login");
+  const { isRecoverableReadError } = await import("./bootstrap");
+  const failure = new ORPCError("INTERNAL_SERVER_ERROR");
+  expect(failure.status).toBe(500);
+  expect(
+    isRecoverableReadError(
+      kind === "cause" ? new Error("Read failed", { cause: failure }) : failure,
+    ),
+  ).toBe(true);
+});
+
+it.each(["BAD_REQUEST", "UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND"] as const)(
+  "does not automatically retry a permanent %s read error",
+  async (code) => {
+    window.history.replaceState({}, "", "/login");
+    const { isRecoverableReadError } = await import("./bootstrap");
+    const failure = new ORPCError(code);
+    expect(isRecoverableReadError(failure)).toBe(false);
+    expect(isRecoverableReadError(new Error("Failed to fetch", { cause: failure }))).toBe(false);
+  },
+);
+
+it.each([
+  new TypeError("Failed to fetch"),
+  Object.assign(new Error("Read timed out"), { name: "TimeoutError" }),
+  new ORPCError("BAD_GATEWAY"),
+  new ORPCError("SERVICE_UNAVAILABLE"),
+  new ORPCError("GATEWAY_TIMEOUT"),
+])("preserves existing recoverable read errors: %s", async (failure) => {
+  window.history.replaceState({}, "", "/login");
+  const { isRecoverableReadError } = await import("./bootstrap");
+  expect(isRecoverableReadError(failure)).toBe(true);
+});
 
 it("keeps Board capability unknown until the primed request returns", async () => {
   let resolve!: (bootstrap: AppBootstrap) => void;

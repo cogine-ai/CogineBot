@@ -164,7 +164,7 @@ import { TeachRecordingChrome, TeachStopButton } from "../components/teach/Teach
 import { readActivityMode, writeActivityMode } from "../lib/activity-mode";
 import type { ArtifactTarget } from "../lib/artifact-open";
 import { authClient } from "../lib/auth";
-import { takeInitialBootstrap } from "../lib/bootstrap";
+import { isRecoverableReadError, takeInitialBootstrap } from "../lib/bootstrap";
 import { readBotsSidebarCollapsed, writeBotsSidebarCollapsed } from "../lib/bots-sidebar-pref";
 import {
   deliverBrowserNotification as deliverNativeBrowserNotification,
@@ -678,7 +678,7 @@ export function ShellPage() {
     (target: string, controller: AbortController) =>
       (status: "loading" | "recovering" | "ready", error?: unknown) => {
         if (controller.signal.aborted) return;
-        if (error !== undefined && !isServerUnreachable(error)) {
+        if (error !== undefined && !isRecoverableReadError(error)) {
           setThreadConnection({
             target,
             status: "failed",
@@ -1381,7 +1381,7 @@ export function ShellPage() {
         }
       } catch (error) {
         if (cancelled || selectedSpaceId() !== requestedSpaceId) return;
-        bootstrapBlocked = !isServerUnreachable(error);
+        bootstrapBlocked = !isRecoverableReadError(error);
         setBootstrapLoad({ pending: false, error });
         if (!fallbackRequested) {
           fallbackRequested = true;
@@ -4148,7 +4148,7 @@ export function ShellPage() {
               className="flex items-center justify-center gap-3 px-4 py-2 text-[12px] text-muted-foreground"
             >
               <span>
-                {bootstrapLoad.error && !isServerUnreachable(bootstrapLoad.error)
+                {bootstrapLoad.error && !isRecoverableReadError(bootstrapLoad.error)
                   ? errorText(bootstrapLoad.error, t`Could not load this chat.`)
                   : t`Waiting for connection`}
               </span>
