@@ -1,5 +1,5 @@
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
-import type { MessageBlock } from "@rakazo/contracts";
+import type { ComputerMode, MessageBlock } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
@@ -13,7 +13,14 @@ vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
 const TEXT_ONLY_MODEL = "deepseek/deepseek-v4-flash-0731";
 const VISION_MODEL = "openai/gpt-4o";
 
-function historyMessages(): Array<{
+function historyMessages(
+  earlierAttachment: MessageBlock = {
+    kind: "image",
+    artifactId: "art-1",
+    mimeType: "image/png",
+    name: "shot.png",
+  },
+): Array<{
   id: string;
   threadId: string;
   seq: number;
@@ -42,7 +49,7 @@ function historyMessages(): Array<{
       seq: 1,
       role: "user",
       runId: "run-0",
-      blocks: [{ kind: "image", artifactId: "art-1", mimeType: "image/png", name: "shot.png" }],
+      blocks: [earlierAttachment],
       replyToMessageId: null,
       replyQuote: null,
       replyTo: null,
@@ -55,6 +62,10 @@ async function runWithModel(
   switchModel?: { provider: string; modelId: string },
   backupReadFails = false,
   scripted = false,
+  attachmentOptions: {
+    block?: Extract<MessageBlock, { kind: "file" | "image" }>;
+    computerMode?: ComputerMode;
+  } = {},
 ) {
   const run = {
     id: "run-1",
@@ -68,6 +79,10 @@ async function runWithModel(
     leaseFence: 0,
   };
   const get = vi.fn(async () => new Uint8Array([1, 2, 3, 4]));
+  const writeFile = vi.fn(async (..._args: unknown[]) => undefined);
+  const exportWorkspace = vi.fn(async function* () {
+    yield* [];
+  });
   let request: AgentRunRequest | undefined;
   const runtimeRun = vi.fn(async function* (next: AgentRunRequest) {
     request = next;
@@ -102,7 +117,7 @@ async function runWithModel(
         computerId: "computer-1",
         computerSwitching: false,
         memoryScope: null,
-        computer: { id: "computer-1", scope: "dedicated" },
+        computer: { id: "computer-1", scope: attachmentOptions.computerMode ?? "dedicated" },
       })),
       findMany: vi.fn(async () => []),
     },
@@ -122,7 +137,7 @@ async function runWithModel(
     },
     message: {
       findMany: vi.fn(async (args: { where?: { threadId?: string } }) =>
-        args.where?.threadId ? historyMessages() : [],
+        args.where?.threadId ? historyMessages(attachmentOptions.block) : [],
       ),
       findUnique: vi.fn(async () => null),
     },
@@ -159,7 +174,13 @@ async function runWithModel(
     externalEffect: { findMany: vi.fn(async () => []) },
     artifact: {
       findMany: vi.fn(async () => [
-        { id: "art-1", storageKey: "shot.png", size: 4, mimeType: "image/png", name: "shot.png" },
+        {
+          id: "art-1",
+          storageKey: "shot.png",
+          size: 4,
+          mimeType: attachmentOptions.block?.mimeType ?? "image/png",
+          name: attachmentOptions.block?.name ?? "shot.png",
+        },
       ]),
     },
   };
@@ -170,10 +191,9 @@ async function runWithModel(
     runtime: { describe: () => ({ capabilities: { scripted } }), run: runtimeRun },
     sandbox: {
       describe: () => ({ capabilities: { graphical: false } }),
-      writeFile: vi.fn(async () => undefined),
-      async *exportWorkspace() {
-        yield* [];
-      },
+      writeFile,
+      readFile: vi.fn().mockRejectedValue(new Error("computer file not found")),
+      exportWorkspace,
     },
     home: { commit: vi.fn(async () => "fixture-revision") },
     memory: { read: async () => ({ documents: [] }) },
@@ -188,16 +208,56 @@ async function runWithModel(
   expect(runtimeRun).toHaveBeenCalled();
   expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
   if (!request) throw new Error("runtime was not called");
-  return { request, get, prisma, run };
+  return { request, get, prisma, run, writeFile, exportWorkspace };
 }
 
 describe("recent turn images follow model vision", () => {
   it("does not send history images to a text-only model", async () => {
-    const { request, get } = await runWithModel(TEXT_ONLY_MODEL);
+    const { request } = await runWithModel(TEXT_ONLY_MODEL);
 
     expect(request.model.id).toBe(TEXT_ONLY_MODEL);
     expect(request.history.find((entry) => entry.id === "earlier")?.images).toBeUndefined();
-    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("makes an earlier attachment available to file tools on a later text-only turn", async () => {
+    const { request, writeFile, exportWorkspace } = await runWithModel(TEXT_ONLY_MODEL);
+
+    expect(writeFile).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "computer-1" }),
+      { path: "attachments/art-1.png", content: new Uint8Array([1, 2, 3, 4]) },
+      expect.objectContaining({ botId: "bot-1", spaceId: "space-1", userId: "user-1" }),
+    );
+    expect(request.prompt).toContain(
+      'Files attached earlier in this conversation are also on your computer:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
+    );
+    expect(exportWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("prepares an earlier document in the Bot's Team Computer folder without a checkpoint", async () => {
+    const { request, writeFile, exportWorkspace } = await runWithModel(
+      TEXT_ONLY_MODEL,
+      undefined,
+      false,
+      false,
+      {
+        computerMode: "team",
+        block: {
+          kind: "file",
+          artifactId: "art-1",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          size: 4,
+        },
+      },
+    );
+
+    expect(writeFile).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "computer-1" }),
+      { path: "bots/bot-1/attachments/art-1.txt", content: new Uint8Array([1, 2, 3, 4]) },
+      expect.objectContaining({ botId: "bot-1", spaceId: "space-1", userId: "user-1" }),
+    );
+    expect(request.prompt).toContain('"notes.txt" (text/plain, 4 bytes): "attachments/art-1.txt"');
+    expect(exportWorkspace).not.toHaveBeenCalled();
   });
 
   it("attaches an earlier turn's image for a model that can see it", async () => {

@@ -9,13 +9,21 @@ import type {
 } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AgentRunRequest, AgentRuntimeEvent, ModelCallObserver } from "@rakazo/adapter-kit";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as Core from "@rakazo/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const providerState = vi.hoisted(() => ({
   models: new Map<string, Record<string, unknown>>(),
   credentialStores: [] as unknown[],
   stream: vi.fn(),
   agentOptions: undefined as AgentOptions | undefined,
+  agent: undefined as AgentCore.Agent | undefined,
+  delay: vi.fn<(delayMs: number, signal?: AbortSignal) => Promise<void>>(),
+}));
+
+vi.mock("@rakazo/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof Core>()),
+  abortableDelay: providerState.delay,
 }));
 
 vi.mock("@earendil-works/pi-agent-core", async (importOriginal) => {
@@ -26,6 +34,7 @@ vi.mock("@earendil-works/pi-agent-core", async (importOriginal) => {
       constructor(options: AgentOptions) {
         super(options);
         providerState.agentOptions = options;
+        providerState.agent = this;
       }
     },
   };
@@ -199,19 +208,295 @@ beforeEach(() => {
   }
   providerState.stream.mockReset();
   providerState.agentOptions = undefined;
+  providerState.agent = undefined;
   vi.restoreAllMocks();
+  providerState.delay.mockReset().mockResolvedValue(undefined);
+});
+
+afterEach(() => vi.useRealTimers());
+
+describe("Pi runtime completion recovery", () => {
+  it("recovers from an empty truncated completion without configured backups", async () => {
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [], "error", "Stream ended without finish_reason")),
+      )
+      .mockImplementation(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Recovered." }], "stop")),
+      );
+    const events = await run(request());
+    expect(events.filter((event) => event.type === "text")).toEqual([
+      { type: "text", text: "Recovered." },
+    ]);
+    expect(events.at(-1)).toEqual({ type: "done", text: "Recovered." });
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+    expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000]);
+  });
+
+  it("recovers a helper completion without restarting the parent tool call", async () => {
+    const input = request();
+    input.tools.push({
+      name: "run_subagent",
+      description: "Run a fixture helper.",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" }, task: { type: "string" } },
+        required: ["name", "task"],
+      },
+      readOnly: true,
+    });
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              {
+                type: "toolCall",
+                id: "helper-once",
+                name: "run_subagent",
+                arguments: { name: "helper", task: "Report the fixture." },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [], "error", "Stream ended without finish_reason")),
+      )
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Helper recovered." }], "stop")),
+      )
+      .mockImplementation(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Parent complete." }], "stop")),
+      );
+    const events = await run(input);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "subagent",
+        status: "completed",
+        result: "Helper recovered.",
+      }),
+    );
+    expect(events.at(-1)).toEqual({ type: "done", text: "Parent complete." });
+    expect(providerState.stream).toHaveBeenCalledTimes(4);
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000]);
+  });
+
+  it("limits each completion to three retries and preserves the first eligible error", async () => {
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [], "error", "HTTP 503 initial provider failure")),
+      )
+      .mockImplementation(() =>
+        stream(primary, message(primary, [], "error", "HTTP 503 unavailable")),
+      );
+    await expect(run(request())).rejects.toThrow("HTTP 503 initial provider failure");
+    expect(providerState.stream).toHaveBeenCalledTimes(4);
+    expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000, 8_000, 20_000]);
+  });
+
+  it("starts a fresh completion budget after one completed tool without replaying it", async () => {
+    let calls = 0;
+    providerState.stream.mockImplementation(() => {
+      calls += 1;
+      if (calls === 4)
+        return stream(
+          primary,
+          message(
+            primary,
+            [
+              {
+                type: "toolCall",
+                id: "effect-once",
+                name: "write_effect",
+                arguments: { value: "once" },
+              },
+            ],
+            "toolUse",
+          ),
+        );
+      if (calls === 8)
+        return stream(primary, message(primary, [{ type: "text", text: "Saved once." }], "stop"));
+      return stream(primary, message(primary, [], "error", "Stream ended without finish_reason"));
+    });
+    const input = request();
+    const events = await run(input);
+    expect(events.at(-1)).toEqual({ type: "done", text: "Saved once." });
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(providerState.stream).toHaveBeenCalledTimes(8);
+    expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([
+      2_000, 8_000, 20_000, 2_000, 8_000, 20_000,
+    ]);
+    for (const call of providerState.stream.mock.calls.slice(4)) {
+      expect((call[1] as Context).messages).toContainEqual(
+        expect.objectContaining({ role: "toolResult", toolCallId: "effect-once" }),
+      );
+    }
+  });
+
+  it.each([
+    "HTTP 401; 503 service unavailable",
+    "HTTP 403; 429 rate limit",
+    "invalid api key; terminated",
+    "context_length_exceeded; 503 overloaded",
+    "user declined consent; 429 rate limit",
+    "Request timed out.",
+    "HTTP 402 quota exhausted",
+    "HTTP 429 insufficient_quota",
+    "quota temporarily exceeded",
+    "HTTP 429 insufficient credit balance",
+    "HTTP 429 billing limit reached",
+    "HTTP 429 usage limit reached",
+    "HTTP 503 insufficient funds",
+  ])("does not add same-model retries for %s", async (error) => {
+    providerState.stream.mockImplementation(() =>
+      stream(primary, message(primary, [], "error", error)),
+    );
+    await expect(run(request())).rejects.toThrow(error);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "HTTP 402 quota exhausted",
+    "HTTP 429 insufficient_quota",
+    "quota temporarily exceeded",
+  ])("preserves configured backup eligibility without same-model repeats for %s", async (error) => {
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+      stream(
+        target,
+        target.provider === primary.provider
+          ? message(target, [], "error", error)
+          : message(target, [{ type: "text", text: "Backup succeeds." }], "stop"),
+      ),
+    );
+    const events = await run(
+      request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]),
+    );
+    expect(events.at(-1)).toEqual({ type: "done", text: "Backup succeeds." });
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it("waits for every bounded delay before starting its next request", async () => {
+    vi.useFakeTimers();
+    const { abortableDelay } = await vi.importActual<typeof Core>("@rakazo/core");
+    providerState.delay.mockImplementation(abortableDelay);
+    providerState.stream.mockImplementation(() =>
+      stream(primary, message(primary, [], "error", "429 rate limit")),
+    );
+    const outcome = run(request()).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    for (const [index, delay] of [2_000, 8_000, 20_000].entries()) {
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(providerState.stream).toHaveBeenCalledTimes(index + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(providerState.stream).toHaveBeenCalledTimes(index + 2);
+    }
+    expect(await outcome).toEqual(expect.objectContaining({ message: "429 rate limit" }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["run", "turn"])(
+    "cancels the %s during backoff without another model request",
+    async (source) => {
+      vi.useFakeTimers();
+      const { abortableDelay } = await vi.importActual<typeof Core>("@rakazo/core");
+      providerState.delay.mockImplementation(abortableDelay);
+      providerState.stream.mockImplementation(() =>
+        stream(primary, message(primary, [], "error", "429 rate limit")),
+      );
+      const controller = new AbortController();
+      const events: AgentRuntimeEvent[] = [];
+      const consume = async () => {
+        for await (const event of new PiAgentRuntime().run(request(), {
+          signal: controller.signal,
+        }))
+          events.push(event);
+      };
+      const outcome = consume().catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(providerState.delay).toHaveBeenCalledOnce();
+      if (source === "run") controller.abort();
+      else providerState.agent?.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await outcome).toEqual(
+        expect.objectContaining({ message: expect.stringMatching(/abort|stop/i) }),
+      );
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(events.some((event) => event.type === "done")).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(["text", "thinking", "toolCall"])(
+    "does not retry after a %s event even if the error loses its content",
+    async (kind) => {
+      const failure = message(primary, [], "error", "Stream ended without finish_reason");
+      providerState.stream.mockImplementation(() => {
+        const result = new AssistantMessageEventStream();
+        const partial = message(primary, [], "stop");
+        result.push({ type: "start", partial });
+        if (kind === "toolCall") result.push({ type: "toolcall_start", contentIndex: 0, partial });
+        else if (kind === "thinking")
+          result.push({ type: "thinking_delta", contentIndex: 0, delta: "partial", partial });
+        else result.push({ type: "text_delta", contentIndex: 0, delta: "partial", partial });
+        result.push({ type: "error", reason: "error", error: failure });
+        result.end(failure);
+        return result;
+      });
+      const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+      await expect(run(input)).rejects.toThrow("Stream ended without finish_reason");
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(providerState.delay).not.toHaveBeenCalled();
+      expect(input.executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["reservation", "accounting", "settlement"])(
+    "does not retry a local %s failure that resembles a provider outage",
+    async (phase) => {
+      const input = request();
+      const localError = new Error("503 local service unavailable");
+      const beforeCall = vi.fn<ModelCallObserver["beforeCall"]>(async () => {
+        if (phase === "reservation") throw localError;
+        return "reservation";
+      });
+      const afterCall = vi.fn<ModelCallObserver["afterCall"]>(async () => {
+        if (phase === "settlement") throw localError;
+      });
+      if (phase === "accounting")
+        input.onUsage = async () => {
+          throw localError;
+        };
+      providerState.stream.mockImplementation(() =>
+        stream(primary, message(primary, [], "error", "429 provider rate limit")),
+      );
+      await expect(
+        run(input, [], new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } })),
+      ).rejects.toThrow("503 local service unavailable");
+      expect(beforeCall).toHaveBeenCalledOnce();
+      expect(providerState.stream).toHaveBeenCalledTimes(phase === "reservation" ? 0 : 1);
+      expect(providerState.delay).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Pi runtime ordered model fallback", () => {
   it.each(["absent", "empty"])(
     "passes the original stream options and terminal content through with %s backups",
     async (backups) => {
-      providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
-        stream(target, message(target, [{ type: "text", text: "healthy" }], "stop")),
-      );
+      const initialStream = new AssistantMessageEventStream();
+      providerState.stream.mockReturnValue(initialStream);
       const input = request();
       if (backups === "absent") delete input.fallbackModels;
-      await run(input);
+      const initialRun = run(input);
+      await vi.waitFor(() => expect(providerState.stream).toHaveBeenCalledOnce());
       const agentOptions = providerState.agentOptions;
       if (!agentOptions) throw new Error("Agent was not created");
       expect(await agentOptions.getApiKey?.(primary.provider)).toBe("fake-primary-key");
@@ -243,17 +528,26 @@ describe("Pi runtime ordered model fallback", () => {
       );
       const start = { type: "start" as const, partial: { ...failure, content: [] } };
       upstream.push(start);
-      // A buffering wrapper would wait for output or termination here.
-      expect((await first).value).toBe(start);
+      let started = false;
+      void first.then(() => {
+        started = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(started).toBe(false);
       expect(providerState.stream.mock.lastCall?.[2]).toMatchObject(options);
       upstream.push({ type: "error", reason: "error", error: failure });
       upstream.end(failure);
+      expect((await first).value).toBe(start);
       expect((await iterator.next()).value).toEqual({
         type: "error",
         reason: "error",
         error: failure,
       });
       expect(await response.result()).toBe(failure);
+      const healthy = message(primary, [{ type: "text", text: "healthy" }], "stop");
+      initialStream.push({ type: "done", reason: "stop", message: healthy });
+      initialStream.end(healthy);
+      await initialRun;
     },
   );
 
@@ -1069,7 +1363,7 @@ describe("Pi runtime ordered model fallback", () => {
     ).toEqual([primary.provider, primary.provider]);
   });
 
-  it("tries backups in order and each only once before surfacing exhaustion", async () => {
+  it("tries each backup in order, then retries the last model before surfacing exhaustion", async () => {
     providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
       stream(target, message(target, [], "error", "529 overloaded_error")),
     );
@@ -1089,7 +1383,7 @@ describe("Pi runtime ordered model fallback", () => {
       providerState.stream.mock.calls.map(
         ([target]) => (target as Model<"openai-completions">).provider,
       ),
-    ).toEqual([primary.provider, backupA.provider, backupB.provider]);
+    ).toEqual([primary.provider, backupA.provider, ...Array<string>(4).fill(backupB.provider)]);
   });
 
   it("skips a backup that cannot fit the actual prompt and selects the next smaller-than-primary fit", async () => {

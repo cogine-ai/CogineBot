@@ -532,6 +532,16 @@ describe("sandbox supervisor input containment", () => {
     expect(
       isComputerControlUnavailable(
         Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("Connect Timeout Error (timeout: 10000ms)"), {
+            name: "ConnectTimeoutError",
+            code: "UND_ERR_CONNECT_TIMEOUT",
+          }),
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isComputerControlUnavailable(
+        Object.assign(new TypeError("fetch failed"), {
           cause: new Error("read ECONNRESET"),
         }),
       ),
