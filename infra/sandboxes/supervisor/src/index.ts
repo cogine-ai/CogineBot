@@ -1177,6 +1177,11 @@ async function ensureManagedScreen(
     if (info.State?.StartedAt === screen.info.State?.StartedAt) {
       // Confirm the pending boot marker only after setup completes against the same boot.
       if (info.State?.StartedAt) computerScreenBoots.set(id, info.State.StartedAt);
+      try {
+        await rejoinComputerNetwork(info);
+      } catch (error) {
+        getLogger().error("computer network rejoin failed", error);
+      }
       return { ...screen, info };
     }
     clearComputerScreenRegistry(computerScreens, computerScreenBoots, id);
@@ -1397,6 +1402,16 @@ async function publishedScreenUrl(
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("computer screen port was not published");
+}
+
+// A recreated supervisor only rejoins the Compose network. Already-running
+// computers may never publish their screen again, so rejoin before using them.
+// The existing peer connector only attaches members missing from the network.
+async function rejoinComputerNetwork(info: Docker.ContainerInspectInfo) {
+  if (screenNetworkMode !== "isolated") return;
+  const runtime = supervisorInfo ?? (await inspectSupervisorContainer());
+  const networkName = info.HostConfig.NetworkMode;
+  if (runtime && networkName) await connectComposeScreenPeers(networkName, runtime);
 }
 
 async function setInteractiveScreen(

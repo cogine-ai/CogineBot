@@ -45,6 +45,7 @@ import {
   isApprovalAskBlock,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
+  isServerUnreachable,
   isToolActivityBlock,
   latestAnswerableAskMessageId,
   mentionChipKey,
@@ -163,7 +164,7 @@ import { TeachRecordingChrome, TeachStopButton } from "../components/teach/Teach
 import { readActivityMode, writeActivityMode } from "../lib/activity-mode";
 import type { ArtifactTarget } from "../lib/artifact-open";
 import { authClient } from "../lib/auth";
-import { takeInitialBootstrap } from "../lib/bootstrap";
+import { isRecoverableReadError, takeInitialBootstrap } from "../lib/bootstrap";
 import { readBotsSidebarCollapsed, writeBotsSidebarCollapsed } from "../lib/bots-sidebar-pref";
 import {
   deliverBrowserNotification as deliverNativeBrowserNotification,
@@ -423,6 +424,7 @@ export function ShellPage() {
   const botOrderEpochRef = useRef(0);
   const pendingBotOrderRef = useRef<string[] | null>(null);
   const savingBotOrderRef = useRef(false);
+  const [botOrderStatus, setBotOrderStatus] = useState<"saving" | "unconfirmed" | null>(null);
   const [botSections, setBotSections] = useState<BotSection[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [archivedBots, setArchivedBots] = useState<Bot[]>([]);
@@ -689,6 +691,34 @@ export function ShellPage() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [initialBotsLoaded, setInitialBotsLoaded] = useState(false);
   const [bootstrapMe, setBootstrapMe] = useState<Me | null>();
+  const [bootstrapLoad, setBootstrapLoad] = useState<{ pending: boolean; error: unknown }>({
+    pending: true,
+    error: null,
+  });
+  const retryBootstrap = useRef(() => {});
+  const [threadRetry, setThreadRetry] = useState(0);
+  const [threadConnection, setThreadConnection] = useState<{
+    target: string;
+    status: "loading" | "recovering" | "ready" | "failed";
+    error?: string;
+  } | null>(null);
+  const observeThreadConnection = useCallback(
+    (target: string, controller: AbortController) =>
+      (status: "loading" | "recovering" | "ready", error?: unknown) => {
+        if (controller.signal.aborted) return;
+        if (error !== undefined && !isRecoverableReadError(error)) {
+          setThreadConnection({
+            target,
+            status: "failed",
+            error: errorText(error, t`Could not load this chat.`),
+          });
+          controller.abort();
+          return;
+        }
+        setThreadConnection({ target, status });
+      },
+    [t],
+  );
   const [keepComputerRecovery, setKeepComputerRecovery] = useState(false);
   const recoveryHoldTimer = useRef<number | undefined>(undefined);
   const showComputerRecoveryHint =
@@ -1049,6 +1079,11 @@ export function ShellPage() {
           (replaceBotOrder || (!preserveBotOrder && !savingBotOrderRef.current))
         ) {
           setBots(list);
+          if (
+            (replaceBotOrder || !savingBotOrderRef.current) &&
+            pendingBotOrderRef.current === null
+          )
+            setBotOrderStatus(null);
         }
         setBotSections(sections);
         setGroups(groupList);
@@ -1306,26 +1341,44 @@ export function ShellPage() {
           setMemoryProviderConfig(null);
         }
       });
-    const appliedAtStart = botsRefreshApplied.current;
-    void takeInitialBootstrap(botId)
-      .then((bootstrap) => {
-        if (cancelled) return;
-        const groupList = bootstrap.groups;
+    let bootstrapInFlight = false;
+    let bootstrapReady = false;
+    let bootstrapBlocked = false;
+    let fallbackRequested = false;
+    const initialize = async () => {
+      if (cancelled || bootstrapInFlight || bootstrapReady) return;
+      bootstrapInFlight = true;
+      setBootstrapLoad((current) => ({ ...current, pending: true }));
+      const appliedAtStart = botsRefreshApplied.current;
+      const requestedBotId = routeBotId.current;
+      const requestedGroupId = routeGroupId.current;
+      const requestedSpaceId = selectedSpaceId();
+      try {
+        const bootstrap = await takeInitialBootstrap(requestedBotId);
+        if (cancelled || selectedSpaceId() !== requestedSpaceId) return;
+        if (bootstrap.me.userId !== userId) throw new Error(t`Could not load this chat.`);
+        bootstrapReady = true;
+        bootstrapBlocked = false;
         setBootstrapMe(bootstrap.me);
-        // A successful refresh, creation, or save makes older bootstrap writes stale.
-        // Failed refreshes only bump the request epoch, not botsRefreshApplied.
-        const applyBotLists = appliedAtStart === botsRefreshApplied.current;
-        if (applyBotLists) {
-          setBots(bootstrap.bots);
-          setBotSections(bootstrap.botSections);
-          setArchivedBots(bootstrap.archivedBots);
-          setArchivedGroups(bootstrap.archivedGroups);
-          setGroups(groupList);
-          setSpaces(bootstrap.spaces);
-          setInitialBotsLoaded(true);
-        }
-        if (!applyBotLists) return;
-        if (!groupId && bootstrap.thread) {
+        setBootstrapLoad({ pending: false, error: null });
+        // List refreshes and saves own newer roster data. Context can still recover.
+        if (appliedAtStart !== botsRefreshApplied.current) return;
+        const groupList = bootstrap.groups;
+        setBots(bootstrap.bots);
+        setBotSections(bootstrap.botSections);
+        setArchivedBots(bootstrap.archivedBots);
+        setArchivedGroups(bootstrap.archivedGroups);
+        setGroups(groupList);
+        setSpaces(bootstrap.spaces);
+        setInitialBotsLoaded(true);
+        // A user can navigate while initialization is pending; never restore the old target.
+        if (
+          routeBotId.current !== requestedBotId ||
+          routeGroupId.current !== requestedGroupId ||
+          inNewChatRef.current
+        )
+          return;
+        if (!requestedGroupId && bootstrap.thread) {
           bootstrappedThread.current = bootstrap.thread;
           commitSnapshot(bootstrap.thread);
           commitComputer(bootstrap.thread.computer ?? null);
@@ -1344,38 +1397,53 @@ export function ShellPage() {
           navigate("/onboarding", { replace: true });
           return;
         }
-        if (groupId) {
-          if (!groupList.some((group) => group.id === groupId)) {
+        if (requestedGroupId) {
+          if (!groupList.some((group) => group.id === requestedGroupId)) {
             navigate(firstThreadRoute(bootstrap.bots, groupList), { replace: true });
           }
           return;
         }
         const selectedBotId = bootstrap.thread?.botId ?? bootstrap.bots[0]?.id;
-        if (selectedBotId && selectedBotId !== botId) {
+        if (selectedBotId && selectedBotId !== requestedBotId) {
           navigate(`/app/${selectedBotId}`, { replace: true });
         }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setBootstrapMe(null);
-        void refreshBots(true).catch(() => undefined);
-      });
+      } catch (error) {
+        if (cancelled || selectedSpaceId() !== requestedSpaceId) return;
+        bootstrapBlocked = !isRecoverableReadError(error);
+        setBootstrapLoad({ pending: false, error });
+        if (!fallbackRequested) {
+          fallbackRequested = true;
+          void refreshBots(true).catch(() => undefined);
+        }
+      } finally {
+        bootstrapInFlight = false;
+      }
+    };
+    retryBootstrap.current = () => void initialize();
+    void initialize();
     let refreshTimer: number | undefined;
     const refreshVisibleBots = () => {
       if (document.visibilityState !== "visible") return;
       window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => void refreshBots().catch(() => undefined), 50);
+      refreshTimer = window.setTimeout(() => {
+        if (!bootstrapReady) {
+          if (!bootstrapBlocked) void initialize();
+        } else {
+          void refreshBots().catch(() => undefined);
+        }
+      }, 50);
     };
     window.addEventListener("focus", refreshVisibleBots);
     document.addEventListener("visibilitychange", refreshVisibleBots);
     // Poll skips while a refresh is in flight; focus/visibility and event-driven
     // callers still bump botsRefreshEpoch so only the latest response applies.
     const poll = window.setInterval(() => {
-      if (botsRefreshInFlight.current > 0) return;
+      if (bootstrapInFlight || (bootstrapReady && botsRefreshInFlight.current > 0)) return;
       refreshVisibleBots();
     }, 3_000);
     return () => {
       cancelled = true;
+      retryBootstrap.current = () => {};
       window.clearTimeout(refreshTimer);
       window.clearInterval(poll);
       window.removeEventListener("focus", refreshVisibleBots);
@@ -1461,12 +1529,18 @@ export function ShellPage() {
     };
   }, [active?.id, markBotReadIfVisible]);
 
+  // Entering a conversation resets its history window; retrying the same reader does not.
+  useEffect(() => {
+    if (!active && !activeGroup) return;
+    const pendingJump = searchParamsRef.current.get("m");
+    if (!pendingJump) pinnedAroundRef.current = null;
+    if (active || !pendingJump) expandedHistoryThread.current = null;
+    historyEpoch.current += 1;
+  }, [active?.id, activeGroup?.id]);
+
   useEffect(() => {
     if (!active) return;
     const pendingJump = searchParamsRef.current.get("m");
-    if (!pendingJump) {
-      pinnedAroundRef.current = null;
-    }
     screenRequest.current += 1;
     setComputerError(null);
     setComputerErrorFromScreen(false);
@@ -1479,11 +1553,10 @@ export function ShellPage() {
     } else {
       setScreenUrl(null);
     }
-    expandedHistoryThread.current = null;
-    historyEpoch.current += 1;
     const abort = new AbortController();
     void runThreadSubscription({
       signal: abort.signal,
+      onStatus: observeThreadConnection(`bot:${active.id}`, abort),
       loadInitial: async () => {
         const primed = bootstrappedThread.current;
         bootstrappedThread.current = null;
@@ -1572,7 +1645,13 @@ export function ShellPage() {
     return () => {
       abort.abort();
     };
-  }, [active?.id, markBotReadIfVisible, notifyBrowserForEvent]);
+  }, [
+    active?.id,
+    markBotReadIfVisible,
+    notifyBrowserForEvent,
+    observeThreadConnection,
+    threadRetry,
+  ]);
 
   useEffect(() => {
     if (!groupId || !activeGroup) return;
@@ -1597,14 +1676,10 @@ export function ShellPage() {
     window.addEventListener("focus", markVisibleGroupRead);
     document.addEventListener("visibilitychange", markVisibleGroupRead);
     const pendingJump = searchParamsRef.current.get("m");
-    if (!pendingJump) {
-      pinnedAroundRef.current = null;
-      expandedHistoryThread.current = null;
-    }
-    historyEpoch.current += 1;
     const abort = new AbortController();
     void runThreadSubscription({
       signal: abort.signal,
+      onStatus: observeThreadConnection(`group:${groupId}`, abort),
       loadInitial: () =>
         pendingJump
           ? rpc.threads.get({ groupId }, { signal: threadSnapshotSignal(abort.signal) })
@@ -1668,7 +1743,14 @@ export function ShellPage() {
       document.removeEventListener("visibilitychange", markVisibleGroupRead);
       abort.abort();
     };
-  }, [activeGroup?.id, groupId, notifyBrowserForEvent, setConversationUnread]);
+  }, [
+    activeGroup?.id,
+    groupId,
+    notifyBrowserForEvent,
+    setConversationUnread,
+    observeThreadConnection,
+    threadRetry,
+  ]);
 
   useEffect(() => {
     const closed = hadPeerConversation.current && !peerConversation;
@@ -1736,17 +1818,24 @@ export function ShellPage() {
   const flushBotOrder = useCallback(async () => {
     if (savingBotOrderRef.current) return;
     savingBotOrderRef.current = true;
+    setBotOrderStatus("saving");
     try {
       while (pendingBotOrderRef.current) {
+        setBotOrderStatus("saving");
         const botIds = pendingBotOrderRef.current;
         pendingBotOrderRef.current = null;
         try {
           await rpc.bots.reorder({ botIds });
+          if (pendingBotOrderRef.current === null) setBotOrderStatus(null);
         } catch {
-          // Keep a newer order queued during this failed save; only roll back
-          // when nothing else is pending.
+          // Preserve newer user intent; otherwise read the authoritative order.
           if (pendingBotOrderRef.current === null) {
-            await refreshBots(false, true).catch(() => undefined);
+            setBotOrderStatus("unconfirmed");
+            try {
+              await refreshBots(false, true);
+            } catch {
+              // Retain unknown outcome until a later authoritative order is applied.
+            }
           }
         }
       }
@@ -1760,7 +1849,8 @@ export function ShellPage() {
   }, [refreshBots]);
   const reorderRosterBot = useCallback(
     (sourceId: string, targetId: string, groupBotIds: string[]) => {
-      if (!groupBotIds.includes(sourceId) || !groupBotIds.includes(targetId)) return;
+      if (!bootstrapMe || !groupBotIds.includes(sourceId) || !groupBotIds.includes(targetId))
+        return;
       const current = botsRef.current;
       const reordered = reorderBotTo(current, sourceId, targetId);
       if (reordered === current) return;
@@ -1771,7 +1861,7 @@ export function ShellPage() {
       pendingBotOrderRef.current = next.map((bot) => bot.id);
       void flushBotOrder();
     },
-    [flushBotOrder],
+    [bootstrapMe, flushBotOrder],
   );
   const toggleSidebarSection = useCallback(
     (key: string) => {
@@ -2398,6 +2488,7 @@ export function ShellPage() {
     ],
   );
   const shellReady =
+    Boolean(bootstrapMe) &&
     initialBotsLoaded &&
     (inNewChat ||
       (inGroup
@@ -2819,7 +2910,11 @@ export function ShellPage() {
         return true;
       } catch (error) {
         if (isCurrentAttempt() && stillHere())
-          setSendError(errorText(error, t`Failed to send message`));
+          setSendError(
+            isServerUnreachable(error)
+              ? t`Send not confirmed. Your draft is kept.`
+              : errorText(error, t`Failed to send message`),
+          );
         return false;
       } finally {
         composerSendAttempts.finish(originThreadKey, attempt, succeeded);
@@ -3351,6 +3446,10 @@ export function ShellPage() {
   const compactSidebar = isDesktop && layout.sidebarCollapsed;
   const currentSpace = spaces.find((space) => space.id === bootstrapMe?.spaceId);
   const currentSpaceName = currentSpace?.name ?? t`My space`;
+  const currentThreadConnection =
+    threadConnection?.target === (inGroup ? `group:${groupId}` : `bot:${active?.id}`)
+      ? threadConnection
+      : null;
   const expandSidebar = () => {
     if (
       compactSidebar &&
@@ -3608,6 +3707,7 @@ export function ShellPage() {
               title={t`Create`}
               aria-label={t`Create`}
               data-testid="create-menu-trigger"
+              disabled={!bootstrapMe}
             >
               <Plus size={19} strokeWidth={1.6} />
             </PopoverTrigger>
@@ -3647,6 +3747,15 @@ export function ShellPage() {
             ) : null}
           </Popover>
         </div>
+        {botOrderStatus ? (
+          <div
+            role="status"
+            data-testid="roster-order-status"
+            className="px-3 pb-2 text-[11px] text-muted-foreground"
+          >
+            {botOrderStatus === "saving" ? t`Saving…` : t`Order not confirmed`}
+          </div>
+        ) : null}
         <div
           className={`rk-scroll flex flex-1 flex-col gap-0.5 overflow-y-auto pb-2.5 ${compactSidebar ? "px-3" : "px-2.5"}`}
         >
@@ -4394,7 +4503,7 @@ export function ShellPage() {
                 <ChatRecipients
                   bots={bots}
                   selectedBotIds={pendingChat.botIds}
-                  disabled={sending || Boolean(pendingChat.groupId)}
+                  disabled={!bootstrapMe || sending || Boolean(pendingChat.groupId)}
                   onSelectedBotIdsChange={(botIds) => {
                     setPendingChat((current) => ({
                       ...current,
@@ -4499,11 +4608,52 @@ export function ShellPage() {
               </>
             )}
           </div>
+          {!bootstrapMe ? (
+            <div
+              role="status"
+              data-testid="bootstrap-status"
+              className="flex items-center justify-center gap-3 px-4 py-2 text-[12px] text-muted-foreground"
+            >
+              <span>
+                {bootstrapLoad.error && !isRecoverableReadError(bootstrapLoad.error)
+                  ? errorText(bootstrapLoad.error, t`Could not load this chat.`)
+                  : t`Waiting for connection`}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={bootstrapLoad.pending}
+                onClick={() => retryBootstrap.current()}
+              >
+                <Trans>Retry</Trans>
+              </Button>
+            </div>
+          ) : !inNewChat &&
+            currentThreadConnection &&
+            currentThreadConnection.status !== "ready" ? (
+            <div
+              role="status"
+              data-testid="connection-status"
+              className="flex items-center justify-center gap-3 px-4 py-2 text-[12px] text-muted-foreground"
+            >
+              <span>
+                {currentThreadConnection.error ??
+                  (activeSnapshot ? t`Reconnecting` : t`Waiting for connection`)}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setThreadRetry((value) => value + 1)}
+              >
+                <Trans>Retry</Trans>
+              </Button>
+            </div>
+          ) : null}
           {inNewChat ? (
             <div data-testid="pending-group-chat" className="min-h-0 flex-1" />
           ) : !active && !activeGroup && initialBotsLoaded ? (
             <div className="grid flex-1 place-items-center">
-              <Button onClick={() => setPanel("create")}>
+              <Button disabled={!bootstrapMe} onClick={() => setPanel("create")}>
                 <Plus size={16} aria-hidden="true" />
                 <Trans>Create new Bot</Trans>
               </Button>
@@ -4578,7 +4728,11 @@ export function ShellPage() {
                     : active?.name
               }
               running={composerRunning}
-              disabled={Boolean(recordingSkill) || (inNewChat && pendingChat.botIds.length === 0)}
+              disabled={
+                !draftScopeKey ||
+                Boolean(recordingSkill) ||
+                (inNewChat && pendingChat.botIds.length === 0)
+              }
               pendingAttachments={activePendingAttachments}
               attachmentNotice={
                 attachmentNotice?.scopeKey === draftScopeKey ? attachmentNotice.text : null

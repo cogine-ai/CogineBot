@@ -1787,6 +1787,7 @@ msgid "Could not load this artifact."
 msgstr ""
 
 #: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
 msgid "Could not load this chat."
 msgstr "이 채팅을 불러오지 못했습니다."
 
@@ -3829,6 +3830,10 @@ msgstr "또는 API 키 연결"
 msgid "Or paste an API key"
 msgstr "또는 API 키 붙여넣기"
 
+#: src/pages/Shell.tsx
+msgid "Order not confirmed"
+msgstr "순서 확인 안 됨"
+
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
 msgstr "조직 API 키"
@@ -4078,8 +4083,8 @@ msgstr ""
 msgid "Reconnect OAuth"
 msgstr "OAuth 다시 연결"
 
-#: src/App.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/pages/Shell.tsx
 msgid "Reconnecting"
 msgstr "다시 연결 중"
 
@@ -4356,6 +4361,7 @@ msgstr ""
 #: src/components/AccountAccess.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/Shell.tsx
 msgid "Retry"
 msgstr "다시 시도"
 
@@ -4521,6 +4527,7 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Saving…"
@@ -4616,6 +4623,10 @@ msgstr "삭제 코드 보내기"
 #: src/components/AskCard.tsx
 msgid "Send it"
 msgstr "보내기"
+
+#: src/pages/Shell.tsx
+msgid "Send not confirmed. Your draft is kept."
+msgstr "전송이 확인되지 않았습니다. 초안은 유지됩니다."
 
 #: src/pages/Auth.tsx
 msgid "Send reset link"
@@ -5489,6 +5500,11 @@ msgstr "음성 대화"
 #: src/lib/model-connection-preflight.ts
 msgid "Wait a moment and test again."
 msgstr "잠시 기다린 뒤 다시 테스트하세요."
+
+#: src/App.tsx
+#: src/pages/Shell.tsx
+msgid "Waiting for connection"
+msgstr "연결 대기 중"
 
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for first signed event"

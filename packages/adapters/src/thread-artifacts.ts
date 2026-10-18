@@ -11,6 +11,7 @@ import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
   ARTIFACT_NAME_MAX_LENGTH,
   ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_COUNT,
 } from "@rakazo/contracts";
 import {
   attachmentExtensionForMimeType,
@@ -20,6 +21,7 @@ import {
 } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { withResolvedArtifactVersion } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { resolveBotWorkspacePath } from "./computer-support.js";
 
 export type MaterializedThreadFile = {
@@ -124,6 +126,15 @@ export async function materializeCurrentTurnFiles(
     markWorkspaceDirty?: () => void;
   },
 ): Promise<MaterializedThreadFile[]> {
+  return materializeThreadFiles(deps, blocks, input, false);
+}
+
+async function materializeThreadFiles(
+  deps: Parameters<typeof materializeCurrentTurnFiles>[0],
+  blocks: MessageBlock[] | undefined,
+  input: Parameters<typeof materializeCurrentTurnFiles>[2],
+  preserveExisting: boolean,
+): Promise<MaterializedThreadFile[]> {
   // "image" attachments (e.g. a photo pasted or uploaded in chat) are backed
   // by a real artifact exactly like "file" ones — the model seeing them
   // inline for vision (loadCurrentTurnImages) doesn't put them on disk, so
@@ -148,20 +159,69 @@ export async function materializeCurrentTurnFiles(
   for (const block of fileBlocks) {
     const row = byId.get(block.artifactId);
     if (!row) throw new Error(`Attached file is unavailable: ${block.name}`);
-    const bytes = await deps.artifacts.get(row.storageKey, input.context);
-    if (bytes.byteLength > ATTACHMENT_MAX_BYTES) {
-      throw new Error(`Attached file exceeds the 10 MiB limit: ${row.name}`);
-    }
     const relativePath = `attachments/${row.id}${attachmentExtensionForMimeType(row.mimeType)}`;
-    input.markWorkspaceDirty?.();
-    await deps.sandbox.writeFile(
-      input.computer,
-      {
-        path: resolveBotWorkspacePath(input.computerMode, input.context.botId, relativePath),
-        content: bytes,
-      },
-      input.context,
+    const workspacePath = resolveBotWorkspacePath(
+      input.computerMode,
+      input.context.botId,
+      relativePath,
     );
+    const probeMaxBytes = 1;
+    const exists = preserveExisting
+      ? await deps.sandbox
+          .readFile(input.computer, workspacePath, input.context, { maxBytes: probeMaxBytes })
+          .then(
+            () => true,
+            (error: unknown) => {
+              if (error instanceof Error) {
+                const limitMessage = `computer file exceeds ${probeMaxBytes} bytes`;
+                // Existing provider limits confirm the file without reading its contents.
+                if (error.message === limitMessage) return true;
+                const dockerLimitPrefix = "sandbox file read failed: 413 ";
+                if (error.message.startsWith(dockerLimitPrefix)) {
+                  try {
+                    const body: unknown = JSON.parse(error.message.slice(dockerLimitPrefix.length));
+                    if (
+                      typeof body === "object" &&
+                      body !== null &&
+                      "error" in body &&
+                      body.error === limitMessage
+                    )
+                      return true;
+                  } catch {
+                    // An unrelated or malformed 413 cannot establish file existence.
+                  }
+                  throw error;
+                }
+              }
+              if (
+                (typeof error === "object" &&
+                  error !== null &&
+                  "code" in error &&
+                  error.code === "ENOENT") ||
+                (error instanceof Error &&
+                  /\bfile not found\b|\bno such file or directory\b/i.test(error.message))
+              ) {
+                return false;
+              }
+              // An unreadable existing file may contain edits; do not replace it.
+              throw error;
+            },
+          )
+      : false;
+    if (preserveExisting) input.context.signal.throwIfAborted();
+    if (!exists) {
+      const bytes = await deps.artifacts.get(row.storageKey, input.context);
+      if (preserveExisting) input.context.signal.throwIfAborted();
+      if (bytes.byteLength > ATTACHMENT_MAX_BYTES) {
+        throw new Error(`Attached file exceeds the 10 MiB limit: ${row.name}`);
+      }
+      input.markWorkspaceDirty?.();
+      await deps.sandbox.writeFile(
+        input.computer,
+        { path: workspacePath, content: bytes },
+        input.context,
+      );
+    }
     materialized.push({
       name: row.name,
       mimeType: row.mimeType,
@@ -173,13 +233,79 @@ export async function materializeCurrentTurnFiles(
   return materialized;
 }
 
+export async function materializeRecentThreadFiles(
+  deps: Parameters<typeof materializeCurrentTurnFiles>[0],
+  history: ReadonlyArray<{ id?: string; role: string }>,
+  messages: ReadonlyArray<{ id: string; blocks: MessageBlock[] }>,
+  input: Parameters<typeof materializeCurrentTurnFiles>[2] & {
+    skipMessageId?: string | null;
+    maxTurns: number;
+  },
+): Promise<MaterializedThreadFile[]> {
+  const materialized: MaterializedThreadFile[] = [];
+  for (const block of recentAttachmentBlocks(history, messages, input)) {
+    input.context.signal.throwIfAborted();
+    if (materialized.length >= ATTACHMENT_MAX_COUNT) break;
+    try {
+      materialized.push(
+        ...(await materializeThreadFiles(
+          deps,
+          [block],
+          { ...input, markWorkspaceDirty: undefined },
+          true,
+        )),
+      );
+    } catch (error) {
+      if (input.context.signal.aborted) throw error;
+      getLogger().warn("earlier thread attachment was not copied to the computer", {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return materialized;
+}
+
+/** Newest attachments from the effective history's last attachment-bearing user turns. */
+function recentAttachmentBlocks(
+  history: ReadonlyArray<{ id?: string; role: string }>,
+  messages: ReadonlyArray<{ id: string; blocks: MessageBlock[] }>,
+  input: { skipMessageId?: string | null; maxTurns: number },
+): Array<Extract<MessageBlock, { kind: "file" | "image" }>> {
+  const blocksByMessageId = new Map(messages.map((message) => [message.id, message.blocks]));
+  const selected = new Map<string, Extract<MessageBlock, { kind: "file" | "image" }>>();
+  let turns = 0;
+  for (let index = history.length - 1; index >= 0 && turns < input.maxTurns; index -= 1) {
+    const entry = history[index];
+    if (!entry?.id || entry.role !== "user" || entry.id === input.skipMessageId) continue;
+    const attached = (blocksByMessageId.get(entry.id) ?? []).filter(
+      (block): block is Extract<MessageBlock, { kind: "file" | "image" }> =>
+        block.kind === "file" || block.kind === "image",
+    );
+    if (!attached.length) continue;
+    turns += 1;
+    for (const block of attached.reverse()) {
+      if (!selected.has(block.artifactId)) selected.set(block.artifactId, block);
+    }
+  }
+  return [...selected.values()];
+}
+
+function fileLine(file: MaterializedThreadFile): string {
+  return `- ${JSON.stringify(file.name)} (${file.mimeType}, ${file.size} bytes): ${JSON.stringify(file.path)}`;
+}
+
 export function currentTurnFilesInstruction(files: readonly MaterializedThreadFile[]): string {
   if (!files.length) return "";
   return [
     "Current-turn attached files are available on your computer. Inspect them before answering:",
-    ...files.map(
-      (file) =>
-        `- ${JSON.stringify(file.name)} (${file.mimeType}, ${file.size} bytes): ${JSON.stringify(file.path)}`,
-    ),
+    ...files.map(fileLine),
+  ].join("\n");
+}
+
+export function recentThreadFilesInstruction(files: readonly MaterializedThreadFile[]): string {
+  if (!files.length) return "";
+  return [
+    "Files attached earlier in this conversation are also on your computer:",
+    ...files.map(fileLine),
   ].join("\n");
 }

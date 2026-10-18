@@ -369,6 +369,8 @@ import {
   attachWorkspaceFileToThread,
   currentTurnFilesInstruction,
   materializeCurrentTurnFiles,
+  materializeRecentThreadFiles,
+  recentThreadFilesInstruction,
 } from "./thread-artifacts.js";
 import type { TicketChangeNotifier } from "./ticket-changes.js";
 import { loadAgentTicketContext } from "./ticket-context.js";
@@ -3757,29 +3759,45 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(() =>
           checkpointRunComputerWorkspace(deps, storedComputer, computer, context),
         );
-        let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>>;
+        let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>> = [];
+        let recentThreadFiles: Awaited<ReturnType<typeof materializeRecentThreadFiles>> = [];
         try {
-          currentTurnFiles = deps.artifacts
-            ? await materializeCurrentTurnFiles(
-                {
-                  prisma: deps.prisma,
-                  artifacts: deps.artifacts,
-                  sandbox: deps.sandbox,
-                },
-                turnBlocks,
-                {
-                  context,
-                  computer,
-                  computerMode,
-                  markWorkspaceDirty: workspaceCheckpoint.markDirty,
-                },
-              )
-            : [];
+          if (deps.artifacts) {
+            const fileDeps = {
+              prisma: deps.prisma,
+              artifacts: deps.artifacts,
+              sandbox: deps.sandbox,
+            };
+            const fileInput = {
+              context,
+              computer,
+              computerMode,
+              markWorkspaceDirty: workspaceCheckpoint.markDirty,
+            };
+            currentTurnFiles = await materializeCurrentTurnFiles(fileDeps, turnBlocks, fileInput);
+            recentThreadFiles = await materializeRecentThreadFiles(
+              fileDeps,
+              history,
+              historyMessages,
+              {
+                ...fileInput,
+                // Recent files can be copied again without exporting the workspace.
+                markWorkspaceDirty: undefined,
+                skipMessageId: currentTurnMessage?.id,
+                maxTurns: RECENT_TURN_IMAGE_TURNS,
+              },
+            );
+          }
         } catch (error) {
           await workspaceCheckpoint.flush().catch(() => undefined);
           throw error;
         }
-        const attachedFilesPrompt = currentTurnFilesInstruction(currentTurnFiles);
+        const attachedFilesPrompt = [
+          currentTurnFilesInstruction(currentTurnFiles),
+          recentThreadFilesInstruction(recentThreadFiles),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
         const graphical =
           computer.kind !== "desktop" && deps.sandbox.describe().capabilities.graphical;
         // Gate on the model this run will actually call — the pair written to the run row
