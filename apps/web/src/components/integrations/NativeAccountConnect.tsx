@@ -70,6 +70,7 @@ export function NativeAccountConnect({
       (entry) => entry.appId === appId && entry.enabled && entry.configured,
     ) ?? [];
   const selected = configurations.find((entry) => entry.id === selectedId);
+  const usesConfiguredCredential = selected?.usesConfiguredCredential === true;
   const oauth = selected?.credentialKind === "oauth" || selected?.credentialKind === "mcp_oauth";
   const canChooseDriveFiles =
     appId === "google-drive" &&
@@ -79,7 +80,9 @@ export function NativeAccountConnect({
   function methodLabel(entry: NativeConfigStatus): string {
     const kind =
       entry.credentialKind === "machine_key"
-        ? t`Machine API key`
+        ? ["feishu-lark", "dingtalk", "wecom"].includes(appId)
+          ? t`App credentials`
+          : t`Machine API key`
         : entry.credentialKind === "internal_token"
           ? t`Internal integration`
           : entry.credentialKind === "personal_token"
@@ -87,7 +90,9 @@ export function NativeAccountConnect({
               ? t`Personal API key`
               : appId === "slack"
                 ? t`User token`
-                : t`Personal access token`
+                : appId === "hubspot"
+                  ? t`Private app token`
+                  : t`Personal access token`
             : entry.credentialKind === "bot_token"
               ? t`Bot token`
               : entry.credentialKind === "github_app_installation"
@@ -95,14 +100,15 @@ export function NativeAccountConnect({
                 : t`Account authorization`;
     const ownership =
       entry.ownership === "official" ? t`Official application` : t`Your application`;
-    const actor =
-      entry.credentialKind === "oauth" && entry.actor
-        ? entry.actor === "bot"
+    const actor = entry.actor
+      ? entry.actor === "installation"
+        ? t`App installation`
+        : entry.actor === "bot"
           ? t`Bot`
           : entry.actor === "app"
             ? t`Application`
             : t`User`
-        : null;
+      : null;
     return `${entry.label} · ${ownership} · ${kind}${actor ? ` · ${actor}` : ""}`;
   }
   const credentialLabel =
@@ -111,21 +117,29 @@ export function NativeAccountConnect({
       : selected?.credentialKind === "internal_token"
         ? t`Internal integration token`
         : selected?.credentialKind === "bot_token"
-          ? t`Slack bot token`
+          ? appId === "telegram-bot"
+            ? t`Telegram bot token`
+            : appId === "discord"
+              ? t`Discord bot token`
+              : t`Slack bot token`
           : selected?.credentialKind === "github_app_installation"
             ? t`GitHub App private key JSON`
             : appId === "linear"
               ? t`Linear API key`
               : appId === "slack"
                 ? t`Slack user token`
-                : t`Personal access token`;
-  const submitLabel = oauth
-    ? t`Authorize account`
-    : selected?.credentialKind === "machine_key"
-      ? t`Connect machine`
-      : selected?.credentialKind === "internal_token"
-        ? t`Connect integration`
-        : t`Connect account`;
+                : appId === "hubspot"
+                  ? t`HubSpot private app token`
+                  : t`Personal access token`;
+  const submitLabel = usesConfiguredCredential
+    ? t`Connect application`
+    : oauth
+      ? t`Authorize account`
+      : selected?.credentialKind === "machine_key"
+        ? t`Connect machine`
+        : selected?.credentialKind === "internal_token"
+          ? t`Connect integration`
+          : t`Connect account`;
 
   async function submit(authorizationFlow?: "drive_picker") {
     if (!selected || submitting.current) return;
@@ -134,7 +148,7 @@ export function NativeAccountConnect({
       configId: selected.id,
       ...(authorizationFlow ? { authorizationFlow } : {}),
       ...(previousConnectionId ? { previousConnectionId } : {}),
-      ...(!oauth ? { credential: credential.trim() } : {}),
+      ...(!oauth && !usesConfiguredCredential ? { credential: credential.trim() } : {}),
     });
     if (!parsed.success) {
       setError(t`Enter a valid credential`);
@@ -225,7 +239,7 @@ export function NativeAccountConnect({
           </NativeSelect>
         </Field>
       ) : null}
-      {selected && !oauth ? (
+      {selected && !oauth && !usesConfiguredCredential ? (
         <Field>
           <FieldLabel htmlFor={`${id}-credential`}>{credentialLabel}</FieldLabel>
           <Input
@@ -259,6 +273,13 @@ export function NativeAccountConnect({
             </p>
           ) : null}
         </Field>
+      ) : null}
+      {appId === "figma" && selected?.credentialKind === "oauth" ? (
+        <p className="text-sm text-muted-foreground">
+          <Trans>
+            Authorizing this Figma account replaces its previous authorization for this application.
+          </Trans>
+        </p>
       ) : null}
       {canChooseDriveFiles ? (
         <div className="space-y-2 rounded-lg border border-border p-3">
@@ -315,7 +336,12 @@ export function NativeAccountConnect({
           </Button>
         ) : null}
         {configurations.length > 0 ? (
-          <Button type="submit" disabled={busy || !selected || (!oauth && !credential.trim())}>
+          <Button
+            type="submit"
+            disabled={
+              busy || !selected || (!oauth && !usesConfiguredCredential && !credential.trim())
+            }
+          >
             {busy ? t`Connecting…` : submitLabel}
           </Button>
         ) : null}

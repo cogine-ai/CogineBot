@@ -41,6 +41,7 @@ async function render(
   actor: NativeConfigStatus["actor"],
   options: Partial<ComponentProps<typeof NativeAccountConnect>> & {
     pickerAvailable?: boolean;
+    usesConfiguredCredential?: boolean;
   } = {},
 ) {
   status.mockResolvedValue({
@@ -59,6 +60,7 @@ async function render(
         revision: 1,
         callbackUri: "https://instance.example.test/callback",
         executionLocation: "instance",
+        usesConfiguredCredential: options.usesConfiguredCredential,
         ...(options.pickerAvailable === undefined
           ? {}
           : { driveFilePickerAvailable: options.pickerAvailable }),
@@ -84,6 +86,9 @@ it.each([
   ["linear", "personal_token", "user", "Linear API key"],
   ["slack", "bot_token", "bot", "Slack bot token"],
   ["slack", "personal_token", "user", "Slack user token"],
+  ["telegram-bot", "bot_token", "bot", "Telegram bot token"],
+  ["discord", "bot_token", "bot", "Discord bot token"],
+  ["hubspot", "personal_token", "app", "HubSpot private app token"],
 ] as const)(
   "%s %s displays the actual protected credential field",
   async (appId, kind, actor, label) => {
@@ -151,3 +156,38 @@ it.each([false, undefined])(
     if (pickerAvailable === false) expect(container.textContent).toContain("Ask an administrator");
   },
 );
+
+it.each([
+  ["telegram-bot", "bot_token", "bot"],
+  ["discord", "bot_token", "bot"],
+  ["feishu-lark", "machine_key", "app"],
+  ["dingtalk", "machine_key", "app"],
+  ["wecom", "machine_key", "app"],
+] as const)(
+  "%s reuses the configured credential without asking a member to paste it",
+  async (appId, kind, actor) => {
+    const submit = vi.fn();
+    await render(appId, kind, actor, { usesConfiguredCredential: true, onSubmit: submit });
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    const button = [...container.querySelectorAll("button")].find(
+      (node) => node.textContent === "Connect application",
+    )!;
+    expect(button.disabled).toBe(false);
+    await act(async () => {
+      container
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(submit).toHaveBeenCalledWith({ configId: "fixture-config" });
+  },
+);
+
+it("Figma warns about the platform token replacement only for OAuth", async () => {
+  const message =
+    "Authorizing this Figma account replaces its previous authorization for this application.";
+  await render("figma", "oauth", "user");
+  expect(container.textContent).toContain(message);
+  await act(async () => root.render(null));
+  await render("figma", "personal_token", "user");
+  expect(container.textContent).not.toContain(message);
+});

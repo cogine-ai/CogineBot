@@ -1,4 +1,10 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "App installation": "Установка приложения",
+  "Telegram bot token": "Токен бота Telegram",
+  "Discord bot token": "Токен бота Discord",
+  "Private app token": "Токен частного приложения",
+  "HubSpot private app token": "Токен частного приложения HubSpot",
+  "Connect application": "Подключить приложение",
   "No connected apps.": "Нет подключённых приложений.",
   "Share tools": "Предоставить инструменты",
   "Review tool access": "Проверить доступ к инструментам",
@@ -922,4 +928,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Gmail event": "Событие Gmail",
   "Drive event": "Событие Drive",
   "Slack bot event": "Событие бота Slack",
+  "Authorizing this Figma account replaces its previous authorization for this application.":
+    "Авторизация этого аккаунта Figma заменит его предыдущую авторизацию для этого приложения.",
+  "App credentials": "Учётные данные приложения",
 };
