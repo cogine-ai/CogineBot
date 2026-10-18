@@ -238,6 +238,9 @@ describe("personal sidebar groups", () => {
       "असाइन नहीं किया गया",
       "Não atribuído",
       "Non assigné",
+      "Na\u0303o atribui\u0301do",
+      "Non assigne\u0301",
+      "섹션 없음".normalize("NFD"),
       " ",
     ]) {
       await expect(db.repos.createBotSection(actor, { botId: "bot", name })).rejects.toThrow();
@@ -328,46 +331,56 @@ describe("personal sidebar groups", () => {
     ]);
   });
 
-  it.each(["Unassigned", "未分组", "Nicht zugewiesen", "Sin asignar", "Без раздела"])(
-    "can undo removal of a historical group named %s",
-    async (name) => {
-      const db = database({ sections: [section("legacy", name)], bots: [member("bot", "legacy")] });
-      const snapshot = await db.repos.removeBotSection(actor, "legacy");
+  it.each([
+    "Unassigned",
+    "未分组",
+    "Nicht zugewiesen",
+    "Sin asignar",
+    "Без раздела",
+    "Non assigne\u0301",
+    "Na\u0303o atribui\u0301do",
+  ])("can remove but cannot restore a historical group named %s", async (name) => {
+    const db = database({ sections: [section("legacy", name)], bots: [member("bot", "legacy")] });
+    const snapshot = await db.repos.removeBotSection(actor, "legacy");
 
-      const restored = await db.repos.restoreBotSection(actor, snapshot);
+    expect(snapshot.section.name).toBe(name);
+    const afterRemoval = structuredClone(db.state);
+    await expect(db.repos.restoreBotSection(actor, snapshot)).rejects.toThrow();
+    expect(db.state).toEqual(afterRemoval);
+    await expect(db.repos.createBotSection(actor, { botId: "bot", name })).rejects.toThrow();
+  });
 
-      expect(restored).toMatchObject({ id: "legacy", name });
-      expect(db.state.bots[0]?.sectionId).toBe("legacy");
-      await expect(db.repos.createBotSection(actor, { botId: "bot", name })).rejects.toThrow();
-    },
-  );
+  it.each([
+    "Unassigned",
+    "未分组",
+    "Nicht zugewiesen",
+    "Sin asignar",
+    "Без раздела",
+    "Non assigne\u0301",
+    "Na\u0303o atribui\u0301do",
+  ])("can rename but cannot restore a historical group named %s", async (name) => {
+    const db = database({ sections: [section("legacy", name)] });
 
-  it.each(["Unassigned", "未分组", "Nicht zugewiesen", "Sin asignar", "Без раздела"])(
-    "can undo renaming a historical group named %s",
-    async (name) => {
-      const db = database({ sections: [section("legacy", name)] });
-
-      await db.repos.updateBotSection(actor, { sectionId: "legacy", name: "Product" });
-      expect(db.state.sections[0]?.name).toBe("Product");
-      await expect(
-        db.repos.updateBotSection(actor, { sectionId: "legacy", name }),
-      ).rejects.toThrow();
-      const restored = await db.repos.restoreBotSectionName(actor, {
+    await db.repos.updateBotSection(actor, { sectionId: "legacy", name: "Product" });
+    expect(db.state.sections[0]?.name).toBe("Product");
+    await expect(db.repos.updateBotSection(actor, { sectionId: "legacy", name })).rejects.toThrow();
+    const afterRename = structuredClone(db.state);
+    await expect(
+      db.repos.restoreBotSectionName(actor, {
         sectionId: "legacy",
         name,
         expectedName: "Product",
-      });
-
-      expect(restored).toMatchObject({ id: "legacy", name });
-    },
-  );
+      }),
+    ).rejects.toThrow();
+    expect(db.state).toEqual(afterRename);
+  });
 
   it("restores a name idempotently and leaves subsequent renames untouched", async () => {
     const db = database({ sections: [section("work", "Product")] });
-    const undo = { sectionId: "work", name: "Unassigned", expectedName: "Product" };
+    const undo = { sectionId: "work", name: "Original", expectedName: "Product" };
     await db.repos.restoreBotSectionName(actor, undo);
     await expect(db.repos.restoreBotSectionName(actor, undo)).resolves.toMatchObject({
-      name: "Unassigned",
+      name: "Original",
     });
     await db.repos.updateBotSection(actor, { sectionId: "work", name: "Later" });
 
@@ -389,7 +402,7 @@ describe("personal sidebar groups", () => {
       await expect(
         db.repos.restoreBotSectionName(actor, {
           sectionId,
-          name: "Unassigned",
+          name: "Original",
           expectedName: "Product",
         }),
       ).rejects.toBeInstanceOf(IsolationError);
@@ -408,7 +421,7 @@ describe("personal sidebar groups", () => {
     await expect(
       db.repos.restoreBotSectionName(actor, {
         sectionId: "work",
-        name: "Unassigned",
+        name: "Original",
         expectedName: "Product",
       }),
     ).rejects.toBeInstanceOf(BotSectionNameConflictError);

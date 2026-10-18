@@ -138,7 +138,7 @@ describePostgres("sidebar group undo (PostgreSQL)", () => {
       1,
     );
   });
-  it("restores a historical name only through the explicit undo path", async () => {
+  it("rejects client-supplied historical reserved names through both restore paths", async () => {
     const section = await prisma.botSection.create({
       data: { spaceId, userId, name: "Unassigned" },
     });
@@ -148,13 +148,23 @@ describePostgres("sidebar group undo (PostgreSQL)", () => {
       repos.updateBotSection(actor, { sectionId: section.id, name: "Unassigned" }),
     ).rejects.toThrow();
 
-    const restored = await repos.restoreBotSectionName(actor, {
-      sectionId: section.id,
-      name: "Unassigned",
-      expectedName: "Legacy renamed",
-    });
+    await expect(
+      repos.restoreBotSectionName(actor, {
+        sectionId: section.id,
+        name: "Unassigned",
+        expectedName: "Legacy renamed",
+      }),
+    ).rejects.toThrow();
 
-    expect(restored.name).toBe("Unassigned");
+    const snapshot = await repos.removeBotSection(actor, section.id);
+    await expect(
+      repos.restoreBotSection(actor, {
+        ...snapshot,
+        section: { ...snapshot.section, name: "Unassigned" },
+      }),
+    ).rejects.toThrow();
+
+    expect(await prisma.botSection.findUnique({ where: { id: section.id } })).toBeNull();
   });
 
   it("keeps a concurrent rename when the expected-name update no longer matches", async () => {

@@ -75,6 +75,7 @@ import {
   REPLY_QUOTE_MAX_LENGTH,
   RemovedBotSectionSchema,
   ReorderBotsInput,
+  RestoreBotSectionInput,
   RestoreBotSectionNameInput,
   RoutineSchema,
   ScratchpadItemSchema,
@@ -352,7 +353,7 @@ export const appContract = {
     restoreName: oc.input(RestoreBotSectionNameInput).output(BotSectionSchema),
     reorder: oc.input(z.object({ sectionIds: z.array(Id) })).output(z.array(BotSectionSchema)),
     remove: oc.input(z.object({ sectionId: Id })).output(RemovedBotSectionSchema),
-    restore: oc.input(RemovedBotSectionSchema).output(BotSectionSchema),
+    restore: oc.input(RestoreBotSectionInput).output(BotSectionSchema),
   },
   threads: {
     head: oc.input(threadTarget).output(

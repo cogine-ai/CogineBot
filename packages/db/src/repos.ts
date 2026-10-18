@@ -10,8 +10,8 @@ import type {
 import {
   BOT_COLORS,
   BotSectionNameSchema,
-  RemovedBotSectionSchema,
   RestoreBotSectionNameInput as RestoreBotSectionNameSchema,
+  RestoreBotSectionInput as RestoreBotSectionSchema,
 } from "@rakazo/contracts";
 import type { PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
@@ -411,7 +411,7 @@ export function createRepos(prisma: PrismaClient) {
     async restoreBotSection(actor: Actor, snapshot: RemovedBotSection): Promise<BotSection> {
       const {
         section: { name },
-      } = RemovedBotSectionSchema.parse(snapshot);
+      } = RestoreBotSectionSchema.parse(snapshot);
       const restore = () =>
         withTransactionRetry(() =>
           prisma.$transaction(

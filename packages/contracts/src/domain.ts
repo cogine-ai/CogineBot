@@ -174,10 +174,10 @@ const RESERVED_BOT_SECTION_NAMES = new Set(
     "Sin asignar",
     "Без раздела",
     "Non assigné",
-  ].map((name) => name.toUpperCase()),
+  ].map((name) => name.normalize("NFC").toUpperCase()),
 );
 export const BotSectionNameSchema = BotSectionStoredNameSchema.refine(
-  (name) => !RESERVED_BOT_SECTION_NAMES.has(name.toUpperCase()),
+  (name) => !RESERVED_BOT_SECTION_NAMES.has(name.normalize("NFC").toUpperCase()),
   {
     message: "Choose another group name",
   },
@@ -186,7 +186,7 @@ export const BotSectionNameSchema = BotSectionStoredNameSchema.refine(
 export const UpdateBotSectionInput = z.object({ sectionId: Id, name: BotSectionNameSchema });
 export const RestoreBotSectionNameInput = z.object({
   sectionId: Id,
-  name: BotSectionStoredNameSchema,
+  name: BotSectionNameSchema,
   expectedName: BotSectionStoredNameSchema,
 });
 export type RestoreBotSectionNameInput = z.infer<typeof RestoreBotSectionNameInput>;
@@ -201,12 +201,17 @@ export const BotSectionSchema = z.object({
 export type BotSection = z.infer<typeof BotSectionSchema>;
 
 export const RemovedBotSectionSchema = z.object({
-  // Undo must also accept names created before system names were reserved.
+  // Deletion snapshots keep historical names readable; restoration validates them separately.
   section: BotSectionSchema.extend({ name: BotSectionStoredNameSchema }),
   botIds: z.array(Id),
   groupIds: z.array(Id),
 });
 export type RemovedBotSection = z.infer<typeof RemovedBotSectionSchema>;
+
+export const RestoreBotSectionInput = RemovedBotSectionSchema.extend({
+  section: BotSectionSchema.extend({ name: BotSectionNameSchema }),
+});
+export type RestoreBotSectionInput = z.infer<typeof RestoreBotSectionInput>;
 
 /**
  * A space is a real privacy boundary, not just sidebar organization.

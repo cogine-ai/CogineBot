@@ -23,6 +23,7 @@ import {
   parseModelMaxTokens,
   RemovedBotSectionSchema,
   ReorderBotsInput,
+  RestoreBotSectionInput,
   RestoreBotSectionNameInput,
   RunActivityRowSchema,
   RunSchema,
@@ -53,37 +54,52 @@ describe("contracts", () => {
       " ",
       ...localizedUnassignedNames,
       ...localizedUnassignedNames.map((name) => ` ${name.toUpperCase()} `),
+      ...localizedUnassignedNames.map((name) => name.normalize("NFD")),
     ]) {
       expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
       expect(UpdateBotSectionInput.safeParse({ sectionId: "work", name }).success).toBe(false);
     }
   });
 
-  it("accepts historical reserved group names only through explicit restore contracts", () => {
-    for (const name of localizedUnassignedNames) {
-      expect(
-        RemovedBotSectionSchema.parse({
-          section: {
-            id: "legacy",
-            name,
-            position: 0,
-            createdAt: "2026-10-18",
-            updatedAt: "2026-10-18",
-          },
-          botIds: [],
-          groupIds: [],
-        }).section.name,
-      ).toBe(name);
+  it("preserves the encoding of ordinary sidebar group names", () => {
+    const name = "Cafe\u0301";
+    expect(name).not.toBe(name.normalize("NFC"));
+    expect(BotSectionNameSchema.parse(` ${name} `)).toBe(name);
+    expect(UpdateBotSectionInput.parse({ sectionId: "work", name }).name).toBe(name);
+    expect(
+      RestoreBotSectionNameInput.parse({
+        sectionId: "work",
+        name,
+        expectedName: "Non assigne\u0301",
+      }),
+    ).toMatchObject({ name, expectedName: "Non assigne\u0301" });
+  });
+
+  it("keeps historical reserved names readable but rejects restoring them", () => {
+    for (const name of localizedUnassignedNames.flatMap((name) => [name, name.normalize("NFD")])) {
+      const snapshot = {
+        section: {
+          id: "legacy",
+          name,
+          position: 0,
+          createdAt: "2026-10-18",
+          updatedAt: "2026-10-18",
+        },
+        botIds: [],
+        groupIds: [],
+      };
+      expect(RemovedBotSectionSchema.parse(snapshot).section.name).toBe(name);
+      expect(RestoreBotSectionInput.safeParse(snapshot).success).toBe(false);
       expect(BotSectionStoredNameSchema.parse(` ${name} `)).toBe(name);
       expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
       expect(UpdateBotSectionInput.safeParse({ sectionId: "legacy", name }).success).toBe(false);
       expect(
-        RestoreBotSectionNameInput.parse({
+        RestoreBotSectionNameInput.safeParse({
           sectionId: "legacy",
           name,
           expectedName: "Product",
-        }).name,
-      ).toBe(name);
+        }).success,
+      ).toBe(false);
     }
   });
   it("accepts structured live activity progress", () => {
