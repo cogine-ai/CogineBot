@@ -1,0 +1,874 @@
+{
+  "version": 1,
+  "revision": 3,
+  "frozenAt": "2026-10-18",
+  "appId": "telegram-bot",
+  "actions": [
+    {
+      "id": "telegram.chats.get",
+      "description": "Read metadata of one explicitly authorized Telegram chat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          }
+        },
+        "required": [
+          "chat_id"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/getChat"
+      },
+      "requiredCapabilities": [
+        "read"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890"
+        },
+        "output": {
+          "id": -1001234567890,
+          "type": "supergroup",
+          "title": "Fixture chat"
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    },
+    {
+      "id": "telegram.pinned.get",
+      "description": "Read the latest pinned message returned for an authorized chat; not arbitrary chat history.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          }
+        },
+        "required": [
+          "chat_id"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/getChat"
+      },
+      "requiredCapabilities": [
+        "read"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890"
+        },
+        "output": {
+          "chat_id": "-1001234567890",
+          "pinned_message": {
+            "message_id": 17,
+            "date": 1792281600,
+            "chat": {
+              "id": -1001234567890,
+              "type": "supergroup"
+            },
+            "from": {
+              "id": 100001,
+              "is_bot": true,
+              "username": "fixture_bot",
+              "first_name": "Fixture"
+            },
+            "text": "Hello"
+          },
+          "historyAvailable": false
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "chat_id",
+          "historyAvailable"
+        ],
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "pinned_message": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "historyAvailable": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    },
+    {
+      "id": "telegram.messages.send",
+      "description": "Send plain text to an explicitly authorized chat as this bot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "disable_notification": {
+            "type": "boolean"
+          },
+          "buttons": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "url": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 2048,
+                    "pattern": "^https://"
+                  }
+                },
+                "required": [
+                  "text",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "minItems": 1,
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "chat_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/sendMessage"
+      },
+      "requiredCapabilities": [
+        "send"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890",
+          "text": "Hello",
+          "buttons": [
+            [
+              {
+                "text": "Open",
+                "url": "https://example.test/docs"
+              }
+            ]
+          ]
+        },
+        "output": {
+          "message_id": 17,
+          "chat": {
+            "id": -1001234567890,
+            "type": "supergroup"
+          },
+          "text": "Hello",
+          "write_outcome": "confirmed"
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "message_id",
+          "write_outcome"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "chat": {
+            "type": "object"
+          },
+          "text": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    },
+    {
+      "id": "telegram.messages.reply",
+      "description": "Reply to an existing message in the same explicitly authorized chat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          },
+          "message_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "buttons": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "url": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 2048,
+                    "pattern": "^https://"
+                  }
+                },
+                "required": [
+                  "text",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "minItems": 1,
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/sendMessage"
+      },
+      "requiredCapabilities": [
+        "send"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890",
+          "text": "Hello",
+          "buttons": [
+            [
+              {
+                "text": "Open",
+                "url": "https://example.test/docs"
+              }
+            ]
+          ],
+          "message_id": 12
+        },
+        "output": {
+          "message_id": 17,
+          "chat": {
+            "id": -1001234567890,
+            "type": "supergroup"
+          },
+          "text": "Hello",
+          "write_outcome": "confirmed"
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "message_id",
+          "write_outcome"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "chat": {
+            "type": "object"
+          },
+          "text": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    },
+    {
+      "id": "telegram.messages.edit",
+      "description": "Edit text of a bot message in an explicitly authorized chat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          },
+          "message_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "buttons": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "url": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 2048,
+                    "pattern": "^https://"
+                  }
+                },
+                "required": [
+                  "text",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "minItems": 1,
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/editMessageText"
+      },
+      "requiredCapabilities": [
+        "edit"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890",
+          "text": "Hello",
+          "buttons": [
+            [
+              {
+                "text": "Open",
+                "url": "https://example.test/docs"
+              }
+            ]
+          ],
+          "message_id": 17
+        },
+        "output": {
+          "message_id": 17,
+          "chat": {
+            "id": -1001234567890,
+            "type": "supergroup"
+          },
+          "text": "Hello",
+          "write_outcome": "confirmed"
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "message_id",
+          "write_outcome"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "chat": {
+            "type": "object"
+          },
+          "text": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    },
+    {
+      "id": "telegram.messages.delete",
+      "description": "Delete one message where this bot has permission in an authorized chat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          },
+          "message_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/deleteMessage"
+      },
+      "requiredCapabilities": [
+        "delete"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890",
+          "message_id": 17
+        },
+        "output": {
+          "chat_id": "-1001234567890",
+          "message_id": 17,
+          "deleted": true,
+          "write_outcome": "confirmed"
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "chat_id",
+          "message_id",
+          "write_outcome"
+        ],
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    },
+    {
+      "id": "telegram.files.send",
+      "description": "Upload one existing Space-owned file artifact to an authorized chat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "caption": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "chat_id",
+          "artifactId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/sendDocument"
+      },
+      "requiredCapabilities": [
+        "send",
+        "files"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890",
+          "artifactId": "fixture-artifact",
+          "caption": "File"
+        },
+        "output": {
+          "message_id": 17,
+          "document": {
+            "file_unique_id": "stable"
+          },
+          "write_outcome": "confirmed"
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "message_id",
+          "write_outcome"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "document": {
+            "type": "object"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    },
+    {
+      "id": "telegram.messages.react",
+      "description": "Set one standard emoji reaction on a message in an authorized chat.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "pattern": "^-?[1-9][0-9]{0,18}$"
+          },
+          "message_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "emoji": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id",
+          "emoji"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/setMessageReaction"
+      },
+      "requiredCapabilities": [
+        "reactions"
+      ],
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
+        "scopeAuthority": "provider_enforced",
+        "resourceProof": "exact configured and grant target; live bot identity, membership and effective permissions; Discord exact configured guild"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownNeverReplay": true
+      },
+      "pagination": "Discord messages: explicit before or after snowflake, limit <=100; no full-sync guarantee. Other methods are singleton operations.",
+      "attachments": "Only existing owner/Space artifacts may be uploaded; Discord download first proves attachment in the selected channel message, then fixed CDN download <=10 MiB. No arbitrary URL/file/callback identifiers with unproved target ownership.",
+      "output": "Normalized resource with stable bot/target/message identity; confirmed writes include write_outcome. Provider-filtered message content is never fabricated.",
+      "example": {
+        "input": {
+          "chat_id": "-1001234567890",
+          "message_id": 17,
+          "emoji": "👍"
+        },
+        "output": {
+          "chat_id": "-1001234567890",
+          "message_id": 17,
+          "reaction_set": true,
+          "write_outcome": "confirmed"
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "chat_id",
+          "message_id",
+          "write_outcome"
+        ],
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "reaction_set": {
+            "type": "boolean"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "acceptance": [
+        "strict JSON input rejects credentials and arbitrary routing",
+        "exact configured Space and target verified live",
+        "fixed actual provider API fixture and normalized JSON output",
+        "existing ExternalEffect receipt before each write; unknown writes never replay",
+        "real provider verification deferred until all remaining connectors are implemented"
+      ]
+    }
+  ],
+  "sources": [
+    "https://core.telegram.org/bots/api",
+    "https://core.telegram.org/bots/faq"
+  ],
+  "inbound": "Existing single consumer retained. No getUpdates, setWebhook, Gateway, event subscription, slash registration or polling is created.",
+  "identity": "Bot token only, actual bot identity and administrator space/targets; no personal remote user identity claim",
+  "refreshRevoke": "No OAuth refresh; owner token rotation invalidates grants under existing config revision; revoked token/target permission fails closed. Local disconnect does not uninstall the shared bot.",
+  "limits": "No API-specific limit is guessed. Respect actual 429/Retry-After; unknown writes never replay. Binary maximum 10 MiB.",
+  "real_verified": false,
+  "acceptance": [
+    "exact method/path/body",
+    "current identity and exact target+guild",
+    "guild roles and ordered channel overwrites",
+    "view/history/send/thread/file/moderation permissions",
+    "target proof on every execution",
+    "owner capabilities constrain actions",
+    "old token and space/target mismatch closed",
+    "no second inbound consumer",
+    "durable write receipt and no uncertain replay",
+    "fixed CDN and bounded artifacts",
+    "false/malformed success rejected"
+  ],
+  "supersedesSha256": "88e64314929b339ad5c33e8dc991676dac8ef947e25df920b5fb40a24cac81f9",
+  "revisionReason": "Explicit HTTPS URL-only inline keyboard buttons; no callback ownership is guessed.",
+  "events": [
+    "telegram.pinned_message_changed: baseline+current pinned snapshot only; no historical message API/getUpdates"
+  ]
+}
