@@ -106,6 +106,7 @@ describePostgres("Slack lifecycle exact-grant receipts (PostgreSQL)", () => {
       tokens?: { bot?: string[]; oauth?: string[] },
       extraEvent = {},
       eventId = `Ev${randomUUID().replaceAll("-", "")}`,
+      key = signingSecret,
     ) {
       const body = {
           type: "event_callback",
@@ -117,7 +118,7 @@ describePostgres("Slack lifecycle exact-grant receipts (PostgreSQL)", () => {
         },
         raw = Buffer.from(JSON.stringify(body)),
         timestamp = String(Math.floor(now.getTime() / 1000)),
-        signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:`).update(raw).digest("hex")}`;
+        signature = `v0=${createHmac("sha256", key).update(`v0:${timestamp}:`).update(raw).digest("hex")}`;
       const accepted = await hooks.accept(hook.id, raw, signature, timestamp);
       assert.ok(accepted?.kind === "lifecycle" || accepted?.kind === "event");
       return accepted;
@@ -305,6 +306,68 @@ describePostgres("Slack lifecycle exact-grant receipts (PostgreSQL)", () => {
       assert.equal(await db.secret.count({ where: { id: target.secretId } }), 1);
     }
   });
+  for (const type of ["tokens_revoked", "app_uninstalled"])
+    it(`${type} keeps its original receipt across signing rotation without revoking newer grants`, async () => {
+      const f = await fixture(),
+        target = await f.grant(),
+        token = await f.grant(),
+        generation = await f.grant(),
+        binding = await f.grant(),
+        eventId = `Ev${randomUUID().replaceAll("-", "")}`,
+        tokens = type === "tokens_revoked" ? { bot: ["UBOTFIXTURE"] } : undefined,
+        event = await f.accept(type, tokens, {}, eventId),
+        before = await db.nativeSlackEventInbox.findUniqueOrThrow({ where: { id: event.inboxId } }),
+        newKey = "synthetic-rotated-lifecycle-signing-secret";
+      await f.hooks.save(
+        {
+          configId: f.cfg.id,
+          id: f.hook.id,
+          expectedRevision: f.hook.revision,
+          appId: f.appId,
+          signingSecret: newKey,
+          botEvents: ["tokens_revoked", "app_uninstalled", "message.channels"],
+          botSubscriptionsConfirmed: true,
+        },
+        context,
+        true,
+      );
+      const sibling = await f.grant("UBOTFIXTURE", { fresh: true });
+      await db.nativeOAuthGrant.update({
+        where: { id: token.id },
+        data: { tokenVersion: { increment: 1 } },
+      });
+      await db.nativeOAuthGrant.update({
+        where: { id: generation.id },
+        data: { authGeneration: { increment: 1 } },
+      });
+      await db.connection.update({
+        where: { id: generation.connectionId },
+        data: { metadata: { authRevision: `${generation.id}:2` } },
+      });
+      await db.connection.update({
+        where: { id: binding.connectionId },
+        data: { metadata: { authRevision: "replaced:1" } },
+      });
+      const replay = await f.accept(type, tokens, {}, eventId, newKey);
+      assert.equal(replay.inboxId, event.inboxId);
+      assert.deepEqual(
+        (await db.nativeSlackEventInbox.findUniqueOrThrow({ where: { id: event.inboxId } })).signal,
+        before.signal,
+      );
+      assert.equal(await applyNativeSlackLifecycle(db, f.hooks, f.payload(event.inboxId)), 1);
+      assert.equal(
+        (await db.connection.findUniqueOrThrow({ where: { id: target.connectionId } })).status,
+        "revoked",
+      );
+      for (const safe of [token, generation, binding, sibling]) {
+        assert.equal(
+          (await db.connection.findUniqueOrThrow({ where: { id: safe.connectionId } })).status,
+          "connected",
+        );
+        assert.equal(await db.secret.count({ where: { id: safe.secretId } }), 1);
+      }
+      assert.equal(await applyNativeSlackLifecycle(db, f.hooks, f.payload(event.inboxId)), 0);
+    });
   it("stale hook revision and disabled hook cannot apply a queued lifecycle receipt", async () => {
     const f = await fixture(),
       target = await f.grant(),

@@ -33,6 +33,7 @@ interface HookRow {
   configId: string;
   configRevision: number;
   revision: number;
+  deliveryRevision: number;
   appId: string;
   teamId: string | null;
   botEvents: NativeSlackBotEvent[];
@@ -99,7 +100,7 @@ function verified(row: HookRow): SlackVerifiedHook {
     id: row.id,
     configId: row.configId,
     configRevision: row.configRevision,
-    revision: row.revision,
+    revision: row.deliveryRevision,
     appId: row.appId,
     teamId: row.teamId,
     botEvents: row.botEvents,
@@ -124,6 +125,7 @@ export class NativeSlackHookStore {
     const origin = nativeEventWebhookOrigin(this.apiUrl);
     return {
       ...verified(row),
+      revision: row.revision,
       botEvents: [...row.botEvents],
       enabled: row.enabled,
       configured: Boolean(row.secretRecordId && row.ciphertext),
@@ -224,8 +226,17 @@ export class NativeSlackHookStore {
                 current.secretRecordId !== before.secretRecordId
               )
                 conflict();
+              // Every save advances the public edit version. Only subscription changes
+              // invalidate signed durable deliveries; signing keys have their own CAS.
+              const sameSubscription =
+                enabled(current) &&
+                current.configRevision === app.revision &&
+                current.appId === input.appId &&
+                current.teamId === (settings.data.tenantId ?? null) &&
+                stableJsonValue([...current.botEvents].sort()) ===
+                  stableJsonValue([...input.botEvents].sort());
               await tx.$executeRaw(
-                Prisma.sql`UPDATE native_slack_hooks SET "configRevision"=${app.revision},revision=revision+1,"appId"=${input.appId},"teamId"=${settings.data.tenantId ?? null},"botEvents"=ARRAY[${Prisma.join(input.botEvents)}]::text[],"secretRecordId"=${recordId},ciphertext=${secret.ciphertext},enabled=true,"disabledAt"=NULL,"ownerConfirmedAt"=${this.clock()},"lastVerifiedAt"=NULL,"updatedAt"=${this.clock()} WHERE id=${id} AND revision=${input.expectedRevision}`,
+                Prisma.sql`UPDATE native_slack_hooks SET "configRevision"=${app.revision},revision=revision+1,"deliveryRevision"="deliveryRevision"+${sameSubscription ? 0 : 1},"appId"=${input.appId},"teamId"=${settings.data.tenantId ?? null},"botEvents"=ARRAY[${Prisma.join(input.botEvents)}]::text[],"secretRecordId"=${recordId},ciphertext=${secret.ciphertext},enabled=true,"disabledAt"=NULL,"ownerConfirmedAt"=${this.clock()},"lastVerifiedAt"=NULL,"updatedAt"=${this.clock()} WHERE id=${id} AND revision=${input.expectedRevision}`,
               );
             } else {
               await tx.$executeRaw(
@@ -259,7 +270,7 @@ export class NativeSlackHookStore {
           Prisma.sql`SELECT id FROM native_app_configs WHERE id=${input.configId} FOR UPDATE`,
         );
         const count = await tx.$executeRaw(
-          Prisma.sql`UPDATE native_slack_hooks SET enabled=false,"disabledAt"=${this.clock()},"secretRecordId"=NULL,ciphertext=NULL,revision=revision+1,"updatedAt"=${this.clock()} WHERE id=${input.id} AND "configId"=${input.configId} AND revision=${input.expectedRevision}`,
+          Prisma.sql`UPDATE native_slack_hooks SET enabled=false,"disabledAt"=${this.clock()},"secretRecordId"=NULL,ciphertext=NULL,revision=revision+1,"deliveryRevision"="deliveryRevision"+1,"updatedAt"=${this.clock()} WHERE id=${input.id} AND "configId"=${input.configId} AND revision=${input.expectedRevision}`,
         );
         if (count !== 1) conflict();
         const row = (await this.rows(input.id, tx))[0];
@@ -326,7 +337,7 @@ export class NativeSlackHookStore {
               }
             : signal;
         await tx.$executeRaw(
-          Prisma.sql`INSERT INTO native_slack_event_inbox(id,"hookId","hookRevision","configRevision","eventId",signal,"receivedAt") VALUES(${randomUUID()},${id},${row.revision},${row.configRevision},${signal.eventId},${JSON.stringify(payload)}::jsonb,${now}) ON CONFLICT("hookId","eventId") DO NOTHING`,
+          Prisma.sql`INSERT INTO native_slack_event_inbox(id,"hookId","hookRevision","configRevision","eventId",signal,"receivedAt") VALUES(${randomUUID()},${id},${row.deliveryRevision},${row.configRevision},${signal.eventId},${JSON.stringify(payload)}::jsonb,${now}) ON CONFLICT("hookId","eventId") DO NOTHING`,
         );
         stored = (
           await tx.$queryRaw<InboxRow[]>(
@@ -336,7 +347,7 @@ export class NativeSlackHookStore {
       }
       if (
         !stored ||
-        stored.hookRevision !== row.revision ||
+        stored.hookRevision !== row.deliveryRevision ||
         stored.configRevision !== row.configRevision
       )
         return { kind: "ignored" };
@@ -371,16 +382,20 @@ export class NativeSlackHookStore {
     return row &&
       enabled(row) &&
       row.lastVerifiedAt &&
-      (revision === undefined || row.revision === revision)
+      (revision === undefined || row.deliveryRevision === revision)
       ? verified(row)
       : undefined;
+  }
+  private async deliveryHook(id: string, revision: number): Promise<SlackVerifiedHook | undefined> {
+    const row = (await this.rows(id))[0];
+    return row && enabled(row) && row.deliveryRevision === revision ? verified(row) : undefined;
   }
   async loadInbox(
     inboxId: string,
     hookId: string,
     hookRevision: number,
   ): Promise<{ hook: SlackVerifiedHook; signal: NativeSlackEventSignal } | undefined> {
-    const hook = await this.load(hookId, hookRevision);
+    const hook = await this.deliveryHook(hookId, hookRevision);
     if (!hook) return undefined;
     const row = (
       await this.prisma.$queryRaw<InboxRow[]>(
@@ -395,14 +410,15 @@ export class NativeSlackHookStore {
       (hook.teamId && parsed.data.teamId !== hook.teamId)
     )
       return undefined;
-    return { hook, signal: parsed.data };
+    // The exact inbox row is proof of successful signed acceptance before key rotation.
+    return { hook: { ...hook, verified: true }, signal: parsed.data };
   }
   async loadLifecycleInbox(
     inboxId: string,
     hookId: string,
     hookRevision: number,
   ): Promise<{ hook: SlackVerifiedHook; receipt: NativeSlackLifecycleReceipt } | undefined> {
-    const hook = await this.load(hookId, hookRevision);
+    const hook = await this.deliveryHook(hookId, hookRevision);
     if (!hook) return undefined;
     const row = (
       await this.prisma.$queryRaw<InboxRow[]>(
@@ -417,11 +433,11 @@ export class NativeSlackHookStore {
       (hook.teamId && parsed.data.signal.teamId !== hook.teamId)
     )
       return undefined;
-    return { hook, receipt: parsed.data };
+    return { hook: { ...hook, verified: true }, receipt: parsed.data };
   }
   async markDispatched(inboxId: string, hookId: string, hookRevision: number): Promise<boolean> {
     const count = await this.prisma.$executeRaw(
-      Prisma.sql`UPDATE native_slack_event_inbox i SET "dispatchedAt"=COALESCE(i."dispatchedAt",${this.clock()}) FROM native_slack_hooks h,native_app_configs a WHERE i.id=${inboxId} AND i."hookId"=${hookId} AND i."hookRevision"=${hookRevision} AND h.id=i."hookId" AND h.revision=i."hookRevision" AND h."configRevision"=i."configRevision" AND h.enabled=true AND h."lastVerifiedAt" IS NOT NULL AND h."disabledAt" IS NULL AND a.id=h."configId" AND a.enabled=true AND a.revision=h."configRevision"`,
+      Prisma.sql`UPDATE native_slack_event_inbox i SET "dispatchedAt"=COALESCE(i."dispatchedAt",${this.clock()}) FROM native_slack_hooks h,native_app_configs a WHERE i.id=${inboxId} AND i."hookId"=${hookId} AND i."hookRevision"=${hookRevision} AND h.id=i."hookId" AND h."deliveryRevision"=i."hookRevision" AND h."configRevision"=i."configRevision" AND h.enabled=true AND h."disabledAt" IS NULL AND h."ownerConfirmedAt" IS NOT NULL AND h."secretRecordId" IS NOT NULL AND h.ciphertext IS NOT NULL AND a.id=h."configId" AND a.enabled=true AND a.revision=h."configRevision"`,
     );
     return count === 1;
   }
@@ -430,7 +446,7 @@ export class NativeSlackHookStore {
   ): Promise<Array<{ inboxId: string; hookId: string; hookRevision: number }>> {
     const size = Math.max(1, Math.min(100, Math.floor(limit)));
     return this.prisma.$queryRaw<Array<{ inboxId: string; hookId: string; hookRevision: number }>>(
-      Prisma.sql`SELECT i.id AS "inboxId",i."hookId",i."hookRevision" FROM native_slack_event_inbox i JOIN native_slack_hooks h ON h.id=i."hookId" JOIN native_app_configs a ON a.id=h."configId" WHERE i."dispatchedAt" IS NULL AND h.enabled=true AND h."disabledAt" IS NULL AND h."lastVerifiedAt" IS NOT NULL AND h.revision=i."hookRevision" AND h."configRevision"=i."configRevision" AND a.enabled=true AND a.revision=h."configRevision" ORDER BY i."receivedAt",i.id LIMIT ${size}`,
+      Prisma.sql`SELECT i.id AS "inboxId",i."hookId",i."hookRevision" FROM native_slack_event_inbox i JOIN native_slack_hooks h ON h.id=i."hookId" JOIN native_app_configs a ON a.id=h."configId" WHERE i."dispatchedAt" IS NULL AND h.enabled=true AND h."disabledAt" IS NULL AND h."ownerConfirmedAt" IS NOT NULL AND h."secretRecordId" IS NOT NULL AND h.ciphertext IS NOT NULL AND h."deliveryRevision"=i."hookRevision" AND h."configRevision"=i."configRevision" AND a.enabled=true AND a.revision=h."configRevision" ORDER BY i."receivedAt",i.id LIMIT ${size}`,
     );
   }
 }

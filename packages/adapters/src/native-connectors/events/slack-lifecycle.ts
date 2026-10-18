@@ -92,9 +92,9 @@ export async function applyNativeSlackLifecycle(
       );
     const current = await tx.$queryRaw<Array<{ signal: unknown }>>(Prisma.sql`
       SELECT i.signal FROM native_slack_event_inbox i JOIN native_slack_hooks h ON h.id=i."hookId" JOIN native_app_configs a ON a.id=h."configId"
-      WHERE i.id=${payload.inboxId} AND h.id=${payload.hookId} AND h.revision=${payload.hookRevision} AND h.revision=i."hookRevision"
+      WHERE i.id=${payload.inboxId} AND h.id=${payload.hookId} AND h."deliveryRevision"=${payload.hookRevision} AND h."deliveryRevision"=i."hookRevision"
         AND h."configId"=${loaded.hook.configId} AND h."configRevision"=i."configRevision" AND h."configRevision"=a.revision
-        AND h.enabled=true AND h."disabledAt" IS NULL AND h."lastVerifiedAt" IS NOT NULL AND h."ownerConfirmedAt" IS NOT NULL
+        AND h.enabled=true AND h."disabledAt" IS NULL AND h."ownerConfirmedAt" IS NOT NULL
         AND h."secretRecordId" IS NOT NULL AND h.ciphertext IS NOT NULL AND a.enabled=true AND a."appId"='slack'
       FOR UPDATE OF i,h`);
     if (current.length !== 1) return 0;

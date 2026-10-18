@@ -1652,6 +1652,7 @@ model NativeSlackHook {
   config NativeAppConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
   configRevision Int
   revision Int @default(1)
+  deliveryRevision Int @default(1)
   appId String
   teamId String?
   botEvents String[]

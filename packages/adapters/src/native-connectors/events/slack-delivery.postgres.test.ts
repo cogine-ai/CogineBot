@@ -107,6 +107,7 @@ describePostgres("Slack actual service durable delivery (PostgreSQL)", () => {
         },
       },
     });
+    let beforeChannelRead: (() => Promise<void>) | undefined;
     const requests: string[] = [];
     const network = {
       resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
@@ -130,6 +131,9 @@ describePostgres("Slack actual service durable delivery (PostgreSQL)", () => {
             { headers: { "x-oauth-scopes": scopes.join(",") } },
           );
         assert.equal(url.pathname, "/api/conversations.info");
+        const beforeRead = beforeChannelRead;
+        beforeChannelRead = undefined;
+        await beforeRead?.();
         assert.equal(url.searchParams.get("channel"), "CFIXTURE");
         return Response.json({
           ok: true,
@@ -310,6 +314,9 @@ describePostgres("Slack actual service durable delivery (PostgreSQL)", () => {
       signed,
       signalPayload,
       ownQueued,
+      onChannelRead: (fn: () => Promise<void>) => {
+        beforeChannelRead = fn;
+      },
       setQueueFailure: (value: boolean) => {
         rejectQueue = value;
       },
@@ -359,6 +366,101 @@ describePostgres("Slack actual service durable delivery (PostgreSQL)", () => {
         assert.equal(await db.run.count({ where: { routineId: f.routine.id } }), 0);
         await f.service.slackLifecycle(f.ownQueued()[0]!.payload);
       }
+    });
+  for (const type of ["message", "tokens_revoked", "app_uninstalled"])
+    for (const stage of ["pending", "queued"])
+      it(`${type} acknowledged ${stage} delivery survives secret-only rotation without a new callback`, async () => {
+        const f = await fixture();
+        if (type === "app_uninstalled") {
+          // Static bot credentials need prior signed app visibility before app-wide revocation.
+          const proof = f.signed("message", `Ev${randomUUID().replaceAll("-", "")}`),
+            accepted = await f.hooks.accept(f.hook.id, proof.raw, proof.signature, proof.timestamp);
+          assert.ok(accepted?.kind === "event");
+          assert.equal(
+            await f.hooks.markDispatched(accepted.inboxId, f.hook.id, accepted.hook.revision),
+            true,
+          );
+        }
+        await f.ingest(type);
+        const before = await f.inbox();
+        if (stage === "queued") await f.service.reconcile();
+        await f.hooks.save(
+          {
+            configId: f.configId,
+            id: f.hook.id,
+            expectedRevision: f.hook.revision,
+            appId: f.appId,
+            signingSecret: "synthetic-rotated-delivery-signing-secret",
+            botEvents: ["app_uninstalled", "tokens_revoked", "message.channels"],
+            botSubscriptionsConfirmed: true,
+          },
+          context,
+          true,
+        );
+        assert.deepEqual((await f.inbox()).signal, before.signal);
+        if (stage === "pending") await f.service.reconcile();
+        assert.equal(f.ownQueued().length, 1);
+        const job = f.ownQueued()[0]!;
+        if (type === "message") {
+          await f.service.slackSignal(job.payload, new AbortController().signal);
+          await f.service.slackSignal(job.payload, new AbortController().signal);
+          assert.equal(await db.run.count({ where: { routineId: f.routine.id } }), 1);
+        } else {
+          await f.service.slackLifecycle(job.payload);
+          await f.service.slackLifecycle(job.payload);
+          assert.equal(
+            (await db.connection.findUniqueOrThrow({ where: { id: f.connectionId } })).status,
+            "revoked",
+          );
+          assert.equal(await db.run.count({ where: { routineId: f.routine.id } }), 0);
+        }
+      });
+  for (const change of ["secret", "subscriptions", "disable"])
+    it(`${change} change immediately before final Run claim preserves only same-subscription delivery`, async () => {
+      const f = await fixture();
+      await f.ingest();
+      await f.service.reconcile();
+      const job = f.ownQueued()[0]!;
+      let changed = false;
+      f.onChannelRead(async () => {
+        if (change === "disable") {
+          await f.hooks.disable(
+            { configId: f.configId, id: f.hook.id, expectedRevision: f.hook.revision },
+            context,
+            true,
+          );
+        } else {
+          await f.hooks.save(
+            {
+              configId: f.configId,
+              id: f.hook.id,
+              expectedRevision: f.hook.revision,
+              appId: f.appId,
+              signingSecret: "synthetic-final-claim-rotated-secret",
+              botEvents:
+                change === "secret"
+                  ? ["message.channels", "tokens_revoked", "app_uninstalled"]
+                  : ["tokens_revoked", "app_uninstalled"],
+              botSubscriptionsConfirmed: true,
+            },
+            context,
+            true,
+          );
+        }
+        changed = true;
+      });
+      const consume = f.service.slackSignal(job.payload, new AbortController().signal);
+      if (change === "secret") {
+        await consume;
+        assert.equal(await db.run.count({ where: { routineId: f.routine.id } }), 1);
+        const current = (await f.hooks.status({ configId: f.configId }, context, true)).hooks[0]!;
+        assert.equal(current.phase, "waiting_for_verification");
+        assert.equal(current.revision, f.hook.revision + 1);
+      } else {
+        await consume;
+        assert.equal(await db.run.count({ where: { routineId: f.routine.id } }), 0);
+      }
+      assert.equal(changed, true);
     });
   it("duplicate ACK before and after dispatch never enqueues inline or grows inbox", async () => {
     const f = await fixture();
