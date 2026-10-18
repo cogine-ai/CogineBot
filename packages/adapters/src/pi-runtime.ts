@@ -2353,7 +2353,7 @@ function canRetrySameModel(error: unknown): boolean {
   // A configured backup may use a different quota. Repeating the same model
   // cannot replenish funds, and a timeout already consumed its request budget.
   return (
-    !statuses.has(402) &&
+    ![402, 408, 504].some((status) => statuses.has(status)) &&
     !/timed? out|timeout|quota|billing|credit|payment|funds|(?:insufficient|low|empty|not enough|exhausted)[ _-]+balance|balance.*(?:insufficient|low|empty|exhausted)|(?:spend(?:ing)?|usage|budget)[ _-]+(?:limit|cap)/.test(
       text,
     )

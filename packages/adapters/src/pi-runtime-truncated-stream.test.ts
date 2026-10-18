@@ -13,7 +13,71 @@ vi.mock("@rakazo/core", async (importOriginal) => ({
 
 import { PiAgentRuntime } from "./pi-runtime.js";
 
+it.each([408, 504])(
+  "does not add completion retries after a real parsed HTTP %s without timeout text",
+  async (status) => {
+    delay.mockClear();
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ error: { message: "Fixture rejected.", type: "fixture_error" } }),
+      );
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Fixture endpoint unavailable");
+    const beforeCall = vi.fn(async () => "fixture-reservation");
+    const afterCall = vi.fn(async (_reservation: unknown, _usage: AgentUsage | null) => undefined);
+    const events: AgentRuntimeEvent[] = [];
+    let failure: unknown;
+    try {
+      try {
+        for await (const event of new PiAgentRuntime({
+          modelCallObserver: { beforeCall, afterCall },
+        }).run(
+          {
+            botId: "fixture-bot",
+            threadId: "fixture-thread",
+            runId: "fixture-run",
+            prompt: "Report the fixture.",
+            instructions: "Fixture",
+            history: [],
+            tools: [],
+            executeTool: vi.fn(),
+            model: {
+              provider: "openai-compatible",
+              id: "fixture",
+              baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            },
+          },
+          { signal: AbortSignal.timeout(5_000) },
+        ))
+          events.push(event);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain(String(status));
+      expect((failure as Error).message).not.toMatch(/timeout|timed out/i);
+      expect(requests).toBe(1);
+      expect(delay).not.toHaveBeenCalled();
+      expect(beforeCall).toHaveBeenCalledOnce();
+      expect(afterCall).toHaveBeenCalledOnce();
+      expect(events.some((event) => event.type === "done")).toBe(false);
+    } finally {
+      const closed = once(server, "close");
+      server.close();
+      server.closeAllConnections();
+      await closed;
+    }
+  },
+);
+
 it("recovers real parsed empty completions after a completed tool without replaying its effect", async () => {
+  delay.mockClear();
   const requests: Array<{ messages: unknown[] }> = [];
   const fixtureFailures: unknown[] = [];
   const server = createServer((request, response) => {

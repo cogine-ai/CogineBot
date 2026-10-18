@@ -173,24 +173,107 @@ describe("thread subscription recovery", () => {
     },
   );
 
-  it("retains a same-thread snapshot already newer than the fallback head", async () => {
-    vi.useFakeTimers();
-    const newer = { ...head, cursor: 20 };
-    const { abort, channel, state, callbacks } = setup(newer);
-    callbacks.loadInitial.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    callbacks.loadHead.mockResolvedValue({ ...head, cursor: 15 });
-    const onStatus = vi.fn();
-    const running = runThreadSubscription({ ...callbacks, onStatus });
-    await vi.advanceTimersByTimeAsync(0);
-    channel.send(heartbeat());
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(onStatus).toHaveBeenLastCalledWith("ready");
-    expect(state.committed).toBe(newer);
-    expect(callbacks.refresh).not.toHaveBeenCalled();
-    abort.abort();
-    channel.end();
-    await running;
-  });
+  it.each([false, true])(
+    "does not replay committed messages or effects from a newer retained snapshot with observer %s",
+    async (observed) => {
+      vi.useFakeTimers();
+      const newer = { ...head, cursor: 20 };
+      const fallback = { ...head, cursor: 15 };
+      const { abort, channel, state, callbacks } = setup(newer);
+      let messages = ["already-rendered"];
+      const backlog: ProductEvent[] = [
+        { ...event(16), type: "thread.cleared" },
+        {
+          ...event(17),
+          type: "thread.message.created",
+          payload: { messageId: "old-already-rendered", role: "bot", blocks: [] },
+        },
+        { ...event(19), type: "thread.call.ended", payload: { farewell: "Old farewell" } },
+        {
+          ...event(21),
+          type: "thread.message.created",
+          payload: { messageId: "new-after-retained-snapshot", role: "bot", blocks: [] },
+        },
+      ];
+      callbacks.loadInitial.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      callbacks.loadHead.mockResolvedValue(fallback);
+      // Match the server's seq > cursor replay contract, including clear/call effects.
+      callbacks.subscribe.mockImplementation(async (cursor) =>
+        (async function* () {
+          for (const item of backlog) if (item.seq > cursor) yield item;
+          yield* channel.events;
+        })(),
+      );
+      callbacks.applyEvent.mockImplementation((item) => {
+        if (item.type === "thread.cleared") messages = [];
+        if (item.type === "thread.message.created") messages.push(String(item.payload.messageId));
+        state.committed = { ...head, cursor: item.seq };
+      });
+      const beforeEvent = vi.fn();
+      const onStatus = vi.fn();
+      const running = runThreadSubscription({
+        ...callbacks,
+        beforeEvent,
+        ...(observed ? { onStatus } : {}),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect.soft(callbacks.onEvent.mock.calls.map(([item]) => item.seq)).toEqual([21]);
+        expect(messages).toEqual(["already-rendered", "new-after-retained-snapshot"]);
+        expect(callbacks.subscribe).toHaveBeenCalledWith(20);
+        expect(state.committed).toEqual({ ...head, cursor: 21 });
+        expect(callbacks.applyEvent.mock.calls.map(([item]) => item.seq)).toEqual([21]);
+        expect(beforeEvent.mock.calls.map(([item]) => item.seq)).toEqual([21]);
+        expect(callbacks.onEvent.mock.calls.map(([item]) => item.seq)).toEqual([21]);
+        expect(callbacks.onEvent).toHaveBeenLastCalledWith(backlog[3], fallback);
+        if (observed) expect(onStatus).toHaveBeenLastCalledWith("ready");
+        expect(callbacks.refresh).not.toHaveBeenCalled();
+        channel.end();
+        await vi.advanceTimersByTimeAsync(250);
+        expect(callbacks.subscribe.mock.calls.map(([cursor]) => cursor)).toEqual([20, 21]);
+        channel.send(heartbeat());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(messages).toEqual(["already-rendered", "new-after-retained-snapshot"]);
+        expect(callbacks.onEvent).toHaveBeenCalledOnce();
+      } finally {
+        abort.abort();
+        channel.end();
+        await running;
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "ignores another thread's retained cursor when starting head recovery with observer %s",
+    async (observed) => {
+      vi.useFakeTimers();
+      const { abort, channel, state, callbacks } = setup({ threadId: "other-thread", cursor: 50 });
+      const fallback = { ...head, cursor: 15 };
+      callbacks.loadInitial.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      callbacks.loadHead.mockResolvedValue(fallback);
+      callbacks.refresh.mockImplementation(async () => {
+        state.committed = fallback;
+      });
+      const running = runThreadSubscription({
+        ...callbacks,
+        ...(observed ? { onStatus: vi.fn() } : {}),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callbacks.subscribe).toHaveBeenCalledWith(15);
+        channel.send(event(16));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callbacks.applyEvent).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(250);
+        expect(callbacks.applyEvent).toHaveBeenCalledExactlyOnceWith(event(16));
+        expect(callbacks.onEvent).toHaveBeenCalledExactlyOnceWith(event(16), fallback);
+      } finally {
+        abort.abort();
+        channel.end();
+        await running;
+      }
+    },
+  );
 
   it("falls back to head with backoff and buffers until a snapshot commits", async () => {
     vi.useFakeTimers();

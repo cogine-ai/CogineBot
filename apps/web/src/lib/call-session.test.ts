@@ -80,6 +80,97 @@ describe("call session", () => {
     vi.useRealTimers();
   });
 
+  it("ignores an older concurrent snapshot without repeating call reactions", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls.at(-1)?.[0];
+    const older = deferred<ThreadSnapshot>();
+    getThread.mockReturnValueOnce(older.promise as never);
+    const pending = feed?.refresh();
+    const latest = { ...snapshot([]), cursor: 20 };
+    getThread.mockResolvedValueOnce(latest as never);
+    await feed?.refresh();
+    const callState = getSnapshot();
+    vi.mocked(dictation.stop).mockClear();
+    speak.mockClear();
+    older.resolve({
+      ...snapshot(
+        [
+          {
+            ...botMessage("stale-secret", "Enter a code"),
+            blocks: [{ kind: "ask", text: "Enter a code", input: "secret", status: "pending" }],
+          },
+        ],
+        { ...runningRun, status: "waiting_input" } as ThreadSnapshot["run"],
+      ),
+      cursor: 17,
+    });
+    expect(await pending).toBe(latest);
+    expect(feed?.currentSnapshot()).toBe(latest);
+    expect(getSnapshot()).toBe(callState);
+    expect(dictation.stop).not.toHaveBeenCalled();
+    expect(speak).not.toHaveBeenCalled();
+  });
+
+  it.each(["thread.message.created", "thread.cleared"] as const)(
+    "keeps live %s state when an earlier snapshot response arrives",
+    async (type) => {
+      startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+      const feed = vi.mocked(runThreadSubscription).mock.calls.at(-1)?.[0];
+      const previous = { ...snapshot([botMessage("before-clear", "Earlier reply")]), cursor: 20 };
+      getThread.mockResolvedValueOnce(previous as never);
+      await feed?.refresh();
+      const older = deferred<ThreadSnapshot>();
+      getThread.mockReturnValueOnce(older.promise as never);
+      const pending = feed?.refresh();
+      feed?.applyEvent({
+        id: "event-live-21",
+        seq: 21,
+        spaceId: "space-1",
+        threadId: "thread-1",
+        botId: "call-bot",
+        type,
+        payload: { messageId: "live-message", role: "bot", blocks: [] },
+        createdAt: "2026-09-20T00:00:00.000Z",
+      });
+      const live = feed?.currentSnapshot();
+      older.resolve(previous);
+      expect(await pending).toBe(live);
+      expect(feed?.currentSnapshot()).toBe(live);
+      expect(feed?.currentSnapshot()?.cursor).toBe(21);
+      expect(feed?.currentSnapshot()).toMatchObject({
+        messages:
+          type === "thread.cleared"
+            ? []
+            : expect.arrayContaining([{ ...botMessage("before-clear", "Earlier reply") }]),
+      });
+    },
+  );
+
+  it("accepts equal-cursor call metadata without treating it as an older read", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls.at(-1)?.[0];
+    getThread.mockResolvedValueOnce({ ...snapshot([]), cursor: 20 } as never);
+    await feed?.refresh();
+    const updated = {
+      ...snapshot([], { ...runningRun, status: "waiting_input" } as ThreadSnapshot["run"]),
+      cursor: 20,
+    };
+    getThread.mockResolvedValueOnce(updated as never);
+    expect(await feed?.refresh()).toBe(updated);
+    expect(feed?.currentSnapshot()).toBe(updated);
+  });
+
+  it("does not compare cursors across different call threads", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls.at(-1)?.[0];
+    getThread.mockResolvedValueOnce({ ...snapshot([]), cursor: 20 } as never);
+    await feed?.refresh();
+    const replacement = { ...snapshot([]), threadId: "replacement-thread", cursor: 1 };
+    getThread.mockResolvedValueOnce(replacement as never);
+    expect(await feed?.refresh()).toBe(replacement);
+    expect(feed?.currentSnapshot()).toBe(replacement);
+  });
+
   it("starts listening for the bot on the call", async () => {
     startCall({ botId: "call-bot", botName: "Ada", transcribe: true });
     await Promise.resolve();

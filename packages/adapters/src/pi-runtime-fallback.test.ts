@@ -345,6 +345,8 @@ describe("Pi runtime completion recovery", () => {
     "context_length_exceeded; 503 overloaded",
     "user declined consent; 429 rate limit",
     "Request timed out.",
+    "HTTP 408",
+    "HTTP 504",
     "HTTP 402 quota exhausted",
     "HTTP 429 insufficient_quota",
     "quota temporarily exceeded",
@@ -362,6 +364,8 @@ describe("Pi runtime completion recovery", () => {
   });
 
   it.each([
+    "HTTP 408",
+    "HTTP 504",
     "HTTP 402 quota exhausted",
     "HTTP 429 insufficient_quota",
     "quota temporarily exceeded",

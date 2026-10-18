@@ -55,12 +55,17 @@ export async function runThreadSubscription(options: {
   }
   if (!initial || signal.aborted) return;
   const head = initial;
-  let cursor = head.cursor;
+  const initialSnapshot = options.currentSnapshot();
+  // Another refresh may have committed beyond the head while its request was pending.
+  let cursor =
+    initialSnapshot?.threadId === head.threadId
+      ? Math.max(head.cursor, initialSnapshot.cursor)
+      : head.cursor;
   // A retained reader can be older than a successful head fallback. Until a snapshot
   // covers that cursor, keep recovering rather than skip the gap and trust a heartbeat.
   const coversHead = (snapshot: ThreadHead | null) =>
     snapshot?.threadId === head.threadId && snapshot.cursor >= head.cursor;
-  let snapshotReady = coversHead(options.currentSnapshot());
+  let snapshotReady = coversHead(initialSnapshot);
   let snapshotHealthy = snapshotReady;
   let streamReady = false;
   const reportReady = () => {
