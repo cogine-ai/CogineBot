@@ -1,5 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
-import { commitSpaceRename, sidebarGroupsForSpaces } from "./space-sidebar";
+import {
+  commitSpaceRename,
+  restoreSidebarSectionOrder,
+  sidebarGroupsForSpaces,
+} from "./space-sidebar";
+
+describe("restoreSidebarSectionOrder", () => {
+  it("keeps an independently restored group in its current slot", () => {
+    expect(restoreSidebarSectionOrder(["a", "c", "b"], ["b", "c"])).toEqual(["a", "b", "c"]);
+    expect(restoreSidebarSectionOrder(["c", "a", "b"], ["b", "c"])).toEqual(["b", "a", "c"]);
+  });
+
+  it("ignores deleted originals and includes every current group exactly once", () => {
+    expect(restoreSidebarSectionOrder(["d", "c", "new", "b"], ["a", "b", "c", "d"])).toEqual([
+      "b",
+      "c",
+      "new",
+      "d",
+    ]);
+    expect(restoreSidebarSectionOrder(["new", "restored"], ["deleted"])).toEqual([
+      "new",
+      "restored",
+    ]);
+    expect(restoreSidebarSectionOrder([], ["deleted"])).toEqual([]);
+  });
+});
 
 function chat(id: string, name: string) {
   return {
@@ -59,6 +84,72 @@ describe("sidebarGroupsForSpaces", () => {
       canDeleteSpace: true,
       emptySpaceId: "space-2",
     });
+  });
+
+  it("keeps collapse identity stable when another space appears", () => {
+    const personal = {
+      ...space("space-1", "Personal"),
+      botSections: [{ id: "s1", name: "Product" }],
+    };
+    const single = sidebarGroupsForSpaces([personal], "");
+    const multiple = sidebarGroupsForSpaces([personal, space("space-2", "Support")], "");
+    expect(single.find((group) => group.sectionId === "s1")?.collapseKey).toBe(
+      "space:space-1:section:s1",
+    );
+    expect(multiple.find((group) => group.sectionId === "s1")?.collapseKey).toBe(
+      single.find((group) => group.sectionId === "s1")?.collapseKey,
+    );
+    expect(single.find((group) => group.kind === "unassigned")?.collapseKey).toBe(
+      "space:space-1:unassigned",
+    );
+  });
+
+  it("keeps an empty grouped space selectable while retaining its section headings", () => {
+    const emptyGrouped = {
+      ...space("space-2", "Support", { canRename: true, bots: [] }),
+      botSections: [{ id: "s1", name: "Product" }],
+    };
+    const groups = sidebarGroupsForSpaces([space("space-1", "Personal"), emptyGrouped], "");
+    const emptyGroups = groups.filter((group) => group.spaceId === emptyGrouped.id);
+
+    expect(emptyGroups.map((group) => group.baseTitle)).toEqual(["Product", "Unassigned"]);
+    expect(emptyGroups[0]).toMatchObject({
+      sectionId: "s1",
+      emptySpaceId: emptyGrouped.id,
+      bots: [],
+    });
+    expect(emptyGroups[1]?.emptySpaceId).toBeUndefined();
+  });
+
+  it("does not mark a populated grouped space empty when search hides its chats", () => {
+    const grouped = {
+      ...space("space-2", "Support"),
+      botSections: [{ id: "s1", name: "Product" }],
+    };
+    const groups = sidebarGroupsForSpaces([space("space-1", "Personal"), grouped], "missing");
+
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.emptySpaceId === undefined)).toBe(true);
+  });
+
+  it("distinguishes space labels from Unassigned and retains empty sections during filtering", () => {
+    const grouped = {
+      ...space("space-1", "Personal"),
+      botSections: [{ id: "s1", name: "Product" }],
+    };
+    const groups = sidebarGroupsForSpaces([grouped, space("space-2", "Support")], "missing");
+    expect(groups.find((group) => group.sectionId === "s1")).toMatchObject({
+      baseTitle: "Product",
+      bots: [],
+    });
+    expect(
+      groups.find((group) => group.spaceId === "space-1" && group.kind === "unassigned"),
+    ).toMatchObject({ baseTitle: "Unassigned", bots: [] });
+    const noCustom = sidebarGroupsForSpaces(
+      [space("space-1", "Personal"), space("space-2", "Support")],
+      "",
+    );
+    expect(noCustom.every((group) => group.baseTitle === null)).toBe(true);
   });
 
   it("hides space actions while a search removes every chat from the only space", () => {

@@ -15,6 +15,10 @@ describePostgres("PostgresRealtimeFanout (PostgreSQL contract)", () => {
     let cursor = 0;
     let drainError: unknown;
     let draining = Promise.resolve();
+    let resumeReconnect!: () => void;
+    const disconnectedWriteCommitted = new Promise<void>((resolve) => {
+      resumeReconnect = resolve;
+    });
 
     await pool.query(`CREATE TABLE ${table} (id bigserial PRIMARY KEY, body text NOT NULL)`);
     const realtime = new PostgresRealtimeFanout({
@@ -24,6 +28,13 @@ describePostgres("PostgresRealtimeFanout (PostgreSQL contract)", () => {
       },
       clientFactory: () => {
         const client = new Client({ connectionString: databaseUrl! });
+        if (listenerClients.length > 0) {
+          const connect = client.connect.bind(client);
+          client.connect = async () => {
+            await disconnectedWriteCommitted;
+            return connect();
+          };
+        }
         listenerClients.push(client);
         return client as RealtimeListenerClient;
       },
@@ -62,7 +73,10 @@ describePostgres("PostgresRealtimeFanout (PostgreSQL contract)", () => {
       await vi.waitFor(() => expect(seen).toEqual(["notified-event"]), { timeout: 5_000 });
 
       await pool.query("SELECT pg_terminate_backend($1)", [listenerPid]);
+      // Keep the unnotified write inside the disconnected window regardless of
+      // how long this worker pauses before issuing or committing the INSERT.
       await pool.query(`INSERT INTO ${table} (body) VALUES ($1)`, ["missed-while-disconnected"]);
+      resumeReconnect();
 
       await vi.waitFor(
         () => {
@@ -77,6 +91,7 @@ describePostgres("PostgresRealtimeFanout (PostgreSQL contract)", () => {
       expect(signals).toContain("durable-event-available");
       await unsubscribe();
     } finally {
+      resumeReconnect();
       await realtime.close();
       await pool.query(`DROP TABLE IF EXISTS ${table}`).catch(() => undefined);
       await pool.end();

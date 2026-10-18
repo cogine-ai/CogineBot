@@ -1,5 +1,7 @@
 import { groupBotsForSidebar } from "@rakazo/core";
 
+type SidebarGroupKind = "pinned" | "unassigned" | "section" | "space";
+
 type SidebarChat = {
   id: string;
   name: string;
@@ -37,6 +39,18 @@ export async function commitSpaceRename(input: {
   await input.refresh().catch(() => undefined);
 }
 
+/** Undo the surviving sections' relative order without moving newly restored sections. */
+export function restoreSidebarSectionOrder(
+  currentIds: readonly string[],
+  previousIds: readonly string[],
+): string[] {
+  const current = new Set(currentIds);
+  const previous = new Set(previousIds);
+  const restored = previousIds.filter((id) => current.has(id));
+  let index = 0;
+  return currentIds.map((id) => (previous.has(id) ? restored[index++]! : id));
+}
+
 export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends SidebarChat>(
   spaces: readonly SidebarSpace<TBot, TGroup>[],
   query: string,
@@ -64,6 +78,13 @@ export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends 
       space.botSections,
     ).map((group, index) => ({
       ...group,
+      collapseKey: `space:${space.id}:${group.key}`,
+      kind: (group.key === "pinned"
+        ? "pinned"
+        : group.key === "unassigned"
+          ? "unassigned"
+          : "section") as SidebarGroupKind,
+      baseTitle: group.title,
       sectionId: group.key.startsWith("section:") ? group.key.slice("section:".length) : null,
       key: showSpaceNames ? `space:${space.id}:${group.key}` : group.key,
       title: showSpaceNames
@@ -72,7 +93,10 @@ export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends 
           : space.name
         : group.title,
       showLock: showSpaceNames,
-      emptySpaceId: undefined as string | undefined,
+      emptySpaceId:
+        showSpaceNames && index === 0 && space.bots.length === 0 && space.groups.length === 0
+          ? space.id
+          : undefined,
       spaceId: space.id,
       spaceName: space.name,
       ...spaceHeaderMenu(space, index === 0),
@@ -84,6 +108,9 @@ export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends 
     return [
       {
         key: showSpaceNames ? `space:${space.id}:empty` : `space:${space.id}:actions`,
+        collapseKey: `space:${space.id}:empty`,
+        kind: "space" as SidebarGroupKind,
+        baseTitle: null,
         title: showSpaceNames ? space.name : null,
         bots: [],
         sectionId: null,

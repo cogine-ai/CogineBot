@@ -99,7 +99,7 @@ describe("spaceInboxItems", () => {
       ],
     });
     const headings = spaceInboxItems([work]).filter((item) => item.type === "heading");
-    expect(headings.map((item) => item.title)).toEqual(["Work", "Pinned", "Research"]);
+    expect(headings.map((item) => item.title)).toEqual(["Work", "Research", "Unassigned"]);
     expect(headings.filter((item) => item.space)).toEqual([
       { type: "heading", key: work.id, title: work.name, space: work },
     ]);
@@ -120,6 +120,86 @@ describe("spaceInboxItems", () => {
     const items = spaceInboxItems([space({ isDefault: true, bots: [bot], groups: [group] })]);
     expect(items.map((item) => item.type)).toEqual(["bot", "group"]);
     expect(items[0]).toMatchObject({ type: "bot", depth: 0, hasChildren: false });
+  });
+
+  it("counts only unpinned conversations and collapses custom and system sections independently", () => {
+    const work = space({
+      isDefault: true,
+      bots: [
+        { ...bot, id: "pinned", pinned: true, sectionId: "research" },
+        { ...bot, id: "research", sectionId: "research" },
+        { ...bot, id: "loose" },
+      ],
+      botSections: [
+        { id: "research", name: "Research", position: 0, createdAt: "", updatedAt: "" },
+      ],
+    });
+    const collapsed = spaceInboxItems([work], new Set(), new Set([`${work.id}:section:research`]));
+    expect(collapsed.filter((item) => item.type === "bot").map((item) => item.bot.id)).toEqual([
+      "pinned",
+      "loose",
+    ]);
+    expect(collapsed.find((item) => item.type === "heading" && item.section)).toMatchObject({
+      title: "Research",
+      count: 1,
+      collapsed: true,
+    });
+    const systemCollapsed = spaceInboxItems([work], new Set(), new Set([`${work.id}:unassigned`]));
+    expect(
+      systemCollapsed.filter((item) => item.type === "bot").map((item) => item.bot.id),
+    ).toEqual(["pinned", "research"]);
+    expect(
+      systemCollapsed.find((item) => item.type === "heading" && item.title === "Unassigned"),
+    ).toMatchObject({
+      count: 1,
+      collapsed: true,
+      section: undefined,
+    });
+  });
+
+  it("keeps empty sections visible and ignores remembered system folding without custom sections", () => {
+    const empty = space({
+      isDefault: true,
+      bots: [bot],
+      botSections: [{ id: "empty", name: "Empty", position: 0, createdAt: "", updatedAt: "" }],
+    });
+    expect(
+      spaceInboxItems([empty]).find((item) => item.type === "heading" && item.section),
+    ).toMatchObject({ count: 0 });
+    const plain = { ...empty, botSections: [] };
+    expect(spaceInboxItems([plain], new Set(), new Set([`${plain.id}:unassigned`]))).toMatchObject([
+      { type: "bot", bot: { id: bot.id } },
+    ]);
+  });
+
+  it("does not present a new-inbox hint when existing conversations are all folded", () => {
+    const work = space({
+      isDefault: true,
+      bots: [{ ...bot, sectionId: "research" }],
+      botSections: [
+        { id: "research", name: "Research", position: 0, createdAt: "", updatedAt: "" },
+      ],
+    });
+    const items = spaceInboxItems(
+      [work],
+      new Set(),
+      new Set([`${work.id}:section:research`, `${work.id}:unassigned`]),
+    );
+    expect(items.every((item) => item.type === "heading")).toBe(true);
+    expect(inboxNeedsCreateHint(items)).toBe(false);
+  });
+
+  it("temporarily expands sections for filtered results without changing remembered folding", () => {
+    const work = space({
+      isDefault: true,
+      bots: [bot],
+      botSections: [{ id: "empty", name: "Empty", position: 0, createdAt: "", updatedAt: "" }],
+    });
+    const collapsed = new Set([`${work.id}:unassigned`]);
+    expect(
+      spaceInboxItems([work], new Set(), collapsed, true).some((item) => item.type === "bot"),
+    ).toBe(true);
+    expect(collapsed.has(`${work.id}:unassigned`)).toBe(true);
   });
 
   it("nests child bots under their parent and can collapse them", () => {

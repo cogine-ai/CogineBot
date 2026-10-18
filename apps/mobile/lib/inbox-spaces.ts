@@ -1,4 +1,4 @@
-import type { SpaceBot, SpaceGroup } from "@rakazo/contracts";
+import type { BotSection, SpaceBot, SpaceGroup } from "@rakazo/contracts";
 import { groupBotsForSidebar, nestRosterByParent } from "@rakazo/core";
 import {
   adoptDeletedSpaceFallback,
@@ -9,6 +9,7 @@ import {
   selectedSpaceId,
   selectSpace,
 } from "./api";
+import { t } from "./i18n";
 
 export type InboxSpace = Pick<
   MobileSpace,
@@ -26,7 +27,16 @@ export type InboxSpaceItem =
       hasChildren: boolean;
     }
   | { type: "group"; group: MobileGroup | SpaceGroup }
-  | { type: "heading"; key: string; title: string; space?: InboxSpace };
+  | {
+      type: "heading";
+      key: string;
+      title: string;
+      space?: InboxSpace;
+      spaceId?: string;
+      section?: BotSection;
+      count?: number;
+      collapsed?: boolean;
+    };
 
 export function canDeleteInboxSpace(
   space: Pick<InboxSpace, "isDefault" | "hasContent" | "canDelete">,
@@ -35,13 +45,15 @@ export function canDeleteInboxSpace(
 }
 
 /** A brand-new space renders only its heading until it has a bot or group. */
-export function inboxNeedsCreateHint(items: readonly { type: string }[]): boolean {
-  return items.length > 0 && items.every((item) => item.type === "heading");
+export function inboxNeedsCreateHint(items: readonly { type: string; count?: number }[]): boolean {
+  return items.length > 0 && items.every((item) => item.type === "heading" && !item.count);
 }
 
 export function spaceInboxItems(
   spaces: InboxSpace[],
   collapsedParentIds: ReadonlySet<string> = new Set(),
+  collapsedSectionKeys: ReadonlySet<string> = new Set(),
+  expandSections = false,
 ): InboxSpaceItem[] {
   return spaces.flatMap((space): InboxSpaceItem[] => {
     const chats = [
@@ -66,9 +78,22 @@ export function spaceInboxItems(
       items.push({ type: "heading", key: space.id, title: space.name, space });
     }
     for (const group of groupBotsForSidebar(chats, space.botSections)) {
-      if (group.title) {
-        items.push({ type: "heading", key: `${space.id}:${group.key}`, title: group.title });
+      const section = space.botSections.find((entry) => group.key === `section:${entry.id}`);
+      const hasHeading = !!section || (group.key === "unassigned" && space.botSections.length > 0);
+      const key = `${space.id}:${group.key}`;
+      const collapsed = hasHeading && !expandSections && collapsedSectionKeys.has(key);
+      if (hasHeading) {
+        items.push({
+          type: "heading",
+          key,
+          title: section?.name ?? t("Unassigned"),
+          spaceId: space.id,
+          section,
+          count: group.bots.length,
+          collapsed,
+        });
       }
+      if (collapsed) continue;
       for (const row of nestRosterByParent(group.bots, collapsedParentIds)) {
         if (row.item.type === "bot") {
           items.push({

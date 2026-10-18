@@ -410,18 +410,24 @@ describeJourneys("required product journeys", () => {
 
     const pinned = await rpc<Bot>(app, ada, "bots/update", { botId: coder.id, pinned: true });
     expect(pinned.pinned).toBe(true);
-    const [section, concurrentSection] = await Promise.all([
-      rpc<{ id: string; name: string }>(app, ada, "botSections/create", {
-        botId: chief.id,
-        name: "Planning",
-      }),
-      rpc<{ id: string; name: string }>(app, ada, "botSections/create", {
-        botId: coder.id,
-        name: "Planning",
-      }),
-    ]);
+    const section = await rpc<{ id: string; name: string }>(app, ada, "botSections/create", {
+      botId: chief.id,
+      name: "Planning",
+    });
     expect(section.name).toBe("Planning");
-    expect(concurrentSection.id).toBe(section.id);
+    const duplicateSection = await raw(app, ada, "botSections/create", {
+      botId: coder.id,
+      name: "Planning",
+    });
+    expect(duplicateSection.status).toBe(409);
+    expect(
+      (await rpc<Bot[]>(app, ada, "bots/list")).find((bot) => bot.id === coder.id),
+    ).toMatchObject({ sectionId: pinned.sectionId, pinned: pinned.pinned });
+    await rpc<Bot>(app, ada, "bots/update", {
+      botId: coder.id,
+      sectionId: section.id,
+      pinned: false,
+    });
     expect(await rpc<Array<{ id: string }>>(app, ada, "botSections/list")).toEqual([
       expect.objectContaining({ id: section.id }),
     ]);
@@ -462,6 +468,7 @@ describeJourneys("required product journeys", () => {
     expect(await rpc<Array<{ id: string; name: string }>>(app, ada, "botSections/list")).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: section.id, name: "Delivery" })]),
     );
+    await rpc<Bot>(app, ada, "bots/update", { botId: coder.id, pinned: true });
     const duplicate = await rpc<Bot>(app, ada, "bots/duplicate", { botId: chief.id });
     expect(duplicate).toMatchObject({
       name: "Chief copy",

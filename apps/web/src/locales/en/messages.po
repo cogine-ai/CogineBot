@@ -5648,3 +5648,68 @@ msgstr "Your name"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Your team of always-on agents<0/>that you can give real work to."
+
+#: src/pages/Shell.tsx
+msgid "Could not update sidebar"
+msgstr "Could not update sidebar"
+
+#: src/pages/Shell.tsx
+msgid "Wait for the current change to finish"
+msgstr "Wait for the current change to finish"
+
+#: src/pages/Shell.tsx
+msgid "Moved and unpinned"
+msgstr "Moved and unpinned"
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}, {0}"
+msgstr "Expand {displayTitle}, {0}"
+
+#: src/pages/Shell.tsx
+msgid "Section deleted"
+msgstr "Section deleted"
+
+#: src/pages/Shell.tsx
+msgid "Undo"
+msgstr "Undo"
+
+#: src/pages/Shell.tsx
+msgid "Move up"
+msgstr "Move up"
+
+#: src/pages/Shell.tsx
+msgid "Move down"
+msgstr "Move down"
+
+#: src/pages/Shell.tsx
+msgid "Delete section"
+msgstr "Delete section"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section name is required"
+msgstr "Section name is required"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section names can be up to 60 characters"
+msgstr "Section names can be up to 60 characters"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Choose another group name"
+msgstr "Choose another group name"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "A section with this name already exists"
+msgstr "A section with this name already exists"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Could not save section"
+msgstr "Could not save section"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section name"
+msgstr "Section name"
+
+#: src/pages/BotContextMenu.tsx
+msgctxt "sidebar grouping"
+msgid "Group"
+msgstr "Group"

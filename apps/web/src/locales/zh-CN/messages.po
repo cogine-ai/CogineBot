@@ -3414,7 +3414,7 @@ msgstr "把它们移到共享记忆。"
 
 #: src/pages/BotContextMenu.tsx
 msgid "Move to"
-msgstr "移动到"
+msgstr "移至"
 
 #: src/components/call/CallCard.tsx
 msgid "Mute"
@@ -5286,7 +5286,7 @@ msgstr "输入你的回答"
 
 #: src/pages/BotContextMenu.tsx
 msgid "Unassigned"
-msgstr "未分配"
+msgstr "未分组"
 
 #: src/components/SoftwareUpdateSection.tsx
 #: src/pages/RoutineNativeEvents.tsx
@@ -5648,3 +5648,68 @@ msgstr "你的名字"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "你的一支随时在线的 Agent 团队<0/>可以交给它们真正的工作。"
+
+#: src/pages/Shell.tsx
+msgid "Could not update sidebar"
+msgstr "无法更新侧边栏"
+
+#: src/pages/Shell.tsx
+msgid "Wait for the current change to finish"
+msgstr "请等待当前操作完成"
+
+#: src/pages/Shell.tsx
+msgid "Moved and unpinned"
+msgstr "已移动并取消置顶"
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}, {0}"
+msgstr "展开 {displayTitle}，{0} 项"
+
+#: src/pages/Shell.tsx
+msgid "Section deleted"
+msgstr "分组已删除"
+
+#: src/pages/Shell.tsx
+msgid "Undo"
+msgstr "撤销"
+
+#: src/pages/Shell.tsx
+msgid "Move up"
+msgstr "上移"
+
+#: src/pages/Shell.tsx
+msgid "Move down"
+msgstr "下移"
+
+#: src/pages/Shell.tsx
+msgid "Delete section"
+msgstr "删除分组"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section name is required"
+msgstr "请输入分组名称"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section names can be up to 60 characters"
+msgstr "分组名称最多 60 个字符"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Choose another group name"
+msgstr "请使用其他分组名称"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "A section with this name already exists"
+msgstr "已有同名分组"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Could not save section"
+msgstr "无法保存分组"
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section name"
+msgstr "分组名称"
+
+#: src/pages/BotContextMenu.tsx
+msgctxt "sidebar grouping"
+msgid "Group"
+msgstr "分组"
