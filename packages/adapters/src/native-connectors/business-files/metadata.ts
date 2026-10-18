@@ -1,0 +1,102 @@
+/** Fixed provider metadata; no configurable business API authority. */
+export const BUSINESS_FILES_APPS = {
+  clickup: {
+    supportsTenant: false,
+    credentialActors: { oauth: ["user"], personal_token: ["user"] },
+    name: "ClickUp",
+    apiBase: "https://api.clickup.com",
+    authority: "https://app.clickup.com",
+    scopes: [],
+    defaultScopes: [],
+    credentialKinds: ["oauth", "personal_token"],
+    actors: ["user"],
+  },
+  airtable: {
+    supportsTenant: false,
+    credentialActors: { oauth: ["user"], personal_token: ["user"] },
+    name: "Airtable",
+    apiBase: "https://api.airtable.com",
+    authority: "https://airtable.com",
+    scopes: [
+      "schema.bases:read",
+      "data.records:read",
+      "data.records:write",
+      "data.recordComments:write",
+      "user.email:read",
+    ],
+    defaultScopes: ["schema.bases:read", "data.records:read"],
+    credentialKinds: ["oauth", "personal_token"],
+    actors: ["user"],
+  },
+  dropbox: {
+    supportsTenant: true,
+    credentialActors: { oauth: ["user"] },
+    name: "Dropbox",
+    apiBase: "https://api.dropboxapi.com",
+    authority: "https://www.dropbox.com",
+    scopes: [
+      "account_info.read",
+      "files.metadata.read",
+      "files.content.read",
+      "files.content.write",
+      "sharing.write",
+    ],
+    defaultScopes: ["account_info.read", "files.metadata.read", "files.content.read"],
+    credentialKinds: ["oauth"],
+    actors: ["user"],
+  },
+  hubspot: {
+    supportsTenant: true,
+    credentialActors: { oauth: ["app", "user"], personal_token: ["app"] },
+    defaultActor: "app",
+    name: "HubSpot",
+    apiBase: "https://api.hubapi.com",
+    authority: "https://app.hubspot.com",
+    scopes: [
+      "oauth",
+      "crm.objects.contacts.read",
+      "crm.objects.contacts.write",
+      "crm.objects.companies.read",
+      "crm.objects.companies.write",
+      "crm.objects.deals.read",
+      "crm.objects.deals.write",
+    ],
+    defaultScopes: [
+      "oauth",
+      "crm.objects.contacts.read",
+      "crm.objects.companies.read",
+      "crm.objects.deals.read",
+    ],
+    credentialKinds: ["oauth", "personal_token"],
+    actors: ["app", "user"],
+  },
+  figma: {
+    supportsTenant: false,
+    credentialActors: { oauth: ["user"], personal_token: ["user"] },
+    name: "Figma",
+    apiBase: "https://api.figma.com",
+    authority: "https://www.figma.com",
+    scopes: [
+      "current_user:read",
+      "file_content:read",
+      "file_comments:read",
+      "file_comments:write",
+      "file_versions:read",
+      "library_assets:read",
+    ],
+    defaultScopes: [
+      "current_user:read",
+      "file_content:read",
+      "file_comments:read",
+      "file_versions:read",
+      "library_assets:read",
+    ],
+    credentialKinds: ["oauth", "personal_token"],
+    actors: ["user"],
+  },
+} as const;
+export type BusinessFilesAppId = keyof typeof BUSINESS_FILES_APPS;
+export const businessFilesAppIds = Object.keys(BUSINESS_FILES_APPS) as BusinessFilesAppId[];
+export function isBusinessFilesApp(app: string): app is BusinessFilesAppId {
+  return Object.hasOwn(BUSINESS_FILES_APPS, app);
+}

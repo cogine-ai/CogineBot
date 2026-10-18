@@ -1,0 +1,406 @@
+{
+  "version": 2,
+  "appId": "figma",
+  "name": "Figma",
+  "actions": [
+    {
+      "id": "figma.files.get",
+      "description": "Read a design file with a bounded node depth.",
+      "method": "GET",
+      "path": "/v1/files/{fileKey}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        },
+        "required": [
+          "fileKey"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "file_content:read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "figma.nodes.get",
+      "description": "Read selected design nodes.",
+      "method": "GET",
+      "path": "/v1/files/{fileKey}/nodes",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        },
+        "required": [
+          "fileKey",
+          "ids"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "file_content:read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "figma.images.render",
+      "description": "Render selected nodes and return expiring image links.",
+      "method": "GET",
+      "path": "/v1/images/{fileKey}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          },
+          "format": {
+            "enum": [
+              "png",
+              "jpg",
+              "svg",
+              "pdf"
+            ]
+          },
+          "scale": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 4
+          }
+        },
+        "required": [
+          "fileKey",
+          "ids"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "file_content:read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "figma.comments.list",
+      "description": "List comments on a design file.",
+      "method": "GET",
+      "path": "/v1/files/{fileKey}/comments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "fileKey"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "file_comments:read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "figma.comments.create",
+      "description": "Post a design file comment or reply.",
+      "method": "POST",
+      "path": "/v1/files/{fileKey}/comments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "commentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "fileKey",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "comment"
+        ],
+        "properties": {
+          "action_id": {
+            "const": "figma.comments.create"
+          },
+          "comment": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "file_comments:write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "figma.comments.delete",
+      "description": "Delete a comment authored by this user.",
+      "method": "DELETE",
+      "path": "/v1/files/{fileKey}/comments/{commentId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "commentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "fileKey",
+          "commentId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "file_comments:write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "figma.versions.list",
+      "description": "Read one page of design file versions.",
+      "method": "GET",
+      "path": "/v1/files/{fileKey}/versions",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "before": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[0-9]+$"
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "required": [
+          "fileKey"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "file_versions:read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "figma.components.list",
+      "description": "List published components in a file.",
+      "method": "GET",
+      "path": "/v1/files/{fileKey}/components",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fileKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "fileKey"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": [
+          "library_assets:read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    }
+  ],
+  "authorization": {
+    "credentialKinds": [
+      "oauth",
+      "personal_token"
+    ],
+    "identity": "GET /v1/me string ID; OAuth returned user_id_string must match; PAT X-Figma-Token; plan tokens unsupported /me so cannot masquerade as user",
+    "scopes": "Granular current_user:read plus action scopes; tokenservice does not introspect scopes, store empty actualscopes with explicit provider_enforced_scope identity marker; do not fabricate configuredgrants",
+    "refresh": "Basic confidential /v1/oauth/token + PKCE S256; refresh grant_type=refresh_token per 2025-05-16 changelog; reusable refresh; same app/user has one active access. Recheck same user; no independence assumption for local connections.",
+    "events": "Webhook APIs available with scope/team permissions; no automatically created subscription or secondary gateway",
+    "rate": "429 Retry-After depends endpoint tier/seat/plan, do not assume polling cadence",
+    "limits": "PublicOAuthapp requiresreview; privateOAuth limitedownteam/org; PATmax90days; filesdefaultdepth2,100nodes; renderingreturns ephemeralURLs; no arbitraryimagefetch; DELETE onlyafter verifying originalauthor"
+  },
+  "sources": [
+    "https://developers.figma.com/docs/rest-api/oauth-apps/",
+    "https://developers.figma.com/docs/rest-api/scopes/",
+    "https://developers.figma.com/docs/rest-api/file-endpoints/",
+    "https://developers.figma.com/docs/rest-api/comments-endpoints/",
+    "https://github.com/figma/rest-api-spec/blob/main/openapi/openapi.yaml",
+    "https://developers.figma.com/docs/rest-api/changelog/"
+  ],
+  "errorPolicy": "401expired;403scope/ACL;404resource;409/412conflict;429retryAfter;5xxunavailable; acknowledgedunknownwrite never replay; never expose diagnostics/tokens",
+  "acceptance": [
+    "everyaction exactmethod/path/body fixture",
+    "schemaunknownfield rejection beforeHTTP",
+    "wrongactor/subject/tenant rejection",
+    "paginationneverpretendallpages",
+    "401/403/404/429 mapping",
+    "writecheckpoint beforedispatch and no replay afterunknown",
+    "authidentity/scopes/refreshnegative tests"
+  ]
+}

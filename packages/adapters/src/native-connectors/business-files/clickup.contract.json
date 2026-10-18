@@ -1,0 +1,431 @@
+{
+  "version": 2,
+  "appId": "clickup",
+  "name": "ClickUp",
+  "actions": [
+    {
+      "id": "clickup.workspaces.list",
+      "description": "List authorized ClickUp workspaces.",
+      "method": "GET",
+      "path": "/api/v2/team",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "clickup.spaces.list",
+      "description": "List spaces in an authorized ClickUp workspace.",
+      "method": "GET",
+      "path": "/api/v2/team/{workspaceId}/space",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "clickup.lists.list",
+      "description": "List lists in a ClickUp space or folder.",
+      "method": "GET",
+      "path": "/api/v2/{parentType}/{parentId}/list",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "parentType": {
+            "enum": [
+              "space",
+              "folder"
+            ]
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "parentType",
+          "parentId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "clickup.tasks.list",
+      "description": "Read one page of tasks from a list.",
+      "method": "GET",
+      "path": "/api/v2/list/{listId}/task",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "includeClosed": {
+            "type": "boolean"
+          },
+          "includeSubtasks": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "listId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "clickup.tasks.get",
+      "description": "Read a ClickUp task.",
+      "method": "GET",
+      "path": "/api/v2/task/{taskId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "task"
+        ],
+        "properties": {
+          "action_id": {
+            "const": "clickup.tasks.get"
+          },
+          "task": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "clickup.tasks.create",
+      "description": "Create a task in a ClickUp list.",
+      "method": "POST",
+      "path": "/api/v2/list/{listId}/task",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "dueDate": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "listId",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "task"
+        ],
+        "properties": {
+          "action_id": {
+            "const": "clickup.tasks.create"
+          },
+          "task": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "clickup.tasks.update",
+      "description": "Update a task after checking its last-read timestamp.",
+      "method": "PUT",
+      "path": "/api/v2/task/{taskId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expectedDateUpdated": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 50000
+              },
+              "status": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "due_date": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 8640000000000000
+              }
+            },
+            "required": [],
+            "additionalProperties": false,
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "taskId",
+          "expectedDateUpdated",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "task"
+        ],
+        "properties": {
+          "action_id": {
+            "const": "clickup.tasks.update"
+          },
+          "task": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "clickup.comments.create",
+      "description": "Post a task comment.",
+      "method": "POST",
+      "path": "/api/v2/task/{taskId}/comment",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "notifyAll": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "taskId",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "comment"
+        ],
+        "properties": {
+          "action_id": {
+            "const": "clickup.comments.create"
+          },
+          "comment": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": []
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    }
+  ],
+  "authorization": {
+    "credentialKinds": [
+      "oauth",
+      "personal_token"
+    ],
+    "identity": "GET /api/v2/user + GET /api/v2/team verifies actual user and authorized Workspace IDs. No tenantId selection: user may authorize multiple Workspaces; provider ACL per request.",
+    "scopes": "No OAuth scopes API: do not fabricate; resource ACL checked by provider per request",
+    "refresh": "No documented refresh; nonexpiring current token; revoked token reconnects",
+    "events": "Signed workspace webhook available; no automatic registration or second consumer; only existing explicitly selected Routine framework may poll later",
+    "rate": "HTTP429, plan-dependent100/1000/10000 requests/minute; respect Retry-After or X-RateLimit-Reset",
+    "limits": "No custom fields, attachment upload, or task search implied by these8actions; update precheck notatomic"
+  },
+  "sources": [
+    "https://developer.clickup.com/docs/authentication",
+    "https://developer.clickup.com/docs/rate-limits",
+    "https://developer.clickup.com/reference/gettasks",
+    "https://developer.clickup.com/reference/createtask",
+    "https://developer.clickup.com/reference/updatetask",
+    "https://developer.clickup.com/reference/createtaskcomment"
+  ],
+  "errorPolicy": "401expired;403scope/ACL;404resource;409/412conflict;429retryAfter;5xxunavailable; acknowledgedunknownwrite never replay; never expose diagnostics/tokens",
+  "acceptance": [
+    "everyaction exactmethod/path/body fixture",
+    "schemaunknownfield rejection beforeHTTP",
+    "wrongactor/subject/tenant rejection",
+    "paginationneverpretendallpages",
+    "401/403/404/429 mapping",
+    "writecheckpoint beforedispatch and no replay afterunknown",
+    "authidentity/scopes/refreshnegative tests"
+  ]
+}

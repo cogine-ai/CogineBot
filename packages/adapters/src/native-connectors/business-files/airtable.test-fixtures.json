@@ -1,0 +1,320 @@
+{
+  "contractSha256": "0c84d4e774125c778be28bd3287e39bfa0a9edeb2334348767f3ecf12c33cbb3",
+  "fixtures": [
+    {
+      "id": "airtable.bases.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v0/meta/bases",
+            "query": {}
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "bases": [
+                {
+                  "id": "appFixture",
+                  "permissionLevel": "edit"
+                }
+              ],
+              "offset": "nextA"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.bases.list",
+        "nextCursor": "nextA",
+        "hasMore": true,
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "airtable.tables.list",
+      "input": {
+        "baseId": "appFixture"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v0/meta/bases/appFixture/tables"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "tables": [
+                {
+                  "id": "tblFixture",
+                  "fields": []
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.tables.list",
+        "items": [
+          {
+            "id": "tblFixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": "airtable.records.list",
+      "input": {
+        "baseId": "appFixture",
+        "tableId": "tblFixture",
+        "pageSize": 10,
+        "fields": [
+          "Name"
+        ]
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v0/appFixture/tblFixture",
+            "query": {
+              "pageSize": 10,
+              "fields[]": [
+                "Name"
+              ]
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "records": [
+                {
+                  "id": "recFixture",
+                  "fields": {
+                    "Name": "Item"
+                  }
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.records.list",
+        "items": [
+          {
+            "id": "recFixture"
+          }
+        ],
+        "allPagesRead": true
+      }
+    },
+    {
+      "id": "airtable.records.get",
+      "input": {
+        "baseId": "appFixture",
+        "tableId": "tblFixture",
+        "recordId": "recFixture"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v0/appFixture/tblFixture/recFixture"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "recFixture",
+              "fields": {
+                "Name": "Item"
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.records.get",
+        "record": {
+          "id": "recFixture"
+        }
+      }
+    },
+    {
+      "id": "airtable.records.create",
+      "input": {
+        "baseId": "appFixture",
+        "tableId": "tblFixture",
+        "fields": {
+          "Name": "New"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/v0/appFixture/tblFixture",
+            "body": {
+              "fields": {
+                "Name": "New"
+              },
+              "typecast": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "recCreated",
+              "fields": {
+                "Name": "New"
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.records.create",
+        "record": {
+          "id": "recCreated"
+        }
+      }
+    },
+    {
+      "id": "airtable.records.update",
+      "input": {
+        "baseId": "appFixture",
+        "tableId": "tblFixture",
+        "recordId": "recFixture",
+        "expectedFields": {
+          "Name": "Item"
+        },
+        "fields": {
+          "Name": "New"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v0/appFixture/tblFixture/recFixture"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "recFixture",
+              "fields": {
+                "Name": "Item"
+              }
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "PATCH",
+            "path": "/v0/appFixture/tblFixture/recFixture",
+            "body": {
+              "fields": {
+                "Name": "New"
+              },
+              "typecast": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "recFixture",
+              "fields": {
+                "Name": "New"
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.records.update",
+        "record": {
+          "id": "recFixture"
+        },
+        "concurrency_guarantee": "best_effort_precheck"
+      }
+    },
+    {
+      "id": "airtable.records.delete",
+      "input": {
+        "baseId": "appFixture",
+        "tableId": "tblFixture",
+        "recordId": "recFixture"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "DELETE",
+            "path": "/v0/appFixture/tblFixture/recFixture"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "recFixture",
+              "deleted": true
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.records.delete",
+        "record": {
+          "id": "recFixture",
+          "deleted": true
+        }
+      }
+    },
+    {
+      "id": "airtable.comments.create",
+      "input": {
+        "baseId": "appFixture",
+        "tableId": "tblFixture",
+        "recordId": "recFixture",
+        "text": "Comment"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/v0/appFixture/tblFixture/recFixture/comments",
+            "body": {
+              "text": "Comment"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "comFixture",
+              "text": "Comment",
+              "author": {
+                "id": "usrFixture"
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "airtable.comments.create",
+        "comment": {
+          "id": "comFixture"
+        }
+      }
+    }
+  ]
+}

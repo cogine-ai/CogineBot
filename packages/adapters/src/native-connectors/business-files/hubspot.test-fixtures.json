@@ -1,0 +1,704 @@
+{
+  "contractSha256": "efd444fc0de86c5eff5b1ba8826e068220262e2d7ee158e56a1bbd768e4f184e",
+  "fixtures": [
+    {
+      "id": "hubspot.contacts.search",
+      "input": {
+        "query": "Name",
+        "limit": 10,
+        "after": 10
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/crm/objects/2026-09/contacts/search",
+            "body": {
+              "query": "Name",
+              "after": 10,
+              "limit": 10
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "total": 11,
+              "results": [
+                {
+                  "id": "C1",
+                  "properties": {}
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.contacts.search",
+        "items": [
+          {
+            "id": "C1"
+          }
+        ],
+        "allPagesRead": false,
+        "hasMore": false
+      }
+    },
+    {
+      "id": "hubspot.contacts.get",
+      "input": {
+        "contactId": "C1",
+        "properties": [
+          "name"
+        ]
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/objects/2026-09/contacts/C1",
+            "query": {
+              "properties": [
+                "name"
+              ],
+              "archived": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "C1",
+              "properties": {
+                "firstname": "Name"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.contacts.get",
+        "contact": {
+          "id": "C1"
+        }
+      }
+    },
+    {
+      "id": "hubspot.contacts.create",
+      "input": {
+        "properties": {
+          "firstname": "Name"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/crm/objects/2026-09/contacts",
+            "body": {
+              "properties": {
+                "firstname": "Name"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "C1",
+              "properties": {
+                "firstname": "Name"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.contacts.create",
+        "contact": {
+          "id": "C1"
+        }
+      }
+    },
+    {
+      "id": "hubspot.contacts.update",
+      "input": {
+        "contactId": "C1",
+        "expectedUpdatedAt": "2026-10-18T00:00:00Z",
+        "properties": {
+          "firstname": "New"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/objects/2026-09/contacts/C1",
+            "query": {
+              "archived": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "C1",
+              "properties": {
+                "firstname": "Name"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "PATCH",
+            "path": "/crm/objects/2026-09/contacts/C1",
+            "body": {
+              "properties": {
+                "firstname": "New"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "C1",
+              "properties": {
+                "firstname": "New"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.contacts.update",
+        "contact": {
+          "id": "C1"
+        },
+        "concurrency_guarantee": "best_effort_precheck"
+      }
+    },
+    {
+      "id": "hubspot.companies.search",
+      "input": {
+        "query": "Name",
+        "limit": 10,
+        "after": 10
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/crm/objects/2026-09/companies/search",
+            "body": {
+              "query": "Name",
+              "after": 10,
+              "limit": 10
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "total": 11,
+              "results": [
+                {
+                  "id": "C1",
+                  "properties": {}
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.companies.search",
+        "items": [
+          {
+            "id": "C1"
+          }
+        ],
+        "allPagesRead": false,
+        "hasMore": false
+      }
+    },
+    {
+      "id": "hubspot.companies.get",
+      "input": {
+        "companyId": "C1",
+        "properties": [
+          "name"
+        ]
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/objects/2026-09/companies/C1",
+            "query": {
+              "properties": [
+                "name"
+              ],
+              "archived": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "C1",
+              "properties": {
+                "firstname": "Name"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.companies.get",
+        "company": {
+          "id": "C1"
+        }
+      }
+    },
+    {
+      "id": "hubspot.deals.search",
+      "input": {
+        "query": "Name",
+        "limit": 10,
+        "after": 10
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/crm/objects/2026-09/deals/search",
+            "body": {
+              "query": "Name",
+              "after": 10,
+              "limit": 10
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "total": 11,
+              "results": [
+                {
+                  "id": "C1",
+                  "properties": {}
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.deals.search",
+        "items": [
+          {
+            "id": "C1"
+          }
+        ],
+        "allPagesRead": false,
+        "hasMore": false
+      }
+    },
+    {
+      "id": "hubspot.deals.get",
+      "input": {
+        "dealId": "C1",
+        "properties": [
+          "name"
+        ]
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/objects/2026-09/deals/C1",
+            "query": {
+              "properties": [
+                "name"
+              ],
+              "archived": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "C1",
+              "properties": {
+                "firstname": "Name"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.deals.get",
+        "deal": {
+          "id": "C1"
+        }
+      }
+    },
+    {
+      "id": "hubspot.companies.create",
+      "input": {
+        "properties": {
+          "name": "Fixture"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/crm/objects/2026-09/companies",
+            "body": {
+              "properties": {
+                "name": "Fixture"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "companies1",
+              "properties": {
+                "name": "Fixture"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.companies.create",
+        "company": {
+          "id": "companies1"
+        }
+      }
+    },
+    {
+      "id": "hubspot.companies.update",
+      "input": {
+        "companyId": "companies1",
+        "expectedUpdatedAt": "2026-10-18T00:00:00Z",
+        "properties": {
+          "name": "Updated"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/objects/2026-09/companies/companies1",
+            "query": {
+              "archived": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "companies1",
+              "properties": {
+                "name": "Fixture"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "PATCH",
+            "path": "/crm/objects/2026-09/companies/companies1",
+            "body": {
+              "properties": {
+                "name": "Updated"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "companies1",
+              "properties": {
+                "name": "Updated"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.companies.update",
+        "company": {
+          "id": "companies1"
+        },
+        "concurrency_guarantee": "best_effort_precheck"
+      }
+    },
+    {
+      "id": "hubspot.deals.create",
+      "input": {
+        "properties": {
+          "dealname": "Fixture",
+          "pipeline": "pipeline1",
+          "dealstage": "stage1"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/pipelines/2026-09/deals/pipeline1"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "pipeline1",
+              "label": "Sales",
+              "stages": [
+                {
+                  "id": "stage1",
+                  "label": "Open",
+                  "archived": false
+                }
+              ],
+              "archived": false
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/crm/objects/2026-09/deals",
+            "body": {
+              "properties": {
+                "dealname": "Fixture",
+                "pipeline": "pipeline1",
+                "dealstage": "stage1"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "deals1",
+              "properties": {
+                "dealname": "Fixture",
+                "pipeline": "pipeline1",
+                "dealstage": "stage1"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.deals.create",
+        "deal": {
+          "id": "deals1"
+        }
+      }
+    },
+    {
+      "id": "hubspot.deals.update",
+      "input": {
+        "dealId": "deals1",
+        "expectedUpdatedAt": "2026-10-18T00:00:00Z",
+        "properties": {
+          "dealstage": "stage1"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/objects/2026-09/deals/deals1",
+            "query": {
+              "archived": false,
+              "properties": [
+                "pipeline",
+                "dealstage"
+              ]
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "deals1",
+              "properties": {
+                "dealname": "Fixture",
+                "pipeline": "pipeline1",
+                "dealstage": "stage1"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/pipelines/2026-09/deals/pipeline1"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "pipeline1",
+              "label": "Sales",
+              "stages": [
+                {
+                  "id": "stage1",
+                  "label": "Open",
+                  "archived": false
+                }
+              ],
+              "archived": false
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "PATCH",
+            "path": "/crm/objects/2026-09/deals/deals1",
+            "body": {
+              "properties": {
+                "dealstage": "stage1"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "deals1",
+              "properties": {
+                "dealname": "Fixture",
+                "pipeline": "pipeline1",
+                "dealstage": "stage1"
+              },
+              "updatedAt": "2026-10-18T00:00:00Z"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.deals.update",
+        "deal": {
+          "id": "deals1"
+        },
+        "concurrency_guarantee": "best_effort_precheck"
+      }
+    },
+    {
+      "id": "hubspot.pipelines.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/crm/pipelines/2026-09/deals"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "results": [
+                {
+                  "id": "pipeline1",
+                  "label": "Sales",
+                  "stages": [
+                    {
+                      "id": "stage1",
+                      "label": "Open",
+                      "archived": false
+                    }
+                  ],
+                  "archived": false
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.pipelines.list",
+        "items": [
+          {
+            "id": "pipeline1",
+            "stages": [
+              {
+                "id": "stage1"
+              }
+            ]
+          }
+        ],
+        "allPagesRead": true
+      }
+    },
+    {
+      "id": "hubspot.associations.create",
+      "input": {
+        "fromType": "contacts",
+        "fromId": "contact1",
+        "toType": "companies",
+        "toId": "company1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "PUT",
+            "path": "/crm/objects/2026-09/contacts/contact1/associations/default/companies/company1"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "status": "COMPLETE",
+              "results": [
+                {
+                  "from": {
+                    "id": "contact1"
+                  },
+                  "to": {
+                    "id": "company1"
+                  },
+                  "associationSpec": {
+                    "associationCategory": "HUBSPOT_DEFINED",
+                    "associationTypeId": 279
+                  }
+                }
+              ],
+              "numErrors": 0
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "hubspot.associations.create",
+        "fromType": "contacts",
+        "fromId": "contact1",
+        "toType": "companies",
+        "toId": "company1"
+      }
+    }
+  ]
+}

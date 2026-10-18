@@ -1,0 +1,350 @@
+{
+  "contractSha256": "9659e449d376133df5159bd112af035ed32ee9cdc9cdafa11f71e67630d40ee5",
+  "fixtures": [
+    {
+      "id": "figma.files.get",
+      "input": {
+        "fileKey": "fixtureKey"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v1/files/fixtureKey",
+            "query": {
+              "depth": 2
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "name": "Design",
+              "version": "version1",
+              "document": {
+                "id": "0:0",
+                "type": "DOCUMENT",
+                "children": []
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.files.get",
+        "fileKey": "fixtureKey",
+        "depth": 2,
+        "completeTree": false
+      }
+    },
+    {
+      "id": "figma.nodes.get",
+      "input": {
+        "fileKey": "fixtureKey",
+        "ids": [
+          "1:1",
+          "1:2"
+        ]
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v1/files/fixtureKey/nodes",
+            "query": {
+              "ids": "1:1,1:2",
+              "depth": 2
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "nodes": {
+                "1:1": {
+                  "document": {
+                    "id": "1:1",
+                    "type": "FRAME"
+                  }
+                },
+                "1:2": null
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.nodes.get",
+        "items": [
+          {
+            "nodeId": "1:1",
+            "available": true
+          },
+          {
+            "nodeId": "1:2",
+            "available": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "figma.images.render",
+      "input": {
+        "fileKey": "fixtureKey",
+        "ids": [
+          "1:1",
+          "1:2"
+        ]
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v1/images/fixtureKey",
+            "query": {
+              "ids": "1:1,1:2",
+              "format": "png",
+              "scale": 1
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "err": null,
+              "images": {
+                "1:1": "https://s3-alpha.figma.com/rendered.png",
+                "1:2": null
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.images.render",
+        "items": [
+          {
+            "nodeId": "1:1",
+            "rendered": true
+          },
+          {
+            "nodeId": "1:2",
+            "rendered": false
+          }
+        ],
+        "linksExpire": true,
+        "storedAsArtifact": false
+      }
+    },
+    {
+      "id": "figma.comments.list",
+      "input": {
+        "fileKey": "fixtureKey"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v1/files/fixtureKey/comments",
+            "query": {
+              "as_md": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "comments": [
+                {
+                  "id": "comment1",
+                  "file_key": "fixtureKey",
+                  "user": {
+                    "id": "user1"
+                  },
+                  "message": "Comment"
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.comments.list",
+        "items": [
+          {
+            "id": "comment1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "figma.comments.create",
+      "input": {
+        "fileKey": "fixtureKey",
+        "message": "Comment"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/v1/files/fixtureKey/comments",
+            "body": {
+              "message": "Comment"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "comment1",
+              "file_key": "fixtureKey",
+              "user": {
+                "id": "user1"
+              },
+              "message": "Comment"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.comments.create",
+        "comment": {
+          "id": "comment1"
+        }
+      }
+    },
+    {
+      "id": "figma.comments.delete",
+      "input": {
+        "fileKey": "fixtureKey",
+        "commentId": "comment1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v1/files/fixtureKey/comments",
+            "query": {
+              "as_md": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "comments": [
+                {
+                  "id": "comment1",
+                  "file_key": "fixtureKey",
+                  "user": {
+                    "id": "user1"
+                  },
+                  "message": "Comment"
+                }
+              ]
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "DELETE",
+            "path": "/v1/files/fixtureKey/comments/comment1"
+          },
+          "response": {
+            "status": 200,
+            "body": {},
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.comments.delete",
+        "commentId": "comment1",
+        "deleted": true
+      }
+    },
+    {
+      "id": "figma.versions.list",
+      "input": {
+        "fileKey": "fixtureKey"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v1/files/fixtureKey/versions",
+            "query": {
+              "page_size": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "versions": [
+                {
+                  "id": "13",
+                  "label": "Version"
+                }
+              ],
+              "pagination": {
+                "next_page": "https://api.figma.com/v1/files/fixtureKey/versions?before=13&page_size=30"
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.versions.list",
+        "items": [
+          {
+            "id": "13"
+          }
+        ],
+        "hasMore": true,
+        "nextBefore": "13",
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "figma.components.list",
+      "input": {
+        "fileKey": "fixtureKey"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/v1/files/fixtureKey/components"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "status": 200,
+              "error": false,
+              "meta": {
+                "components": [
+                  {
+                    "key": "componentKey",
+                    "node_id": "1:1",
+                    "name": "Component"
+                  }
+                ]
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "figma.components.list",
+        "items": [
+          {
+            "key": "componentKey",
+            "node_id": "1:1"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,380 @@
+{
+  "contractSha256": "b737f4ab05a695bab4b2a5b0eac284739b9bcb123ba80a2352775b701571cfc9",
+  "fixtures": [
+    {
+      "id": "dropbox.files.list",
+      "input": {
+        "path": ""
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/list_folder",
+            "body": {
+              "path": "",
+              "recursive": false,
+              "limit": 100,
+              "include_deleted": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "entries": [
+                {
+                  ".tag": "file",
+                  "id": "id:file1",
+                  "name": "fixture.txt",
+                  "rev": "r1",
+                  "size": 7
+                }
+              ],
+              "cursor": "cursor1",
+              "has_more": true
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.files.list",
+        "items": [
+          {
+            "id": "id:file1"
+          }
+        ],
+        "nextCursor": "cursor1",
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "dropbox.files.search",
+      "input": {
+        "query": "fixture"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/search_v2",
+            "body": {
+              "query": "fixture",
+              "options": {
+                "path": "",
+                "max_results": 100
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "matches": [
+                {
+                  "metadata": {
+                    ".tag": "metadata",
+                    "metadata": {
+                      ".tag": "file",
+                      "id": "id:file1",
+                      "name": "fixture.txt",
+                      "rev": "r1",
+                      "size": 7
+                    }
+                  }
+                }
+              ],
+              "has_more": false
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.files.search",
+        "items": [
+          {
+            "id": "id:file1"
+          }
+        ],
+        "allPagesRead": true
+      }
+    },
+    {
+      "id": "dropbox.files.get",
+      "input": {
+        "path": "id:file1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/get_metadata",
+            "body": {
+              "path": "id:file1",
+              "include_deleted": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              ".tag": "file",
+              "id": "id:file1",
+              "name": "fixture.txt",
+              "rev": "r1",
+              "size": 7
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.files.get",
+        "metadata": {
+          "id": "id:file1"
+        }
+      }
+    },
+    {
+      "id": "dropbox.files.download",
+      "input": {
+        "path": "id:file1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/download",
+            "service": "dropbox-content",
+            "headers": {
+              "Dropbox-API-Arg": "{\"path\":\"id:file1\"}"
+            },
+            "responseType": "bytes"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "$bytes": "fixture"
+            },
+            "headers": {
+              "dropbox-api-result": "{\"id\": \"id:file1\", \"name\": \"fixture.txt\", \"rev\": \"r1\", \"size\": 7}",
+              "content-type": "text/plain"
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.files.download",
+        "metadata": {
+          "id": "id:file1"
+        },
+        "artifact": {
+          "id": "artifact-output",
+          "size": 7
+        }
+      }
+    },
+    {
+      "id": "dropbox.files.upload",
+      "input": {
+        "path": "/fixture.txt",
+        "artifactId": "artifact-input"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/upload",
+            "service": "dropbox-content",
+            "headers": {
+              "content-type": "application/octet-stream",
+              "Dropbox-API-Arg": "{\"path\":\"/fixture.txt\",\"mode\":{\".tag\":\"add\"},\"autorename\":false,\"strict_conflict\":true,\"mute\":false}"
+            },
+            "body": {
+              "$bytes": "fixture"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "id:file1",
+              "name": "fixture.txt",
+              "rev": "r1",
+              "size": 7
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.files.upload",
+        "metadata": {
+          "id": "id:file1",
+          "rev": "r1"
+        }
+      }
+    },
+    {
+      "id": "dropbox.folders.create",
+      "input": {
+        "path": "/Folder"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/create_folder_v2",
+            "body": {
+              "path": "/Folder",
+              "autorename": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "metadata": {
+                "id": "id:folder1",
+                "name": "Folder"
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.folders.create",
+        "metadata": {
+          "id": "id:folder1"
+        }
+      }
+    },
+    {
+      "id": "dropbox.files.move",
+      "input": {
+        "fromPath": "/fixture.txt",
+        "toPath": "/moved.txt"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/move_v2",
+            "body": {
+              "from_path": "/fixture.txt",
+              "to_path": "/moved.txt",
+              "autorename": false,
+              "allow_ownership_transfer": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "metadata": {
+                ".tag": "file",
+                "id": "id:file1",
+                "name": "fixture.txt",
+                "rev": "r1",
+                "size": 7
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.files.move",
+        "metadata": {
+          "id": "id:file1"
+        }
+      }
+    },
+    {
+      "id": "dropbox.files.delete",
+      "input": {
+        "path": "/fixture.txt",
+        "expectedRev": "r1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/files/delete_v2",
+            "body": {
+              "path": "/fixture.txt",
+              "parent_rev": "r1"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "metadata": {
+                ".tag": "file",
+                "id": "id:file1",
+                "name": "fixture.txt",
+                "rev": "r1",
+                "size": 7
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.files.delete",
+        "metadata": {
+          "id": "id:file1"
+        }
+      }
+    },
+    {
+      "id": "dropbox.shared_links.create",
+      "input": {
+        "path": "id:file1",
+        "visibility": "team_only",
+        "allowDownload": false
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/2/sharing/create_shared_link_with_settings",
+            "body": {
+              "path": "id:file1",
+              "settings": {
+                "access": {
+                  ".tag": "viewer"
+                },
+                "requested_visibility": {
+                  ".tag": "team_only"
+                },
+                "allow_download": false
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              ".tag": "file",
+              "id": "id:file1",
+              "name": "fixture.txt",
+              "url": "https://www.dropbox.com/s/fixture/fixture.txt?dl=0",
+              "link_permissions": {
+                "resolved_visibility": {
+                  ".tag": "team_only"
+                },
+                "allow_download": false
+              }
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "dropbox.shared_links.create",
+        "sharedLink": {
+          "id": "id:file1"
+        },
+        "resolvedVisibility": "team_only"
+      }
+    }
+  ]
+}

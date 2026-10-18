@@ -1,0 +1,719 @@
+{
+  "version": 3,
+  "appId": "hubspot",
+  "name": "HubSpot",
+  "actions": [
+    {
+      "id": "hubspot.contacts.search",
+      "description": "Search one page of CRM contacts.",
+      "method": "POST",
+      "path": "/crm/objects/2026-09/contacts/search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.contacts.read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.contacts.get",
+      "description": "Read a selected CRM contact.",
+      "method": "GET",
+      "path": "/crm/objects/2026-09/contacts/{contactId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "contactId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.contacts.read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.contacts.create",
+      "description": "Create a CRM contact.",
+      "method": "POST",
+      "path": "/crm/objects/2026-09/contacts",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 50000
+            }
+          }
+        },
+        "required": [
+          "properties"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.contacts.write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.contacts.update",
+      "description": "Update a contact after checking its last-read timestamp.",
+      "method": "PATCH",
+      "path": "/crm/objects/2026-09/contacts/{contactId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "properties": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 50000
+            }
+          }
+        },
+        "required": [
+          "contactId",
+          "expectedUpdatedAt",
+          "properties"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.contacts.write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.companies.search",
+      "description": "Search one page of CRM companies.",
+      "method": "POST",
+      "path": "/crm/objects/2026-09/companies/search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.companies.read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.companies.get",
+      "description": "Read a selected CRM company.",
+      "method": "GET",
+      "path": "/crm/objects/2026-09/companies/{companyId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "companyId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "companyId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.companies.read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.deals.search",
+      "description": "Search one page of CRM deals.",
+      "method": "POST",
+      "path": "/crm/objects/2026-09/deals/search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.deals.read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.deals.get",
+      "description": "Read a selected CRM deal.",
+      "method": "GET",
+      "path": "/crm/objects/2026-09/deals/{dealId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dealId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "dealId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.deals.read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.companies.create",
+      "description": "Create a CRM company.",
+      "method": "POST",
+      "path": "/crm/objects/2026-09/companies",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 50000
+            }
+          }
+        },
+        "required": [
+          "properties"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "company"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.companies.write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.companies.update",
+      "description": "Update a CRM company after checking its last-read timestamp.",
+      "method": "PATCH",
+      "path": "/crm/objects/2026-09/companies/{companyId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "companyId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "properties": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 50000
+            }
+          }
+        },
+        "required": [
+          "companyId",
+          "expectedUpdatedAt",
+          "properties"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "company"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.companies.write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.deals.create",
+      "description": "Create a CRM deal.",
+      "method": "POST",
+      "path": "/crm/objects/2026-09/deals",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 50000
+            },
+            "properties": {
+              "dealname": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50000
+              },
+              "pipeline": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "dealstage": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "required": [
+              "dealname",
+              "pipeline",
+              "dealstage"
+            ]
+          }
+        },
+        "required": [
+          "properties"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "deal"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.deals.write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.deals.update",
+      "description": "Update a CRM deal after checking its last-read timestamp.",
+      "method": "PATCH",
+      "path": "/crm/objects/2026-09/deals/{dealId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dealId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "properties": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 50000
+            }
+          }
+        },
+        "required": [
+          "dealId",
+          "expectedUpdatedAt",
+          "properties"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id",
+          "deal"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "app or verified user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.deals.write"
+        ]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "hubspot.pipelines.list",
+      "description": "List this account’s deal pipelines and real stage IDs.",
+      "method": "GET",
+      "path": "/crm/pipelines/2026-09/deals",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "verified account app or user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.deals.read"
+        ]
+      },
+      "externalEffect": "none",
+      "pagination": "single complete response or exact provider cursor; no assumed synchronization"
+    },
+    {
+      "id": "hubspot.associations.create",
+      "description": "Associate two selected CRM records without an added label.",
+      "method": "PUT",
+      "path": "/crm/objects/2026-09/{fromType}/{fromId}/associations/default/{toType}/{toId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fromType": {
+            "enum": [
+              "contacts",
+              "companies",
+              "deals"
+            ]
+          },
+          "fromId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "toType": {
+            "enum": [
+              "contacts",
+              "companies",
+              "deals"
+            ]
+          },
+          "toId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "fromType",
+          "fromId",
+          "toType",
+          "toId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "action_id"
+        ]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "verified account app or user-level OAuth",
+        "acceptedAnyOfScopes": [
+          "crm.objects.contacts.write",
+          "crm.objects.companies.write",
+          "crm.objects.deals.write"
+        ]
+      },
+      "externalEffect": "mutates selected CRM account or sharing permission; receipt before dispatch, unknown outcome never automatically replayed",
+      "pagination": "single complete response or exact provider cursor; no assumed synchronization"
+    }
+  ],
+  "authorization": {
+    "credentialKinds": [
+      "oauth",
+      "personal_token"
+    ],
+    "identity": "2026-09 OAuth body introspection binds client_id/app_id/hub_id/user_id. signed_access_token.isUserLevel true -> user; false -> account app. private token info -> app actor, never user-row ACL promise.",
+    "scopes": "crm.objects.contacts.read/write companies.read deals.read; product tier/recordACL remains upstream, not fabricate objects crm.objects.companies.write crm.objects.deals.write. Updates require corresponding read; deal stage changes require actual pipeline/stage verification and deals.read; association requires both selected object write scopes.",
+    "refresh": "2026-09 fixed api.hubspot.com token endpoint, normal reusable refresh handling; newest refresh retained. Uncertain token response never silently reuse replaced material.",
+    "events": "Webhook signing/appsubscription conditional; do not register without explicit admin config; polling not silently enabled",
+    "rate": "429 Retry-After and X-HubSpot-RateLimit; search pagination limit10000; no write auto retries",
+    "limits": "Contacts/company/deal CRUD only; deal pipeline metadata read, not pipeline mutation; default unlabeled associations limited to these3types. No arbitraryCRM object proxy, no customschemas. Best-effort timestamp check is not atomicCAS. Account-vs-user permission semantics explicit."
+  },
+  "sources": [
+    "https://developers.hubspot.com/docs/api-reference/latest/authentication/manage-oauth-tokens",
+    "https://developers.hubspot.com/docs/api-reference/latest/crm/search-the-crm",
+    "https://developers.hubspot.com/docs/apps/developer-platform/build-apps/authentication/user-level-apps",
+    "https://developers.hubspot.com/docs/apps/legacy-apps/private-apps/overview",
+    "https://developers.hubspot.com/docs/api-reference/latest/crm/pipelines/get-pipelines",
+    "https://developers.hubspot.com/docs/api-reference/latest/crm/associations/associate-records/update-association"
+  ],
+  "errorPolicy": "401expired;403scope/ACL;404resource;409/412conflict;429retryAfter;5xxunavailable; acknowledgedunknownwrite never replay; never expose diagnostics/tokens",
+  "acceptance": [
+    "everyaction exactmethod/path/body fixture",
+    "schemaunknownfield rejection beforeHTTP",
+    "wrongactor/subject/tenant rejection",
+    "paginationneverpretendallpages",
+    "401/403/404/429 mapping",
+    "writecheckpoint beforedispatch and no replay afterunknown",
+    "authidentity/scopes/refreshnegative tests"
+  ]
+}

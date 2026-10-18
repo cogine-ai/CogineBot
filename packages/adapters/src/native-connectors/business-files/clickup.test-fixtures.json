@@ -1,0 +1,298 @@
+{
+  "contractSha256": "13b265f80971e28058b68aeba3f84a4aa164a2e578428d1ee439c83e77404ee7",
+  "fixtures": [
+    {
+      "id": "clickup.workspaces.list",
+      "input": {},
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/api/v2/team"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "teams": [
+                {
+                  "id": "W1",
+                  "name": "Workspace"
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.workspaces.list",
+        "items": [
+          {
+            "id": "W1"
+          }
+        ],
+        "allPagesRead": true
+      }
+    },
+    {
+      "id": "clickup.spaces.list",
+      "input": {
+        "workspaceId": "W1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/api/v2/team/W1/space",
+            "query": {}
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "spaces": [
+                {
+                  "id": "S1"
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.spaces.list",
+        "items": [
+          {
+            "id": "S1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "clickup.lists.list",
+      "input": {
+        "parentType": "folder",
+        "parentId": "F1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/api/v2/folder/F1/list",
+            "query": {}
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "lists": [
+                {
+                  "id": "L1"
+                }
+              ]
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.lists.list",
+        "items": [
+          {
+            "id": "L1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "clickup.tasks.list",
+      "input": {
+        "listId": "L1",
+        "page": 1,
+        "includeClosed": true
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/api/v2/list/L1/task",
+            "query": {
+              "page": 1,
+              "include_closed": true,
+              "include_markdown_description": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "tasks": [
+                {
+                  "id": "T1"
+                }
+              ],
+              "last_page": true
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.tasks.list",
+        "items": [
+          {
+            "id": "T1"
+          }
+        ],
+        "nextPage": null,
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "clickup.tasks.get",
+      "input": {
+        "taskId": "T1"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/api/v2/task/T1"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "T1",
+              "name": "Task",
+              "date_updated": "1700000000000"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.tasks.get",
+        "task": {
+          "id": "T1"
+        }
+      }
+    },
+    {
+      "id": "clickup.tasks.create",
+      "input": {
+        "listId": "L1",
+        "name": "Task",
+        "dueDate": 1700000000000
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/api/v2/list/L1/task",
+            "body": {
+              "name": "Task",
+              "due_date": 1700000000000,
+              "check_required_custom_fields": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "T2"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.tasks.create",
+        "task": {
+          "id": "T2"
+        },
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "clickup.tasks.update",
+      "input": {
+        "taskId": "T1",
+        "expectedDateUpdated": "1700000000000",
+        "changes": {
+          "name": "New"
+        }
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/api/v2/task/T1"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "T1",
+              "date_updated": "1700000000000"
+            },
+            "headers": {}
+          }
+        },
+        {
+          "request": {
+            "method": "PUT",
+            "path": "/api/v2/task/T1",
+            "body": {
+              "name": "New"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "T1",
+              "name": "New"
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.tasks.update",
+        "task": {
+          "id": "T1"
+        },
+        "concurrency_guarantee": "best_effort_precheck"
+      }
+    },
+    {
+      "id": "clickup.comments.create",
+      "input": {
+        "taskId": "T1",
+        "text": "Comment"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/api/v2/task/T1/comment",
+            "body": {
+              "comment_text": "Comment",
+              "notify_all": false
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": 41,
+              "hist_id": "h1",
+              "date": 1700000000000
+            },
+            "headers": {}
+          }
+        }
+      ],
+      "expectedOutput": {
+        "action_id": "clickup.comments.create",
+        "comment": {
+          "id": 41
+        }
+      }
+    }
+  ]
+}
