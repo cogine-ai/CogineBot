@@ -91,6 +91,8 @@ export * from "./model-vision.js";
 export { NativeActionError } from "./native-connectors/action.js";
 export * from "./native-connectors/events/api.js";
 export * from "./native-connectors/events/notion-hooks.js";
+export * from "./native-connectors/events/slack-hooks.js";
+export * from "./native-connectors/events/slack-signals.js";
 export * from "./native-connectors/events/readers.js";
 export * from "./native-connectors/events/resource-verifier.js";
 export * from "./native-connectors/events/service.js";

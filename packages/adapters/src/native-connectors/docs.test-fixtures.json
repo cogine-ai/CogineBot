@@ -13,9 +13,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "documentId"
-        ],
+        "required": ["documentId"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -28,9 +26,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/documents.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/documents.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -67,9 +63,7 @@
           "input": {
             "documentId": "doc_fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/documents.readonly"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/documents.readonly"],
           "upstream": [
             {
               "request": {
@@ -135,9 +129,7 @@
             "maxLength": 1000
           }
         },
-        "required": [
-          "title"
-        ],
+        "required": ["title"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -148,9 +140,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/documents"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/documents"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -187,9 +177,7 @@
           "input": {
             "title": "Fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/documents"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/documents"],
           "upstream": [
             {
               "request": {
@@ -251,13 +239,7 @@
             "maxLength": 100000
           }
         },
-        "required": [
-          "documentId",
-          "expectedRevisionId",
-          "tabId",
-          "index",
-          "text"
-        ],
+        "required": ["documentId", "expectedRevisionId", "tabId", "index", "text"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -268,9 +250,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/documents"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/documents"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -319,9 +299,7 @@
             "index": 1,
             "text": "Hi"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/documents"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/documents"],
           "upstream": [
             {
               "request": {
@@ -378,9 +356,7 @@
                 "status": 200,
                 "body": {
                   "documentId": "doc_fixture",
-                  "replies": [
-                    {}
-                  ]
+                  "replies": [{}]
                 }
               }
             }
@@ -428,14 +404,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "documentId",
-          "expectedRevisionId",
-          "tabId",
-          "find",
-          "replace",
-          "matchCase"
-        ],
+        "required": ["documentId", "expectedRevisionId", "tabId", "find", "replace", "matchCase"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -446,9 +415,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/documents"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/documents"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -500,9 +467,7 @@
             "replace": "Team",
             "matchCase": true
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/documents"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/documents"],
           "upstream": [
             {
               "request": {
@@ -548,9 +513,7 @@
                         },
                         "replaceText": "Team",
                         "tabsCriteria": {
-                          "tabIds": [
-                            "tab_fixture"
-                          ]
+                          "tabIds": ["tab_fixture"]
                         }
                       }
                     }
@@ -564,9 +527,7 @@
                 "status": 200,
                 "body": {
                   "documentId": "doc_fixture",
-                  "replies": [
-                    {}
-                  ]
+                  "replies": [{}]
                 }
               }
             }
@@ -612,13 +573,7 @@
             "maximum": 2147483647
           }
         },
-        "required": [
-          "documentId",
-          "expectedRevisionId",
-          "tabId",
-          "startIndex",
-          "endIndex"
-        ],
+        "required": ["documentId", "expectedRevisionId", "tabId", "startIndex", "endIndex"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -629,9 +584,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/documents"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/documents"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -680,9 +633,7 @@
             "startIndex": 1,
             "endIndex": 3
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/documents"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/documents"],
           "upstream": [
             {
               "request": {
@@ -739,9 +690,7 @@
                 "status": 200,
                 "body": {
                   "documentId": "doc_fixture",
-                  "replies": [
-                    {}
-                  ]
+                  "replies": [{}]
                 }
               }
             }
@@ -797,12 +746,7 @@
                       "maxLength": 100000
                     }
                   },
-                  "required": [
-                    "kind",
-                    "tabId",
-                    "index",
-                    "text"
-                  ],
+                  "required": ["kind", "tabId", "index", "text"],
                   "additionalProperties": false
                 },
                 {
@@ -830,13 +774,7 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "kind",
-                    "tabId",
-                    "find",
-                    "replace",
-                    "matchCase"
-                  ],
+                  "required": ["kind", "tabId", "find", "replace", "matchCase"],
                   "additionalProperties": false
                 },
                 {
@@ -862,12 +800,7 @@
                       "maximum": 2147483647
                     }
                   },
-                  "required": [
-                    "kind",
-                    "tabId",
-                    "startIndex",
-                    "endIndex"
-                  ],
+                  "required": ["kind", "tabId", "startIndex", "endIndex"],
                   "additionalProperties": false
                 }
               ]
@@ -876,11 +809,7 @@
             "maxItems": 100
           }
         },
-        "required": [
-          "documentId",
-          "expectedRevisionId",
-          "operations"
-        ],
+        "required": ["documentId", "expectedRevisionId", "operations"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -891,9 +820,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/documents"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/documents"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -957,9 +884,7 @@
               }
             ]
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/documents"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/documents"],
           "upstream": [
             {
               "request": {
@@ -1016,9 +941,7 @@
                 "status": 200,
                 "body": {
                   "documentId": "doc_fixture",
-                  "replies": [
-                    {}
-                  ]
+                  "replies": [{}]
                 }
               }
             }
@@ -1065,22 +988,14 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "find",
-                "replace",
-                "matchCase"
-              ],
+              "required": ["find", "replace", "matchCase"],
               "additionalProperties": false
             },
             "minItems": 1,
             "maxItems": 100
           }
         },
-        "required": [
-          "templateId",
-          "title",
-          "replacements"
-        ],
+        "required": ["templateId", "title", "replacements"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -1090,9 +1005,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -1153,9 +1066,7 @@
               }
             ]
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/drive"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/drive"],
           "upstream": [
             {
               "request": {
@@ -1241,9 +1152,7 @@
                 "status": 200,
                 "body": {
                   "documentId": "new_doc",
-                  "replies": [
-                    {}
-                  ]
+                  "replies": [{}]
                 }
               }
             }

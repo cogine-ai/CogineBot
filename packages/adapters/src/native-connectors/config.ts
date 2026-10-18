@@ -9,6 +9,7 @@ import {
   NATIVE_OAUTH_CALLBACK_PATH,
   NativeConfigEditableSchema,
   NativeConfigInputSchema,
+  NativeGoogleWatchConfigSchema,
 } from "@rakazo/contracts";
 import type { NativeAppConfig, PrismaClient } from "@rakazo/db";
 import { z } from "zod";
@@ -17,6 +18,8 @@ import { actorMayUsePrivateEndpoint } from "../private-endpoint.js";
 import type { RemoteTransportDependencies } from "../remote-mcp.js";
 import { assertSafeRemoteUrl } from "../remote-mcp.js";
 import { persistPreparedSecret } from "../secret-persistence.js";
+import { COLLABORATION_SCOPES, SLACK_POLICY_CAPABILITIES } from "./collaboration-config.js";
+import { GOOGLE_NATIVE_APPS, isGoogleNativeApp } from "./google.js";
 
 export const CALENDAR_SCOPE_PREFIX = "https://www.googleapis.com/auth/";
 export const CALENDAR_SCOPES = [
@@ -36,6 +39,10 @@ export const NativeConfigSettingsSchema = z.object({
   capabilities: z.array(z.string()),
   knowledgeBaseIds: z.array(z.string()),
   tenantId: z.string().optional(),
+  actor: z.enum(["user", "app", "bot", "installation"]).optional(),
+  githubAppId: z.string().optional(),
+  githubInstallationId: z.string().optional(),
+  googleWatch: NativeGoogleWatchConfigSchema.optional(),
 });
 export type NativeConfigSettings = z.infer<typeof NativeConfigSettingsSchema>;
 
@@ -61,22 +68,42 @@ export function nativeCallbackUri(apiUrl: string): string {
 }
 
 function settingsFor(input: NativeConfigInput): NativeConfigSettings {
-  if (input.appId === "google-calendar") {
-    if (!input.scopes.includes("openid")) throw new Error("Calendar identity requires openid");
-    if (input.scopes.some((scope) => !CALENDAR_SCOPES.some((allowed) => allowed === scope)))
-      throw new Error("Unsupported Calendar scope");
+  if (isGoogleNativeApp(input.appId)) {
+    if (!input.scopes.includes("openid")) throw new Error("Google identity requires openid");
+    if (input.appId === "gmail" && !input.scopes.includes("email"))
+      throw new Error("Gmail sending identity requires verified email permission");
+    if (
+      input.scopes.some(
+        (scope) =>
+          !GOOGLE_NATIVE_APPS[input.appId as keyof typeof GOOGLE_NATIVE_APPS].scopes.includes(
+            scope,
+          ),
+      )
+    )
+      throw new Error(
+        input.appId === "google-calendar"
+          ? "Unsupported Calendar scope"
+          : "Unsupported Google application scope",
+      );
   } else if (input.appId === "coginex") {
     if (input.scopes.some((scope) => scope !== "mcp"))
       throw new Error("CogineX uses the fixed MCP scope");
+  } else if (COLLABORATION_SCOPES[input.appId]) {
+    if (input.scopes.some((scope) => !COLLABORATION_SCOPES[input.appId]!.includes(scope)))
+      throw new Error("Unsupported collaboration application scope");
+    if (input.appId === "slack" && input.actor === "bot" && input.scopes.includes("search:read"))
+      throw new Error("Slack legacy search requires the selected user actor");
   } else if (input.scopes.length) {
-    throw new Error("This authorization protocol does not accept Calendar OAuth scopes");
+    throw new Error("This authorization protocol does not accept Google OAuth scopes");
   }
   const allowed =
     input.appId === "knowai"
       ? KNOWAI_CAPABILITIES
       : input.appId === "notion"
         ? NOTION_CAPABILITIES
-        : new Set<string>();
+        : input.appId === "slack"
+          ? SLACK_POLICY_CAPABILITIES
+          : new Set<string>();
   if (input.capabilities.some((capability) => !allowed.has(capability)))
     throw new Error("Unsupported service capability");
   let endpoint = input.endpoint?.replace(/\/$/, "");
@@ -94,6 +121,10 @@ function settingsFor(input: NativeConfigInput): NativeConfigSettings {
     capabilities: [...new Set(input.capabilities)].sort(),
     knowledgeBaseIds: [...new Set(input.knowledgeBaseIds)].sort(),
     ...(input.tenantId ? { tenantId: input.tenantId } : {}),
+    ...(input.actor ? { actor: input.actor } : {}),
+    ...(input.githubAppId ? { githubAppId: input.githubAppId } : {}),
+    ...(input.githubInstallationId ? { githubInstallationId: input.githubInstallationId } : {}),
+    ...(input.googleWatch ? { googleWatch: input.googleWatch } : {}),
   };
 }
 
@@ -112,6 +143,7 @@ export function nativeConfigStatus(row: NativeAppConfig): NativeConfigStatus {
     revision: row.revision,
     callbackUri: row.callbackUri,
     executionLocation: "instance",
+    ...(settings.actor ? { actor: settings.actor } : {}),
   };
 }
 
@@ -176,6 +208,28 @@ export class NativeConfigStore {
     // An optional OAuth adapter must not prevent an HTTP/LAN core deployment from starting.
     if (["oauth", "mcp_oauth"].includes(input.credentialKind)) nativeCallbackUri(this.apiUrl);
     const config = settingsFor(input);
+    if (config.googleWatch) {
+      const callback = new URL("/api/connectors/events/gmail", this.apiUrl);
+      if (callback.protocol !== "https:" || config.googleWatch.callbackAudience !== callback.href)
+        throw new Error(
+          "Gmail push requires this instance's exact public HTTPS callback audience.",
+        );
+      const peers = await this.prisma.nativeAppConfig.findMany({
+        where: { appId: "gmail", enabled: true, ...(input.id ? { id: { not: input.id } } : {}) },
+        select: { config: true },
+      });
+      for (const peer of peers) {
+        const watch = NativeConfigSettingsSchema.parse(peer.config).googleWatch;
+        if (
+          watch?.projectId === config.googleWatch.projectId &&
+          watch.topicName !== config.googleWatch.topicName
+        )
+          throw new Error(
+            "Gmail configurations in this instance must share one fixed topic per Google project.",
+          );
+      }
+    }
+
     if (config.endpoint) {
       assertNoSensitiveQuery(config.endpoint);
       await assertSafeRemoteUrl(config.endpoint, this.network.resolveHostname, {

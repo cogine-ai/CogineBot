@@ -67,9 +67,7 @@
           "body": {
             "id": "m1",
             "threadId": "t1",
-            "labelIds": [
-              "INBOX"
-            ],
+            "labelIds": ["INBOX"],
             "historyId": "10",
             "internalDate": "1700000000000",
             "sizeEstimate": 120,
@@ -143,9 +141,7 @@
               {
                 "id": "m1",
                 "threadId": "t1",
-                "labelIds": [
-                  "INBOX"
-                ],
+                "labelIds": ["INBOX"],
                 "historyId": "10",
                 "internalDate": "1700000000000",
                 "sizeEstimate": 120,
@@ -217,9 +213,7 @@
           "body": {
             "id": "m1",
             "threadId": "t1",
-            "labelIds": [
-              "INBOX"
-            ],
+            "labelIds": ["INBOX"],
             "historyId": "10",
             "internalDate": "1700000000000",
             "sizeEstimate": 120,
@@ -346,8 +340,9 @@
               {
                 "id": "d1",
                 "message": {
-                  "id": "m1",
-                  "threadId": "t1"
+                  "id": "draft-message-before",
+                  "threadId": "draft-thread",
+                  "labelIds": ["DRAFT"]
                 }
               }
             ],
@@ -391,11 +386,9 @@
           "body": {
             "id": "d1",
             "message": {
-              "id": "m1",
-              "threadId": "t1",
-              "labelIds": [
-                "INBOX"
-              ],
+              "id": "draft-message-before",
+              "threadId": "draft-thread",
+              "labelIds": ["DRAFT"],
               "historyId": "10",
               "internalDate": "1700000000000",
               "sizeEstimate": 120,
@@ -405,19 +398,19 @@
                 "headers": [
                   {
                     "name": "From",
-                    "value": "Sender <sender@example.test>"
-                  },
-                  {
-                    "name": "To",
                     "value": "owner@example.test"
                   },
                   {
+                    "name": "To",
+                    "value": "target@example.test"
+                  },
+                  {
                     "name": "Subject",
-                    "value": "Fixture subject"
+                    "value": "Draft fixture subject"
                   },
                   {
                     "name": "Message-ID",
-                    "value": "<source@example.test>"
+                    "value": "<draft@example.test>"
                   }
                 ],
                 "body": {
@@ -432,7 +425,7 @@
       "expectedOutput": {
         "id": "d1",
         "message": {
-          "id": "m1",
+          "id": "draft-message-before",
           "text": "Hello"
         }
       },
@@ -454,12 +447,8 @@
       "id": "gmail.drafts.create",
       "input": {
         "message": {
-          "to": [
-            "target@example.test"
-          ],
-          "bcc": [
-            "hidden@example.test"
-          ],
+          "to": ["target@example.test"],
+          "bcc": ["hidden@example.test"],
           "replyTo": "reply@example.test",
           "subject": "Fixture subject",
           "text": "Hello"
@@ -476,16 +465,23 @@
         {
           "status": 200,
           "body": {
-            "id": "d1",
+            "id": "created-draft",
             "message": {
-              "id": "m2",
-              "threadId": "t1"
+              "id": "draft-message-created",
+              "threadId": "draft-thread-created",
+              "labelIds": ["DRAFT"]
             }
           }
         }
       ],
       "expectedOutput": {
-        "outcome": "succeeded"
+        "outcome": "succeeded",
+        "draftId": "created-draft",
+        "message": {
+          "id": "draft-message-created",
+          "threadId": "draft-thread-created",
+          "labelIds": ["DRAFT"]
+        }
       },
       "expectedMime": {
         "From": "owner@example.test",
@@ -497,12 +493,8 @@
       },
       "rejectedInput": {
         "message": {
-          "to": [
-            "target@example.test"
-          ],
-          "bcc": [
-            "hidden@example.test"
-          ],
+          "to": ["target@example.test"],
+          "bcc": ["hidden@example.test"],
           "replyTo": "reply@example.test",
           "subject": "Fixture subject",
           "text": "Hello"
@@ -525,18 +517,14 @@
       "id": "gmail.drafts.update",
       "input": {
         "message": {
-          "to": [
-            "target@example.test"
-          ],
-          "bcc": [
-            "hidden@example.test"
-          ],
+          "to": ["target@example.test"],
+          "bcc": ["hidden@example.test"],
           "replyTo": "reply@example.test",
           "subject": "Fixture subject",
           "text": "Hello"
         },
         "draftId": "d1",
-        "expectedMessageId": "m1"
+        "expectedMessageId": "draft-message-before"
       },
       "context": {
         "subject": "fixture-google-sub",
@@ -551,11 +539,9 @@
           "body": {
             "id": "d1",
             "message": {
-              "id": "m1",
-              "threadId": "t1",
-              "labelIds": [
-                "INBOX"
-              ],
+              "id": "draft-message-before",
+              "threadId": "draft-thread",
+              "labelIds": ["DRAFT"],
               "historyId": "10",
               "internalDate": "1700000000000",
               "sizeEstimate": 120,
@@ -565,19 +551,19 @@
                 "headers": [
                   {
                     "name": "From",
-                    "value": "Sender <sender@example.test>"
-                  },
-                  {
-                    "name": "To",
                     "value": "owner@example.test"
                   },
                   {
+                    "name": "To",
+                    "value": "target@example.test"
+                  },
+                  {
                     "name": "Subject",
-                    "value": "Fixture subject"
+                    "value": "Draft fixture subject"
                   },
                   {
                     "name": "Message-ID",
-                    "value": "<source@example.test>"
+                    "value": "<draft@example.test>"
                   }
                 ],
                 "body": {
@@ -593,14 +579,21 @@
           "body": {
             "id": "d1",
             "message": {
-              "id": "m2",
-              "threadId": "t1"
+              "id": "draft-message-after",
+              "threadId": "draft-thread",
+              "labelIds": ["DRAFT"]
             }
           }
         }
       ],
       "expectedOutput": {
-        "outcome": "succeeded"
+        "outcome": "succeeded",
+        "draftId": "d1",
+        "message": {
+          "id": "draft-message-after",
+          "threadId": "draft-thread",
+          "labelIds": ["DRAFT"]
+        }
       },
       "expectedMime": {
         "From": "owner@example.test",
@@ -612,18 +605,14 @@
       },
       "rejectedInput": {
         "message": {
-          "to": [
-            "target@example.test"
-          ],
-          "bcc": [
-            "hidden@example.test"
-          ],
+          "to": ["target@example.test"],
+          "bcc": ["hidden@example.test"],
           "replyTo": "reply@example.test",
           "subject": "Fixture subject",
           "text": "Hello"
         },
         "draftId": "d1",
-        "expectedMessageId": "m1",
+        "expectedMessageId": "draft-message-before",
         "access_token": "fixture-not-a-token"
       },
       "requests": [
@@ -649,7 +638,7 @@
       "id": "gmail.drafts.delete",
       "input": {
         "draftId": "d1",
-        "expectedMessageId": "m1"
+        "expectedMessageId": "draft-message-before"
       },
       "context": {
         "subject": "fixture-google-sub",
@@ -664,11 +653,9 @@
           "body": {
             "id": "d1",
             "message": {
-              "id": "m1",
-              "threadId": "t1",
-              "labelIds": [
-                "INBOX"
-              ],
+              "id": "draft-message-before",
+              "threadId": "draft-thread",
+              "labelIds": ["DRAFT"],
               "historyId": "10",
               "internalDate": "1700000000000",
               "sizeEstimate": 120,
@@ -678,19 +665,19 @@
                 "headers": [
                   {
                     "name": "From",
-                    "value": "Sender <sender@example.test>"
-                  },
-                  {
-                    "name": "To",
                     "value": "owner@example.test"
                   },
                   {
+                    "name": "To",
+                    "value": "target@example.test"
+                  },
+                  {
                     "name": "Subject",
-                    "value": "Fixture subject"
+                    "value": "Draft fixture subject"
                   },
                   {
                     "name": "Message-ID",
-                    "value": "<source@example.test>"
+                    "value": "<draft@example.test>"
                   }
                 ],
                 "body": {
@@ -711,7 +698,7 @@
       },
       "rejectedInput": {
         "draftId": "d1",
-        "expectedMessageId": "m1",
+        "expectedMessageId": "draft-message-before",
         "access_token": "fixture-not-a-token"
       },
       "requests": [
@@ -732,12 +719,8 @@
       "id": "gmail.messages.send",
       "input": {
         "message": {
-          "to": [
-            "target@example.test"
-          ],
-          "bcc": [
-            "hidden@example.test"
-          ],
+          "to": ["target@example.test"],
+          "bcc": ["hidden@example.test"],
           "replyTo": "reply@example.test",
           "subject": "Fixture subject",
           "text": "Hello"
@@ -756,9 +739,7 @@
           "body": {
             "id": "m2",
             "threadId": "t1",
-            "labelIds": [
-              "SENT"
-            ]
+            "labelIds": ["SENT"]
           }
         }
       ],
@@ -775,12 +756,8 @@
       },
       "rejectedInput": {
         "message": {
-          "to": [
-            "target@example.test"
-          ],
-          "bcc": [
-            "hidden@example.test"
-          ],
+          "to": ["target@example.test"],
+          "bcc": ["hidden@example.test"],
           "replyTo": "reply@example.test",
           "subject": "Fixture subject",
           "text": "Hello"
@@ -818,9 +795,7 @@
           "body": {
             "id": "m1",
             "threadId": "t1",
-            "labelIds": [
-              "INBOX"
-            ],
+            "labelIds": ["INBOX"],
             "historyId": "10",
             "internalDate": "1700000000000",
             "sizeEstimate": 120,
@@ -857,9 +832,7 @@
           "body": {
             "id": "m2",
             "threadId": "t1",
-            "labelIds": [
-              "SENT"
-            ]
+            "labelIds": ["SENT"]
           }
         }
       ],
@@ -902,7 +875,7 @@
       "id": "gmail.drafts.send",
       "input": {
         "draftId": "d1",
-        "expectedMessageId": "m1"
+        "expectedMessageId": "draft-message-before"
       },
       "context": {
         "subject": "fixture-google-sub",
@@ -917,11 +890,9 @@
           "body": {
             "id": "d1",
             "message": {
-              "id": "m1",
-              "threadId": "t1",
-              "labelIds": [
-                "INBOX"
-              ],
+              "id": "draft-message-before",
+              "threadId": "draft-thread",
+              "labelIds": ["DRAFT"],
               "historyId": "10",
               "internalDate": "1700000000000",
               "sizeEstimate": 120,
@@ -931,19 +902,19 @@
                 "headers": [
                   {
                     "name": "From",
-                    "value": "Sender <sender@example.test>"
-                  },
-                  {
-                    "name": "To",
                     "value": "owner@example.test"
                   },
                   {
+                    "name": "To",
+                    "value": "target@example.test"
+                  },
+                  {
                     "name": "Subject",
-                    "value": "Fixture subject"
+                    "value": "Draft fixture subject"
                   },
                   {
                     "name": "Message-ID",
-                    "value": "<source@example.test>"
+                    "value": "<draft@example.test>"
                   }
                 ],
                 "body": {
@@ -957,20 +928,25 @@
         {
           "status": 200,
           "body": {
-            "id": "m2",
-            "threadId": "t1",
-            "labelIds": [
-              "SENT"
-            ]
+            "id": "sent-from-draft",
+            "threadId": "draft-thread",
+            "labelIds": ["SENT"]
           }
         }
       ],
       "expectedOutput": {
-        "outcome": "succeeded"
+        "outcome": "succeeded",
+        "draftId": "d1",
+        "draftConsumed": true,
+        "message": {
+          "id": "sent-from-draft",
+          "threadId": "draft-thread",
+          "labelIds": ["SENT"]
+        }
       },
       "rejectedInput": {
         "draftId": "d1",
-        "expectedMessageId": "m1",
+        "expectedMessageId": "draft-message-before",
         "access_token": "fixture-not-a-token"
       },
       "requests": [
@@ -994,9 +970,7 @@
       "id": "gmail.messages.modify",
       "input": {
         "messageId": "m1",
-        "removeLabelIds": [
-          "UNREAD"
-        ]
+        "removeLabelIds": ["UNREAD"]
       },
       "context": {
         "subject": "fixture-google-sub",
@@ -1011,9 +985,7 @@
           "body": {
             "id": "m1",
             "threadId": "t1",
-            "labelIds": [
-              "INBOX"
-            ]
+            "labelIds": ["INBOX"]
           }
         }
       ],
@@ -1022,9 +994,7 @@
       },
       "rejectedInput": {
         "messageId": "m1",
-        "removeLabelIds": [
-          "UNREAD"
-        ],
+        "removeLabelIds": ["UNREAD"],
         "access_token": "fixture-not-a-token"
       },
       "requests": [
@@ -1033,9 +1003,7 @@
           "path": "/users/me/messages/m1/modify",
           "body": {
             "addLabelIds": [],
-            "removeLabelIds": [
-              "UNREAD"
-            ]
+            "removeLabelIds": ["UNREAD"]
           }
         }
       ]
@@ -1058,9 +1026,7 @@
           "body": {
             "id": "m1",
             "threadId": "t1",
-            "labelIds": [
-              "TRASH"
-            ]
+            "labelIds": ["TRASH"]
           }
         }
       ],
@@ -1096,9 +1062,7 @@
           "body": {
             "id": "m1",
             "threadId": "t1",
-            "labelIds": [
-              "INBOX"
-            ]
+            "labelIds": ["INBOX"]
           }
         }
       ],

@@ -28,7 +28,21 @@ const EVENT_KINDS: NativeRoutineEventKind[] = [
   "notion.page_content_changed",
   "notion.page_properties_or_data_source_changed",
   "notion.comment_changed",
+  "gmail.message_received",
+  "gmail.thread_or_label_changed",
+  "drive.file_changed",
+  "drive.file_trashed",
+  "slack.app_mention",
+  "slack.app_dm",
+  "slack.channel_message",
 ];
+const EVENT_APP_NAMES: Record<string, string> = {
+  "google-calendar": "Google Calendar",
+  notion: "Notion",
+  gmail: "Gmail",
+  "google-drive": "Google Drive",
+  slack: "Slack",
+};
 
 export function RoutineNativeEvents({
   value,
@@ -107,7 +121,7 @@ export function RoutineNativeEvents({
         </Button>
         {!loading && !error && accounts.length === 0 ? (
           <span className="text-xs text-muted-foreground">
-            <Trans>No connected Calendar or Notion accounts</Trans>
+            <Trans>No connected accounts for application events</Trans>
           </span>
         ) : null}
       </div>
@@ -123,7 +137,11 @@ type TextKey =
   | "dataSourceId"
   | "blockId"
   | "discussionId"
-  | "anchorBlockId";
+  | "anchorBlockId"
+  | "threadId"
+  | "fileId"
+  | "channelId"
+  | "threadTs";
 function NativeEventFields({
   draft,
   rows,
@@ -157,6 +175,20 @@ function NativeEventFields({
         return t`Notion properties or data source changed`;
       case "notion.comment_changed":
         return t`Notion comments changed`;
+      case "gmail.message_received":
+        return t`New Gmail message`;
+      case "gmail.thread_or_label_changed":
+        return t`Gmail thread or labels changed`;
+      case "drive.file_changed":
+        return t`Drive file changed`;
+      case "drive.file_trashed":
+        return t`Drive file moved to trash`;
+      case "slack.app_mention":
+        return t`This Slack bot is mentioned`;
+      case "slack.app_dm":
+        return t`Direct message to this Slack bot`;
+      case "slack.channel_message":
+        return t`Message in a Slack channel`;
     }
   };
   function textField(key: TextKey, label: ReactNode, number = false) {
@@ -177,6 +209,9 @@ function NativeEventFields({
     draft.kind === "calendar.event_changed" || draft.kind === "calendar.event_starting";
   const properties = draft.kind === "notion.page_properties_or_data_source_changed";
   const comment = draft.kind === "notion.comment_changed";
+  const gmail = draft.kind.startsWith("gmail.");
+  const drive = draft.kind.startsWith("drive.");
+  const slack = draft.kind.startsWith("slack.");
   return (
     <div className="space-y-3 rounded-xl border border-border p-3">
       <div className="flex items-center justify-between gap-2">
@@ -217,8 +252,7 @@ function NativeEventFields({
           ) : null}
           {accounts.map((row) => (
             <NativeSelectOption key={row.id} value={row.id}>
-              {row.displayName} ·{" "}
-              {row.provider === "google-calendar" ? "Google Calendar" : "Notion"}
+              {row.displayName} · {EVENT_APP_NAMES[row.provider] ?? row.provider}
             </NativeSelectOption>
           ))}
         </NativeSelect>
@@ -253,6 +287,39 @@ function NativeEventFields({
         </p>
       ) : null}
       <fieldset disabled={!selected} className="space-y-3">
+        {gmail ? (
+          <>
+            <Field>
+              <FieldLabel htmlFor={`${fieldId}-gmail-labels`}>
+                <Trans>Label IDs (any match, one per line)</Trans>
+              </FieldLabel>
+              <Textarea
+                id={`${fieldId}-gmail-labels`}
+                rows={3}
+                value={draft.labelIds}
+                onChange={(event) => onChange({ ...draft, labelIds: event.target.value })}
+              />
+            </Field>
+            {textField("threadId", t`Thread ID (optional)`)}
+            {!draft.labelIds.trim() && !draft.threadId.trim() ? (
+              <p className="text-xs text-muted-foreground">
+                <Trans>Enter a label ID or a thread ID.</Trans>
+              </p>
+            ) : null}
+          </>
+        ) : null}
+        {drive ? textField("fileId", t`File ID`) : null}
+        {slack ? (
+          <>
+            {textField(
+              "channelId",
+              draft.kind === "slack.app_dm" ? t`Direct message channel ID` : t`Channel ID`,
+            )}
+            {draft.kind === "slack.channel_message"
+              ? textField("threadTs", t`Thread timestamp (optional)`)
+              : null}
+          </>
+        ) : null}
         {calendar ? (
           <>
             {textField("calendarId", t`Calendar ID`)}

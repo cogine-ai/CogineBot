@@ -19,6 +19,11 @@ export type NativeRoutineTriggerDraft = {
   discussionId: string;
   anchorBlockId: string;
   propertyIds: string;
+  labelIds: string;
+  threadId: string;
+  fileId: string;
+  channelId: string;
+  threadTs: string;
 };
 
 export function emptyNativeRoutineTriggerDraft(): NativeRoutineTriggerDraft {
@@ -37,6 +42,11 @@ export function emptyNativeRoutineTriggerDraft(): NativeRoutineTriggerDraft {
     discussionId: "",
     anchorBlockId: "",
     propertyIds: "",
+    labelIds: "",
+    threadId: "",
+    fileId: "",
+    channelId: "",
+    threadTs: "",
   };
 }
 
@@ -77,6 +87,21 @@ export function draftFromNativeRoutineTrigger(
         draft.discussionId = spec.target.discussionId;
         draft.anchorBlockId = spec.target.anchorBlockId;
       }
+      break;
+    case "gmail.message_received":
+    case "gmail.thread_or_label_changed":
+      draft.labelIds = spec.labelIds?.join("\n") ?? "";
+      draft.threadId = spec.threadId ?? "";
+      break;
+    case "drive.file_changed":
+    case "drive.file_trashed":
+      draft.fileId = spec.fileId;
+      break;
+    case "slack.app_mention":
+    case "slack.app_dm":
+    case "slack.channel_message":
+      draft.channelId = spec.channelId;
+      if (spec.kind === "slack.channel_message") draft.threadTs = spec.threadTs ?? "";
   }
   return draft;
 }
@@ -100,7 +125,13 @@ export function nativeEventAppForKind(kind: NativeRoutineTriggerDraft["kind"]) {
     ? "google-calendar"
     : kind.startsWith("notion.")
       ? "notion"
-      : null;
+      : kind.startsWith("gmail.")
+        ? "gmail"
+        : kind.startsWith("drive.")
+          ? "google-drive"
+          : kind.startsWith("slack.")
+            ? "slack"
+            : null;
 }
 
 export function nativeEventAccounts(rows: readonly Connection[]): Connection[] {
@@ -108,7 +139,7 @@ export function nativeEventAccounts(rows: readonly Connection[]): Connection[] {
     (row) =>
       row.connectorId === "native" &&
       row.status === "connected" &&
-      (row.provider === "google-calendar" || row.provider === "notion"),
+      ["google-calendar", "notion", "gmail", "google-drive", "slack"].includes(row.provider),
   );
 }
 
@@ -175,6 +206,43 @@ function nativeRoutineTriggerIntent(draft: NativeRoutineTriggerDraft) {
       };
     case "notion.comment_changed":
       return { ...base, spec: { kind: draft.kind, target: notionTarget(draft) } };
+    case "gmail.message_received":
+    case "gmail.thread_or_label_changed":
+      return {
+        ...base,
+        spec: {
+          kind: draft.kind,
+          ...(draft.labelIds.trim()
+            ? {
+                labelIds: [
+                  ...new Set(
+                    draft.labelIds
+                      .split(/\r?\n/)
+                      .map((id) => id.trim())
+                      .filter(Boolean),
+                  ),
+                ].sort(),
+              }
+            : {}),
+          ...(draft.threadId.trim() ? { threadId: draft.threadId.trim() } : {}),
+        },
+      };
+    case "drive.file_changed":
+    case "drive.file_trashed":
+      return { ...base, spec: { kind: draft.kind, fileId: draft.fileId.trim() } };
+    case "slack.app_mention":
+    case "slack.app_dm":
+    case "slack.channel_message":
+      return {
+        ...base,
+        spec: {
+          kind: draft.kind,
+          channelId: draft.channelId.trim(),
+          ...(draft.kind === "slack.channel_message" && draft.threadTs.trim()
+            ? { threadTs: draft.threadTs.trim() }
+            : {}),
+        },
+      };
     default:
       return { ...base, spec: { kind: draft.kind } };
   }

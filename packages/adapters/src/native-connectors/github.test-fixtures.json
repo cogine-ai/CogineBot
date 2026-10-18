@@ -1,5 +1,5 @@
 {
-  "contractSha256": "380d8662b80e0f277889b63cf3eaea830b1b4ff288bc8e648964b7ca23692780",
+  "contractSha256": "7cf75b1686e3dd81b9967848407f0f434dfa5794250920ca2030184a1d963c87",
   "subjectFixture": {
     "subject": "fixture-actor",
     "tenant": "fixture-tenant"

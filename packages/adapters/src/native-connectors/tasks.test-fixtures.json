@@ -27,9 +27,7 @@
           "https://www.googleapis.com/auth/tasks.readonly",
           "https://www.googleapis.com/auth/tasks"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -60,9 +58,7 @@
         {
           "id": "fixed-request-response",
           "input": {},
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks.readonly"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks.readonly"],
           "upstream": [
             {
               "request": {
@@ -111,20 +107,14 @@
             "maxLength": 1024
           }
         },
-        "required": [
-          "title"
-        ],
+        "required": ["title"],
         "additionalProperties": false
       },
       "readOnly": false,
       "authorization": {
         "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/tasks"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -159,9 +149,7 @@
           "input": {
             "title": "Fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks"],
           "upstream": [
             {
               "request": {
@@ -227,9 +215,7 @@
             "format": "date-time"
           }
         },
-        "required": [
-          "tasklistId"
-        ],
+        "required": ["tasklistId"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -239,9 +225,7 @@
           "https://www.googleapis.com/auth/tasks.readonly",
           "https://www.googleapis.com/auth/tasks"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -276,9 +260,7 @@
           "input": {
             "tasklistId": "list_fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks.readonly"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks.readonly"],
           "upstream": [
             {
               "request": {
@@ -341,10 +323,7 @@
             "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
           }
         },
-        "required": [
-          "tasklistId",
-          "taskId"
-        ],
+        "required": ["tasklistId", "taskId"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -354,9 +333,7 @@
           "https://www.googleapis.com/auth/tasks.readonly",
           "https://www.googleapis.com/auth/tasks"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -394,9 +371,7 @@
             "tasklistId": "list_fixture",
             "taskId": "task_fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks.readonly"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks.readonly"],
           "upstream": [
             {
               "request": {
@@ -462,21 +437,14 @@
             "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
           }
         },
-        "required": [
-          "tasklistId",
-          "title"
-        ],
+        "required": ["tasklistId", "title"],
         "additionalProperties": false
       },
       "readOnly": false,
       "authorization": {
         "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/tasks"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -520,9 +488,7 @@
             "dueDate": "2026-10-20",
             "parent": "parent_fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks"],
           "upstream": [
             {
               "request": {
@@ -614,16 +580,10 @@
               },
               "status": {
                 "type": "string",
-                "enum": [
-                  "needsAction",
-                  "completed"
-                ]
+                "enum": ["needsAction", "completed"]
               },
               "dueDate": {
-                "type": [
-                  "string",
-                  "null"
-                ],
+                "type": ["string", "null"],
                 "format": "date"
               }
             },
@@ -632,23 +592,14 @@
             "minProperties": 1
           }
         },
-        "required": [
-          "tasklistId",
-          "taskId",
-          "expectedEtag",
-          "changes"
-        ],
+        "required": ["tasklistId", "taskId", "expectedEtag", "changes"],
         "additionalProperties": false
       },
       "readOnly": false,
       "authorization": {
         "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/tasks"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -698,9 +649,7 @@
               "status": "completed"
             }
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks"],
           "upstream": [
             {
               "request": {
@@ -787,22 +736,14 @@
             "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
           }
         },
-        "required": [
-          "tasklistId",
-          "taskId",
-          "expectedEtag"
-        ],
+        "required": ["tasklistId", "taskId", "expectedEtag"],
         "additionalProperties": false
       },
       "readOnly": false,
       "authorization": {
         "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/tasks"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -843,9 +784,7 @@
             "taskId": "task_fixture",
             "expectedEtag": "task_v1"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks"],
           "upstream": [
             {
               "request": {
@@ -914,22 +853,14 @@
             "maxLength": 2048
           }
         },
-        "required": [
-          "tasklistId",
-          "taskId",
-          "expectedEtag"
-        ],
+        "required": ["tasklistId", "taskId", "expectedEtag"],
         "additionalProperties": false
       },
       "readOnly": false,
       "authorization": {
         "subject": "exact selected Google OAuth user, app-scoped connection; no global account center",
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/tasks"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/tasks"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/tasks"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [],
@@ -970,9 +901,7 @@
             "taskId": "task_fixture",
             "expectedEtag": "task_v1"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/tasks"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/tasks"],
           "upstream": [
             {
               "request": {

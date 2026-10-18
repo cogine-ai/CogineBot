@@ -21,6 +21,7 @@ function handlers(overrides: Partial<BackgroundJobHandlers> = {}): BackgroundJob
   return {
     "native.source.poll": vi.fn(async () => undefined),
     "native.notion.signal": vi.fn(async () => undefined),
+    "native.slack.signal": vi.fn(async () => undefined),
     "run.continue": vi.fn(async () => undefined),
     "routine.wakeup": vi.fn(async () => undefined),
     "computer.update": vi.fn(async () => undefined),

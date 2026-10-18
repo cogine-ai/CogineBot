@@ -41,58 +41,40 @@
         "additionalProperties": false,
         "oneOf": [
           {
-            "required": [
-              "userId"
-            ],
+            "required": ["userId"],
             "not": {
               "anyOf": [
                 {
-                  "required": [
-                    "email"
-                  ]
+                  "required": ["email"]
                 },
                 {
-                  "required": [
-                    "query"
-                  ]
+                  "required": ["query"]
                 }
               ]
             }
           },
           {
-            "required": [
-              "email"
-            ],
+            "required": ["email"],
             "not": {
               "anyOf": [
                 {
-                  "required": [
-                    "userId"
-                  ]
+                  "required": ["userId"]
                 },
                 {
-                  "required": [
-                    "query"
-                  ]
+                  "required": ["query"]
                 }
               ]
             }
           },
           {
-            "required": [
-              "query"
-            ],
+            "required": ["query"],
             "not": {
               "anyOf": [
                 {
-                  "required": [
-                    "userId"
-                  ]
+                  "required": ["userId"]
                 },
                 {
-                  "required": [
-                    "email"
-                  ]
+                  "required": ["email"]
                 }
               ]
             }
@@ -102,21 +84,54 @@
       "upstream": {
         "baseUrl": "https://slack.com/api",
         "method": "GET",
-        "path": "/users.info"
+        "path": "/users.info",
+        "branches": [
+          {
+            "when": "input.userId",
+            "method": "GET",
+            "path": "/users.info",
+            "query": {
+              "user": "input.userId"
+            },
+            "requiredScopes": ["users:read"]
+          },
+          {
+            "when": "input.email",
+            "method": "GET",
+            "path": "/users.lookupByEmail",
+            "query": {
+              "email": "input.email"
+            },
+            "requiredScopes": ["users:read", "users:read.email"]
+          },
+          {
+            "when": "input.query",
+            "method": "GET",
+            "path": "/users.list",
+            "query": {
+              "limit": "input.limit ?? 100",
+              "cursor": "input.cursor when supplied"
+            },
+            "requiredScopes": ["users:read"],
+            "pagination": "Return next_cursor and filter only this page; any next_cursor prevents treating one candidate as unique."
+          }
+        ]
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "users:read"
-        ],
+        "acceptedAnyOfScopes": ["users:read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
+        ],
+        "conditionalScopeGuards": [
+          {
+            "when": "input.email",
+            "requiredAllOfScopes": ["users:read", "users:read.email"],
+            "missingScope": "Reject before dispatch; userId and query do not require email scope."
+          }
         ]
       },
       "readOnly": true,
@@ -124,6 +139,12 @@
         "kind": "read",
         "existingApprovalPolicy": true,
         "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
+      },
+      "outputContract": {
+        "userId": "exact stable selected user ID",
+        "email": "exact email lookup from users.lookupByEmail, requiring separate email grant",
+        "query": "candidate array with ambiguous=true for multiple/zero matches or any unsearched next page",
+        "emailDisclosure": "profile.email is returned only when actual users:read.email is present"
       }
     },
     {
@@ -146,12 +167,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "enum": [
-                "public_channel",
-                "private_channel",
-                "im",
-                "mpim"
-              ]
+              "enum": ["public_channel", "private_channel", "im", "mpim"]
             },
             "minItems": 1,
             "maxItems": 4,
@@ -170,19 +186,11 @@
         "path": "/conversations.list"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "channels:read",
-          "groups:read",
-          "im:read",
-          "mpim:read"
-        ],
+        "acceptedAnyOfScopes": ["channels:read", "groups:read", "im:read", "mpim:read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -220,30 +228,33 @@
             "maxLength": 2048
           }
         },
-        "required": [
-          "channel"
-        ],
+        "required": ["channel"],
         "additionalProperties": false
       },
       "upstream": {
         "baseUrl": "https://slack.com/api",
         "method": "GET",
-        "path": "/conversations.info"
+        "path": "/conversations.info",
+        "secondaryRequests": [
+          {
+            "when": "input.includeMembers===true",
+            "method": "GET",
+            "path": "/conversations.members",
+            "query": {
+              "channel": "input.channel",
+              "limit": "input.limit ?? 100",
+              "cursor": "input.cursor when supplied"
+            },
+            "pagination": "Return next_cursor; do not silently enumerate all members."
+          }
+        ]
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "channels:read",
-          "groups:read",
-          "im:read",
-          "mpim:read"
-        ],
+        "acceptedAnyOfScopes": ["channels:read", "groups:read", "im:read", "mpim:read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -293,9 +304,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "channel"
-        ],
+        "required": ["channel"],
         "additionalProperties": false
       },
       "upstream": {
@@ -304,19 +313,11 @@
         "path": "/conversations.history"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "channels:history",
-          "groups:history",
-          "im:history",
-          "mpim:history"
-        ],
+        "acceptedAnyOfScopes": ["channels:history", "groups:history", "im:history", "mpim:history"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -372,10 +373,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "channel",
-          "ts"
-        ],
+        "required": ["channel", "ts"],
         "additionalProperties": false
       },
       "upstream": {
@@ -384,19 +382,11 @@
         "path": "/conversations.replies"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "channels:history",
-          "groups:history",
-          "im:history",
-          "mpim:history"
-        ],
+        "acceptedAnyOfScopes": ["channels:history", "groups:history", "im:history", "mpim:history"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -431,22 +421,14 @@
           },
           "sort": {
             "type": "string",
-            "enum": [
-              "score",
-              "timestamp"
-            ]
+            "enum": ["score", "timestamp"]
           },
           "sort_dir": {
             "type": "string",
-            "enum": [
-              "asc",
-              "desc"
-            ]
+            "enum": ["asc", "desc"]
           }
         },
-        "required": [
-          "query"
-        ],
+        "required": ["query"],
         "additionalProperties": false
       },
       "upstream": {
@@ -455,15 +437,11 @@
         "path": "/search.messages"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "search:read"
-        ],
+        "acceptedAnyOfScopes": ["search:read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "user"
-        ],
+        "actors": ["user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -498,22 +476,14 @@
           },
           "sort": {
             "type": "string",
-            "enum": [
-              "score",
-              "timestamp"
-            ]
+            "enum": ["score", "timestamp"]
           },
           "sort_dir": {
             "type": "string",
-            "enum": [
-              "asc",
-              "desc"
-            ]
+            "enum": ["asc", "desc"]
           }
         },
-        "required": [
-          "query"
-        ],
+        "required": ["query"],
         "additionalProperties": false
       },
       "upstream": {
@@ -522,15 +492,11 @@
         "path": "/search.files"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "search:read"
-        ],
+        "acceptedAnyOfScopes": ["search:read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "user"
-        ],
+        "actors": ["user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -566,10 +532,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "channel",
-          "text"
-        ],
+        "required": ["channel", "text"],
         "additionalProperties": false
       },
       "upstream": {
@@ -578,16 +541,11 @@
         "path": "/chat.postMessage"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "chat:write"
-        ],
+        "acceptedAnyOfScopes": ["chat:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -626,11 +584,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "channel",
-          "thread_ts",
-          "text"
-        ],
+        "required": ["channel", "thread_ts", "text"],
         "additionalProperties": false
       },
       "upstream": {
@@ -639,16 +593,11 @@
         "path": "/chat.postMessage"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "chat:write"
-        ],
+        "acceptedAnyOfScopes": ["chat:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -684,11 +633,7 @@
             "maxLength": 4000
           }
         },
-        "required": [
-          "channel",
-          "ts",
-          "text"
-        ],
+        "required": ["channel", "ts", "text"],
         "additionalProperties": false
       },
       "upstream": {
@@ -697,16 +642,11 @@
         "path": "/chat.update"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "chat:write"
-        ],
+        "acceptedAnyOfScopes": ["chat:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ],
@@ -743,10 +683,7 @@
             "pattern": "^[0-9]+\\.[0-9]{6}$"
           }
         },
-        "required": [
-          "channel",
-          "ts"
-        ],
+        "required": ["channel", "ts"],
         "additionalProperties": false
       },
       "upstream": {
@@ -755,16 +692,11 @@
         "path": "/chat.delete"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "chat:write"
-        ],
+        "acceptedAnyOfScopes": ["chat:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ],
@@ -811,11 +743,7 @@
             "pattern": "^[0-9]+\\.[0-9]{6}$"
           }
         },
-        "required": [
-          "channel",
-          "text",
-          "post_at"
-        ],
+        "required": ["channel", "text", "post_at"],
         "additionalProperties": false
       },
       "upstream": {
@@ -824,16 +752,11 @@
         "path": "/chat.scheduleMessage"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "chat:write"
-        ],
+        "acceptedAnyOfScopes": ["chat:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -885,7 +808,7 @@
       },
       "upstream": {
         "baseUrl": "https://slack.com/api",
-        "method": "GET",
+        "method": "POST",
         "path": "/chat.scheduledMessages.list"
       },
       "authorization": {
@@ -893,10 +816,7 @@
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -927,10 +847,7 @@
             "pattern": "^[A-Z][A-Z0-9]+$"
           }
         },
-        "required": [
-          "channel",
-          "scheduled_message_id"
-        ],
+        "required": ["channel", "scheduled_message_id"],
         "additionalProperties": false
       },
       "upstream": {
@@ -939,16 +856,11 @@
         "path": "/chat.deleteScheduledMessage"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "chat:write"
-        ],
+        "acceptedAnyOfScopes": ["chat:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -979,9 +891,7 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "users"
-        ],
+        "required": ["users"],
         "additionalProperties": false
       },
       "upstream": {
@@ -990,17 +900,11 @@
         "path": "/conversations.open"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "im:write",
-          "mpim:write"
-        ],
+        "acceptedAnyOfScopes": ["im:write", "mpim:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -1037,11 +941,7 @@
             "pattern": "^[a-z0-9_+\\-]+$"
           }
         },
-        "required": [
-          "channel",
-          "timestamp",
-          "name"
-        ],
+        "required": ["channel", "timestamp", "name"],
         "additionalProperties": false
       },
       "upstream": {
@@ -1050,16 +950,11 @@
         "path": "/reactions.add"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "reactions:write"
-        ],
+        "acceptedAnyOfScopes": ["reactions:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -1111,11 +1006,7 @@
             "pattern": "^[0-9]+\\.[0-9]{6}$"
           }
         },
-        "required": [
-          "artifactId",
-          "filename",
-          "channel_id"
-        ],
+        "required": ["artifactId", "filename", "channel_id"],
         "additionalProperties": false
       },
       "upstream": {
@@ -1124,16 +1015,11 @@
         "path": "/files.getUploadURLExternal"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "files:write"
-        ],
+        "acceptedAnyOfScopes": ["files:write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -1148,6 +1034,9 @@
         "POST /files.getUploadURLExternal",
         "POST returned https://files.slack.com/upload/v1/... with raw bytes and no Authorization",
         "POST /files.completeUploadExternal with exact file_id and channel_id; never replay completion on timeout"
+      ],
+      "runtimeRequirements": [
+        "Server artifact must be nonempty and no larger than shared ATTACHMENT_MAX_BYTES=10*1024*1024, checked before upload allocation."
       ]
     },
     {
@@ -1165,12 +1054,11 @@
           "maxBytes": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 20000000
+            "maximum": 10485760,
+            "default": 10485760
           }
         },
-        "required": [
-          "file"
-        ],
+        "required": ["file"],
         "additionalProperties": false
       },
       "upstream": {
@@ -1179,16 +1067,11 @@
         "path": "/files.info"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "files:read"
-        ],
+        "acceptedAnyOfScopes": ["files:read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "actors": [
-          "bot",
-          "user"
-        ],
+        "actors": ["bot", "user"],
         "conditionalGuards": [
           "Slack user history/files/search collection requires verified policy permission. Search also requires verified legacy permission; RTS is disabled."
         ]
@@ -1198,12 +1081,11 @@
         "kind": "read",
         "existingApprovalPolicy": true,
         "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
-      }
+      },
+      "runtimeRequirements": [
+        "Shared ATTACHMENT_MAX_BYTES=10*1024*1024 for schema, default, bounded streaming reader and artifact writer."
+      ]
     }
   ],
-  "events": [
-    "app_mention",
-    "app_dm_message",
-    "bot_authorized_channel_or_thread_message"
-  ]
+  "events": ["app_mention", "app_dm_message", "bot_authorized_channel_or_thread_message"]
 }

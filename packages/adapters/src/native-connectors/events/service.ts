@@ -1,7 +1,7 @@
 import type { BackgroundJob } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type { NativeEventScope, NativeRoutineEventSpec } from "@rakazo/contracts";
-import { NativeNotionSignalJobSchema } from "@rakazo/contracts";
+import { NativeNotionSignalJobSchema, NativeSlackSignalJobSchema } from "@rakazo/contracts";
 import { expandSkillReferencesInPrompt } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { Prisma } from "@rakazo/db";
@@ -9,8 +9,17 @@ import { z } from "zod";
 import type { RemoteTransportDependencies } from "../../remote-mcp.js";
 import { listAgentSkillRecords } from "../../skill-tools.js";
 import { NativeActionError } from "../action.js";
+import { NativeConfigSettingsSchema } from "../config.js";
 import type { NativeOAuthStore } from "../oauth.js";
 import { ensureCalendarChannel } from "./calendar-watch.js";
+import { createGmailPushVerifier } from "./google-push.js";
+import { readDriveChanges, readGmailChanges } from "./google-readers.js";
+import {
+  driveWatchChannels,
+  ensureDriveChangesWatch,
+  ensureGmailWatch,
+  verifyDriveWatchSignal,
+} from "./google-watch.js";
 import type { NativeNotionHookStore } from "./notion-hooks.js";
 import {
   readCalendarChanges,
@@ -19,14 +28,26 @@ import {
   readNotionWebhook,
 } from "./readers.js";
 import type { CalendarEventChannel, NotionEventSignal } from "./signals.js";
-import { notionSignalCandidate, verifyCalendarSignal, verifyNotionSignal } from "./signals.js";
+import {
+  InvalidNativeEventSignal,
+  notionSignalCandidate,
+  verifyCalendarSignal,
+} from "./signals.js";
+import type { NativeSlackHookStore } from "./slack-hooks.js";
+import { readSlackWebhook } from "./slack-reader.js";
+import { slackSignalAccessible, slackSignalCandidate } from "./slack-signals.js";
 import {
   checkpointNativeEventSource,
   claimNativeRoutineEvent,
   leaseNativeEventSource,
   nativeTriggerScope,
 } from "./store.js";
-import { withNativeCalendarChannelApi, withNativeEventReadApi } from "./transport.js";
+import {
+  nativeGoogleWatchBinding,
+  withNativeCalendarChannelApi,
+  withNativeEventReadApi,
+  withNativeGoogleWatchApi,
+} from "./transport.js";
 import type { NativeSourceReadContext } from "./worker.js";
 import {
   dueNativeSources,
@@ -38,7 +59,13 @@ import {
 } from "./worker.js";
 
 type SignalJob = z.infer<typeof NativeNotionSignalJobSchema>;
-type NativeSignalJob = { name: "native.notion.signal"; payload: SignalJob; replaceKey?: string };
+type NativeSignalJob =
+  | { name: "native.notion.signal"; payload: SignalJob; replaceKey?: string }
+  | {
+      name: "native.slack.signal";
+      payload: z.infer<typeof NativeSlackSignalJobSchema>;
+      replaceKey?: string;
+    };
 export interface NativeEventJobPublisher {
   enqueue(job: BackgroundJob | ReturnType<typeof nativeSourceJob> | NativeSignalJob): Promise<void>;
 }
@@ -48,6 +75,7 @@ const object = (value: unknown): Record<string, unknown> =>
     : {};
 /** Exact Routine bridge. No Bot webhook/fanout, new approval system, or independent outbox. */
 export class NativeRoutineEventService {
+  private readonly gmailPush: ReturnType<typeof createGmailPushVerifier>;
   constructor(
     private readonly prisma: PrismaClient,
     private readonly oauth: Pick<NativeOAuthStore, "authorization">,
@@ -56,8 +84,17 @@ export class NativeRoutineEventService {
     private readonly events: Pick<ThreadEvents, "append">,
     private readonly apiUrl: string,
     private readonly network?: RemoteTransportDependencies,
-  ) {}
+    readonly slackHooks?: NativeSlackHookStore,
+  ) {
+    this.gmailPush = createGmailPushVerifier({ network });
+  }
+  async close(): Promise<void> {
+    await this.gmailPush.close();
+  }
   async reconcile(): Promise<void> {
+    if (this.slackHooks)
+      for (const item of await this.slackHooks.pending())
+        await this.dispatchSlackInbox(item.inboxId, item.hookId, item.hookRevision);
     for (const row of await dueNativeSources(this.prisma))
       await this.jobs.enqueue(nativeSourceJob(row.id, row.version));
   }
@@ -127,6 +164,40 @@ export class NativeRoutineEventService {
             this.network,
           );
         },
+        gmail: async (context) => this.readGoogle(context, "gmail"),
+        drive: async (context) => this.readGoogle(context, "google-drive"),
+        slack: async (context) =>
+          withNativeEventReadApi(
+            this.oauth,
+            context,
+            async (api, _notion, principal) => {
+              if (!principal)
+                throw new NativeActionError(
+                  "authorization_required",
+                  "Slack events require the selected bot connection.",
+                );
+              const spec = context.row.spec as Extract<
+                NativeRoutineEventSpec,
+                { channelId: string }
+              >;
+              const channel = object(
+                object(await api.get("/conversations.info", { channel: spec.channelId })).channel,
+              );
+              if (
+                channel.id !== spec.channelId ||
+                (channel.is_im !== true && channel.is_member !== true)
+              )
+                throw new NativeActionError(
+                  "insufficient_scope",
+                  "The selected bot is no longer a member of this channel.",
+                );
+              return {
+                state: { ...object(context.row.state), ready: true },
+                nextPollAt: new Date(Date.now() + 24 * 60 * 60_000),
+              };
+            },
+            this.network,
+          ),
         notion: async (context) =>
           withNativeEventReadApi(
             this.oauth,
@@ -142,6 +213,57 @@ export class NativeRoutineEventService {
         this.jobs.enqueue(nativeSourceJob(row.id, row.version, result.nextPollAt)),
       async (runId) => this.fired(runId),
     );
+  }
+  private async readGoogle(context: NativeSourceReadContext, app: "gmail" | "google-drive") {
+    const result = await withNativeEventReadApi(
+      this.oauth,
+      context,
+      (api) => (app === "gmail" ? readGmailChanges(context, api) : readDriveChanges(context, api)),
+      this.network,
+    );
+    context.row.state = result.state;
+    await withNativeGoogleWatchApi(
+      this.oauth,
+      context,
+      async (request, settings, subject) => {
+        const persistState = async (state: Record<string, unknown>) => {
+          if (
+            !context.row.leaseId ||
+            !(await checkpointNativeEventSource(this.prisma, context.scope, {
+              triggerId: context.row.id,
+              triggerVersion: context.row.version,
+              leaseId: context.row.leaseId,
+              state,
+              nextPollAt: result.nextPollAt,
+              release: false,
+            }))
+          )
+            throw new NativeSourceLeaseLost();
+          context.row.state = state;
+        };
+        const watchContext = {
+          bindingKey: nativeGoogleWatchBinding(context),
+          state: object(context.row.state),
+          request,
+          persistState,
+        };
+        if (app === "gmail") {
+          if (!settings.googleWatch) return;
+          // Gmail has one watch per developer project/mailbox. A stable active source manages a fixed full-mailbox topic.
+          const leaders = await this.prisma.$queryRaw<Array<{ id: string }>>(
+            Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" JOIN bots b ON b.id=r."botId" WHERE t."configId"=${context.row.configId} AND t."configRevision"=${context.row.configRevision} AND g.subject=${subject} AND g."authGeneration"=t."authGeneration" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND g."configId"=t."configId" AND g."configRevision"=t."configRevision" AND c.provider='gmail' AND c."connectorId"='native' AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND c."nativeConfigId"=t."configId" AND c."nativeConfigRevision"=t."configRevision" AND c."userId"=r."userId" AND c."spaceId"=r."spaceId" AND g."userId"=r."userId" AND g."spaceId"=r."spaceId" AND r.active=true AND b."archivedAt" IS NULL AND b."userId"=r."userId" AND b."spaceId"=r."spaceId" AND a.enabled=true AND a.revision=t."configRevision" AND t.kind LIKE 'gmail.%' AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=r."userId" AND m."spaceId"=r."spaceId") ORDER BY t.id LIMIT 1`,
+          );
+          if (leaders[0]?.id === context.row.id)
+            await ensureGmailWatch(watchContext, settings.googleWatch);
+        } else {
+          const pageToken = object(object(context.row.state).driveChanged).pageToken;
+          if (typeof pageToken === "string")
+            await ensureDriveChangesWatch(watchContext, { apiUrl: this.apiUrl, pageToken });
+        }
+      },
+      this.network,
+    );
+    return { ...result, state: object(context.row.state) };
   }
   /** HTTP has already bounded raw bytes; acknowledge only after all matching durable Graphile jobs are accepted. */
   async ingestNotion(hookId: string, raw: Uint8Array, signature: string | null): Promise<number> {
@@ -308,6 +430,252 @@ export class NativeRoutineEventService {
       }).catch(() => false);
       if (!(error instanceof NativeSourceLeaseLost)) throw error;
     }
+  }
+  async ingestSlack(
+    hookId: string,
+    raw: Uint8Array,
+    signature: string | null,
+    timestamp: string | null,
+  ): Promise<{ challenge?: string }> {
+    if (!this.slackHooks)
+      throw new NativeActionError("not_configured", "Slack event subscriptions are unavailable.");
+    const accepted = await this.slackHooks.accept(hookId, raw, signature, timestamp);
+    if (!accepted || accepted.kind === "ignored") return {};
+    if (accepted.kind === "challenge") return { challenge: accepted.challenge };
+    // The signed, metadata-only inbox is already durable. Reconciliation repairs any enqueue/ACK crash gap.
+    if (!accepted.alreadyDispatched)
+      await this.dispatchSlackInbox(accepted.inboxId, accepted.hook.id, accepted.hook.revision);
+    return {};
+  }
+  private async dispatchSlackInbox(
+    inboxId: string,
+    hookId: string,
+    hookRevision: number,
+  ): Promise<void> {
+    const accepted = await this.slackHooks?.loadInbox(inboxId, hookId, hookRevision);
+    if (!accepted) return;
+    const { hook, signal } = accepted;
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        version: number;
+        spec: unknown;
+        subject: string;
+        principal: unknown;
+        scopes: string[];
+        config: unknown;
+      }>
+    >(
+      Prisma.sql`SELECT t.id,t.version,t.spec,g.subject,g.principal,g.scopes,a.config FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN bots b ON b.id=r."botId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE t."configId"=${hook.configId} AND t."configRevision"=${hook.configRevision} AND r.active=true AND b."archivedAt" IS NULL AND b."userId"=r."userId" AND b."spaceId"=r."spaceId" AND c."userId"=r."userId" AND c."spaceId"=r."spaceId" AND c."connectorId"='native' AND c.provider='slack' AND c.status='connected' AND c.metadata->>'authRevision'=t."authorizationRevision" AND c."oauthGrantId"=g.id AND c."nativeConfigId"=t."configId" AND c."nativeConfigRevision"=t."configRevision" AND g."userId"=r."userId" AND g."spaceId"=r."spaceId" AND g."authGeneration"=t."authGeneration" AND g."configId"=t."configId" AND g."configRevision"=t."configRevision" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND a.enabled=true AND a.revision=t."configRevision" AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=r."userId" AND m."spaceId"=r."spaceId") AND t.kind LIKE 'slack.%'`,
+    );
+    for (const row of rows) {
+      const context = object(row.principal),
+        settings = NativeConfigSettingsSchema.parse(row.config);
+      if (context.tokenType !== "bot" || typeof context.teamId !== "string") continue;
+      const principal = {
+        tokenType: "bot" as const,
+        subject: row.subject,
+        teamId: context.teamId,
+        enterpriseId: typeof context.enterpriseId === "string" ? context.enterpriseId : null,
+        scopes: row.scopes.filter((scope) => settings.scopes.includes(scope)),
+      };
+      if (
+        !slackSignalCandidate(row.spec as NativeRoutineEventSpec, signal) ||
+        !slackSignalAccessible(signal, principal)
+      )
+        continue;
+      await this.jobs.enqueue({
+        name: "native.slack.signal",
+        payload: { triggerId: row.id, triggerVersion: row.version, inboxId, hookId, hookRevision },
+        replaceKey: nativeSignalJobKey(row.id, row.version, `${hook.appId}:${signal.eventId}`),
+      });
+    }
+    await this.slackHooks!.markDispatched(inboxId, hookId, hookRevision);
+  }
+  async slackSignal(raw: unknown, signal: AbortSignal): Promise<void> {
+    const payload = NativeSlackSignalJobSchema.parse(raw),
+      accepted = await this.slackHooks?.loadInbox(
+        payload.inboxId,
+        payload.hookId,
+        payload.hookRevision,
+      );
+    if (!accepted) return;
+    const { hook, signal: event } = accepted,
+      scope = await nativeTriggerScope(this.prisma, payload.triggerId);
+    if (!scope) return;
+    const row = await leaseNativeEventSource(
+      this.prisma,
+      scope,
+      payload.triggerId,
+      payload.triggerVersion,
+    );
+    if (!row?.leaseId) {
+      const busy = await this.prisma.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE t.id=${payload.triggerId} AND t.version=${payload.triggerVersion} AND t."configId"=${hook.configId} AND t."configRevision"=${hook.configRevision} AND r.active=true AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND g."authGeneration"=t."authGeneration" AND g."revokedAt" IS NULL AND a.enabled=true AND a.revision=t."configRevision" AND t."leaseUntil">now()`,
+      );
+      if (busy.length)
+        throw new NativeActionError(
+          "temporarily_unavailable",
+          "This exact Slack source is processing another delivery.",
+        );
+      return;
+    }
+    const leaseId = row.leaseId,
+      preparePrompt = await this.prompt(scope);
+    const checkpoint = async (
+      state: Record<string, unknown>,
+      nextPollAt: Date | null,
+      release: boolean,
+    ) =>
+      checkpointNativeEventSource(this.prisma, scope, {
+        triggerId: row.id,
+        triggerVersion: row.version,
+        leaseId,
+        state,
+        nextPollAt,
+        release,
+      });
+    if (
+      row.configId !== hook.configId ||
+      row.configRevision !== hook.configRevision ||
+      !row.kind.startsWith("slack.")
+    ) {
+      await checkpoint(object(row.state), row.nextPollAt, true);
+      return;
+    }
+    const context: NativeSourceReadContext = {
+      scope,
+      row,
+      signal,
+      heartbeat: async () => {
+        if (!(await checkpoint(object(row.state), row.nextPollAt, false)))
+          throw new NativeSourceLeaseLost();
+      },
+      emit: async (observation) => {
+        if (signal.aborted) throw signal.reason;
+        const claimed = await claimNativeRoutineEvent(
+          this.prisma,
+          scope,
+          observation,
+          leaseId,
+          preparePrompt,
+          new Date(),
+          {
+            id: hook.id,
+            revision: hook.revision,
+            configId: hook.configId,
+            provider: "slack",
+            inboxId: payload.inboxId,
+            eventId: event.eventId,
+          },
+        );
+        if (!claimed) throw new NativeSourceLeaseLost();
+        await this.jobs.enqueue(runContinueJob(claimed.runId));
+        if (claimed.created) await this.fired(claimed.runId);
+        return claimed.created;
+      },
+    };
+    try {
+      const retryAfter = object(row.state).retryAfterAt;
+      if (typeof retryAfter === "string" && Date.parse(retryAfter) > Date.now())
+        throw new NativeActionError(
+          "temporarily_unavailable",
+          "The Slack source is respecting its retry interval.",
+          { retryAfterSeconds: Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000) },
+        );
+      const result = await withNativeEventReadApi(
+        this.oauth,
+        context,
+        async (api, _notion, principal) => {
+          if (!principal)
+            throw new NativeActionError(
+              "authorization_required",
+              "Slack events require the exact configured bot account.",
+            );
+          // Slack never scans history: a verified live event needs no historic-message baseline.
+          row.state = { ...object(row.state), ready: true };
+          await context.heartbeat();
+          return readSlackWebhook(context, api, event, principal, hook);
+        },
+        this.network,
+      );
+      const state = { ...result.state };
+      delete state.retryAfterAt;
+      delete state.lastErrorCode;
+      await checkpoint(state, result.nextPollAt, true);
+    } catch (error) {
+      const retry = nativeSourceRetry(object(row.state), error);
+      await checkpoint(retry.state, retry.nextPollAt, true).catch(() => false);
+      if (!(error instanceof NativeSourceLeaseLost)) throw error;
+    }
+  }
+  async ingestGmail(rawBody: Uint8Array, authorization: string | null): Promise<number> {
+    if (!authorization?.startsWith("Bearer ") || rawBody.byteLength > 64 * 1024)
+      throw new InvalidNativeEventSignal();
+    let subscription: unknown;
+    try {
+      subscription = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(rawBody),
+      ).subscription;
+    } catch {
+      throw new InvalidNativeEventSignal();
+    }
+    if (typeof subscription !== "string") throw new InvalidNativeEventSignal();
+    const configs = await this.prisma.nativeAppConfig.findMany({
+      where: { appId: "gmail", enabled: true },
+      select: { id: true, revision: true, config: true },
+    });
+    let count = 0,
+      matched = false;
+    for (const config of configs) {
+      const watch = NativeConfigSettingsSchema.parse(config.config).googleWatch;
+      if (!watch || watch.subscriptionName !== subscription) continue;
+      const expected = new URL("/api/connectors/events/gmail", this.apiUrl);
+      if (expected.protocol !== "https:" || watch.callbackAudience !== expected.href) continue;
+      const event = await this.gmailPush.verify({ authorization, rawBody }, watch);
+      matched = true;
+      // The signed push is a hint only. Never move a Gmail cursor from a notification historyId.
+      const rows = await this.prisma.$queryRaw<Array<{ id: string; version: number }>>(
+        Prisma.sql`SELECT t.id,t.version FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN bots b ON b.id=r."botId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE t."configId"=${config.id} AND t."configRevision"=${config.revision} AND t.kind LIKE 'gmail.%' AND r.active=true AND b."archivedAt" IS NULL AND b."userId"=r."userId" AND b."spaceId"=r."spaceId" AND c.provider='gmail' AND c."connectorId"='native' AND c.status='connected' AND c."userId"=r."userId" AND c."spaceId"=r."spaceId" AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND c."nativeConfigId"=t."configId" AND c."nativeConfigRevision"=t."configRevision" AND g."userId"=r."userId" AND g."spaceId"=r."spaceId" AND g.principal->>'email'=${event.emailAddress} AND g."authGeneration"=t."authGeneration" AND g."configId"=t."configId" AND g."configRevision"=t."configRevision" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND a.enabled=true AND a.revision=t."configRevision" AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=r."userId" AND m."spaceId"=r."spaceId")`,
+      );
+      for (const row of rows) {
+        await this.jobs.enqueue(nativeSourceJob(row.id, row.version));
+        count++;
+      }
+    }
+    if (
+      !matched &&
+      configs.some(
+        (config) =>
+          NativeConfigSettingsSchema.parse(config.config).googleWatch?.subscriptionName ===
+          subscription,
+      )
+    )
+      throw new InvalidNativeEventSignal();
+    return count;
+  }
+  async ingestDrive(headers: Headers): Promise<number> {
+    const id = headers.get("x-goog-channel-id");
+    if (!id || id.length > 128) return 0;
+    const rows = await this.prisma.$queryRaw<
+      Array<import("./store.js").NativeRoutineTriggerRow & { userId: string; spaceId: string }>
+    >(
+      Prisma.sql`SELECT t.*,r."userId",r."spaceId" FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" WHERE t.kind LIKE 'drive.%' AND r.active=true AND c.provider='google-drive' AND c.status='connected' AND EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.state->'driveWatch'->'channels')='array' THEN t.state->'driveWatch'->'channels' ELSE '[]'::jsonb END) ch WHERE ch->>'id'=${id})`,
+    );
+    let count = 0;
+    for (const row of rows) {
+      const channels = driveWatchChannels(
+        object(row.state),
+        nativeGoogleWatchBinding({ row, scope: { userId: row.userId, spaceId: row.spaceId } }),
+      );
+      const channel = channels.find((candidate) => candidate.id === id);
+      if (!channel) continue;
+      const verified = verifyDriveWatchSignal(headers, channel);
+      if (!verified || verified.phase === "early_sync") continue;
+      await this.jobs.enqueue(nativeSourceJob(row.id, row.version));
+      count++;
+    }
+    return count;
   }
   async ingestCalendar(headers: Headers): Promise<number> {
     const channelId = headers.get("x-goog-channel-id");

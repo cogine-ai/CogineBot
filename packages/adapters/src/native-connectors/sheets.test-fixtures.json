@@ -13,9 +13,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "spreadsheetId"
-        ],
+        "required": ["spreadsheetId"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -28,9 +26,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -67,9 +63,7 @@
           "input": {
             "spreadsheetId": "sheet_fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets.readonly"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
           "upstream": [
             {
               "request": {
@@ -136,9 +130,7 @@
             "maxLength": 1000
           }
         },
-        "required": [
-          "title"
-        ],
+        "required": ["title"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -149,9 +141,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -188,9 +178,7 @@
           "input": {
             "title": "Fixture"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
           "upstream": [
             {
               "request": {
@@ -244,17 +232,10 @@
           },
           "valueRenderOption": {
             "type": "string",
-            "enum": [
-              "FORMATTED_VALUE",
-              "UNFORMATTED_VALUE",
-              "FORMULA"
-            ]
+            "enum": ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"]
           }
         },
-        "required": [
-          "spreadsheetId",
-          "range"
-        ],
+        "required": ["spreadsheetId", "range"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -267,9 +248,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -309,9 +288,7 @@
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets.readonly"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"],
           "upstream": [
             {
               "request": {
@@ -328,12 +305,7 @@
                 "body": {
                   "range": "Data!A1:B1",
                   "majorDimension": "ROWS",
-                  "values": [
-                    [
-                      "old",
-                      1
-                    ]
-                  ]
+                  "values": [["old", 1]]
                 }
               }
             }
@@ -342,12 +314,7 @@
             "valueRange": {
               "range": "Data!A1:B1",
               "majorDimension": "ROWS",
-              "values": [
-                [
-                  "old",
-                  1
-                ]
-              ]
+              "values": [["old", 1]]
             }
           }
         }
@@ -375,11 +342,7 @@
             "items": {
               "type": "array",
               "items": {
-                "type": [
-                  "string",
-                  "number",
-                  "boolean"
-                ],
+                "type": ["string", "number", "boolean"],
                 "maxLength": 10000
               },
               "maxItems": 100
@@ -391,11 +354,7 @@
             "items": {
               "type": "array",
               "items": {
-                "type": [
-                  "string",
-                  "number",
-                  "boolean"
-                ],
+                "type": ["string", "number", "boolean"],
                 "maxLength": 10000
               },
               "maxItems": 100
@@ -404,19 +363,10 @@
           },
           "valueInputOption": {
             "type": "string",
-            "enum": [
-              "RAW",
-              "USER_ENTERED"
-            ]
+            "enum": ["RAW", "USER_ENTERED"]
           }
         },
-        "required": [
-          "spreadsheetId",
-          "range",
-          "expectedValues",
-          "values",
-          "valueInputOption"
-        ],
+        "required": ["spreadsheetId", "range", "expectedValues", "values", "valueInputOption"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -427,9 +377,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -444,18 +392,8 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "expectedValues": [
-              [
-                "old",
-                1
-              ]
-            ],
-            "values": [
-              [
-                "new",
-                2
-              ]
-            ],
+            "expectedValues": [["old", 1]],
+            "values": [["new", 2]],
             "valueInputOption": "RAW",
             "access_token": "fixture-forbidden"
           },
@@ -466,18 +404,8 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "expectedValues": [
-              [
-                "old",
-                1
-              ]
-            ],
-            "values": [
-              [
-                "new",
-                2
-              ]
-            ],
+            "expectedValues": [["old", 1]],
+            "values": [["new", 2]],
             "valueInputOption": "RAW",
             "requests": [
               {
@@ -494,23 +422,11 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "expectedValues": [
-              [
-                "old",
-                1
-              ]
-            ],
-            "values": [
-              [
-                "new",
-                2
-              ]
-            ],
+            "expectedValues": [["old", 1]],
+            "values": [["new", 2]],
             "valueInputOption": "RAW"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
           "upstream": [
             {
               "request": {
@@ -527,12 +443,7 @@
                 "body": {
                   "range": "Data!A1:B1",
                   "majorDimension": "ROWS",
-                  "values": [
-                    [
-                      "old",
-                      1
-                    ]
-                  ]
+                  "values": [["old", 1]]
                 }
               }
             },
@@ -543,12 +454,7 @@
                 "body": {
                   "range": "Data!A1:B1",
                   "majorDimension": "ROWS",
-                  "values": [
-                    [
-                      "new",
-                      2
-                    ]
-                  ]
+                  "values": [["new", 2]]
                 },
                 "query": {
                   "valueInputOption": "RAW",
@@ -604,11 +510,7 @@
             "items": {
               "type": "array",
               "items": {
-                "type": [
-                  "string",
-                  "number",
-                  "boolean"
-                ],
+                "type": ["string", "number", "boolean"],
                 "maxLength": 10000
               },
               "maxItems": 100
@@ -617,26 +519,14 @@
           },
           "valueInputOption": {
             "type": "string",
-            "enum": [
-              "RAW",
-              "USER_ENTERED"
-            ]
+            "enum": ["RAW", "USER_ENTERED"]
           },
           "insertDataOption": {
             "type": "string",
-            "enum": [
-              "INSERT_ROWS",
-              "OVERWRITE"
-            ]
+            "enum": ["INSERT_ROWS", "OVERWRITE"]
           }
         },
-        "required": [
-          "spreadsheetId",
-          "range",
-          "values",
-          "valueInputOption",
-          "insertDataOption"
-        ],
+        "required": ["spreadsheetId", "range", "values", "valueInputOption", "insertDataOption"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -647,9 +537,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -664,12 +552,7 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "values": [
-              [
-                "new",
-                2
-              ]
-            ],
+            "values": [["new", 2]],
             "valueInputOption": "RAW",
             "insertDataOption": "INSERT_ROWS",
             "access_token": "fixture-forbidden"
@@ -681,12 +564,7 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "values": [
-              [
-                "new",
-                2
-              ]
-            ],
+            "values": [["new", 2]],
             "valueInputOption": "RAW",
             "insertDataOption": "INSERT_ROWS",
             "requests": [
@@ -704,18 +582,11 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "values": [
-              [
-                "new",
-                2
-              ]
-            ],
+            "values": [["new", 2]],
             "valueInputOption": "RAW",
             "insertDataOption": "INSERT_ROWS"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
           "upstream": [
             {
               "request": {
@@ -724,12 +595,7 @@
                 "body": {
                   "range": "Data!A1:B1",
                   "majorDimension": "ROWS",
-                  "values": [
-                    [
-                      "new",
-                      2
-                    ]
-                  ]
+                  "values": [["new", 2]]
                 },
                 "query": {
                   "valueInputOption": "RAW",
@@ -742,10 +608,19 @@
                 "status": 200,
                 "body": {
                   "spreadsheetId": "sheet_fixture",
-                  "updatedRange": "Data!A1:B1",
-                  "updatedRows": 1,
-                  "updatedColumns": 2,
-                  "updatedCells": 2
+                  "tableRange": "Data!A1:B1",
+                  "updates": {
+                    "spreadsheetId": "sheet_fixture",
+                    "updatedRange": "Data!A2:B2",
+                    "updatedRows": 1,
+                    "updatedColumns": 2,
+                    "updatedCells": 2,
+                    "updatedData": {
+                      "range": "Data!A2:B2",
+                      "majorDimension": "ROWS",
+                      "values": [["new", 2]]
+                    }
+                  }
                 }
               }
             }
@@ -753,13 +628,23 @@
           "expectedOutput": {
             "result": {
               "spreadsheetId": "sheet_fixture",
-              "updatedRange": "Data!A1:B1",
-              "updatedRows": 1,
-              "updatedColumns": 2,
-              "updatedCells": 2
+              "tableRange": "Data!A1:B1",
+              "updates": {
+                "spreadsheetId": "sheet_fixture",
+                "updatedRange": "Data!A2:B2",
+                "updatedRows": 1,
+                "updatedColumns": 2,
+                "updatedCells": 2,
+                "updatedData": {
+                  "range": "Data!A2:B2",
+                  "majorDimension": "ROWS",
+                  "values": [["new", 2]]
+                }
+              }
             },
             "outcome": "succeeded",
-            "atomicVersionPrecondition": false
+            "atomicVersionPrecondition": false,
+            "actualUpdatedRange": "Data!A2:B2"
           }
         }
       ]
@@ -786,11 +671,7 @@
             "items": {
               "type": "array",
               "items": {
-                "type": [
-                  "string",
-                  "number",
-                  "boolean"
-                ],
+                "type": ["string", "number", "boolean"],
                 "maxLength": 10000
               },
               "maxItems": 100
@@ -798,11 +679,7 @@
             "maxItems": 1000
           }
         },
-        "required": [
-          "spreadsheetId",
-          "range",
-          "expectedValues"
-        ],
+        "required": ["spreadsheetId", "range", "expectedValues"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -813,9 +690,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -830,12 +705,7 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "expectedValues": [
-              [
-                "old",
-                1
-              ]
-            ],
+            "expectedValues": [["old", 1]],
             "access_token": "fixture-forbidden"
           },
           "reason": "additionalProperties=false"
@@ -845,12 +715,7 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "expectedValues": [
-              [
-                "old",
-                1
-              ]
-            ],
+            "expectedValues": [["old", 1]],
             "requests": [
               {
                 "deleteObject": {}
@@ -866,16 +731,9 @@
           "input": {
             "spreadsheetId": "sheet_fixture",
             "range": "Data!A1:B1",
-            "expectedValues": [
-              [
-                "old",
-                1
-              ]
-            ]
+            "expectedValues": [["old", 1]]
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
           "upstream": [
             {
               "request": {
@@ -892,12 +750,7 @@
                 "body": {
                   "range": "Data!A1:B1",
                   "majorDimension": "ROWS",
-                  "values": [
-                    [
-                      "old",
-                      1
-                    ]
-                  ]
+                  "values": [["old", 1]]
                 }
               }
             },
@@ -954,12 +807,7 @@
             "maximum": 18278
           }
         },
-        "required": [
-          "spreadsheetId",
-          "title",
-          "rowCount",
-          "columnCount"
-        ],
+        "required": ["spreadsheetId", "title", "rowCount", "columnCount"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -970,9 +818,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -1018,9 +864,7 @@
             "rowCount": 100,
             "columnCount": 10
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
           "upstream": [
             {
               "request": {
@@ -1094,12 +938,7 @@
             "maxLength": 100
           }
         },
-        "required": [
-          "spreadsheetId",
-          "sheetId",
-          "expectedTitle",
-          "title"
-        ],
+        "required": ["spreadsheetId", "sheetId", "expectedTitle", "title"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -1110,9 +949,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/spreadsheets"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/spreadsheets"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -1158,9 +995,7 @@
             "expectedTitle": "Data",
             "title": "Renamed"
           },
-          "scopes": [
-            "https://www.googleapis.com/auth/spreadsheets"
-          ],
+          "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
           "upstream": [
             {
               "request": {
@@ -1214,9 +1049,7 @@
                 "status": 200,
                 "body": {
                   "spreadsheetId": "sheet_fixture",
-                  "replies": [
-                    {}
-                  ]
+                  "replies": [{}]
                 }
               }
             }

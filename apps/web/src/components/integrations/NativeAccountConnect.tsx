@@ -78,18 +78,42 @@ export function NativeAccountConnect({
         : entry.credentialKind === "internal_token"
           ? t`Internal integration`
           : entry.credentialKind === "personal_token"
-            ? t`Personal access token`
-            : t`Account authorization`;
+            ? appId === "linear"
+              ? t`Personal API key`
+              : appId === "slack"
+                ? t`User token`
+                : t`Personal access token`
+            : entry.credentialKind === "bot_token"
+              ? t`Bot token`
+              : entry.credentialKind === "github_app_installation"
+                ? t`GitHub App installation`
+                : t`Account authorization`;
     const ownership =
       entry.ownership === "official" ? t`Official application` : t`Your application`;
-    return `${entry.label} · ${ownership} · ${kind}`;
+    const actor =
+      entry.credentialKind === "oauth" && entry.actor
+        ? entry.actor === "bot"
+          ? t`Bot`
+          : entry.actor === "app"
+            ? t`Application`
+            : t`User`
+        : null;
+    return `${entry.label} · ${ownership} · ${kind}${actor ? ` · ${actor}` : ""}`;
   }
   const credentialLabel =
     selected?.credentialKind === "machine_key"
       ? t`Machine API key`
       : selected?.credentialKind === "internal_token"
         ? t`Internal integration token`
-        : t`Personal access token`;
+        : selected?.credentialKind === "bot_token"
+          ? t`Slack bot token`
+          : selected?.credentialKind === "github_app_installation"
+            ? t`GitHub App private key JSON`
+            : appId === "linear"
+              ? t`Linear API key`
+              : appId === "slack"
+                ? t`Slack user token`
+                : t`Personal access token`;
   const submitLabel = oauth
     ? t`Authorize account`
     : selected?.credentialKind === "machine_key"
@@ -217,6 +241,14 @@ export function NativeAccountConnect({
           {selected.credentialKind === "internal_token" ? (
             <p className="text-sm text-muted-foreground">
               <Trans>Only pages shared with this integration are available.</Trans>
+            </p>
+          ) : null}
+          {selected.credentialKind === "github_app_installation" ? (
+            <p className="text-sm text-muted-foreground">
+              <Trans>
+                Enter JSON with appId, installationId and privateKeyPem for the configured
+                installation.
+              </Trans>
             </p>
           ) : null}
         </Field>

@@ -5,9 +5,7 @@
     "name": "fixture.txt",
     "mimeType": "text/plain",
     "description": "fixture",
-    "parents": [
-      "p1"
-    ],
+    "parents": ["p1"],
     "trashed": false,
     "version": "7",
     "size": "5",
@@ -29,9 +27,7 @@
     "name": "Fixture folder",
     "mimeType": "application/vnd.google-apps.folder",
     "description": "fixture",
-    "parents": [
-      "p1"
-    ],
+    "parents": ["p1"],
     "trashed": false,
     "version": "7",
     "size": "5",
@@ -66,9 +62,7 @@
                 "name": "fixture.txt",
                 "mimeType": "text/plain",
                 "description": "fixture",
-                "parents": [
-                  "p1"
-                ],
+                "parents": ["p1"],
                 "trashed": false,
                 "version": "7",
                 "size": "5",
@@ -99,7 +93,23 @@
         "pageSize": 1,
         "q": "trashed = false",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files",
+          "query": {
+            "spaces": "drive",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission)",
+            "supportsAllDrives": true,
+            "includeItemsFromAllDrives": true,
+            "corpora": "user",
+            "pageSize": 1,
+            "q": "trashed = false"
+          }
+        }
+      ]
     },
     {
       "id": "drive.files.get",
@@ -121,9 +131,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -149,7 +157,18 @@
       "rejectedInput": {
         "fileId": "f1",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        }
+      ]
     },
     {
       "id": "drive.files.download",
@@ -171,9 +190,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -205,7 +222,28 @@
       "rejectedInput": {
         "fileId": "f1",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "alt": "media",
+            "supportsAllDrives": true
+          },
+          "responseType": "bytes"
+        }
+      ]
     },
     {
       "id": "drive.files.export",
@@ -228,9 +266,7 @@
             "name": "fixture.txt",
             "mimeType": "application/vnd.google-apps.document",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -252,9 +288,7 @@
           "status": 200,
           "body": {
             "exportFormats": {
-              "application/vnd.google-apps.document": [
-                "application/pdf"
-              ]
+              "application/vnd.google-apps.document": ["application/pdf"]
             }
           }
         },
@@ -273,7 +307,35 @@
         "fileId": "f1",
         "mimeType": "application/pdf",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/about",
+          "query": {
+            "fields": "exportFormats"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/export",
+          "query": {
+            "mimeType": "application/pdf"
+          },
+          "responseType": "bytes"
+        }
+      ]
     },
     {
       "id": "drive.files.upload",
@@ -292,9 +354,7 @@
         {
           "status": 200,
           "body": {
-            "ids": [
-              "new-file"
-            ]
+            "ids": ["new-file"]
           }
         },
         {
@@ -311,9 +371,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -342,7 +400,52 @@
         "artifactId": "artifact-source",
         "name": "fixture.txt",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/generateIds",
+          "query": {
+            "count": 1,
+            "space": "drive",
+            "type": "files"
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "POST",
+          "path": "/files",
+          "query": {
+            "uploadType": "resumable",
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "id": "new-file",
+            "name": "fixture.txt",
+            "mimeType": "text/plain"
+          },
+          "headers": {
+            "X-Upload-Content-Type": "text/plain",
+            "X-Upload-Content-Length": "5"
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "PUT",
+          "path": "/files",
+          "query": {
+            "uploadType": "resumable",
+            "upload_id": "fixture-session"
+          },
+          "headers": {
+            "Content-Type": "text/plain",
+            "Content-Range": "bytes 0-4/5"
+          },
+          "bodyBase64": "SGVsbG8="
+        }
+      ]
     },
     {
       "id": "drive.files.update_content",
@@ -366,9 +469,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -400,9 +501,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "8",
             "size": "5",
@@ -432,7 +531,49 @@
         "expectedVersion": "7",
         "artifactId": "artifact-source",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "uploadType": "resumable",
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "mimeType": "text/plain"
+          },
+          "headers": {
+            "X-Upload-Content-Type": "text/plain",
+            "X-Upload-Content-Length": "5"
+          }
+        },
+        {
+          "service": "drive-upload",
+          "method": "PUT",
+          "path": "/files/f1",
+          "query": {
+            "uploadType": "resumable",
+            "upload_id": "fixture-session"
+          },
+          "headers": {
+            "Content-Type": "text/plain",
+            "Content-Range": "bytes 0-4/5"
+          },
+          "bodyBase64": "SGVsbG8="
+        }
+      ]
     },
     {
       "id": "drive.folders.create",
@@ -450,9 +591,7 @@
         {
           "status": 200,
           "body": {
-            "ids": [
-              "new-file"
-            ]
+            "ids": ["new-file"]
           }
         },
         {
@@ -462,9 +601,7 @@
             "name": "New folder",
             "mimeType": "application/vnd.google-apps.folder",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -486,7 +623,33 @@
       "rejectedInput": {
         "name": "New folder",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/generateIds",
+          "query": {
+            "count": 1,
+            "space": "drive",
+            "type": "files"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "POST",
+          "path": "/files",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          },
+          "body": {
+            "id": "new-file",
+            "name": "New folder",
+            "mimeType": "application/vnd.google-apps.folder"
+          }
+        }
+      ]
     },
     {
       "id": "drive.files.update_metadata",
@@ -512,9 +675,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -539,9 +700,7 @@
             "name": "Renamed.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "8",
             "size": "5",
@@ -573,16 +732,37 @@
           "name": "Renamed.txt"
         },
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "name": "Renamed.txt"
+          }
+        }
+      ]
     },
     {
       "id": "drive.files.move",
       "input": {
         "fileId": "f1",
         "expectedVersion": "7",
-        "expectedParentIds": [
-          "p1"
-        ],
+        "expectedParentIds": ["p1"],
         "destinationParentId": "p2"
       },
       "context": {
@@ -600,9 +780,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -627,9 +805,7 @@
             "name": "Fixture folder",
             "mimeType": "application/vnd.google-apps.folder",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -648,9 +824,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p2"
-            ],
+            "parents": ["p2"],
             "trashed": false,
             "version": "8",
             "size": "5",
@@ -672,20 +846,48 @@
       "expectedOutput": {
         "outcome": "succeeded",
         "file": {
-          "parents": [
-            "p2"
-          ]
+          "parents": ["p2"]
         }
       },
       "rejectedInput": {
         "fileId": "f1",
         "expectedVersion": "7",
-        "expectedParentIds": [
-          "p1"
-        ],
+        "expectedParentIds": ["p1"],
         "destinationParentId": "p2",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/p2",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "addParents": "p2",
+            "removeParents": "p1"
+          },
+          "body": {}
+        }
+      ]
     },
     {
       "id": "drive.files.copy",
@@ -708,9 +910,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -735,9 +935,7 @@
             "name": "Copy.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -766,7 +964,30 @@
         "fileId": "f1",
         "name": "Copy.txt",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "POST",
+          "path": "/files/f1/copy",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          },
+          "body": {
+            "name": "Copy.txt"
+          }
+        }
+      ]
     },
     {
       "id": "drive.files.trash",
@@ -789,9 +1010,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -816,9 +1035,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": true,
             "version": "8",
             "size": "5",
@@ -847,7 +1064,30 @@
         "fileId": "f1",
         "expectedVersion": "7",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "trashed": true
+          }
+        }
+      ]
     },
     {
       "id": "drive.files.restore",
@@ -870,9 +1110,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": true,
             "version": "7",
             "size": "5",
@@ -897,9 +1135,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "8",
             "size": "5",
@@ -928,7 +1164,30 @@
         "fileId": "f1",
         "expectedVersion": "7",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "PATCH",
+          "path": "/files/f1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission"
+          },
+          "body": {
+            "trashed": false
+          }
+        }
+      ]
     },
     {
       "id": "drive.permissions.list",
@@ -950,9 +1209,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -995,7 +1252,28 @@
       "rejectedInput": {
         "fileId": "f1",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/permissions",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "nextPageToken,permissions(id,type,role,emailAddress,domain,allowFileDiscovery,deleted,expirationTime,pendingOwner,permissionDetails)",
+            "pageSize": 100
+          }
+        }
+      ]
     },
     {
       "id": "drive.permissions.create",
@@ -1024,9 +1302,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -1070,7 +1346,33 @@
         },
         "sendNotificationEmail": false,
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "POST",
+          "path": "/files/f1/permissions",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,type,role,emailAddress,domain,allowFileDiscovery,deleted,expirationTime,pendingOwner,permissionDetails",
+            "sendNotificationEmail": false
+          },
+          "body": {
+            "type": "user",
+            "role": "reader",
+            "emailAddress": "target@example.test"
+          }
+        }
+      ]
     },
     {
       "id": "drive.permissions.delete",
@@ -1094,9 +1396,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -1149,7 +1449,43 @@
         "expectedVersion": "7",
         "permissionId": "permission1",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/permissions/permission1",
+          "query": {
+            "supportsAllDrives": true,
+            "fields": "id,type,role,emailAddress,domain,allowFileDiscovery,deleted,expirationTime,pendingOwner,permissionDetails"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/about",
+          "query": {
+            "fields": "user(permissionId)"
+          }
+        },
+        {
+          "service": "drive",
+          "method": "DELETE",
+          "path": "/files/f1/permissions/permission1",
+          "query": {
+            "supportsAllDrives": true
+          }
+        }
+      ]
     },
     {
       "id": "drive.revisions.list",
@@ -1171,9 +1507,7 @@
             "name": "fixture.txt",
             "mimeType": "text/plain",
             "description": "fixture",
-            "parents": [
-              "p1"
-            ],
+            "parents": ["p1"],
             "trashed": false,
             "version": "7",
             "size": "5",
@@ -1212,7 +1546,27 @@
       "rejectedInput": {
         "fileId": "f1",
         "access_token": "fixture-not-a-token"
-      }
+      },
+      "requests": [
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1",
+          "query": {
+            "fields": "id,name,mimeType,description,parents,trashed,version,size,md5Checksum,modifiedTime,createdTime,driveId,resourceKey,isAppAuthorized,ownedByMe,capabilities,shortcutDetails,webViewLink,copyRequiresWriterPermission",
+            "supportsAllDrives": true
+          }
+        },
+        {
+          "service": "drive",
+          "method": "GET",
+          "path": "/files/f1/revisions",
+          "query": {
+            "fields": "nextPageToken,revisions(id,mimeType,modifiedTime,keepForever,published,publishAuto,publishedOutsideDomain,originalFilename,md5Checksum,size)",
+            "pageSize": 100
+          }
+        }
+      ]
     }
   ]
 }

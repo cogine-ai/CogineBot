@@ -330,6 +330,31 @@ export class NativeOAuthStore {
     return this.connectStatic(config, credential, identity, context, previousConnectionId);
   }
 
+  async connectCollaborationToken(
+    configId: string,
+    credential: string,
+    context: AdapterContext,
+    previousConnectionId?: string,
+  ): Promise<{ connectionId: string }> {
+    const config = await this.configs.require(configId);
+    if (!["github", "linear", "slack"].includes(config.appId) || config.credentialKind === "oauth")
+      throw new NativeActionError("invalid_input", "Choose the exact non-browser credential type.");
+    await this.member(this.prisma, context);
+    const auth = await this.authorities.collaboration.verifyStatic(
+      config,
+      credential,
+      context.signal,
+    );
+    return this.connectStatic(
+      config,
+      auth.tokens.accessToken,
+      auth.identity,
+      context,
+      previousConnectionId,
+      auth,
+    );
+  }
+
   async connectKnowaiMachine(
     config: NativeAppConfig,
     credential: string,
@@ -356,6 +381,7 @@ export class NativeOAuthStore {
     identity: NativeIdentity,
     context: AdapterContext,
     previousConnectionId?: string,
+    authorization?: NativeAuthorization,
   ): Promise<{ connectionId: string }> {
     const connectionId = randomUUID();
     // No intermediate browser state or token is sent back to the client.
@@ -380,7 +406,7 @@ export class NativeOAuthStore {
       await this.adopt(
         config,
         connectionId,
-        {
+        authorization ?? {
           identity,
           tokens: { accessToken: credential, refreshToken: null },
           scopes: [],
@@ -419,13 +445,39 @@ export class NativeOAuthStore {
       refreshVersion ??= grant.tokenVersion;
       if (grant.tokenVersion > refreshVersion) forceRefresh = false;
       if (
+        config.appId === "linear" &&
+        grant.refreshRecoveryUntil &&
+        grant.refreshRecoveryUntil.getTime() <= Date.now()
+      ) {
+        // The provider's 30-minute replay allowance starts at the FIRST request.
+        // A newer lease or a second lost response must never extend that allowance.
+        await this.failGrant(connection, grant, grant.refreshLeaseId ?? undefined);
+        continue;
+      }
+      if (
         grant.refreshLeaseId &&
         (!grant.refreshLeaseUntil || grant.refreshLeaseUntil.getTime() <= Date.now())
       ) {
         // An expired lease may have issued a successor token before its worker
         // stopped. Retrying the old rotating token can revoke the whole family.
         // Exact lease/version CAS cannot retire a pair already committed by the winner.
-        await this.failGrant(connection, grant, grant.refreshLeaseId);
+        const recoverableLease =
+          config.credentialKind === "github_app_installation" ||
+          (config.appId === "linear" &&
+            Boolean(
+              grant.refreshRecoveryUntil && grant.refreshRecoveryUntil.getTime() > Date.now(),
+            ));
+        if (recoverableLease) {
+          await this.prisma.nativeOAuthGrant.updateMany({
+            where: {
+              id: grant.id,
+              tokenVersion: grant.tokenVersion,
+              refreshLeaseId: grant.refreshLeaseId,
+              revokedAt: null,
+            },
+            data: { refreshLeaseId: null, refreshLeaseUntil: null },
+          });
+        } else await this.failGrant(connection, grant, grant.refreshLeaseId);
         continue;
       }
       const auth = await this.readGrant(grant);
@@ -434,7 +486,7 @@ export class NativeOAuthStore {
         (!grant.accessExpiresAt || grant.accessExpiresAt.getTime() > Date.now() + 60_000)
       )
         return { connection, config, grant, auth };
-      if (!auth.tokens.refreshToken) {
+      if (!auth.tokens.refreshToken && !auth.tokens.githubInstallation) {
         await this.failGrant(connection, grant);
         throw new NativeActionError(
           "authorization_expired",
@@ -453,6 +505,7 @@ export class NativeOAuthStore {
           revokedAt: null,
           refreshLeaseId: null,
           refreshLeaseUntil: null,
+          refreshRecoveryUntil: grant.refreshRecoveryUntil,
           connections: {
             some: { id: connectionId, status: "connected", ...scope(context) },
           },
@@ -460,6 +513,12 @@ export class NativeOAuthStore {
         data: {
           refreshLeaseId: leaseId,
           refreshLeaseUntil: new Date(Date.now() + 60_000),
+          ...(config.appId === "linear"
+            ? {
+                refreshRecoveryUntil:
+                  grant.refreshRecoveryUntil ?? new Date(Date.now() + 30 * 60_000),
+              }
+            : {}),
         },
       });
       if (!claimed.count) {
@@ -490,10 +549,19 @@ export class NativeOAuthStore {
         // refresh token. A stale loser cannot retire the winner's newer pair.
         if (
           error instanceof NativeActionError &&
-          (error.kind === "authorization_expired" || error.options.uncertain)
+          (error.kind === "authorization_expired" ||
+            (error.options.uncertain &&
+              config.appId !== "linear" &&
+              config.credentialKind !== "github_app_installation"))
         )
           await this.failGrant(connection, grant, leaseId);
-        else
+        else if (
+          !(
+            error instanceof NativeActionError &&
+            error.options.uncertain &&
+            config.appId === "linear"
+          )
+        )
           await this.prisma.nativeOAuthGrant.updateMany({
             where: {
               id: grant.id,
@@ -501,7 +569,12 @@ export class NativeOAuthStore {
               refreshLeaseId: leaseId,
               revokedAt: null,
             },
-            data: { refreshLeaseId: null, refreshLeaseUntil: null },
+            data: {
+              refreshLeaseId: null,
+              refreshLeaseUntil: null,
+              // A definite rejection of a replay cannot erase the original lost request's deadline.
+              refreshRecoveryUntil: config.appId === "linear" ? grant.refreshRecoveryUntil : null,
+            },
           });
         throw error;
       }
@@ -535,10 +608,12 @@ export class NativeOAuthStore {
               data: {
                 secretId: material.id,
                 scopes: next.scopes,
+                principal: next.identity.context as Prisma.InputJsonObject,
                 accessExpiresAt: next.expiresAt,
                 tokenVersion: { increment: 1 },
                 refreshLeaseId: null,
                 refreshLeaseUntil: null,
+                refreshRecoveryUntil: null,
               },
             });
             if (!saved.count) throw unavailable();
@@ -549,7 +624,8 @@ export class NativeOAuthStore {
           }),
         );
       } catch (error) {
-        await this.failGrant(connection, grant, leaseId);
+        if (config.appId !== "linear" && config.credentialKind !== "github_app_installation")
+          await this.failGrant(connection, grant, leaseId);
         throw error;
       }
       forceRefresh = false;
@@ -644,6 +720,7 @@ export class NativeOAuthStore {
             authGeneration: { increment: 1 },
             refreshLeaseId: null,
             refreshLeaseUntil: null,
+            refreshRecoveryUntil: null,
           },
         });
       await tx.secret.deleteMany({
@@ -752,7 +829,13 @@ export class NativeOAuthStore {
             if (old) {
               await tx.nativeOAuthGrant.updateMany({
                 where: { id: old.id, ...scope(context) },
-                data: { revokedAt: new Date(), secretId: null },
+                data: {
+                  revokedAt: new Date(),
+                  secretId: null,
+                  refreshLeaseId: null,
+                  refreshLeaseUntil: null,
+                  refreshRecoveryUntil: null,
+                },
               });
               if (old.secretId)
                 await tx.secret.deleteMany({
@@ -819,6 +902,7 @@ export class NativeOAuthStore {
           secretId: null,
           refreshLeaseId: null,
           refreshLeaseUntil: null,
+          refreshRecoveryUntil: null,
         },
       });
       if (changed.count) {
@@ -886,7 +970,7 @@ export class NativeOAuthStore {
     return pending as unknown as NativeMcpPending;
   }
   private async clientSecret(config: NativeAppConfig): Promise<string> {
-    if (config.credentialKind === "mcp_oauth") return "";
+    if (["mcp_oauth", "github_app_installation"].includes(config.credentialKind)) return "";
     if (!config.ciphertext || !config.secretRecordId)
       throw new NativeActionError("not_configured", "This OAuth application has no client secret.");
     return this.secrets.load(config.ciphertext, {

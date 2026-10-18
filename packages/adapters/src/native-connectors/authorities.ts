@@ -6,6 +6,8 @@ import type { OAuthMaterial } from "../mcp-oauth.js";
 import type { RemoteTransportDependencies, SafeRemoteFetch } from "../remote-mcp.js";
 import { NativeActionError } from "./action.js";
 import { NativeConfigSettingsSchema } from "./config.js";
+import { CollaborationOAuthAuthorities } from "./collaboration-authorities.js";
+import { isGoogleNativeApp } from "./google.js";
 import type { NativeMcpPending } from "./mcp.js";
 import { NativeMcpProtocol } from "./mcp.js";
 import { createNativeFetch, nativeAbortable } from "./network.js";
@@ -16,6 +18,8 @@ export interface NativeTokenMaterial {
   refreshToken: string | null;
   /** Encrypted with the same account grant; never returned in a frontend DTO. */
   mcp?: OAuthMaterial;
+  /** GitHub App signing material stays inside the encrypted per-owner grant secret. */
+  githubInstallation?: { appId: string; installationId: string; privateKeyPem: string };
 }
 export interface NativeIdentity {
   authority: string;
@@ -74,18 +78,21 @@ function tokenMaterial(
 export class NativeOAuthAuthorities {
   private readonly fetch: SafeRemoteFetch;
   readonly mcp: NativeMcpProtocol;
+  readonly collaboration: CollaborationOAuthAuthorities;
   constructor(network: RemoteTransportDependencies = {}) {
     this.fetch = createNativeFetch(network);
     this.mcp = new NativeMcpProtocol(network);
+    this.collaboration = new CollaborationOAuthAuthorities(network);
   }
   close(): Promise<void> {
-    return Promise.all([this.fetch.close(), this.mcp.close()]).then(() => undefined);
+    return Promise.all([this.fetch.close(), this.mcp.close(), this.collaboration.close()]).then(() => undefined);
   }
 
   authorizationUrl(config: NativeAppConfig, state: string, verifier: string): string {
+    if (["github", "linear", "slack"].includes(config.appId)) return this.collaboration.authorizationUrl(config, state, verifier);
     const settings = NativeConfigSettingsSchema.parse(config.config);
     const clientId = required(settings.clientId, "an application client ID");
-    if (config.appId === "google-calendar") {
+    if (isGoogleNativeApp(config.appId)) {
       const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
       for (const [key, value] of Object.entries({
         client_id: clientId,
@@ -94,6 +101,7 @@ export class NativeOAuthAuthorities {
         state,
         scope: settings.scopes.join(" "),
         access_type: "offline",
+        include_granted_scopes: "false",
         prompt: "consent select_account",
         code_challenge_method: "S256",
         code_challenge: createHash("sha256").update(verifier).digest("base64url"),
@@ -128,6 +136,7 @@ export class NativeOAuthAuthorities {
     mcpState?: string,
     allowPrivateEndpoint = false,
   ): Promise<NativeAuthorization> {
+    if (["github", "linear", "slack"].includes(config.appId)) return this.collaboration.exchange(config, secret, code, verifier, signal);
     if (config.appId === "coginex") {
       if (!mcpPending || !mcpState)
         throw new NativeActionError(
@@ -138,7 +147,7 @@ export class NativeOAuthAuthorities {
     }
     const settings = NativeConfigSettingsSchema.parse(config.config);
     const clientId = required(settings.clientId, "an application client ID");
-    if (config.appId === "google-calendar") {
+    if (isGoogleNativeApp(config.appId)) {
       const body = await this.json(
         "https://oauth2.googleapis.com/token",
         {
@@ -202,6 +211,7 @@ export class NativeOAuthAuthorities {
     signal: AbortSignal,
     allowPrivateEndpoint = false,
   ): Promise<NativeAuthorization> {
+    if (["github", "linear", "slack"].includes(config.appId)) return this.collaboration.refresh(config, secret, previous, signal);
     if (config.appId === "coginex")
       return this.mcp.refresh(config, previous, signal, allowPrivateEndpoint);
     const settings = NativeConfigSettingsSchema.parse(config.config);
@@ -211,7 +221,7 @@ export class NativeOAuthAuthorities {
         "authorization_expired",
         "This account requires a new authorization.",
       );
-    if (config.appId === "google-calendar") {
+    if (isGoogleNativeApp(config.appId)) {
       const body = await this.json(
         "https://oauth2.googleapis.com/token",
         {
@@ -357,7 +367,7 @@ export class NativeOAuthAuthorities {
           ? body.email
           : typeof body.name === "string"
             ? body.name
-            : "Google Calendar",
+            : "Google",
       context: {
         ...(typeof body.email === "string" && body.email_verified === true
           ? { email: body.email }

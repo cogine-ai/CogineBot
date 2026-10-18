@@ -59,9 +59,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read"
-        ],
+        "acceptedAnyOfScopes": ["read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"
@@ -87,9 +85,7 @@
             "maxLength": 100
           }
         },
-        "required": [
-          "id"
-        ],
+        "required": ["id"],
         "additionalProperties": false
       },
       "upstream": {
@@ -98,9 +94,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read"
-        ],
+        "acceptedAnyOfScopes": ["read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"
@@ -186,10 +180,7 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "teamId",
-          "title"
-        ],
+        "required": ["teamId", "title"],
         "additionalProperties": false
       },
       "upstream": {
@@ -198,10 +189,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "issues:create",
-          "write"
-        ],
+        "acceptedAnyOfScopes": ["issues:create", "write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"
@@ -298,11 +286,7 @@
             "minProperties": 1
           }
         },
-        "required": [
-          "id",
-          "expectedUpdatedAt",
-          "changes"
-        ],
+        "required": ["id", "expectedUpdatedAt", "changes"],
         "additionalProperties": false
       },
       "upstream": {
@@ -311,9 +295,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write"
-        ],
+        "acceptedAnyOfScopes": ["write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"
@@ -353,9 +335,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read"
-        ],
+        "acceptedAnyOfScopes": ["read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"
@@ -395,9 +375,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read"
-        ],
+        "acceptedAnyOfScopes": ["read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"
@@ -437,9 +415,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read"
-        ],
+        "acceptedAnyOfScopes": ["read"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"
@@ -476,10 +452,7 @@
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
           }
         },
-        "required": [
-          "issueId",
-          "body"
-        ],
+        "required": ["issueId", "body"],
         "additionalProperties": false
       },
       "upstream": {
@@ -488,10 +461,7 @@
         "path": "/graphql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "comments:create",
-          "write"
-        ],
+        "acceptedAnyOfScopes": ["comments:create", "write"],
         "actualGrantedScopesRequired": true,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching"

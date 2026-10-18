@@ -54,9 +54,7 @@
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -95,9 +93,7 @@
             "maximum": 100000
           }
         },
-        "required": [
-          "messageId"
-        ],
+        "required": ["messageId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -105,9 +101,7 @@
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -146,9 +140,7 @@
             "maximum": 100000
           }
         },
-        "required": [
-          "threadId"
-        ],
+        "required": ["threadId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -156,9 +148,7 @@
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -197,10 +187,7 @@
             "maxLength": 200
           }
         },
-        "required": [
-          "messageId",
-          "partId"
-        ],
+        "required": ["messageId", "partId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -208,9 +195,7 @@
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -246,9 +231,7 @@
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.labels"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.labels"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -303,9 +286,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -344,9 +325,7 @@
             "maximum": 100000
           }
         },
-        "required": [
-          "draftId"
-        ],
+        "required": ["draftId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -355,9 +334,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.readonly"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -465,9 +442,7 @@
                       "pattern": "^[^\\r\\n/\\\\]+$"
                     }
                   },
-                  "required": [
-                    "artifactId"
-                  ],
+                  "required": ["artifactId"],
                   "additionalProperties": false
                 },
                 "minItems": 0,
@@ -475,17 +450,11 @@
                 "uniqueItems": true
               }
             },
-            "required": [
-              "to",
-              "subject",
-              "text"
-            ],
+            "required": ["to", "subject", "text"],
             "additionalProperties": false
           }
         },
-        "required": [
-          "message"
-        ],
+        "required": ["message"],
         "additionalProperties": false
       },
       "authorization": {
@@ -493,9 +462,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.compose"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -616,9 +583,7 @@
                       "pattern": "^[^\\r\\n/\\\\]+$"
                     }
                   },
-                  "required": [
-                    "artifactId"
-                  ],
+                  "required": ["artifactId"],
                   "additionalProperties": false
                 },
                 "minItems": 0,
@@ -626,19 +591,11 @@
                 "uniqueItems": true
               }
             },
-            "required": [
-              "to",
-              "subject",
-              "text"
-            ],
+            "required": ["to", "subject", "text"],
             "additionalProperties": false
           }
         },
-        "required": [
-          "draftId",
-          "expectedMessageId",
-          "message"
-        ],
+        "required": ["draftId", "expectedMessageId", "message"],
         "additionalProperties": false
       },
       "authorization": {
@@ -646,9 +603,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.compose"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -689,10 +644,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "draftId",
-          "expectedMessageId"
-        ],
+        "required": ["draftId", "expectedMessageId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -700,9 +652,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.compose"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -713,7 +663,7 @@
         "uncertainRecovery": "Never dispatch a second write for an already-dispatched operation; preserve receipt, return result_unknown. Sent Message-ID is correlation, not an idempotency guarantee.",
         "concurrency": "Draft expectedMessageId is checked immediately before write; Google exposes no documented draft CAS, leaving a race window."
       },
-      "notes": "Permanently deletes only this unsent draft, not trashing a received message; 204 acknowledgement required.",
+      "notes": "Permanently deletes only this unsent draft, not trashing a received message; Successful empty 2xx response required; no received-message delete endpoint.",
       "sourceUrls": [
         "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/delete",
         "https://developers.google.com/workspace/gmail/api/auth/scopes",
@@ -811,9 +761,7 @@
                       "pattern": "^[^\\r\\n/\\\\]+$"
                     }
                   },
-                  "required": [
-                    "artifactId"
-                  ],
+                  "required": ["artifactId"],
                   "additionalProperties": false
                 },
                 "minItems": 0,
@@ -821,17 +769,11 @@
                 "uniqueItems": true
               }
             },
-            "required": [
-              "to",
-              "subject",
-              "text"
-            ],
+            "required": ["to", "subject", "text"],
             "additionalProperties": false
           }
         },
-        "required": [
-          "message"
-        ],
+        "required": ["message"],
         "additionalProperties": false
       },
       "authorization": {
@@ -840,9 +782,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.send"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.send"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -912,9 +852,7 @@
                   "pattern": "^[^\\r\\n/\\\\]+$"
                 }
               },
-              "required": [
-                "artifactId"
-              ],
+              "required": ["artifactId"],
               "additionalProperties": false
             },
             "minItems": 0,
@@ -922,12 +860,7 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "messageId",
-          "expectedThreadId",
-          "replyAll",
-          "text"
-        ],
+        "required": ["messageId", "expectedThreadId", "replyAll", "text"],
         "additionalProperties": false
       },
       "authorization": {
@@ -936,9 +869,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.send"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.send"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": [
           "Original message requires gmail.readonly or gmail.modify in addition to sending scope."
@@ -981,10 +912,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "draftId",
-          "expectedMessageId"
-        ],
+        "required": ["draftId", "expectedMessageId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -992,9 +920,7 @@
           "https://www.googleapis.com/auth/gmail.compose",
           "https://www.googleapis.com/auth/gmail.modify"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.compose"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.compose"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -1053,18 +979,12 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "messageId"
-        ],
+        "required": ["messageId"],
         "additionalProperties": false
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/gmail.modify"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.modify"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.modify"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -1099,18 +1019,12 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "messageId"
-        ],
+        "required": ["messageId"],
         "additionalProperties": false
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/gmail.modify"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.modify"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.modify"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },
@@ -1145,18 +1059,12 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "messageId"
-        ],
+        "required": ["messageId"],
         "additionalProperties": false
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "https://www.googleapis.com/auth/gmail.modify"
-        ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/gmail.modify"
-        ],
+        "acceptedAnyOfScopes": ["https://www.googleapis.com/auth/gmail.modify"],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/gmail.modify"],
         "subject": "The exact owner + space + app connection Google user; userId is always me. No arbitrary From, token, URL or account input.",
         "conditionalGuards": []
       },

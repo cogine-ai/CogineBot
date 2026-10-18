@@ -1,7 +1,24 @@
 import { z } from "zod";
 import { Id } from "./ids.js";
 
-export const NativeAppIdSchema = z.enum(["coginex", "knowai", "google-calendar", "notion"]);
+export const NativeGoogleAppIdSchema = z.enum([
+  "google-calendar",
+  "gmail",
+  "google-drive",
+  "google-docs",
+  "google-sheets",
+  "google-slides",
+  "google-tasks",
+]);
+export const NativeAppIdSchema = z.enum([
+  "coginex",
+  "knowai",
+  ...NativeGoogleAppIdSchema.options,
+  "notion",
+  "github",
+  "linear",
+  "slack",
+]);
 export type NativeAppId = z.infer<typeof NativeAppIdSchema>;
 
 export const NativeCredentialKindSchema = z.enum([
@@ -10,8 +27,43 @@ export const NativeCredentialKindSchema = z.enum([
   "oauth",
   "internal_token",
   "personal_token",
+  "bot_token",
+  "github_app_installation",
 ]);
 
+/** Optional deployment-owned Gmail Pub/Sub subscription. No service-account private key is stored. */
+export const NativeGoogleWatchConfigSchema = z
+  .object({
+    projectId: z.string().regex(/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/),
+    topicName: z.string().min(1).max(512),
+    subscriptionName: z.string().min(1).max(512),
+    callbackAudience: z.url().max(2048),
+    pushServiceAccountEmail: z.string().email().max(320),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const base = `projects/${value.projectId}/`;
+    if (
+      !value.topicName.startsWith(`${base}topics/`) ||
+      !/^[A-Za-z][A-Za-z0-9._~+%-]{2,254}$/.test(value.topicName.slice(`${base}topics/`.length))
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["topicName"],
+        message: "The topic must belong to the configured Google project.",
+      });
+    if (
+      !value.subscriptionName.startsWith(`${base}subscriptions/`) ||
+      !/^[A-Za-z][A-Za-z0-9._~+%-]{2,254}$/.test(
+        value.subscriptionName.slice(`${base}subscriptions/`.length),
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["subscriptionName"],
+        message: "The subscription must belong to the configured Google project.",
+      });
+  });
 /** Instance configuration. Credential values are write-only, never a tool argument. */
 export const NativeConfigInputSchema = z
   .object({
@@ -29,11 +81,17 @@ export const NativeConfigInputSchema = z
     capabilities: z.array(z.string().min(1).max(80)).max(24).default([]),
     knowledgeBaseIds: z.array(z.string().min(1).max(160)).max(100).default([]),
     tenantId: z.string().min(1).max(160).optional(),
+    actor: z.enum(["user", "app", "bot", "installation"]).optional(),
+    githubAppId: z.string().regex(/^\d+$/).max(32).optional(),
+    githubInstallationId: z.string().regex(/^\d+$/).max(32).optional(),
+    googleWatch: NativeGoogleWatchConfigSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
     const issue = (path: string, message: string) =>
       ctx.addIssue({ code: "custom", path: [path], message });
+    if (value.googleWatch && value.appId !== "gmail")
+      issue("googleWatch", "Only Gmail uses this Pub/Sub configuration.");
     if (value.id && !value.expectedRevision)
       issue("expectedRevision", "Configuration revision is required");
     if (value.appId === "coginex" && value.credentialKind !== "mcp_oauth")
@@ -44,8 +102,41 @@ export const NativeConfigInputSchema = z
       issue("endpoint", "An instance endpoint is required");
     if (value.appId === "knowai" && (!value.knowledgeBaseIds.length || !value.tenantId))
       issue("knowledgeBaseIds", "Specify the tenant and allowed knowledge bases");
-    if (value.appId === "google-calendar" && value.credentialKind !== "oauth")
-      issue("credentialKind", "Calendar requires user OAuth");
+    if (NativeGoogleAppIdSchema.safeParse(value.appId).success && value.credentialKind !== "oauth")
+      issue("credentialKind", "Google applications require user OAuth");
+    if (value.appId === "github") {
+      if (!["oauth", "personal_token", "github_app_installation"].includes(value.credentialKind))
+        issue("credentialKind", "Select the actual GitHub App or personal credential type");
+      if (
+        value.actor !==
+        (value.credentialKind === "github_app_installation" ? "installation" : "user")
+      )
+        issue("actor", "Choose the exact GitHub credential actor");
+      if (
+        value.credentialKind === "github_app_installation" &&
+        (!value.githubAppId || !value.githubInstallationId)
+      )
+        issue("githubInstallationId", "Configure the GitHub App and installation identities");
+    }
+    if (value.appId === "linear") {
+      if (!["oauth", "personal_token"].includes(value.credentialKind))
+        issue("credentialKind", "Linear requires OAuth or a personal API key");
+      if (
+        !["user", "app"].includes(value.actor ?? "") ||
+        (value.credentialKind === "personal_token" && value.actor !== "user")
+      )
+        issue("actor", "Choose the actual Linear user or app actor");
+    }
+    if (value.appId === "slack") {
+      if (!["oauth", "personal_token", "bot_token"].includes(value.credentialKind))
+        issue("credentialKind", "Select the actual Slack token type");
+      if (
+        !["bot", "user"].includes(value.actor ?? "") ||
+        (value.credentialKind === "bot_token" && value.actor !== "bot") ||
+        (value.credentialKind === "personal_token" && value.actor !== "user")
+      )
+        issue("actor", "Choose the exact Slack bot or user actor");
+    }
     if (
       value.appId === "notion" &&
       !["oauth", "internal_token", "personal_token"].includes(value.credentialKind)
@@ -53,7 +144,11 @@ export const NativeConfigInputSchema = z
       issue("credentialKind", "Select the actual Notion credential type");
     if (value.credentialKind === "oauth" && !value.clientId)
       issue("clientId", "OAuth client ID is required");
-    if (["google-calendar", "notion"].includes(value.appId) && value.endpoint)
+    if (
+      (NativeGoogleAppIdSchema.safeParse(value.appId).success ||
+        ["notion", "github", "linear", "slack"].includes(value.appId)) &&
+      value.endpoint
+    )
       issue("endpoint", "This service uses its fixed API authority");
     if (value.credentialKind !== "oauth" && value.clientSecret)
       issue("clientSecret", "Account credentials belong to the connecting user");
@@ -72,6 +167,7 @@ export const NativeConfigStatusSchema = z.object({
   revision: z.number().int().positive(),
   callbackUri: z.url(),
   executionLocation: z.literal("instance"),
+  actor: z.enum(["user", "app", "bot", "installation"]).optional(),
 });
 export type NativeConfigStatus = z.infer<typeof NativeConfigStatusSchema>;
 

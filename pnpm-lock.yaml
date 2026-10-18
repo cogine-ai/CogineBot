@@ -622,6 +622,9 @@ importers:
       graphile-worker:
         specifier: 0.17.3
         version: 0.17.3(typescript@7.0.2)
+      jose:
+        specifier: 6.2.8
+        version: 6.2.8
       jsdom:
         specifier: 30.0.1
         version: 30.0.1(@noble/hashes@2.3.0)

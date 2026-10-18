@@ -8,9 +8,10 @@ import { combineSignals } from "../connector-safety.js";
 import type { RemoteTransportDependencies, SafeRemoteFetch } from "../remote-mcp.js";
 import type { NativeRequest, NativeResponse } from "./action.js";
 import { NativeActionError } from "./action.js";
+import { readNativeBytes } from "./binary.js";
 import { createNativeFetch, nativeAbortable } from "./network.js";
 
-export type NativeCredential = { kind: "bearer" | "api_key"; value: string };
+export type NativeCredential = { kind: "bearer" | "api_key" | "raw"; value: string };
 
 function retryAfter(response: Response): number | undefined {
   const value = response.headers.get("retry-after");
@@ -75,6 +76,7 @@ function httpError(
     return new NativeActionError(
       "resource_unavailable",
       "This connection cannot access the requested resource.",
+      { recovery },
     );
   if (status === 410)
     return new NativeActionError(
@@ -119,6 +121,8 @@ export class NativeHttpClient {
       timeoutMs?: number;
       /** Refresh only a definitively rejected token, fenced by its tokenVersion. */
       onUnauthorized?: () => Promise<void>;
+      /** Drive upload sessions use 308 as a protocol acknowledgement, without following Location. */
+      resumableUpload?: boolean;
     },
   ) {
     const url = new URL(baseUrl);
@@ -129,6 +133,7 @@ export class NativeHttpClient {
       options.network,
       { allowPrivateEndpoint: options.allowPrivateEndpoint },
       options.timeoutMs,
+      options.resumableUpload ? "google-drive-resumable" : undefined,
     );
   }
 
@@ -146,7 +151,8 @@ export class NativeHttpClient {
     if (!url.toString().startsWith(`${this.base}/`))
       throw new NativeActionError("invalid_input", "Action path escaped its API authority.");
     for (const [key, value] of Object.entries(request.query ?? {})) {
-      if (value !== undefined) url.searchParams.set(key, String(value));
+      if (Array.isArray(value)) for (const item of value) url.searchParams.append(key, item);
+      else if (value !== undefined) url.searchParams.set(key, String(value));
     }
     const custom = request.headers ?? {};
     if (Object.keys(custom).some((name) => isSensitiveHeader(name) || isTransportHeader(name)))
@@ -160,7 +166,7 @@ export class NativeHttpClient {
       const headers = new Headers({ ...this.options.headers, ...custom });
       headers.set(
         auth.kind === "api_key" ? "X-API-Key" : "Authorization",
-        auth.kind === "api_key" ? auth.value : `Bearer ${auth.value}`,
+        auth.kind === "bearer" ? `Bearer ${auth.value}` : auth.value,
       );
       let body: BodyInit | undefined;
       if (request.body !== undefined) {
@@ -192,6 +198,10 @@ export class NativeHttpClient {
           { uncertain: !readOnly },
         );
       }
+      if (response.status === 308 && this.options.resumableUpload) {
+        await response.body?.cancel();
+        return { status: 308, body: null, headers: response.headers };
+      }
       const retry = retryAfter(response);
       if (response.status === 401 && attempt === 0 && this.options.onUnauthorized) {
         await response.body?.cancel();
@@ -221,6 +231,13 @@ export class NativeHttpClient {
         continue;
       }
       let text: string;
+      if (response.ok && request.responseType === "bytes") {
+        return {
+          status: response.status,
+          body: await readNativeBytes(response, signal),
+          headers: response.headers,
+        };
+      }
       try {
         const read = await nativeAbortable(readBoundedText(response, 10_000_000), signal);
         if (read.truncated) throw new Error("incomplete");

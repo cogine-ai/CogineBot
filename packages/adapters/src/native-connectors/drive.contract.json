@@ -59,9 +59,7 @@
           "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -99,9 +97,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "fileId"
-        ],
+        "required": ["fileId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -111,9 +107,7 @@
           "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -151,9 +145,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "fileId"
-        ],
+        "required": ["fileId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -162,9 +154,7 @@
           "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -217,10 +207,7 @@
             ]
           }
         },
-        "required": [
-          "fileId",
-          "mimeType"
-        ],
+        "required": ["fileId", "mimeType"],
         "additionalProperties": false
       },
       "authorization": {
@@ -229,9 +216,7 @@
           "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -284,10 +269,7 @@
             "maxLength": 10000
           }
         },
-        "required": [
-          "artifactId",
-          "name"
-        ],
+        "required": ["artifactId", "name"],
         "additionalProperties": false
       },
       "authorization": {
@@ -295,9 +277,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -311,7 +291,7 @@
         "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
         "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
       },
-      "notes": "Binary only, no implicit Google Workspace conversion. Read artifact owned by actor/space, pin SHA256+size, generate remote file ID, resumable initiation/chunks/status, 256KiB multiples; max10MiB. Lost initiation ACK stops; lost chunk ACK queries same session, never creates replacement file.",
+      "notes": "Binary only, no implicit Google Workspace conversion. Read artifact owned by actor/space, pin SHA256+size, generate remote file ID, resumable initiation/chunks/status, 256KiB multiples; max10MiB. Lost initiation ACK stops; lost chunk ACK queries same session, never creates replacement file. Zero-byte new files use metadata-only create; explicit zero-byte replacements use PATCH uploadType=media with empty bytes and exact size/checksum acknowledgement.",
       "sourceUrls": [
         "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create",
         "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
@@ -347,11 +327,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "fileId",
-          "expectedVersion",
-          "artifactId"
-        ],
+        "required": ["fileId", "expectedVersion", "artifactId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -359,9 +335,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -375,7 +349,7 @@
         "uncertainRecovery": "Bind action,input hash,subject,operationId; persist before dispatch. No blind replay. Upload recovery queries the same resumable session before sending remaining acknowledged bytes.",
         "concurrency": "expectedVersion preflight where editing an existing file; no claim of documented atomic Drive v3 CAS. Resumable sessions can outlive a preflight; conflict must be reviewed."
       },
-      "notes": "Binary-only replacement, not Docs/Sheets editing; capability/MIME/version preflight; same resumable protocol, no auto restart after expired session.",
+      "notes": "Binary-only replacement, not Docs/Sheets editing; capability/MIME/version preflight; same resumable protocol, no auto restart after expired session. Zero-byte new files use metadata-only create; explicit zero-byte replacements use PATCH uploadType=media with empty bytes and exact size/checksum acknowledgement.",
       "sourceUrls": [
         "https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update",
         "https://developers.google.com/workspace/drive/api/guides/api-specific-auth"
@@ -408,9 +382,7 @@
             "maxLength": 10000
           }
         },
-        "required": [
-          "name"
-        ],
+        "required": ["name"],
         "additionalProperties": false
       },
       "authorization": {
@@ -418,9 +390,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -480,11 +450,7 @@
             "additionalProperties": false
           }
         },
-        "required": [
-          "fileId",
-          "expectedVersion",
-          "metadata"
-        ],
+        "required": ["fileId", "expectedVersion", "metadata"],
         "additionalProperties": false
       },
       "authorization": {
@@ -492,9 +458,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -556,12 +520,7 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "fileId",
-          "expectedVersion",
-          "destinationParentId",
-          "expectedParentIds"
-        ],
+        "required": ["fileId", "expectedVersion", "destinationParentId", "expectedParentIds"],
         "additionalProperties": false
       },
       "authorization": {
@@ -569,9 +528,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -620,10 +577,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "fileId",
-          "name"
-        ],
+        "required": ["fileId", "name"],
         "additionalProperties": false
       },
       "authorization": {
@@ -631,9 +585,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -677,10 +629,7 @@
             "pattern": "^[0-9]+$"
           }
         },
-        "required": [
-          "fileId",
-          "expectedVersion"
-        ],
+        "required": ["fileId", "expectedVersion"],
         "additionalProperties": false
       },
       "authorization": {
@@ -688,9 +637,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -734,10 +681,7 @@
             "pattern": "^[0-9]+$"
           }
         },
-        "required": [
-          "fileId",
-          "expectedVersion"
-        ],
+        "required": ["fileId", "expectedVersion"],
         "additionalProperties": false
       },
       "authorization": {
@@ -745,9 +689,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -795,9 +737,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "fileId"
-        ],
+        "required": ["fileId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -806,9 +746,7 @@
           "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -856,20 +794,11 @@
             "properties": {
               "type": {
                 "type": "string",
-                "enum": [
-                  "user",
-                  "group",
-                  "domain",
-                  "anyone"
-                ]
+                "enum": ["user", "group", "domain", "anyone"]
               },
               "role": {
                 "type": "string",
-                "enum": [
-                  "reader",
-                  "commenter",
-                  "writer"
-                ]
+                "enum": ["reader", "commenter", "writer"]
               },
               "emailAddress": {
                 "type": "string",
@@ -885,10 +814,7 @@
                 "pattern": "^[A-Za-z0-9.-]+$"
               }
             },
-            "required": [
-              "type",
-              "role"
-            ],
+            "required": ["type", "role"],
             "additionalProperties": false
           },
           "sendNotificationEmail": {
@@ -898,12 +824,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "fileId",
-          "expectedVersion",
-          "permission",
-          "sendNotificationEmail"
-        ],
+        "required": ["fileId", "expectedVersion", "permission", "sendNotificationEmail"],
         "additionalProperties": false
       },
       "authorization": {
@@ -911,9 +832,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -960,14 +879,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 256,
-            "pattern": "^[A-Za-z0-9_-]+$"
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]*$"
           }
         },
-        "required": [
-          "fileId",
-          "expectedVersion",
-          "permissionId"
-        ],
+        "required": ["fileId", "expectedVersion", "permissionId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -975,9 +890,7 @@
           "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",
@@ -1025,9 +938,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "fileId"
-        ],
+        "required": ["fileId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -1036,9 +947,7 @@
           "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/drive"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive.file"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive.file"],
         "subject": "Exact owner + space + app connection; fixed Drive and Drive-upload authorities only.",
         "conditionalGuards": [
           "With only drive.file, every existing file/parent requires provider isAppAuthorized===true, including source and destination. A caller fileId/URL is never a selection grant.",

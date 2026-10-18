@@ -1,5 +1,5 @@
 {
-  "contractSha256": "2993d430f3382f7badd25bd61cc40d9ba4672c2f3d047f02738a89ee2cfb782d",
+  "contractSha256": "6d5eaa2cca03296e092749ee12f9e8bc3a48a80df76f6c80ef40d38a8e167509",
   "subjectFixture": {
     "subject": "U123FIXTURE",
     "tenant": "T123FIXTURE"
@@ -512,9 +512,9 @@
       "upstream": [
         {
           "request": {
-            "method": "GET",
+            "method": "POST",
             "path": "/chat.scheduledMessages.list",
-            "query": {
+            "body": {
               "limit": 100
             }
           },
@@ -572,9 +572,7 @@
     {
       "id": "slack.conversations.open",
       "input": {
-        "users": [
-          "U123FIXTURE"
-        ]
+        "users": ["U123FIXTURE"]
       },
       "upstream": [
         {
@@ -732,6 +730,107 @@
         "artifact": {
           "id": "fixture-downloaded-artifact"
         }
+      }
+    },
+    {
+      "id": "slack.users.resolve",
+      "fixtureId": "email-with-required-scope",
+      "input": {
+        "email": "fixture@example.test"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users.lookupByEmail",
+            "query": {
+              "email": "fixture@example.test"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "user": {
+                "id": "U123FIXTURE",
+                "name": "fixture",
+                "profile": {
+                  "email": "fixture@example.test"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "users": [
+          {
+            "id": "U123FIXTURE",
+            "profile": {
+              "email": "fixture@example.test"
+            }
+          }
+        ],
+        "ambiguous": false
+      }
+    },
+    {
+      "id": "slack.users.resolve",
+      "fixtureId": "email-without-required-scope",
+      "input": {
+        "email": "fixture@example.test"
+      },
+      "scopes": ["users:read"],
+      "upstream": [],
+      "expectedError": {
+        "kind": "insufficient_scope"
+      }
+    },
+    {
+      "id": "slack.users.resolve",
+      "fixtureId": "name-cursor-page-not-unique",
+      "input": {
+        "query": "fixture",
+        "limit": 15,
+        "cursor": "fixture-cursor"
+      },
+      "upstream": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users.list",
+            "query": {
+              "limit": 15,
+              "cursor": "fixture-cursor"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "members": [
+                {
+                  "id": "U123FIXTURE",
+                  "name": "fixture"
+                }
+              ],
+              "response_metadata": {
+                "next_cursor": "fixture-next-page"
+              }
+            }
+          }
+        }
+      ],
+      "expectedOutput": {
+        "users": [
+          {
+            "id": "U123FIXTURE"
+          }
+        ],
+        "ambiguous": true,
+        "hasMore": true,
+        "nextCursor": "fixture-next-page",
+        "searchedSinglePage": true
       }
     }
   ]

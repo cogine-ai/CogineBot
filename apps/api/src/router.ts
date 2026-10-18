@@ -4650,6 +4650,27 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     nativeConnectors: {
+      slackWebhookStatus: authed.nativeConnectors.slackWebhookStatus.handler(async ({ context, input }) => {
+        if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+        if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+        return deps.nativeConnectors.slackEventHooks.status(input,
+          connectionContext(context.actor, "nativeConnectors.slackWebhookStatus", context.signal), true,
+        ).catch(rethrowNativeRoutineError);
+      }),
+      saveSlackWebhook: authed.nativeConnectors.saveSlackWebhook.handler(async ({ context, input }) => {
+        if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+        if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+        return deps.nativeConnectors.slackEventHooks.save(input,
+          connectionContext(context.actor, "nativeConnectors.saveSlackWebhook", context.signal), true,
+        ).catch(rethrowNativeRoutineError);
+      }),
+      disableSlackWebhook: authed.nativeConnectors.disableSlackWebhook.handler(async ({ context, input }) => {
+        if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+        if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
+        return deps.nativeConnectors.slackEventHooks.disable(input,
+          connectionContext(context.actor, "nativeConnectors.disableSlackWebhook", context.signal), true,
+        ).catch(rethrowNativeRoutineError);
+      }),
       notionWebhookStatus: authed.nativeConnectors.notionWebhookStatus.handler(
         async ({ context, input }) => {
           if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");

@@ -34,11 +34,7 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "open",
-              "closed",
-              "all"
-            ]
+            "enum": ["open", "closed", "all"]
           },
           "labels": {
             "type": "string",
@@ -50,10 +46,7 @@
             "format": "date-time"
           }
         },
-        "required": [
-          "owner",
-          "repo"
-        ],
+        "required": ["owner", "repo"],
         "additionalProperties": false
       },
       "upstream": {
@@ -66,10 +59,7 @@
         "actualGrantedScopesRequired": false,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "acceptedAnyOfPermissions": [
-          "issues:read",
-          "issues:write"
-        ],
+        "acceptedAnyOfPermissions": ["issues:read", "issues:write"],
         "remoteRepositoryPermissionRequired": true
       },
       "readOnly": true,
@@ -116,11 +106,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "owner",
-          "repo",
-          "issue_number"
-        ],
+        "required": ["owner", "repo", "issue_number"],
         "additionalProperties": false
       },
       "upstream": {
@@ -133,10 +119,7 @@
         "actualGrantedScopesRequired": false,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "acceptedAnyOfPermissions": [
-          "issues:read",
-          "issues:write"
-        ],
+        "acceptedAnyOfPermissions": ["issues:read", "issues:write"],
         "remoteRepositoryPermissionRequired": true
       },
       "readOnly": true,
@@ -200,11 +183,7 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "owner",
-          "repo",
-          "title"
-        ],
+        "required": ["owner", "repo", "title"],
         "additionalProperties": false
       },
       "upstream": {
@@ -217,9 +196,7 @@
         "actualGrantedScopesRequired": false,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "acceptedAnyOfPermissions": [
-          "issues:write"
-        ],
+        "acceptedAnyOfPermissions": ["issues:write"],
         "remoteRepositoryPermissionRequired": true
       },
       "readOnly": false,
@@ -258,12 +235,7 @@
             "maxLength": 65536
           }
         },
-        "required": [
-          "owner",
-          "repo",
-          "issue_number",
-          "body"
-        ],
+        "required": ["owner", "repo", "issue_number", "body"],
         "additionalProperties": false
       },
       "upstream": {
@@ -276,10 +248,7 @@
         "actualGrantedScopesRequired": false,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "acceptedAnyOfPermissions": [
-          "issues:write",
-          "pull_requests:write"
-        ],
+        "acceptedAnyOfPermissions": ["issues:write", "pull_requests:write"],
         "remoteRepositoryPermissionRequired": true
       },
       "readOnly": false,
@@ -319,11 +288,7 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "open",
-              "closed",
-              "all"
-            ]
+            "enum": ["open", "closed", "all"]
           },
           "head": {
             "type": "string",
@@ -336,10 +301,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "owner",
-          "repo"
-        ],
+        "required": ["owner", "repo"],
         "additionalProperties": false
       },
       "upstream": {
@@ -352,10 +314,7 @@
         "actualGrantedScopesRequired": false,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "acceptedAnyOfPermissions": [
-          "pull_requests:read",
-          "pull_requests:write"
-        ],
+        "acceptedAnyOfPermissions": ["pull_requests:read", "pull_requests:write"],
         "remoteRepositoryPermissionRequired": true
       },
       "readOnly": true,
@@ -402,11 +361,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "owner",
-          "repo",
-          "pull_number"
-        ],
+        "required": ["owner", "repo", "pull_number"],
         "additionalProperties": false
       },
       "upstream": {
@@ -419,10 +374,7 @@
         "actualGrantedScopesRequired": false,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "acceptedAnyOfPermissions": [
-          "pull_requests:read",
-          "pull_requests:write"
-        ],
+        "acceptedAnyOfPermissions": ["pull_requests:read", "pull_requests:write"],
         "remoteRepositoryPermissionRequired": true
       },
       "readOnly": true,
@@ -510,11 +462,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "owner",
-          "repo",
-          "ref"
-        ],
+        "required": ["owner", "repo", "ref"],
         "additionalProperties": false
       },
       "upstream": {
@@ -527,10 +475,7 @@
         "actualGrantedScopesRequired": false,
         "credentialsInBusinessInput": false,
         "subject": "exact selected connection actor; no implicit default/account switching",
-        "acceptedAnyOfPermissions": [
-          "checks:read",
-          "checks:write"
-        ],
+        "acceptedAnyOfPermissions": ["checks:read", "checks:write"],
         "remoteRepositoryPermissionRequired": true
       },
       "readOnly": true,
@@ -539,13 +484,8 @@
         "existingApprovalPolicy": true,
         "unknownOutcome": "No automatic replay after dispatch. Durable receipt binds action + operation + input digest + actor + tenant. Read exact stable IDs; matching text/time is not proof."
       },
-      "requiredAllPermissions": [
-        "checks:read|write",
-        "statuses:read|write"
-      ],
-      "secondaryRequests": [
-        "GET /repos/{owner}/{repo}/commits/{ref}/status"
-      ],
+      "requiredAllPermissions": ["checks:read|write", "statuses:read|write"],
+      "secondaryRequests": ["GET /repos/{owner}/{repo}/commits/{ref}/status"],
       "pagination": "check and status arrays independently paginated; never infer CI green from a partial page"
     }
   ],

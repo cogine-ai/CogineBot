@@ -88,14 +88,35 @@ export function NativeAccountConnect({
     ) ?? [];
   const selected = configurations.find((entry) => entry.id === selectedId);
   const oauth = selected?.credentialKind === "oauth" || selected?.credentialKind === "mcp_oauth";
+  const webCredential = selected?.credentialKind === "github_app_installation";
+  const credentialLabel =
+    selected?.credentialKind === "machine_key"
+      ? t("Machine API key")
+      : selected?.credentialKind === "internal_token"
+        ? t("Internal integration token")
+        : selected?.credentialKind === "bot_token"
+          ? t("Slack bot token")
+          : appId === "linear"
+            ? t("Linear API key")
+            : appId === "slack"
+              ? t("Slack user token")
+              : t("Personal access token");
   function kindLabel(entry: NativeConfigStatus) {
     return entry.credentialKind === "machine_key"
       ? t("Machine API key")
       : entry.credentialKind === "internal_token"
         ? t("Internal integration")
         : entry.credentialKind === "personal_token"
-          ? t("Personal access token")
-          : t("Account authorization");
+          ? appId === "linear"
+            ? t("Personal API key")
+            : appId === "slack"
+              ? t("User token")
+              : t("Personal access token")
+          : entry.credentialKind === "bot_token"
+            ? t("Bot token")
+            : entry.credentialKind === "github_app_installation"
+              ? t("GitHub App installation")
+              : t("Account authorization");
   }
   async function openWebSettings() {
     if (!webUrl || !scope.current || !isIntegrationsScopeCurrent(scope.current)) return;
@@ -107,6 +128,7 @@ export function NativeAccountConnect({
   }
   async function submit() {
     if (!selected || submitting.current) return;
+    if (webCredential) return;
     if (!scope.current || !isIntegrationsScopeCurrent(scope.current)) {
       setCredential("");
       setError(t("The server or space changed. Return and open this application again."));
@@ -145,7 +167,16 @@ export function NativeAccountConnect({
             coginex: "CogineX",
             knowai: "Knowai",
             "google-calendar": "Google Calendar",
+            gmail: "Gmail",
+            "google-drive": "Google Drive",
+            "google-docs": "Google Docs",
+            "google-sheets": "Google Sheets",
+            "google-slides": "Google Slides",
+            "google-tasks": "Google Tasks",
             notion: "Notion",
+            github: "GitHub",
+            linear: "Linear",
+            slack: "Slack",
           }[appId]
         }
       </Text>
@@ -181,23 +212,11 @@ export function NativeAccountConnect({
           />
         )
       ) : null}
-      {selected && !oauth ? (
+      {selected && !oauth && !webCredential ? (
         <View style={styles.content}>
-          <Text style={styles.label}>
-            {selected.credentialKind === "machine_key"
-              ? t("Machine API key")
-              : selected.credentialKind === "internal_token"
-                ? t("Internal integration token")
-                : t("Personal access token")}
-          </Text>
+          <Text style={styles.label}>{credentialLabel}</Text>
           <TextInput
-            accessibilityLabel={
-              selected.credentialKind === "machine_key"
-                ? t("Machine API key")
-                : selected.credentialKind === "internal_token"
-                  ? t("Internal integration token")
-                  : t("Personal access token")
-            }
+            accessibilityLabel={credentialLabel}
             value={credential}
             onChangeText={setCredential}
             secureTextEntry
@@ -218,6 +237,20 @@ export function NativeAccountConnect({
             <Text style={styles.secondary}>
               {t("Only pages shared with this integration are available.")}
             </Text>
+          ) : null}
+        </View>
+      ) : null}
+      {webCredential ? (
+        <View style={styles.content}>
+          <Text style={styles.secondary}>
+            {t("Connect this GitHub App installation in the web app.")}
+          </Text>
+          {webUrl ? (
+            <NativeActionButton
+              label={t("Open web app")}
+              prominence="secondary"
+              onPress={() => void openWebSettings()}
+            />
           ) : null}
         </View>
       ) : null}
@@ -255,7 +288,7 @@ export function NativeAccountConnect({
           onPress={() => setReload((value) => value + 1)}
         />
       ) : null}
-      {configurations.length ? (
+      {configurations.length && !webCredential ? (
         <NativeActionButton
           label={
             oauth

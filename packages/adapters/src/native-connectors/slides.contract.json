@@ -48,22 +48,14 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "find",
-                "replace",
-                "matchCase"
-              ],
+              "required": ["find", "replace", "matchCase"],
               "additionalProperties": false
             },
             "minItems": 1,
             "maxItems": 100
           }
         },
-        "required": [
-          "templateId",
-          "title",
-          "replacements"
-        ],
+        "required": ["templateId", "title", "replacements"],
         "additionalProperties": false
       },
       "authorization": {
@@ -72,9 +64,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/drive"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/drive"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -161,9 +151,7 @@
             "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
-        "required": [
-          "presentationId"
-        ],
+        "required": ["presentationId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -175,9 +163,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/presentations.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -242,9 +228,7 @@
             "maxLength": 1000
           }
         },
-        "required": [
-          "title"
-        ],
+        "required": ["title"],
         "additionalProperties": false
       },
       "authorization": {
@@ -254,9 +238,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/presentations"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -328,10 +310,7 @@
             "pattern": "^(?!\\.{1,2}$)[^\\u0000-\\u001f\\u007f]+$"
           }
         },
-        "required": [
-          "presentationId",
-          "pageObjectId"
-        ],
+        "required": ["presentationId", "pageObjectId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -343,9 +322,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/presentations.readonly"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations.readonly"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -435,22 +412,14 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "find",
-                "replace",
-                "matchCase"
-              ],
+              "required": ["find", "replace", "matchCase"],
               "additionalProperties": false
             },
             "minItems": 1,
             "maxItems": 100
           }
         },
-        "required": [
-          "presentationId",
-          "expectedRevisionId",
-          "replacements"
-        ],
+        "required": ["presentationId", "expectedRevisionId", "replacements"],
         "additionalProperties": false
       },
       "authorization": {
@@ -460,9 +429,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/presentations"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -608,9 +575,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/presentations"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -713,10 +678,7 @@
           },
           "imageReplaceMethod": {
             "type": "string",
-            "enum": [
-              "CENTER_INSIDE",
-              "CENTER_CROP"
-            ]
+            "enum": ["CENTER_INSIDE", "CENTER_CROP"]
           }
         },
         "required": [
@@ -735,9 +697,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/presentations"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
@@ -830,12 +790,7 @@
             "pattern": "^[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}$"
           }
         },
-        "required": [
-          "presentationId",
-          "expectedRevisionId",
-          "slideObjectId",
-          "newSlideObjectId"
-        ],
+        "required": ["presentationId", "expectedRevisionId", "slideObjectId", "newSlideObjectId"],
         "additionalProperties": false
       },
       "authorization": {
@@ -845,9 +800,7 @@
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/drive.file"
         ],
-        "minimumRequestedScopes": [
-          "https://www.googleapis.com/auth/presentations"
-        ],
+        "minimumRequestedScopes": ["https://www.googleapis.com/auth/presentations"],
         "actualGrantedScopesRequired": true,
         "resourceAccessRequired": true,
         "conditionalScopeGuards": [
