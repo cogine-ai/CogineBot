@@ -74,7 +74,7 @@ export class NativeEnterpriseHookStore {
             configRevision: config.revision,
             tenant: result.tenantId,
             revokedAt: null,
-          createdAt: { lt: new Date((result.issuedAt + 1) * 1000) },
+            createdAt: { lt: new Date((result.issuedAt + 1) * 1000) },
           },
         });
         for (const grant of grants) {

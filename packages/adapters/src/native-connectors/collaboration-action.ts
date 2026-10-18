@@ -128,9 +128,14 @@ export class CollaborationRun {
         "outlook_calendar.events.cancel": /^\/me\/events\/[^/?#]+\/cancel$/,
       };
       if (
-        options.acceptedStatus !== 202 || !write || request.method !== "POST" ||
-        request.service || request.query || !paths[this.definition.id]?.test(request.path)
-      ) invalid("Accepted acknowledgements are only supported by the fixed Microsoft actions.");
+        options.acceptedStatus !== 202 ||
+        !write ||
+        request.method !== "POST" ||
+        request.service ||
+        request.query ||
+        !paths[this.definition.id]?.test(request.path)
+      )
+        invalid("Accepted acknowledgements are only supported by the fixed Microsoft actions.");
     }
     if (write) {
       try {
@@ -181,7 +186,9 @@ export class CollaborationRun {
     if (write) {
       if (response.status === 202) {
         if (!options || ![null, undefined, ""].includes(response.body as null | undefined | string))
-          return this.unknown("The service accepted the request without a verified acknowledgement.");
+          return this.unknown(
+            "The service accepted the request without a verified acknowledgement.",
+          );
         this.accepted = true;
       }
       this.mutated = true;
@@ -193,13 +200,15 @@ export class CollaborationRun {
       try {
         await this.checkpoint({
           ...receipt,
-          ...(this.accepted ? {
-            accepted: true,
-            accepted_status: 202,
-            deliveryVerified: false,
-            terminalStateVerified: false,
-            write_outcome: "accepted",
-          } : {}),
+          ...(this.accepted
+            ? {
+                accepted: true,
+                accepted_status: 202,
+                deliveryVerified: false,
+                terminalStateVerified: false,
+                write_outcome: "accepted",
+              }
+            : {}),
           stage: "committed",
           dispatch_state: "acknowledged",
           complete: true,
@@ -211,7 +220,9 @@ export class CollaborationRun {
       }
       return {
         ...output,
-        ...(this.accepted ? { accepted: true, deliveryVerified: false, terminalStateVerified: false } : {}),
+        ...(this.accepted
+          ? { accepted: true, deliveryVerified: false, terminalStateVerified: false }
+          : {}),
         write_outcome: this.accepted ? "accepted" : "confirmed",
       };
     }

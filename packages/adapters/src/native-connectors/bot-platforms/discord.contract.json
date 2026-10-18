@@ -15,9 +15,7 @@
             "pattern": "^[1-9][0-9]{5,20}$"
           }
         },
-        "required": [
-          "channel_id"
-        ],
+        "required": ["channel_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -25,9 +23,7 @@
         "method": "GET",
         "path": "/channels/{channel_id}"
       },
-      "requiredCapabilities": [
-        "read"
-      ],
+      "requiredCapabilities": ["read"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -55,9 +51,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "id"
-        ],
+        "required": ["id"],
         "properties": {
           "id": {
             "type": "string"
@@ -106,9 +100,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "channel_id"
-        ],
+        "required": ["channel_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -116,9 +108,7 @@
         "method": "GET",
         "path": "/channels/{channel_id}/messages"
       },
-      "requiredCapabilities": [
-        "read"
-      ],
+      "requiredCapabilities": ["read"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -220,10 +210,7 @@
                   "type": "string"
                 },
                 "edited_timestamp": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": ["string", "null"]
                 },
                 "type": {
                   "type": "integer"
@@ -241,18 +228,13 @@
                       "type": "string"
                     },
                     "global_name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": ["string", "null"]
                     },
                     "bot": {
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "id"
-                  ],
+                  "required": ["id"],
                   "additionalProperties": false
                 },
                 "attachments": {
@@ -280,16 +262,10 @@
                         "minimum": 0
                       },
                       "width": {
-                        "type": [
-                          "integer",
-                          "null"
-                        ]
+                        "type": ["integer", "null"]
                       },
                       "height": {
-                        "type": [
-                          "integer",
-                          "null"
-                        ]
+                        "type": ["integer", "null"]
                       },
                       "duration_secs": {
                         "type": "number"
@@ -298,11 +274,7 @@
                         "type": "boolean"
                       }
                     },
-                    "required": [
-                      "id",
-                      "filename",
-                      "size"
-                    ],
+                    "required": ["id", "filename", "size"],
                     "additionalProperties": false
                   }
                 },
@@ -430,18 +402,13 @@
                         "type": "string"
                       },
                       "global_name": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": ["string", "null"]
                       },
                       "bot": {
                         "type": "boolean"
                       }
                     },
-                    "required": [
-                      "id"
-                    ],
+                    "required": ["id"],
                     "additionalProperties": false
                   }
                 },
@@ -479,16 +446,10 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
+                            "type": ["string", "null"]
                           },
                           "name": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
+                            "type": ["string", "null"]
                           },
                           "animated": {
                             "type": "boolean"
@@ -542,10 +503,7 @@
                           "type": "string"
                         },
                         "edited_timestamp": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
+                          "type": ["string", "null"]
                         },
                         "type": {
                           "type": "integer"
@@ -563,18 +521,13 @@
                               "type": "string"
                             },
                             "global_name": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": ["string", "null"]
                             },
                             "bot": {
                               "type": "boolean"
                             }
                           },
-                          "required": [
-                            "id"
-                          ],
+                          "required": ["id"],
                           "additionalProperties": false
                         },
                         "attachments": {
@@ -602,16 +555,10 @@
                                 "minimum": 0
                               },
                               "width": {
-                                "type": [
-                                  "integer",
-                                  "null"
-                                ]
+                                "type": ["integer", "null"]
                               },
                               "height": {
-                                "type": [
-                                  "integer",
-                                  "null"
-                                ]
+                                "type": ["integer", "null"]
                               },
                               "duration_secs": {
                                 "type": "number"
@@ -620,11 +567,7 @@
                                 "type": "boolean"
                               }
                             },
-                            "required": [
-                              "id",
-                              "filename",
-                              "size"
-                            ],
+                            "required": ["id", "filename", "size"],
                             "additionalProperties": false
                           }
                         },
@@ -752,18 +695,13 @@
                                 "type": "string"
                               },
                               "global_name": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
+                                "type": ["string", "null"]
                               },
                               "bot": {
                                 "type": "boolean"
                               }
                             },
-                            "required": [
-                              "id"
-                            ],
+                            "required": ["id"],
                             "additionalProperties": false
                           }
                         },
@@ -801,16 +739,10 @@
                                 "type": "object",
                                 "properties": {
                                   "id": {
-                                    "type": [
-                                      "string",
-                                      "null"
-                                    ]
+                                    "type": ["string", "null"]
                                   },
                                   "name": {
-                                    "type": [
-                                      "string",
-                                      "null"
-                                    ]
+                                    "type": ["string", "null"]
                                   },
                                   "animated": {
                                     "type": "boolean"
@@ -864,10 +796,7 @@
                                   "type": "string"
                                 },
                                 "edited_timestamp": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
+                                  "type": ["string", "null"]
                                 },
                                 "type": {
                                   "type": "integer"
@@ -885,18 +814,13 @@
                                       "type": "string"
                                     },
                                     "global_name": {
-                                      "type": [
-                                        "string",
-                                        "null"
-                                      ]
+                                      "type": ["string", "null"]
                                     },
                                     "bot": {
                                       "type": "boolean"
                                     }
                                   },
-                                  "required": [
-                                    "id"
-                                  ],
+                                  "required": ["id"],
                                   "additionalProperties": false
                                 },
                                 "attachments": {
@@ -924,16 +848,10 @@
                                         "minimum": 0
                                       },
                                       "width": {
-                                        "type": [
-                                          "integer",
-                                          "null"
-                                        ]
+                                        "type": ["integer", "null"]
                                       },
                                       "height": {
-                                        "type": [
-                                          "integer",
-                                          "null"
-                                        ]
+                                        "type": ["integer", "null"]
                                       },
                                       "duration_secs": {
                                         "type": "number"
@@ -942,11 +860,7 @@
                                         "type": "boolean"
                                       }
                                     },
-                                    "required": [
-                                      "id",
-                                      "filename",
-                                      "size"
-                                    ],
+                                    "required": ["id", "filename", "size"],
                                     "additionalProperties": false
                                   }
                                 },
@@ -1074,18 +988,13 @@
                                         "type": "string"
                                       },
                                       "global_name": {
-                                        "type": [
-                                          "string",
-                                          "null"
-                                        ]
+                                        "type": ["string", "null"]
                                       },
                                       "bot": {
                                         "type": "boolean"
                                       }
                                     },
-                                    "required": [
-                                      "id"
-                                    ],
+                                    "required": ["id"],
                                     "additionalProperties": false
                                   }
                                 },
@@ -1123,16 +1032,10 @@
                                         "type": "object",
                                         "properties": {
                                           "id": {
-                                            "type": [
-                                              "string",
-                                              "null"
-                                            ]
+                                            "type": ["string", "null"]
                                           },
                                           "name": {
-                                            "type": [
-                                              "string",
-                                              "null"
-                                            ]
+                                            "type": ["string", "null"]
                                           },
                                           "animated": {
                                             "type": "boolean"
@@ -1186,10 +1089,7 @@
                                           "type": "string"
                                         },
                                         "edited_timestamp": {
-                                          "type": [
-                                            "string",
-                                            "null"
-                                          ]
+                                          "type": ["string", "null"]
                                         },
                                         "type": {
                                           "type": "integer"
@@ -1207,18 +1107,13 @@
                                               "type": "string"
                                             },
                                             "global_name": {
-                                              "type": [
-                                                "string",
-                                                "null"
-                                              ]
+                                              "type": ["string", "null"]
                                             },
                                             "bot": {
                                               "type": "boolean"
                                             }
                                           },
-                                          "required": [
-                                            "id"
-                                          ],
+                                          "required": ["id"],
                                           "additionalProperties": false
                                         },
                                         "attachments": {
@@ -1246,16 +1141,10 @@
                                                 "minimum": 0
                                               },
                                               "width": {
-                                                "type": [
-                                                  "integer",
-                                                  "null"
-                                                ]
+                                                "type": ["integer", "null"]
                                               },
                                               "height": {
-                                                "type": [
-                                                  "integer",
-                                                  "null"
-                                                ]
+                                                "type": ["integer", "null"]
                                               },
                                               "duration_secs": {
                                                 "type": "number"
@@ -1264,11 +1153,7 @@
                                                 "type": "boolean"
                                               }
                                             },
-                                            "required": [
-                                              "id",
-                                              "filename",
-                                              "size"
-                                            ],
+                                            "required": ["id", "filename", "size"],
                                             "additionalProperties": false
                                           }
                                         },
@@ -1396,18 +1281,13 @@
                                                 "type": "string"
                                               },
                                               "global_name": {
-                                                "type": [
-                                                  "string",
-                                                  "null"
-                                                ]
+                                                "type": ["string", "null"]
                                               },
                                               "bot": {
                                                 "type": "boolean"
                                               }
                                             },
-                                            "required": [
-                                              "id"
-                                            ],
+                                            "required": ["id"],
                                             "additionalProperties": false
                                           }
                                         },
@@ -1445,16 +1325,10 @@
                                                 "type": "object",
                                                 "properties": {
                                                   "id": {
-                                                    "type": [
-                                                      "string",
-                                                      "null"
-                                                    ]
+                                                    "type": ["string", "null"]
                                                   },
                                                   "name": {
-                                                    "type": [
-                                                      "string",
-                                                      "null"
-                                                    ]
+                                                    "type": ["string", "null"]
                                                   },
                                                   "animated": {
                                                     "type": "boolean"
@@ -1491,37 +1365,25 @@
                                           "type": "null"
                                         }
                                       },
-                                      "required": [
-                                        "id",
-                                        "channel_id"
-                                      ],
+                                      "required": ["id", "channel_id"],
                                       "additionalProperties": false
                                     }
                                   ]
                                 }
                               },
-                              "required": [
-                                "id",
-                                "channel_id"
-                              ],
+                              "required": ["id", "channel_id"],
                               "additionalProperties": false
                             }
                           ]
                         }
                       },
-                      "required": [
-                        "id",
-                        "channel_id"
-                      ],
+                      "required": ["id", "channel_id"],
                       "additionalProperties": false
                     }
                   ]
                 }
               },
-              "required": [
-                "id",
-                "channel_id"
-              ],
+              "required": ["id", "channel_id"],
               "additionalProperties": false
             }
           },
@@ -1529,25 +1391,17 @@
             "type": "boolean"
           },
           "nextBefore": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "nextAfter": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "allPagesRead": {
             "type": "boolean"
           },
           "messageContentPolicy": {
             "type": "string",
-            "enum": [
-              "provider_filtered_fields_preserved"
-            ]
+            "enum": ["provider_filtered_fields_preserved"]
           }
         },
         "required": [
@@ -1583,10 +1437,7 @@
             "pattern": "^[1-9][0-9]{5,20}$"
           }
         },
-        "required": [
-          "channel_id",
-          "message_id"
-        ],
+        "required": ["channel_id", "message_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -1594,9 +1445,7 @@
         "method": "GET",
         "path": "/channels/{channel_id}/messages/{message_id}"
       },
-      "requiredCapabilities": [
-        "read"
-      ],
+      "requiredCapabilities": ["read"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -1684,10 +1533,7 @@
             "type": "string"
           },
           "edited_timestamp": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "type": {
             "type": "integer"
@@ -1705,18 +1551,13 @@
                 "type": "string"
               },
               "global_name": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": ["string", "null"]
               },
               "bot": {
                 "type": "boolean"
               }
             },
-            "required": [
-              "id"
-            ],
+            "required": ["id"],
             "additionalProperties": false
           },
           "attachments": {
@@ -1744,16 +1585,10 @@
                   "minimum": 0
                 },
                 "width": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": ["integer", "null"]
                 },
                 "height": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": ["integer", "null"]
                 },
                 "duration_secs": {
                   "type": "number"
@@ -1762,11 +1597,7 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "id",
-                "filename",
-                "size"
-              ],
+              "required": ["id", "filename", "size"],
               "additionalProperties": false
             }
           },
@@ -1894,18 +1725,13 @@
                   "type": "string"
                 },
                 "global_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": ["string", "null"]
                 },
                 "bot": {
                   "type": "boolean"
                 }
               },
-              "required": [
-                "id"
-              ],
+              "required": ["id"],
               "additionalProperties": false
             }
           },
@@ -1943,16 +1769,10 @@
                   "type": "object",
                   "properties": {
                     "id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": ["string", "null"]
                     },
                     "name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": ["string", "null"]
                     },
                     "animated": {
                       "type": "boolean"
@@ -2006,10 +1826,7 @@
                     "type": "string"
                   },
                   "edited_timestamp": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
+                    "type": ["string", "null"]
                   },
                   "type": {
                     "type": "integer"
@@ -2027,18 +1844,13 @@
                         "type": "string"
                       },
                       "global_name": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": ["string", "null"]
                       },
                       "bot": {
                         "type": "boolean"
                       }
                     },
-                    "required": [
-                      "id"
-                    ],
+                    "required": ["id"],
                     "additionalProperties": false
                   },
                   "attachments": {
@@ -2066,16 +1878,10 @@
                           "minimum": 0
                         },
                         "width": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
+                          "type": ["integer", "null"]
                         },
                         "height": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
+                          "type": ["integer", "null"]
                         },
                         "duration_secs": {
                           "type": "number"
@@ -2084,11 +1890,7 @@
                           "type": "boolean"
                         }
                       },
-                      "required": [
-                        "id",
-                        "filename",
-                        "size"
-                      ],
+                      "required": ["id", "filename", "size"],
                       "additionalProperties": false
                     }
                   },
@@ -2216,18 +2018,13 @@
                           "type": "string"
                         },
                         "global_name": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
+                          "type": ["string", "null"]
                         },
                         "bot": {
                           "type": "boolean"
                         }
                       },
-                      "required": [
-                        "id"
-                      ],
+                      "required": ["id"],
                       "additionalProperties": false
                     }
                   },
@@ -2265,16 +2062,10 @@
                           "type": "object",
                           "properties": {
                             "id": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": ["string", "null"]
                             },
                             "name": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": ["string", "null"]
                             },
                             "animated": {
                               "type": "boolean"
@@ -2328,10 +2119,7 @@
                             "type": "string"
                           },
                           "edited_timestamp": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
+                            "type": ["string", "null"]
                           },
                           "type": {
                             "type": "integer"
@@ -2349,18 +2137,13 @@
                                 "type": "string"
                               },
                               "global_name": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
+                                "type": ["string", "null"]
                               },
                               "bot": {
                                 "type": "boolean"
                               }
                             },
-                            "required": [
-                              "id"
-                            ],
+                            "required": ["id"],
                             "additionalProperties": false
                           },
                           "attachments": {
@@ -2388,16 +2171,10 @@
                                   "minimum": 0
                                 },
                                 "width": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ]
+                                  "type": ["integer", "null"]
                                 },
                                 "height": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ]
+                                  "type": ["integer", "null"]
                                 },
                                 "duration_secs": {
                                   "type": "number"
@@ -2406,11 +2183,7 @@
                                   "type": "boolean"
                                 }
                               },
-                              "required": [
-                                "id",
-                                "filename",
-                                "size"
-                              ],
+                              "required": ["id", "filename", "size"],
                               "additionalProperties": false
                             }
                           },
@@ -2538,18 +2311,13 @@
                                   "type": "string"
                                 },
                                 "global_name": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
+                                  "type": ["string", "null"]
                                 },
                                 "bot": {
                                   "type": "boolean"
                                 }
                               },
-                              "required": [
-                                "id"
-                              ],
+                              "required": ["id"],
                               "additionalProperties": false
                             }
                           },
@@ -2587,16 +2355,10 @@
                                   "type": "object",
                                   "properties": {
                                     "id": {
-                                      "type": [
-                                        "string",
-                                        "null"
-                                      ]
+                                      "type": ["string", "null"]
                                     },
                                     "name": {
-                                      "type": [
-                                        "string",
-                                        "null"
-                                      ]
+                                      "type": ["string", "null"]
                                     },
                                     "animated": {
                                       "type": "boolean"
@@ -2650,10 +2412,7 @@
                                     "type": "string"
                                   },
                                   "edited_timestamp": {
-                                    "type": [
-                                      "string",
-                                      "null"
-                                    ]
+                                    "type": ["string", "null"]
                                   },
                                   "type": {
                                     "type": "integer"
@@ -2671,18 +2430,13 @@
                                         "type": "string"
                                       },
                                       "global_name": {
-                                        "type": [
-                                          "string",
-                                          "null"
-                                        ]
+                                        "type": ["string", "null"]
                                       },
                                       "bot": {
                                         "type": "boolean"
                                       }
                                     },
-                                    "required": [
-                                      "id"
-                                    ],
+                                    "required": ["id"],
                                     "additionalProperties": false
                                   },
                                   "attachments": {
@@ -2710,16 +2464,10 @@
                                           "minimum": 0
                                         },
                                         "width": {
-                                          "type": [
-                                            "integer",
-                                            "null"
-                                          ]
+                                          "type": ["integer", "null"]
                                         },
                                         "height": {
-                                          "type": [
-                                            "integer",
-                                            "null"
-                                          ]
+                                          "type": ["integer", "null"]
                                         },
                                         "duration_secs": {
                                           "type": "number"
@@ -2728,11 +2476,7 @@
                                           "type": "boolean"
                                         }
                                       },
-                                      "required": [
-                                        "id",
-                                        "filename",
-                                        "size"
-                                      ],
+                                      "required": ["id", "filename", "size"],
                                       "additionalProperties": false
                                     }
                                   },
@@ -2860,18 +2604,13 @@
                                           "type": "string"
                                         },
                                         "global_name": {
-                                          "type": [
-                                            "string",
-                                            "null"
-                                          ]
+                                          "type": ["string", "null"]
                                         },
                                         "bot": {
                                           "type": "boolean"
                                         }
                                       },
-                                      "required": [
-                                        "id"
-                                      ],
+                                      "required": ["id"],
                                       "additionalProperties": false
                                     }
                                   },
@@ -2909,16 +2648,10 @@
                                           "type": "object",
                                           "properties": {
                                             "id": {
-                                              "type": [
-                                                "string",
-                                                "null"
-                                              ]
+                                              "type": ["string", "null"]
                                             },
                                             "name": {
-                                              "type": [
-                                                "string",
-                                                "null"
-                                              ]
+                                              "type": ["string", "null"]
                                             },
                                             "animated": {
                                               "type": "boolean"
@@ -2955,37 +2688,25 @@
                                     "type": "null"
                                   }
                                 },
-                                "required": [
-                                  "id",
-                                  "channel_id"
-                                ],
+                                "required": ["id", "channel_id"],
                                 "additionalProperties": false
                               }
                             ]
                           }
                         },
-                        "required": [
-                          "id",
-                          "channel_id"
-                        ],
+                        "required": ["id", "channel_id"],
                         "additionalProperties": false
                       }
                     ]
                   }
                 },
-                "required": [
-                  "id",
-                  "channel_id"
-                ],
+                "required": ["id", "channel_id"],
                 "additionalProperties": false
               }
             ]
           }
         },
-        "required": [
-          "id",
-          "channel_id"
-        ],
+        "required": ["id", "channel_id"],
         "additionalProperties": false
       },
       "acceptance": [
@@ -3021,10 +2742,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "channel_id",
-          "content"
-        ],
+        "required": ["channel_id", "content"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -3032,9 +2750,7 @@
         "method": "POST",
         "path": "/channels/{channel_id}/messages"
       },
-      "requiredCapabilities": [
-        "send"
-      ],
+      "requiredCapabilities": ["send"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -3123,10 +2839,7 @@
             "type": "string"
           },
           "edited_timestamp": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "type": {
             "type": "integer"
@@ -3144,18 +2857,13 @@
                 "type": "string"
               },
               "global_name": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": ["string", "null"]
               },
               "bot": {
                 "type": "boolean"
               }
             },
-            "required": [
-              "id"
-            ],
+            "required": ["id"],
             "additionalProperties": false
           },
           "attachments": {
@@ -3183,16 +2891,10 @@
                   "minimum": 0
                 },
                 "width": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": ["integer", "null"]
                 },
                 "height": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": ["integer", "null"]
                 },
                 "duration_secs": {
                   "type": "number"
@@ -3201,11 +2903,7 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "id",
-                "filename",
-                "size"
-              ],
+              "required": ["id", "filename", "size"],
               "additionalProperties": false
             }
           },
@@ -3333,18 +3031,13 @@
                   "type": "string"
                 },
                 "global_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": ["string", "null"]
                 },
                 "bot": {
                   "type": "boolean"
                 }
               },
-              "required": [
-                "id"
-              ],
+              "required": ["id"],
               "additionalProperties": false
             }
           },
@@ -3382,16 +3075,10 @@
                   "type": "object",
                   "properties": {
                     "id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": ["string", "null"]
                     },
                     "name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": ["string", "null"]
                     },
                     "animated": {
                       "type": "boolean"
@@ -3445,10 +3132,7 @@
                     "type": "string"
                   },
                   "edited_timestamp": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
+                    "type": ["string", "null"]
                   },
                   "type": {
                     "type": "integer"
@@ -3466,18 +3150,13 @@
                         "type": "string"
                       },
                       "global_name": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": ["string", "null"]
                       },
                       "bot": {
                         "type": "boolean"
                       }
                     },
-                    "required": [
-                      "id"
-                    ],
+                    "required": ["id"],
                     "additionalProperties": false
                   },
                   "attachments": {
@@ -3505,16 +3184,10 @@
                           "minimum": 0
                         },
                         "width": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
+                          "type": ["integer", "null"]
                         },
                         "height": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
+                          "type": ["integer", "null"]
                         },
                         "duration_secs": {
                           "type": "number"
@@ -3523,11 +3196,7 @@
                           "type": "boolean"
                         }
                       },
-                      "required": [
-                        "id",
-                        "filename",
-                        "size"
-                      ],
+                      "required": ["id", "filename", "size"],
                       "additionalProperties": false
                     }
                   },
@@ -3655,18 +3324,13 @@
                           "type": "string"
                         },
                         "global_name": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
+                          "type": ["string", "null"]
                         },
                         "bot": {
                           "type": "boolean"
                         }
                       },
-                      "required": [
-                        "id"
-                      ],
+                      "required": ["id"],
                       "additionalProperties": false
                     }
                   },
@@ -3704,16 +3368,10 @@
                           "type": "object",
                           "properties": {
                             "id": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": ["string", "null"]
                             },
                             "name": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": ["string", "null"]
                             },
                             "animated": {
                               "type": "boolean"
@@ -3767,10 +3425,7 @@
                             "type": "string"
                           },
                           "edited_timestamp": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
+                            "type": ["string", "null"]
                           },
                           "type": {
                             "type": "integer"
@@ -3788,18 +3443,13 @@
                                 "type": "string"
                               },
                               "global_name": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
+                                "type": ["string", "null"]
                               },
                               "bot": {
                                 "type": "boolean"
                               }
                             },
-                            "required": [
-                              "id"
-                            ],
+                            "required": ["id"],
                             "additionalProperties": false
                           },
                           "attachments": {
@@ -3827,16 +3477,10 @@
                                   "minimum": 0
                                 },
                                 "width": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ]
+                                  "type": ["integer", "null"]
                                 },
                                 "height": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ]
+                                  "type": ["integer", "null"]
                                 },
                                 "duration_secs": {
                                   "type": "number"
@@ -3845,11 +3489,7 @@
                                   "type": "boolean"
                                 }
                               },
-                              "required": [
-                                "id",
-                                "filename",
-                                "size"
-                              ],
+                              "required": ["id", "filename", "size"],
                               "additionalProperties": false
                             }
                           },
@@ -3977,18 +3617,13 @@
                                   "type": "string"
                                 },
                                 "global_name": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
+                                  "type": ["string", "null"]
                                 },
                                 "bot": {
                                   "type": "boolean"
                                 }
                               },
-                              "required": [
-                                "id"
-                              ],
+                              "required": ["id"],
                               "additionalProperties": false
                             }
                           },
@@ -4026,16 +3661,10 @@
                                   "type": "object",
                                   "properties": {
                                     "id": {
-                                      "type": [
-                                        "string",
-                                        "null"
-                                      ]
+                                      "type": ["string", "null"]
                                     },
                                     "name": {
-                                      "type": [
-                                        "string",
-                                        "null"
-                                      ]
+                                      "type": ["string", "null"]
                                     },
                                     "animated": {
                                       "type": "boolean"
@@ -4089,10 +3718,7 @@
                                     "type": "string"
                                   },
                                   "edited_timestamp": {
-                                    "type": [
-                                      "string",
-                                      "null"
-                                    ]
+                                    "type": ["string", "null"]
                                   },
                                   "type": {
                                     "type": "integer"
@@ -4110,18 +3736,13 @@
                                         "type": "string"
                                       },
                                       "global_name": {
-                                        "type": [
-                                          "string",
-                                          "null"
-                                        ]
+                                        "type": ["string", "null"]
                                       },
                                       "bot": {
                                         "type": "boolean"
                                       }
                                     },
-                                    "required": [
-                                      "id"
-                                    ],
+                                    "required": ["id"],
                                     "additionalProperties": false
                                   },
                                   "attachments": {
@@ -4149,16 +3770,10 @@
                                           "minimum": 0
                                         },
                                         "width": {
-                                          "type": [
-                                            "integer",
-                                            "null"
-                                          ]
+                                          "type": ["integer", "null"]
                                         },
                                         "height": {
-                                          "type": [
-                                            "integer",
-                                            "null"
-                                          ]
+                                          "type": ["integer", "null"]
                                         },
                                         "duration_secs": {
                                           "type": "number"
@@ -4167,11 +3782,7 @@
                                           "type": "boolean"
                                         }
                                       },
-                                      "required": [
-                                        "id",
-                                        "filename",
-                                        "size"
-                                      ],
+                                      "required": ["id", "filename", "size"],
                                       "additionalProperties": false
                                     }
                                   },
@@ -4299,18 +3910,13 @@
                                           "type": "string"
                                         },
                                         "global_name": {
-                                          "type": [
-                                            "string",
-                                            "null"
-                                          ]
+                                          "type": ["string", "null"]
                                         },
                                         "bot": {
                                           "type": "boolean"
                                         }
                                       },
-                                      "required": [
-                                        "id"
-                                      ],
+                                      "required": ["id"],
                                       "additionalProperties": false
                                     }
                                   },
@@ -4348,16 +3954,10 @@
                                           "type": "object",
                                           "properties": {
                                             "id": {
-                                              "type": [
-                                                "string",
-                                                "null"
-                                              ]
+                                              "type": ["string", "null"]
                                             },
                                             "name": {
-                                              "type": [
-                                                "string",
-                                                "null"
-                                              ]
+                                              "type": ["string", "null"]
                                             },
                                             "animated": {
                                               "type": "boolean"
@@ -4394,44 +3994,29 @@
                                     "type": "null"
                                   }
                                 },
-                                "required": [
-                                  "id",
-                                  "channel_id"
-                                ],
+                                "required": ["id", "channel_id"],
                                 "additionalProperties": false
                               }
                             ]
                           }
                         },
-                        "required": [
-                          "id",
-                          "channel_id"
-                        ],
+                        "required": ["id", "channel_id"],
                         "additionalProperties": false
                       }
                     ]
                   }
                 },
-                "required": [
-                  "id",
-                  "channel_id"
-                ],
+                "required": ["id", "channel_id"],
                 "additionalProperties": false
               }
             ]
           },
           "write_outcome": {
             "type": "string",
-            "enum": [
-              "confirmed"
-            ]
+            "enum": ["confirmed"]
           }
         },
-        "required": [
-          "id",
-          "channel_id",
-          "write_outcome"
-        ],
+        "required": ["id", "channel_id", "write_outcome"],
         "additionalProperties": false
       },
       "acceptance": [
@@ -4462,11 +4047,7 @@
             "maxLength": 2000
           }
         },
-        "required": [
-          "channel_id",
-          "message_id",
-          "content"
-        ],
+        "required": ["channel_id", "message_id", "content"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -4474,9 +4055,7 @@
         "method": "PATCH",
         "path": "/channels/{channel_id}/messages/{message_id}"
       },
-      "requiredCapabilities": [
-        "edit"
-      ],
+      "requiredCapabilities": ["edit"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -4566,10 +4145,7 @@
             "type": "string"
           },
           "edited_timestamp": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "type": {
             "type": "integer"
@@ -4587,18 +4163,13 @@
                 "type": "string"
               },
               "global_name": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": ["string", "null"]
               },
               "bot": {
                 "type": "boolean"
               }
             },
-            "required": [
-              "id"
-            ],
+            "required": ["id"],
             "additionalProperties": false
           },
           "attachments": {
@@ -4626,16 +4197,10 @@
                   "minimum": 0
                 },
                 "width": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": ["integer", "null"]
                 },
                 "height": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": ["integer", "null"]
                 },
                 "duration_secs": {
                   "type": "number"
@@ -4644,11 +4209,7 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "id",
-                "filename",
-                "size"
-              ],
+              "required": ["id", "filename", "size"],
               "additionalProperties": false
             }
           },
@@ -4776,18 +4337,13 @@
                   "type": "string"
                 },
                 "global_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": ["string", "null"]
                 },
                 "bot": {
                   "type": "boolean"
                 }
               },
-              "required": [
-                "id"
-              ],
+              "required": ["id"],
               "additionalProperties": false
             }
           },
@@ -4825,16 +4381,10 @@
                   "type": "object",
                   "properties": {
                     "id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": ["string", "null"]
                     },
                     "name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": ["string", "null"]
                     },
                     "animated": {
                       "type": "boolean"
@@ -4888,10 +4438,7 @@
                     "type": "string"
                   },
                   "edited_timestamp": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
+                    "type": ["string", "null"]
                   },
                   "type": {
                     "type": "integer"
@@ -4909,18 +4456,13 @@
                         "type": "string"
                       },
                       "global_name": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": ["string", "null"]
                       },
                       "bot": {
                         "type": "boolean"
                       }
                     },
-                    "required": [
-                      "id"
-                    ],
+                    "required": ["id"],
                     "additionalProperties": false
                   },
                   "attachments": {
@@ -4948,16 +4490,10 @@
                           "minimum": 0
                         },
                         "width": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
+                          "type": ["integer", "null"]
                         },
                         "height": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
+                          "type": ["integer", "null"]
                         },
                         "duration_secs": {
                           "type": "number"
@@ -4966,11 +4502,7 @@
                           "type": "boolean"
                         }
                       },
-                      "required": [
-                        "id",
-                        "filename",
-                        "size"
-                      ],
+                      "required": ["id", "filename", "size"],
                       "additionalProperties": false
                     }
                   },
@@ -5098,18 +4630,13 @@
                           "type": "string"
                         },
                         "global_name": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
+                          "type": ["string", "null"]
                         },
                         "bot": {
                           "type": "boolean"
                         }
                       },
-                      "required": [
-                        "id"
-                      ],
+                      "required": ["id"],
                       "additionalProperties": false
                     }
                   },
@@ -5147,16 +4674,10 @@
                           "type": "object",
                           "properties": {
                             "id": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": ["string", "null"]
                             },
                             "name": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": ["string", "null"]
                             },
                             "animated": {
                               "type": "boolean"
@@ -5210,10 +4731,7 @@
                             "type": "string"
                           },
                           "edited_timestamp": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
+                            "type": ["string", "null"]
                           },
                           "type": {
                             "type": "integer"
@@ -5231,18 +4749,13 @@
                                 "type": "string"
                               },
                               "global_name": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
+                                "type": ["string", "null"]
                               },
                               "bot": {
                                 "type": "boolean"
                               }
                             },
-                            "required": [
-                              "id"
-                            ],
+                            "required": ["id"],
                             "additionalProperties": false
                           },
                           "attachments": {
@@ -5270,16 +4783,10 @@
                                   "minimum": 0
                                 },
                                 "width": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ]
+                                  "type": ["integer", "null"]
                                 },
                                 "height": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ]
+                                  "type": ["integer", "null"]
                                 },
                                 "duration_secs": {
                                   "type": "number"
@@ -5288,11 +4795,7 @@
                                   "type": "boolean"
                                 }
                               },
-                              "required": [
-                                "id",
-                                "filename",
-                                "size"
-                              ],
+                              "required": ["id", "filename", "size"],
                               "additionalProperties": false
                             }
                           },
@@ -5420,18 +4923,13 @@
                                   "type": "string"
                                 },
                                 "global_name": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
+                                  "type": ["string", "null"]
                                 },
                                 "bot": {
                                   "type": "boolean"
                                 }
                               },
-                              "required": [
-                                "id"
-                              ],
+                              "required": ["id"],
                               "additionalProperties": false
                             }
                           },
@@ -5469,16 +4967,10 @@
                                   "type": "object",
                                   "properties": {
                                     "id": {
-                                      "type": [
-                                        "string",
-                                        "null"
-                                      ]
+                                      "type": ["string", "null"]
                                     },
                                     "name": {
-                                      "type": [
-                                        "string",
-                                        "null"
-                                      ]
+                                      "type": ["string", "null"]
                                     },
                                     "animated": {
                                       "type": "boolean"
@@ -5532,10 +5024,7 @@
                                     "type": "string"
                                   },
                                   "edited_timestamp": {
-                                    "type": [
-                                      "string",
-                                      "null"
-                                    ]
+                                    "type": ["string", "null"]
                                   },
                                   "type": {
                                     "type": "integer"
@@ -5553,18 +5042,13 @@
                                         "type": "string"
                                       },
                                       "global_name": {
-                                        "type": [
-                                          "string",
-                                          "null"
-                                        ]
+                                        "type": ["string", "null"]
                                       },
                                       "bot": {
                                         "type": "boolean"
                                       }
                                     },
-                                    "required": [
-                                      "id"
-                                    ],
+                                    "required": ["id"],
                                     "additionalProperties": false
                                   },
                                   "attachments": {
@@ -5592,16 +5076,10 @@
                                           "minimum": 0
                                         },
                                         "width": {
-                                          "type": [
-                                            "integer",
-                                            "null"
-                                          ]
+                                          "type": ["integer", "null"]
                                         },
                                         "height": {
-                                          "type": [
-                                            "integer",
-                                            "null"
-                                          ]
+                                          "type": ["integer", "null"]
                                         },
                                         "duration_secs": {
                                           "type": "number"
@@ -5610,11 +5088,7 @@
                                           "type": "boolean"
                                         }
                                       },
-                                      "required": [
-                                        "id",
-                                        "filename",
-                                        "size"
-                                      ],
+                                      "required": ["id", "filename", "size"],
                                       "additionalProperties": false
                                     }
                                   },
@@ -5742,18 +5216,13 @@
                                           "type": "string"
                                         },
                                         "global_name": {
-                                          "type": [
-                                            "string",
-                                            "null"
-                                          ]
+                                          "type": ["string", "null"]
                                         },
                                         "bot": {
                                           "type": "boolean"
                                         }
                                       },
-                                      "required": [
-                                        "id"
-                                      ],
+                                      "required": ["id"],
                                       "additionalProperties": false
                                     }
                                   },
@@ -5791,16 +5260,10 @@
                                           "type": "object",
                                           "properties": {
                                             "id": {
-                                              "type": [
-                                                "string",
-                                                "null"
-                                              ]
+                                              "type": ["string", "null"]
                                             },
                                             "name": {
-                                              "type": [
-                                                "string",
-                                                "null"
-                                              ]
+                                              "type": ["string", "null"]
                                             },
                                             "animated": {
                                               "type": "boolean"
@@ -5837,44 +5300,29 @@
                                     "type": "null"
                                   }
                                 },
-                                "required": [
-                                  "id",
-                                  "channel_id"
-                                ],
+                                "required": ["id", "channel_id"],
                                 "additionalProperties": false
                               }
                             ]
                           }
                         },
-                        "required": [
-                          "id",
-                          "channel_id"
-                        ],
+                        "required": ["id", "channel_id"],
                         "additionalProperties": false
                       }
                     ]
                   }
                 },
-                "required": [
-                  "id",
-                  "channel_id"
-                ],
+                "required": ["id", "channel_id"],
                 "additionalProperties": false
               }
             ]
           },
           "write_outcome": {
             "type": "string",
-            "enum": [
-              "confirmed"
-            ]
+            "enum": ["confirmed"]
           }
         },
-        "required": [
-          "id",
-          "channel_id",
-          "write_outcome"
-        ],
+        "required": ["id", "channel_id", "write_outcome"],
         "additionalProperties": false
       },
       "acceptance": [
@@ -5900,10 +5348,7 @@
             "pattern": "^[1-9][0-9]{5,20}$"
           }
         },
-        "required": [
-          "channel_id",
-          "message_id"
-        ],
+        "required": ["channel_id", "message_id"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -5911,9 +5356,7 @@
         "method": "DELETE",
         "path": "/channels/{channel_id}/messages/{message_id}"
       },
-      "requiredCapabilities": [
-        "delete"
-      ],
+      "requiredCapabilities": ["delete"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -5942,11 +5385,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "channel_id",
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["channel_id", "message_id", "write_outcome"],
         "properties": {
           "channel_id": {
             "type": "string"
@@ -5991,11 +5430,7 @@
             "maxLength": 128
           }
         },
-        "required": [
-          "channel_id",
-          "message_id",
-          "emoji"
-        ],
+        "required": ["channel_id", "message_id", "emoji"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -6003,9 +5438,7 @@
         "method": "PUT",
         "path": "/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me"
       },
-      "requiredCapabilities": [
-        "reactions"
-      ],
+      "requiredCapabilities": ["reactions"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -6036,11 +5469,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "channel_id",
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["channel_id", "message_id", "write_outcome"],
         "properties": {
           "channel_id": {
             "type": "string"
@@ -6085,11 +5514,7 @@
             "pattern": "^[1-9][0-9]{5,20}$"
           }
         },
-        "required": [
-          "channel_id",
-          "message_id",
-          "attachment_id"
-        ],
+        "required": ["channel_id", "message_id", "attachment_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -6097,10 +5522,7 @@
         "method": "GET",
         "path": "/channels/{channel_id}/messages/{message_id}"
       },
-      "requiredCapabilities": [
-        "read",
-        "files"
-      ],
+      "requiredCapabilities": ["read", "files"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -6135,11 +5557,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "channel_id",
-          "message_id",
-          "artifact"
-        ],
+        "required": ["channel_id", "message_id", "artifact"],
         "properties": {
           "channel_id": {
             "type": "string"
@@ -6175,9 +5593,7 @@
         "additionalProperties": false
       },
       "readOnly": true,
-      "requiredCapabilities": [
-        "commands"
-      ],
+      "requiredCapabilities": ["commands"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "actual bot/application, verified guild bound exclusively to this Space",
@@ -6213,9 +5629,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "properties": {
           "items": {
             "type": "array",
@@ -6268,21 +5682,13 @@
                   "maxLength": 100
                 },
                 "type": {
-                  "enum": [
-                    3,
-                    4,
-                    5
-                  ]
+                  "enum": [3, 4, 5]
                 },
                 "required": {
                   "type": "boolean"
                 }
               },
-              "required": [
-                "name",
-                "description",
-                "type"
-              ],
+              "required": ["name", "description", "type"],
               "additionalProperties": false
             },
             "maxItems": 25
@@ -6292,16 +5698,11 @@
             "pattern": "^[0-9]{1,25}$"
           }
         },
-        "required": [
-          "name",
-          "description"
-        ],
+        "required": ["name", "description"],
         "additionalProperties": false
       },
       "readOnly": false,
-      "requiredCapabilities": [
-        "commands"
-      ],
+      "requiredCapabilities": ["commands"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "actual bot/application, verified guild bound exclusively to this Space",
@@ -6337,10 +5738,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "properties": {
           "id": {
             "type": "string"

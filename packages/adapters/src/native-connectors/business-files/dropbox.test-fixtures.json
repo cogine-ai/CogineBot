@@ -1,5 +1,5 @@
 {
-  "contractSha256": "b737f4ab05a695bab4b2a5b0eac284739b9bcb123ba80a2352775b701571cfc9",
+  "contractSha256": "c08449a03303ce8ce91c1d7b9330fabb0a72d3c57474c9603a67c3a9c218a51d",
   "fixtures": [
     {
       "id": "dropbox.files.list",

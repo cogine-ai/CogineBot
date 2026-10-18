@@ -1,5 +1,5 @@
 {
-  "contractSha256": "9659e449d376133df5159bd112af035ed32ee9cdc9cdafa11f71e67630d40ee5",
+  "contractSha256": "d74fa6803cffd68bc05cdb92df693108c0631ef3c6fc535a129a0b7b70135af8",
   "fixtures": [
     {
       "id": "figma.files.get",
@@ -41,10 +41,7 @@
       "id": "figma.nodes.get",
       "input": {
         "fileKey": "fixtureKey",
-        "ids": [
-          "1:1",
-          "1:2"
-        ]
+        "ids": ["1:1", "1:2"]
       },
       "upstream": [
         {
@@ -91,10 +88,7 @@
       "id": "figma.images.render",
       "input": {
         "fileKey": "fixtureKey",
-        "ids": [
-          "1:1",
-          "1:2"
-        ]
+        "ids": ["1:1", "1:2"]
       },
       "upstream": [
         {

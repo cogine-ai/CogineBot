@@ -29,9 +29,7 @@
         "path": "/wiki/api/v2/spaces"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:space:confluence"
-        ],
+        "acceptedAnyOfScopes": ["read:space:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -65,10 +63,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "hasMore"
-        ],
+        "required": ["items", "hasMore"],
         "additionalProperties": true
       }
     },
@@ -94,9 +89,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "cql"
-        ],
+        "required": ["cql"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -106,10 +99,7 @@
         "queryConstraint": "type=page AND (<cql>)"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "search:confluence",
-          "read:content-details:confluence"
-        ],
+        "acceptedAnyOfScopes": ["search:confluence", "read:content-details:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -143,20 +133,13 @@
             }
           },
           "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "allPagesRead": {
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "nextCursor",
-          "allPagesRead"
-        ],
+        "required": ["items", "nextCursor", "allPagesRead"],
         "additionalProperties": true
       }
     },
@@ -172,9 +155,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "page_id"
-        ],
+        "required": ["page_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -183,9 +164,7 @@
         "path": "/wiki/api/v2/pages/{page_id}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:page:confluence"
-        ],
+        "acceptedAnyOfScopes": ["read:page:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -214,10 +193,7 @@
             "type": "object"
           }
         },
-        "required": [
-          "id",
-          "version"
-        ],
+        "required": ["id", "version"],
         "additionalProperties": true
       }
     },
@@ -248,11 +224,7 @@
             "maxLength": 100000
           }
         },
-        "required": [
-          "spaceId",
-          "title",
-          "body"
-        ],
+        "required": ["spaceId", "title", "body"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -261,9 +233,7 @@
         "path": "/wiki/api/v2/pages"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:page:confluence"
-        ],
+        "acceptedAnyOfScopes": ["write:page:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -290,10 +260,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -324,12 +291,7 @@
             "maximum": 2147483647
           }
         },
-        "required": [
-          "page_id",
-          "title",
-          "body",
-          "expectedVersion"
-        ],
+        "required": ["page_id", "title", "body", "expectedVersion"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -338,9 +300,7 @@
         "path": "/wiki/api/v2/pages/{page_id}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:page:confluence"
-        ],
+        "acceptedAnyOfScopes": ["write:page:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -373,11 +333,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "version",
-          "write_outcome"
-        ],
+        "required": ["id", "version", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -403,9 +359,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "page_id"
-        ],
+        "required": ["page_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -414,9 +368,7 @@
         "path": "/wiki/api/v2/pages/{page_id}/footer-comments"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:comment:confluence"
-        ],
+        "acceptedAnyOfScopes": ["read:comment:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -446,9 +398,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     },
@@ -469,10 +419,7 @@
             "maxLength": 50000
           }
         },
-        "required": [
-          "page_id",
-          "body"
-        ],
+        "required": ["page_id", "body"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -481,9 +428,7 @@
         "path": "/wiki/api/v2/footer-comments"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:comment:confluence"
-        ],
+        "acceptedAnyOfScopes": ["write:comment:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -510,10 +455,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -539,9 +481,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "page_id"
-        ],
+        "required": ["page_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -550,9 +490,7 @@
         "path": "/wiki/api/v2/pages/{page_id}/attachments"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:attachment:confluence"
-        ],
+        "acceptedAnyOfScopes": ["read:attachment:confluence"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -583,9 +521,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     }

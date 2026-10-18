@@ -15,9 +15,7 @@
             "pattern": "^-?[1-9][0-9]{0,18}$"
           }
         },
-        "required": [
-          "chat_id"
-        ],
+        "required": ["chat_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -25,9 +23,7 @@
         "method": "GET",
         "path": "/getChat"
       },
-      "requiredCapabilities": [
-        "read"
-      ],
+      "requiredCapabilities": ["read"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -54,9 +50,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "id"
-        ],
+        "required": ["id"],
         "properties": {
           "id": {
             "type": "integer"
@@ -89,9 +83,7 @@
             "pattern": "^-?[1-9][0-9]{0,18}$"
           }
         },
-        "required": [
-          "chat_id"
-        ],
+        "required": ["chat_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -99,9 +91,7 @@
         "method": "GET",
         "path": "/getChat"
       },
-      "requiredCapabilities": [
-        "read"
-      ],
+      "requiredCapabilities": ["read"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -142,19 +132,13 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "chat_id",
-          "historyAvailable"
-        ],
+        "required": ["chat_id", "historyAvailable"],
         "properties": {
           "chat_id": {
             "type": "string"
           },
           "pinned_message": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": ["object", "null"]
           },
           "historyAvailable": {
             "type": "boolean"
@@ -207,10 +191,7 @@
                     "pattern": "^https://"
                   }
                 },
-                "required": [
-                  "text",
-                  "url"
-                ],
+                "required": ["text", "url"],
                 "additionalProperties": false
               },
               "minItems": 1,
@@ -220,10 +201,7 @@
             "maxItems": 8
           }
         },
-        "required": [
-          "chat_id",
-          "text"
-        ],
+        "required": ["chat_id", "text"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -231,9 +209,7 @@
         "method": "POST",
         "path": "/sendMessage"
       },
-      "requiredCapabilities": [
-        "send"
-      ],
+      "requiredCapabilities": ["send"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -273,10 +249,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["message_id", "write_outcome"],
         "properties": {
           "message_id": {
             "type": "integer"
@@ -340,10 +313,7 @@
                     "pattern": "^https://"
                   }
                 },
-                "required": [
-                  "text",
-                  "url"
-                ],
+                "required": ["text", "url"],
                 "additionalProperties": false
               },
               "minItems": 1,
@@ -353,11 +323,7 @@
             "maxItems": 8
           }
         },
-        "required": [
-          "chat_id",
-          "message_id",
-          "text"
-        ],
+        "required": ["chat_id", "message_id", "text"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -365,9 +331,7 @@
         "method": "POST",
         "path": "/sendMessage"
       },
-      "requiredCapabilities": [
-        "send"
-      ],
+      "requiredCapabilities": ["send"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -408,10 +372,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["message_id", "write_outcome"],
         "properties": {
           "message_id": {
             "type": "integer"
@@ -475,10 +436,7 @@
                     "pattern": "^https://"
                   }
                 },
-                "required": [
-                  "text",
-                  "url"
-                ],
+                "required": ["text", "url"],
                 "additionalProperties": false
               },
               "minItems": 1,
@@ -488,11 +446,7 @@
             "maxItems": 8
           }
         },
-        "required": [
-          "chat_id",
-          "message_id",
-          "text"
-        ],
+        "required": ["chat_id", "message_id", "text"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -500,9 +454,7 @@
         "method": "POST",
         "path": "/editMessageText"
       },
-      "requiredCapabilities": [
-        "edit"
-      ],
+      "requiredCapabilities": ["edit"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -543,10 +495,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["message_id", "write_outcome"],
         "properties": {
           "message_id": {
             "type": "integer"
@@ -587,10 +536,7 @@
             "maximum": 2147483647
           }
         },
-        "required": [
-          "chat_id",
-          "message_id"
-        ],
+        "required": ["chat_id", "message_id"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -598,9 +544,7 @@
         "method": "POST",
         "path": "/deleteMessage"
       },
-      "requiredCapabilities": [
-        "delete"
-      ],
+      "requiredCapabilities": ["delete"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -629,11 +573,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "chat_id",
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["chat_id", "message_id", "write_outcome"],
         "properties": {
           "chat_id": {
             "type": "string"
@@ -679,10 +619,7 @@
             "maxLength": 1024
           }
         },
-        "required": [
-          "chat_id",
-          "artifactId"
-        ],
+        "required": ["chat_id", "artifactId"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -690,10 +627,7 @@
         "method": "POST",
         "path": "/sendDocument"
       },
-      "requiredCapabilities": [
-        "send",
-        "files"
-      ],
+      "requiredCapabilities": ["send", "files"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -724,10 +658,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["message_id", "write_outcome"],
         "properties": {
           "message_id": {
             "type": "integer"
@@ -770,11 +701,7 @@
             "maxLength": 32
           }
         },
-        "required": [
-          "chat_id",
-          "message_id",
-          "emoji"
-        ],
+        "required": ["chat_id", "message_id", "emoji"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -782,9 +709,7 @@
         "method": "POST",
         "path": "/setMessageReaction"
       },
-      "requiredCapabilities": [
-        "reactions"
-      ],
+      "requiredCapabilities": ["reactions"],
       "authorization": {
         "acceptedAnyOfScopes": [],
         "actor": "verified bot with deployment-owner explicit target authorization for this Space; not remote personal-user OAuth",
@@ -814,11 +739,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "chat_id",
-          "message_id",
-          "write_outcome"
-        ],
+        "required": ["chat_id", "message_id", "write_outcome"],
         "properties": {
           "chat_id": {
             "type": "string"
@@ -844,10 +765,7 @@
       ]
     }
   ],
-  "sources": [
-    "https://core.telegram.org/bots/api",
-    "https://core.telegram.org/bots/faq"
-  ],
+  "sources": ["https://core.telegram.org/bots/api", "https://core.telegram.org/bots/faq"],
   "inbound": "Existing single consumer retained. No getUpdates, setWebhook, Gateway, event subscription, slash registration or polling is created.",
   "identity": "Bot token only, actual bot identity and administrator space/targets; no personal remote user identity claim",
   "refreshRevoke": "No OAuth refresh; owner token rotation invalidates grants under existing config revision; revoked token/target permission fails closed. Local disconnect does not uninstall the shared bot.",

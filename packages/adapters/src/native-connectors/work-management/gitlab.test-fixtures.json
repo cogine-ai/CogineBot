@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "contractSha256": "a1b141a96b1a5cefcaad7becee0773e78440e96cffa2fccc6311fee8372ee689",
+  "contractSha256": "8eea4c5d5d8fe61d6835e7ee21e12000d0d3b4d0b274383fdb94ac39103125cf",
   "fixtures": [
     {
       "id": "gitlab.projects.list",
@@ -115,9 +115,7 @@
       "input": {
         "project": "9",
         "title": "Fixture issue",
-        "assignee_ids": [
-          3
-        ]
+        "assignee_ids": [3]
       },
       "steps": [
         {
@@ -126,9 +124,7 @@
             "path": "/projects/9/issues",
             "body": {
               "title": "Fixture issue",
-              "assignee_ids": [
-                3
-              ]
+              "assignee_ids": [3]
             }
           },
           "response": {

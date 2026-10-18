@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "contractSha256": "300464786d44abd1ad8ec67f84dd3749dc9eef7ec51a44b74079e78334b627ac",
+  "contractSha256": "ee4fd166de503935977e328ec212c48eb64cc091165f4f6e29ff09cfec19360f",
   "fixtures": [
     {
       "id": "confluence.spaces.list",

@@ -27,23 +27,17 @@
             "maximum": 10
           }
         },
-        "required": [
-          "fileKey"
-        ],
+        "required": ["fileKey"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "file_content:read"
-        ]
+        "acceptedAnyOfScopes": ["file_content:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -78,24 +72,17 @@
             "maximum": 10
           }
         },
-        "required": [
-          "fileKey",
-          "ids"
-        ],
+        "required": ["fileKey", "ids"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "file_content:read"
-        ]
+        "acceptedAnyOfScopes": ["file_content:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -125,12 +112,7 @@
             "uniqueItems": true
           },
           "format": {
-            "enum": [
-              "png",
-              "jpg",
-              "svg",
-              "pdf"
-            ]
+            "enum": ["png", "jpg", "svg", "pdf"]
           },
           "scale": {
             "type": "number",
@@ -138,24 +120,17 @@
             "maximum": 4
           }
         },
-        "required": [
-          "fileKey",
-          "ids"
-        ],
+        "required": ["fileKey", "ids"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "file_content:read"
-        ]
+        "acceptedAnyOfScopes": ["file_content:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -174,23 +149,17 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "fileKey"
-        ],
+        "required": ["fileKey"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "file_comments:read"
-        ]
+        "acceptedAnyOfScopes": ["file_comments:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -219,18 +188,12 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "fileKey",
-          "message"
-        ],
+        "required": ["fileKey", "message"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "comment"
-        ],
+        "required": ["action_id", "comment"],
         "properties": {
           "action_id": {
             "const": "figma.comments.create"
@@ -243,9 +206,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "file_comments:write"
-        ]
+        "acceptedAnyOfScopes": ["file_comments:write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -269,24 +230,17 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "fileKey",
-          "commentId"
-        ],
+        "required": ["fileKey", "commentId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "file_comments:write"
-        ]
+        "acceptedAnyOfScopes": ["file_comments:write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -316,23 +270,17 @@
             "maximum": 50
           }
         },
-        "required": [
-          "fileKey"
-        ],
+        "required": ["fileKey"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "file_versions:read"
-        ]
+        "acceptedAnyOfScopes": ["file_versions:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -351,33 +299,24 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "fileKey"
-        ],
+        "required": ["fileKey"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "library_assets:read"
-        ]
+        "acceptedAnyOfScopes": ["library_assets:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
     }
   ],
   "authorization": {
-    "credentialKinds": [
-      "oauth",
-      "personal_token"
-    ],
+    "credentialKinds": ["oauth", "personal_token"],
     "identity": "GET /v1/me string ID; OAuth returned user_id_string must match; PAT X-Figma-Token; plan tokens unsupported /me so cannot masquerade as user",
     "scopes": "Granular current_user:read plus action scopes; tokenservice does not introspect scopes, store empty actualscopes with explicit provider_enforced_scope identity marker; do not fabricate configuredgrants",
     "refresh": "Basic confidential /v1/oauth/token + PKCE S256; refresh grant_type=refresh_token per 2025-05-16 changelog; reusable refresh; same app/user has one active access. Recheck same user; no independence assumption for local connections.",

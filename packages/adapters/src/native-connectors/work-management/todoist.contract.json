@@ -29,10 +29,7 @@
         "path": "/projects"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "data:read",
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["data:read", "data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -66,10 +63,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "hasMore"
-        ],
+        "required": ["items", "hasMore"],
         "additionalProperties": true
       }
     },
@@ -114,10 +108,7 @@
         "path": "/tasks"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "data:read",
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["data:read", "data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -148,16 +139,10 @@
             }
           },
           "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "items",
-          "nextCursor"
-        ],
+        "required": ["items", "nextCursor"],
         "additionalProperties": true
       }
     },
@@ -173,9 +158,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "task_id"
-        ],
+        "required": ["task_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -184,10 +167,7 @@
         "path": "/tasks/{task_id}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "data:read",
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["data:read", "data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -210,9 +190,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id"
-        ],
+        "required": ["id"],
         "additionalProperties": true
       }
     },
@@ -271,9 +249,7 @@
             "maxItems": 100
           }
         },
-        "required": [
-          "content"
-        ],
+        "required": ["content"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -282,10 +258,7 @@
         "path": "/tasks"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "task:add",
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["task:add", "data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -312,10 +285,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -371,10 +341,7 @@
             "additionalProperties": false
           }
         },
-        "required": [
-          "task_id",
-          "changes"
-        ],
+        "required": ["task_id", "changes"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -383,9 +350,7 @@
         "path": "/tasks/{task_id}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -412,10 +377,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -431,9 +393,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "task_id"
-        ],
+        "required": ["task_id"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -442,9 +402,7 @@
         "path": "/tasks/{task_id}/close"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -475,11 +433,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "task_id",
-          "closed",
-          "write_outcome"
-        ],
+        "required": ["task_id", "closed", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -495,9 +449,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "task_id"
-        ],
+        "required": ["task_id"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -506,9 +458,7 @@
         "path": "/tasks/{task_id}/reopen"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -539,11 +489,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "task_id",
-          "closed",
-          "write_outcome"
-        ],
+        "required": ["task_id", "closed", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -564,10 +510,7 @@
             "maxLength": 50000
           }
         },
-        "required": [
-          "task_id",
-          "content"
-        ],
+        "required": ["task_id", "content"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -576,9 +519,7 @@
         "path": "/comments"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "data:read_write"
-        ],
+        "acceptedAnyOfScopes": ["data:read_write"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -605,17 +546,12 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     }
   ],
-  "sources": [
-    "https://developer.todoist.com/api/v1/"
-  ],
+  "sources": ["https://developer.todoist.com/api/v1/"],
   "errorPolicy": "401 reauthorize;403 permissions;404 unavailable;409/412 version conflict;429 Retry-After;5xx/transport uncertain writes never replay; partial/malformed responses rejected",
   "events": "No new inbound webhook consumer or task mechanism in this contract. Existing explicit Routine behavior unchanged. Provider events require separately verified subscription/lifecycle and are not implied by OAuth.",
   "acceptance": [

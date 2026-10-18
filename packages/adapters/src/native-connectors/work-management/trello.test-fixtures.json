@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "contractSha256": "28bced8012c2abbd33072306d9f15469019349e7bad49d887ece3a43a3b9b211",
+  "contractSha256": "92dfc1fee7ec4c4882d2ceea4d7eebdafbb3ce07511c94a7e9b71e4649b6babd",
   "fixtures": [
     {
       "id": "trello.boards.list",
@@ -136,10 +136,7 @@
       "input": {
         "idList": "list-fixture",
         "name": "Fixture card",
-        "idMembers": [
-          "member1",
-          "member2"
-        ]
+        "idMembers": ["member1", "member2"]
       },
       "steps": [
         {

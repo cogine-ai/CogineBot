@@ -1,5 +1,5 @@
 {
-  "contractSha256": "efd444fc0de86c5eff5b1ba8826e068220262e2d7ee158e56a1bbd768e4f184e",
+  "contractSha256": "d2db061a21e29c7f0c84ed1ebd627cb3b244ef799f563fc0937c7357b5db01e1",
   "fixtures": [
     {
       "id": "hubspot.contacts.search",
@@ -49,9 +49,7 @@
       "id": "hubspot.contacts.get",
       "input": {
         "contactId": "C1",
-        "properties": [
-          "name"
-        ]
+        "properties": ["name"]
       },
       "upstream": [
         {
@@ -59,9 +57,7 @@
             "method": "GET",
             "path": "/crm/objects/2026-09/contacts/C1",
             "query": {
-              "properties": [
-                "name"
-              ],
+              "properties": ["name"],
               "archived": false
             }
           },
@@ -232,9 +228,7 @@
       "id": "hubspot.companies.get",
       "input": {
         "companyId": "C1",
-        "properties": [
-          "name"
-        ]
+        "properties": ["name"]
       },
       "upstream": [
         {
@@ -242,9 +236,7 @@
             "method": "GET",
             "path": "/crm/objects/2026-09/companies/C1",
             "query": {
-              "properties": [
-                "name"
-              ],
+              "properties": ["name"],
               "archived": false
             }
           },
@@ -316,9 +308,7 @@
       "id": "hubspot.deals.get",
       "input": {
         "dealId": "C1",
-        "properties": [
-          "name"
-        ]
+        "properties": ["name"]
       },
       "upstream": [
         {
@@ -326,9 +316,7 @@
             "method": "GET",
             "path": "/crm/objects/2026-09/deals/C1",
             "query": {
-              "properties": [
-                "name"
-              ],
+              "properties": ["name"],
               "archived": false
             }
           },
@@ -533,10 +521,7 @@
             "path": "/crm/objects/2026-09/deals/deals1",
             "query": {
               "archived": false,
-              "properties": [
-                "pipeline",
-                "dealstage"
-              ]
+              "properties": ["pipeline", "dealstage"]
             }
           },
           "response": {

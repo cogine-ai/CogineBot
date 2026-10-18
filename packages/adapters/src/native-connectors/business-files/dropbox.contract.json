@@ -29,23 +29,17 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "path"
-        ],
+        "required": ["path"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.metadata.read"
-        ]
+        "acceptedAnyOfScopes": ["files.metadata.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -78,23 +72,17 @@
             "maximum": 100
           }
         },
-        "required": [
-          "query"
-        ],
+        "required": ["query"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.metadata.read"
-        ]
+        "acceptedAnyOfScopes": ["files.metadata.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -113,17 +101,12 @@
             "maxLength": 1024
           }
         },
-        "required": [
-          "path"
-        ],
+        "required": ["path"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "metadata"
-        ],
+        "required": ["action_id", "metadata"],
         "properties": {
           "action_id": {
             "const": "dropbox.files.get"
@@ -136,9 +119,7 @@
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.metadata.read"
-        ]
+        "acceptedAnyOfScopes": ["files.metadata.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -157,17 +138,12 @@
             "maxLength": 1024
           }
         },
-        "required": [
-          "path"
-        ],
+        "required": ["path"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "metadata"
-        ],
+        "required": ["action_id", "metadata"],
         "properties": {
           "action_id": {
             "const": "dropbox.files.download"
@@ -180,9 +156,7 @@
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.content.read"
-        ]
+        "acceptedAnyOfScopes": ["files.content.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -211,18 +185,12 @@
             "maxLength": 128
           }
         },
-        "required": [
-          "path",
-          "artifactId"
-        ],
+        "required": ["path", "artifactId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "metadata"
-        ],
+        "required": ["action_id", "metadata"],
         "properties": {
           "action_id": {
             "const": "dropbox.files.upload"
@@ -235,9 +203,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.content.write"
-        ]
+        "acceptedAnyOfScopes": ["files.content.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -256,17 +222,12 @@
             "maxLength": 1024
           }
         },
-        "required": [
-          "path"
-        ],
+        "required": ["path"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "metadata"
-        ],
+        "required": ["action_id", "metadata"],
         "properties": {
           "action_id": {
             "const": "dropbox.folders.create"
@@ -279,9 +240,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.content.write"
-        ]
+        "acceptedAnyOfScopes": ["files.content.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -305,18 +264,12 @@
             "maxLength": 1024
           }
         },
-        "required": [
-          "fromPath",
-          "toPath"
-        ],
+        "required": ["fromPath", "toPath"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "metadata"
-        ],
+        "required": ["action_id", "metadata"],
         "properties": {
           "action_id": {
             "const": "dropbox.files.move"
@@ -329,9 +282,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.content.write"
-        ]
+        "acceptedAnyOfScopes": ["files.content.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -355,17 +306,12 @@
             "maxLength": 128
           }
         },
-        "required": [
-          "path"
-        ],
+        "required": ["path"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "metadata"
-        ],
+        "required": ["action_id", "metadata"],
         "properties": {
           "action_id": {
             "const": "dropbox.files.delete"
@@ -378,9 +324,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "files.content.write"
-        ]
+        "acceptedAnyOfScopes": ["files.content.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -399,42 +343,30 @@
             "maxLength": 1024
           },
           "visibility": {
-            "enum": [
-              "public",
-              "team_only"
-            ]
+            "enum": ["public", "team_only"]
           },
           "allowDownload": {
             "type": "boolean"
           }
         },
-        "required": [
-          "path",
-          "visibility"
-        ],
+        "required": ["path", "visibility"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "verified account app or user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "sharing.write"
-        ]
+        "acceptedAnyOfScopes": ["sharing.write"]
       },
       "externalEffect": "mutates selected CRM account or sharing permission; receipt before dispatch, unknown outcome never automatically replayed",
       "pagination": "single complete response or exact provider cursor; no assumed synchronization"
     }
   ],
   "authorization": {
-    "credentialKinds": [
-      "oauth"
-    ],
+    "credentialKinds": ["oauth"],
     "identity": "POST /2/users/get_current_account actual account_id; team namespace/root_info actual context; user tokens only, no arbitrary Dropbox-API-Select-User; FullAccount.team null or absent means personal account; a present team object needs actual stable team.id",
     "scopes": "account_info.read files.metadata.read files.content.read files.content.write; app-folder/fullDropbox access chosen in appconsole sharing.write only for explicitly requested shared link; never default to public or retry a rejected team-only request as public",
     "refresh": "token_access_type=offline; shortlived access, reusable refresh, PKCES256; compare same account on refresh",

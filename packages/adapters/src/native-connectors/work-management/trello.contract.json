@@ -18,9 +18,7 @@
         "path": "/members/me/boards"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["read:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -54,10 +52,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "allPagesRead"
-        ],
+        "required": ["items", "allPagesRead"],
         "additionalProperties": true
       }
     },
@@ -73,9 +68,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "board_id"
-        ],
+        "required": ["board_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -84,9 +77,7 @@
         "path": "/boards/{board_id}/lists"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["read:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -116,9 +107,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     },
@@ -134,18 +123,10 @@
             "maxLength": 256
           },
           "filter": {
-            "enum": [
-              "all",
-              "closed",
-              "none",
-              "open",
-              "visible"
-            ]
+            "enum": ["all", "closed", "none", "open", "visible"]
           }
         },
-        "required": [
-          "board_id"
-        ],
+        "required": ["board_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -154,9 +135,7 @@
         "path": "/boards/{board_id}/cards"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["read:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -190,10 +169,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "items",
-          "collectionScope"
-        ],
+        "required": ["items", "collectionScope"],
         "additionalProperties": true
       }
     },
@@ -209,9 +185,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "card_id"
-        ],
+        "required": ["card_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -220,9 +194,7 @@
         "path": "/cards/{card_id}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["read:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -245,9 +217,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id"
-        ],
+        "required": ["id"],
         "additionalProperties": true
       }
     },
@@ -273,10 +243,7 @@
             "maxLength": 50000
           },
           "due": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "maxLength": 64
           },
           "idMembers": {
@@ -289,10 +256,7 @@
             "maxItems": 100
           }
         },
-        "required": [
-          "idList",
-          "name"
-        ],
+        "required": ["idList", "name"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -301,9 +265,7 @@
         "path": "/cards"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["write:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -330,10 +292,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -367,10 +326,7 @@
                 "maxLength": 256
               },
               "due": {
-                "type": [
-                  "string",
-                  "null"
-                ],
+                "type": ["string", "null"],
                 "maxLength": 64
               },
               "dueComplete": {
@@ -393,10 +349,7 @@
             "additionalProperties": false
           }
         },
-        "required": [
-          "card_id",
-          "changes"
-        ],
+        "required": ["card_id", "changes"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -405,9 +358,7 @@
         "path": "/cards/{card_id}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["write:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -438,11 +389,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "idList",
-          "write_outcome"
-        ],
+        "required": ["id", "idList", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -458,9 +405,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "checklist_id"
-        ],
+        "required": ["checklist_id"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -469,9 +414,7 @@
         "path": "/checklists/{checklist_id}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["read:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -494,9 +437,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id"
-        ],
+        "required": ["id"],
         "additionalProperties": true
       }
     },
@@ -517,10 +458,7 @@
             "maxLength": 50000
           }
         },
-        "required": [
-          "card_id",
-          "text"
-        ],
+        "required": ["card_id", "text"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -529,9 +467,7 @@
         "path": "/cards/{card_id}/actions/comments"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:board:trello"
-        ],
+        "acceptedAnyOfScopes": ["write:board:trello"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -558,10 +494,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     }

@@ -16,9 +16,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
@@ -45,16 +43,12 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "workspaceId"
-        ],
+        "required": ["workspaceId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
@@ -73,10 +67,7 @@
         "type": "object",
         "properties": {
           "parentType": {
-            "enum": [
-              "space",
-              "folder"
-            ]
+            "enum": ["space", "folder"]
           },
           "parentId": {
             "type": "string",
@@ -87,17 +78,12 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "parentType",
-          "parentId"
-        ],
+        "required": ["parentType", "parentId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
@@ -132,16 +118,12 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "listId"
-        ],
+        "required": ["listId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
@@ -165,17 +147,12 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "taskId"
-        ],
+        "required": ["taskId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "task"
-        ],
+        "required": ["action_id", "task"],
         "properties": {
           "action_id": {
             "const": "clickup.tasks.get"
@@ -238,18 +215,12 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "listId",
-          "name"
-        ],
+        "required": ["listId", "name"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "task"
-        ],
+        "required": ["action_id", "task"],
         "properties": {
           "action_id": {
             "const": "clickup.tasks.create"
@@ -303,10 +274,7 @@
                 "maxLength": 100
               },
               "due_date": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
+                "type": ["integer", "null"],
                 "minimum": 0,
                 "maximum": 8640000000000000
               }
@@ -316,19 +284,12 @@
             "minProperties": 1
           }
         },
-        "required": [
-          "taskId",
-          "expectedDateUpdated",
-          "changes"
-        ],
+        "required": ["taskId", "expectedDateUpdated", "changes"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "task"
-        ],
+        "required": ["action_id", "task"],
         "properties": {
           "action_id": {
             "const": "clickup.tasks.update"
@@ -368,18 +329,12 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "taskId",
-          "text"
-        ],
+        "required": ["taskId", "text"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "comment"
-        ],
+        "required": ["action_id", "comment"],
         "properties": {
           "action_id": {
             "const": "clickup.comments.create"
@@ -399,10 +354,7 @@
     }
   ],
   "authorization": {
-    "credentialKinds": [
-      "oauth",
-      "personal_token"
-    ],
+    "credentialKinds": ["oauth", "personal_token"],
     "identity": "GET /api/v2/user + GET /api/v2/team verifies actual user and authorized Workspace IDs. No tenantId selection: user may authorize multiple Workspaces; provider ACL per request.",
     "scopes": "No OAuth scopes API: do not fabricate; resource ACL checked by provider per request",
     "refresh": "No documented refresh; nonexpiring current token; revoked token reconnects",

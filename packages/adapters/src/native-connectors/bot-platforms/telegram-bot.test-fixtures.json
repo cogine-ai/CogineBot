@@ -1,5 +1,5 @@
 {
-  "contractSha256": "3941c4caeed451c95bff49abe54483e6e6c373ca6c710fda1b2c4e6afab704fc",
+  "contractSha256": "9dfbb8f3b63f6938c89fbf14c98fcf455b0d9baa57a82d5e0f006ef1c2b30ec6",
   "fixtures": [
     {
       "id": "telegram.chats.get",

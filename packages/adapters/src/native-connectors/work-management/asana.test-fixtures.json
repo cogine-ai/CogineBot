@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "contractSha256": "b2a880a24fb4477707e6be32b899138045da89cb9046d8b289e18b2e8d3ddd40",
+  "contractSha256": "9f5dce4f006e3e8feb5de055131491ad16a598efefc4097b67af12ff190a855d",
   "fixtures": [
     {
       "id": "asana.workspaces.list",
@@ -154,9 +154,7 @@
       "input": {
         "workspace": "workspace-fixture",
         "name": "Fixture task",
-        "projects": [
-          "project-fixture"
-        ],
+        "projects": ["project-fixture"],
         "assignee": "person-fixture"
       },
       "steps": [
@@ -168,9 +166,7 @@
               "data": {
                 "workspace": "workspace-fixture",
                 "name": "Fixture task",
-                "projects": [
-                  "project-fixture"
-                ],
+                "projects": ["project-fixture"],
                 "assignee": "person-fixture"
               }
             }

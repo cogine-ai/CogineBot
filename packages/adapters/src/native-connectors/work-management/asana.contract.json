@@ -29,10 +29,7 @@
         "path": "/workspaces"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "workspaces:read",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["workspaces:read", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -67,10 +64,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "hasMore"
-        ],
+        "required": ["items", "hasMore"],
         "additionalProperties": true
       }
     },
@@ -99,9 +93,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "workspace_gid"
-        ],
+        "required": ["workspace_gid"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -110,10 +102,7 @@
         "path": "/workspaces/{workspace_gid}/projects"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "projects:read",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["projects:read", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -145,16 +134,10 @@
             }
           },
           "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "items",
-          "nextCursor"
-        ],
+        "required": ["items", "nextCursor"],
         "additionalProperties": true
       }
     },
@@ -185,9 +168,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "project_gid"
-        ],
+        "required": ["project_gid"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -196,10 +177,7 @@
         "path": "/projects/{project_gid}/tasks"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "tasks:read",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["tasks:read", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -230,9 +208,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     },
@@ -248,9 +224,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "task_gid"
-        ],
+        "required": ["task_gid"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -259,10 +233,7 @@
         "path": "/tasks/{task_gid}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "tasks:read",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["tasks:read", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -286,9 +257,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "gid"
-        ],
+        "required": ["gid"],
         "additionalProperties": true
       }
     },
@@ -328,17 +297,11 @@
             "maxLength": 256
           },
           "due_on": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
           }
         },
-        "required": [
-          "workspace",
-          "name"
-        ],
+        "required": ["workspace", "name"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -347,10 +310,7 @@
         "path": "/tasks"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "tasks:write",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["tasks:write", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -378,10 +338,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "gid",
-          "write_outcome"
-        ],
+        "required": ["gid", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -410,17 +367,11 @@
                 "maxLength": 50000
               },
               "assignee": {
-                "type": [
-                  "string",
-                  "null"
-                ],
+                "type": ["string", "null"],
                 "maxLength": 256
               },
               "due_on": {
-                "type": [
-                  "string",
-                  "null"
-                ],
+                "type": ["string", "null"],
                 "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
               },
               "completed": {
@@ -431,10 +382,7 @@
             "additionalProperties": false
           }
         },
-        "required": [
-          "task_gid",
-          "changes"
-        ],
+        "required": ["task_gid", "changes"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -443,10 +391,7 @@
         "path": "/tasks/{task_gid}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "tasks:write",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["tasks:write", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -478,11 +423,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "gid",
-          "completed",
-          "write_outcome"
-        ],
+        "required": ["gid", "completed", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -508,9 +449,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "task_gid"
-        ],
+        "required": ["task_gid"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -519,10 +458,7 @@
         "path": "/tasks/{task_gid}/stories"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "stories:read",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["stories:read", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -553,9 +489,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     },
@@ -576,10 +510,7 @@
             "maxLength": 50000
           }
         },
-        "required": [
-          "task_gid",
-          "text"
-        ],
+        "required": ["task_gid", "text"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -588,10 +519,7 @@
         "path": "/tasks/{task_gid}/stories"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "stories:write",
-          "default"
-        ],
+        "acceptedAnyOfScopes": ["stories:write", "default"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true,
         "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
@@ -619,10 +547,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "gid",
-          "write_outcome"
-        ],
+        "required": ["gid", "write_outcome"],
         "additionalProperties": true
       }
     }

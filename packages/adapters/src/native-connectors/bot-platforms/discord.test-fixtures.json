@@ -1,5 +1,5 @@
 {
-  "contractSha256": "98c3abc14be420862d3e8de1577f693d35d7cf1dc4b51c71613ab88576d39cd9",
+  "contractSha256": "f8efd4dc7fbf77972bf133f52834c21fa752f2c44608dbac9118bd61b7759917",
   "fixtures": [
     {
       "id": "discord.channels.get",

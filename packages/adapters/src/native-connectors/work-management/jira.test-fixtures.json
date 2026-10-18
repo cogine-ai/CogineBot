@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "contractSha256": "0d31155e6082389dfa99e0b54197628a2046a54f8fa69d57cc732f7b4b0c0995",
+  "contractSha256": "fdfe2400891629369532e09d8e7367c7f6d91a3d7a56b8c1c5316c5741683cb5",
   "fixtures": [
     {
       "id": "jira.projects.list",

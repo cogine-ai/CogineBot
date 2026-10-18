@@ -28,9 +28,7 @@
         "path": "/rest/api/3/project/search"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["read:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -64,10 +62,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "hasMore"
-        ],
+        "required": ["items", "hasMore"],
         "additionalProperties": true
       }
     },
@@ -93,9 +88,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "jql"
-        ],
+        "required": ["jql"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -104,9 +97,7 @@
         "path": "/rest/api/3/search/jql"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["read:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -138,20 +129,13 @@
             }
           },
           "nextPageToken": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "allPagesRead": {
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "nextPageToken",
-          "allPagesRead"
-        ],
+        "required": ["items", "nextPageToken", "allPagesRead"],
         "additionalProperties": true
       }
     },
@@ -167,9 +151,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "issue"
-        ],
+        "required": ["issue"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -178,9 +160,7 @@
         "path": "/rest/api/3/issue/{issue}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["read:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -207,10 +187,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "key"
-        ],
+        "required": ["id", "key"],
         "additionalProperties": true
       }
     },
@@ -255,11 +232,7 @@
             "maxItems": 100
           }
         },
-        "required": [
-          "projectId",
-          "issueTypeId",
-          "summary"
-        ],
+        "required": ["projectId", "issueTypeId", "summary"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -268,9 +241,7 @@
         "path": "/rest/api/3/issue"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["write:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -297,10 +268,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -347,10 +315,7 @@
             "additionalProperties": false
           }
         },
-        "required": [
-          "issue",
-          "changes"
-        ],
+        "required": ["issue", "changes"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -359,9 +324,7 @@
         "path": "/rest/api/3/issue/{issue}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["write:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -392,11 +355,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "issue",
-          "updated",
-          "write_outcome"
-        ],
+        "required": ["issue", "updated", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -412,9 +371,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "issue"
-        ],
+        "required": ["issue"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -423,9 +380,7 @@
         "path": "/rest/api/3/issue/{issue}/transitions"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["read:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -456,9 +411,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     },
@@ -479,10 +432,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "issue",
-          "transitionId"
-        ],
+        "required": ["issue", "transitionId"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -491,9 +441,7 @@
         "path": "/rest/api/3/issue/{issue}/transitions"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["write:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -520,10 +468,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "transitioned",
-          "write_outcome"
-        ],
+        "required": ["transitioned", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -544,10 +489,7 @@
             "maxLength": 50000
           }
         },
-        "required": [
-          "issue",
-          "body"
-        ],
+        "required": ["issue", "body"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -556,9 +498,7 @@
         "path": "/rest/api/3/issue/{issue}/comment"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "write:jira-work"
-        ],
+        "acceptedAnyOfScopes": ["write:jira-work"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -585,10 +525,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     }

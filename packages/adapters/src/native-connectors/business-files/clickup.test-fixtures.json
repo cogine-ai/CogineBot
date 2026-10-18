@@ -1,5 +1,5 @@
 {
-  "contractSha256": "13b265f80971e28058b68aeba3f84a4aa164a2e578428d1ee439c83e77404ee7",
+  "contractSha256": "77688deecc81054e6ec817bcc36a0171f2794b387de89a63d90ea89c0d5ff264",
   "fixtures": [
     {
       "id": "clickup.workspaces.list",

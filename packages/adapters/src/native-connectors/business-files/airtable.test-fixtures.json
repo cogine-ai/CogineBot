@@ -1,5 +1,5 @@
 {
-  "contractSha256": "0c84d4e774125c778be28bd3287e39bfa0a9edeb2334348767f3ecf12c33cbb3",
+  "contractSha256": "a668688c56095436dff7df103e4be4b45430c9c26e8e28681ebcf6a33061c581",
   "fixtures": [
     {
       "id": "airtable.bases.list",
@@ -73,9 +73,7 @@
         "baseId": "appFixture",
         "tableId": "tblFixture",
         "pageSize": 10,
-        "fields": [
-          "Name"
-        ]
+        "fields": ["Name"]
       },
       "upstream": [
         {
@@ -84,9 +82,7 @@
             "path": "/v0/appFixture/tblFixture",
             "query": {
               "pageSize": 10,
-              "fields[]": [
-                "Name"
-              ]
+              "fields[]": ["Name"]
             }
           },
           "response": {

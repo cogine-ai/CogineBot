@@ -34,10 +34,7 @@
         "path": "/projects"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read_api",
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["read_api", "api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -67,9 +64,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     },
@@ -95,11 +90,7 @@
             "maximum": 100
           },
           "state": {
-            "enum": [
-              "opened",
-              "closed",
-              "all"
-            ]
+            "enum": ["opened", "closed", "all"]
           },
           "search": {
             "type": "string",
@@ -107,9 +98,7 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "project"
-        ],
+        "required": ["project"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -118,10 +107,7 @@
         "path": "/projects/{project}/issues"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read_api",
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["read_api", "api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -157,21 +143,13 @@
             "type": "boolean"
           },
           "nextPage": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "allPagesRead": {
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "hasMore",
-          "nextPage",
-          "allPagesRead"
-        ],
+        "required": ["items", "hasMore", "nextPage", "allPagesRead"],
         "additionalProperties": true
       }
     },
@@ -192,10 +170,7 @@
             "maximum": 2147483647
           }
         },
-        "required": [
-          "project",
-          "issue_iid"
-        ],
+        "required": ["project", "issue_iid"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -204,10 +179,7 @@
         "path": "/projects/{project}/issues/{issue_iid}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read_api",
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["read_api", "api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -234,10 +206,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "id",
-          "iid"
-        ],
+        "required": ["id", "iid"],
         "additionalProperties": true
       }
     },
@@ -277,10 +246,7 @@
             "maxItems": 50
           }
         },
-        "required": [
-          "project",
-          "title"
-        ],
+        "required": ["project", "title"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -289,9 +255,7 @@
         "path": "/projects/{project}/issues"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -318,10 +282,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -347,11 +308,7 @@
             "maxLength": 50000
           }
         },
-        "required": [
-          "project",
-          "issue_iid",
-          "body"
-        ],
+        "required": ["project", "issue_iid", "body"],
         "additionalProperties": false
       },
       "readOnly": false,
@@ -360,9 +317,7 @@
         "path": "/projects/{project}/issues/{issue_iid}/notes"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -389,10 +344,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "write_outcome"
-        ],
+        "required": ["id", "write_outcome"],
         "additionalProperties": true
       }
     },
@@ -418,18 +370,10 @@
             "maximum": 100
           },
           "state": {
-            "enum": [
-              "opened",
-              "closed",
-              "locked",
-              "merged",
-              "all"
-            ]
+            "enum": ["opened", "closed", "locked", "merged", "all"]
           }
         },
-        "required": [
-          "project"
-        ],
+        "required": ["project"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -438,10 +382,7 @@
         "path": "/projects/{project}/merge_requests"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read_api",
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["read_api", "api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -475,10 +416,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "items",
-          "hasMore"
-        ],
+        "required": ["items", "hasMore"],
         "additionalProperties": true
       }
     },
@@ -499,10 +437,7 @@
             "maximum": 2147483647
           }
         },
-        "required": [
-          "project",
-          "merge_request_iid"
-        ],
+        "required": ["project", "merge_request_iid"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -511,10 +446,7 @@
         "path": "/projects/{project}/merge_requests/{merge_request_iid}"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read_api",
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["read_api", "api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -541,10 +473,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "id",
-          "iid"
-        ],
+        "required": ["id", "iid"],
         "additionalProperties": true
       }
     },
@@ -590,9 +519,7 @@
             ]
           }
         },
-        "required": [
-          "project"
-        ],
+        "required": ["project"],
         "additionalProperties": false
       },
       "readOnly": true,
@@ -601,10 +528,7 @@
         "path": "/projects/{project}/pipelines"
       },
       "authorization": {
-        "acceptedAnyOfScopes": [
-          "read_api",
-          "api"
-        ],
+        "acceptedAnyOfScopes": ["read_api", "api"],
         "actor": "verified selected user; bound provider/site; no global default",
         "actualGrantedScopesRequired": true
       },
@@ -635,9 +559,7 @@
             }
           }
         },
-        "required": [
-          "items"
-        ],
+        "required": ["items"],
         "additionalProperties": true
       }
     }

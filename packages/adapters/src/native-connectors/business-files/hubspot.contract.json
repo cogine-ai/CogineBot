@@ -43,16 +43,12 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.contacts.read"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.contacts.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -82,23 +78,17 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "contactId"
-        ],
+        "required": ["contactId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.contacts.read"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.contacts.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -121,23 +111,17 @@
             }
           }
         },
-        "required": [
-          "properties"
-        ],
+        "required": ["properties"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.contacts.write"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.contacts.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -170,25 +154,17 @@
             }
           }
         },
-        "required": [
-          "contactId",
-          "expectedUpdatedAt",
-          "properties"
-        ],
+        "required": ["contactId", "expectedUpdatedAt", "properties"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.contacts.write"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.contacts.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -233,16 +209,12 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.companies.read"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.companies.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -272,23 +244,17 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "companyId"
-        ],
+        "required": ["companyId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.companies.read"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.companies.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -333,16 +299,12 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.deals.read"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.deals.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -372,23 +334,17 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "dealId"
-        ],
+        "required": ["dealId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.deals.read"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.deals.read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -411,24 +367,17 @@
             }
           }
         },
-        "required": [
-          "properties"
-        ],
+        "required": ["properties"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "company"
-        ]
+        "required": ["action_id", "company"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.companies.write"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.companies.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -461,26 +410,17 @@
             }
           }
         },
-        "required": [
-          "companyId",
-          "expectedUpdatedAt",
-          "properties"
-        ],
+        "required": ["companyId", "expectedUpdatedAt", "properties"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "company"
-        ]
+        "required": ["action_id", "company"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.companies.write"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.companies.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -518,31 +458,20 @@
                 "maxLength": 256
               }
             },
-            "required": [
-              "dealname",
-              "pipeline",
-              "dealstage"
-            ]
+            "required": ["dealname", "pipeline", "dealstage"]
           }
         },
-        "required": [
-          "properties"
-        ],
+        "required": ["properties"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "deal"
-        ]
+        "required": ["action_id", "deal"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.deals.write"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.deals.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -575,26 +504,17 @@
             }
           }
         },
-        "required": [
-          "dealId",
-          "expectedUpdatedAt",
-          "properties"
-        ],
+        "required": ["dealId", "expectedUpdatedAt", "properties"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "deal"
-        ]
+        "required": ["action_id", "deal"]
       },
       "readOnly": false,
       "authorization": {
         "actor": "app or verified user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.deals.write"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.deals.write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -612,16 +532,12 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "verified account app or user-level OAuth",
-        "acceptedAnyOfScopes": [
-          "crm.objects.deals.read"
-        ]
+        "acceptedAnyOfScopes": ["crm.objects.deals.read"]
       },
       "externalEffect": "none",
       "pagination": "single complete response or exact provider cursor; no assumed synchronization"
@@ -635,11 +551,7 @@
         "type": "object",
         "properties": {
           "fromType": {
-            "enum": [
-              "contacts",
-              "companies",
-              "deals"
-            ]
+            "enum": ["contacts", "companies", "deals"]
           },
           "fromId": {
             "type": "string",
@@ -647,11 +559,7 @@
             "maxLength": 256
           },
           "toType": {
-            "enum": [
-              "contacts",
-              "companies",
-              "deals"
-            ]
+            "enum": ["contacts", "companies", "deals"]
           },
           "toId": {
             "type": "string",
@@ -659,19 +567,12 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "fromType",
-          "fromId",
-          "toType",
-          "toId"
-        ],
+        "required": ["fromType", "fromId", "toType", "toId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": false,
       "authorization": {
@@ -687,10 +588,7 @@
     }
   ],
   "authorization": {
-    "credentialKinds": [
-      "oauth",
-      "personal_token"
-    ],
+    "credentialKinds": ["oauth", "personal_token"],
     "identity": "2026-09 OAuth body introspection binds client_id/app_id/hub_id/user_id. signed_access_token.isUserLevel true -> user; false -> account app. private token info -> app actor, never user-row ACL promise.",
     "scopes": "crm.objects.contacts.read/write companies.read deals.read; product tier/recordACL remains upstream, not fabricate objects crm.objects.companies.write crm.objects.deals.write. Updates require corresponding read; deal stage changes require actual pipeline/stage verification and deals.read; association requires both selected object write scopes.",
     "refresh": "2026-09 fixed api.hubspot.com token endpoint, normal reusable refresh handling; newest refresh retained. Uncertain token response never silently reuse replaced material.",

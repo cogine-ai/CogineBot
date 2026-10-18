@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "contractSha256": "17db6fcd5867e5b500c799ef100afa6254e3ee3c0f97bf193cb5ea0ab52a2e83",
+  "contractSha256": "1e8f616b64daf425b7db5c1e1f488b19aa1305cbcb25c493bb549f13bbdee5a6",
   "fixtures": [
     {
       "id": "todoist.projects.list",

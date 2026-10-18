@@ -22,16 +22,12 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "schema.bases:read"
-        ]
+        "acceptedAnyOfScopes": ["schema.bases:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -50,23 +46,17 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "baseId"
-        ],
+        "required": ["baseId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "schema.bases:read"
-        ]
+        "acceptedAnyOfScopes": ["schema.bases:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -121,24 +111,17 @@
             "uniqueItems": true
           }
         },
-        "required": [
-          "baseId",
-          "tableId"
-        ],
+        "required": ["baseId", "tableId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id"
-        ]
+        "required": ["action_id"]
       },
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "data.records:read"
-        ]
+        "acceptedAnyOfScopes": ["data.records:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -167,19 +150,12 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "baseId",
-          "tableId",
-          "recordId"
-        ],
+        "required": ["baseId", "tableId", "recordId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "record"
-        ],
+        "required": ["action_id", "record"],
         "properties": {
           "action_id": {
             "const": "airtable.records.get"
@@ -192,9 +168,7 @@
       "readOnly": true,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "data.records:read"
-        ]
+        "acceptedAnyOfScopes": ["data.records:read"]
       },
       "externalEffect": "none",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -224,19 +198,12 @@
             "additionalProperties": true
           }
         },
-        "required": [
-          "baseId",
-          "tableId",
-          "fields"
-        ],
+        "required": ["baseId", "tableId", "fields"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "record"
-        ],
+        "required": ["action_id", "record"],
         "properties": {
           "action_id": {
             "const": "airtable.records.create"
@@ -249,9 +216,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "data.records:write"
-        ]
+        "acceptedAnyOfScopes": ["data.records:write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -292,21 +257,12 @@
             "additionalProperties": true
           }
         },
-        "required": [
-          "baseId",
-          "tableId",
-          "recordId",
-          "expectedFields",
-          "fields"
-        ],
+        "required": ["baseId", "tableId", "recordId", "expectedFields", "fields"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "record"
-        ],
+        "required": ["action_id", "record"],
         "properties": {
           "action_id": {
             "const": "airtable.records.update"
@@ -319,9 +275,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "data.records:write"
-        ]
+        "acceptedAnyOfScopes": ["data.records:write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -350,19 +304,12 @@
             "maxLength": 256
           }
         },
-        "required": [
-          "baseId",
-          "tableId",
-          "recordId"
-        ],
+        "required": ["baseId", "tableId", "recordId"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "record"
-        ],
+        "required": ["action_id", "record"],
         "properties": {
           "action_id": {
             "const": "airtable.records.delete"
@@ -375,9 +322,7 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "data.records:write"
-        ]
+        "acceptedAnyOfScopes": ["data.records:write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
@@ -411,20 +356,12 @@
             "maxLength": 10000
           }
         },
-        "required": [
-          "baseId",
-          "tableId",
-          "recordId",
-          "text"
-        ],
+        "required": ["baseId", "tableId", "recordId", "text"],
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": [
-          "action_id",
-          "comment"
-        ],
+        "required": ["action_id", "comment"],
         "properties": {
           "action_id": {
             "const": "airtable.comments.create"
@@ -437,19 +374,14 @@
       "readOnly": false,
       "authorization": {
         "actor": "user",
-        "acceptedAnyOfScopes": [
-          "data.recordComments:write"
-        ]
+        "acceptedAnyOfScopes": ["data.recordComments:write"]
       },
       "externalEffect": "write resource on selected account; notifications may be emitted",
       "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
     }
   ],
   "authorization": {
-    "credentialKinds": [
-      "oauth",
-      "personal_token"
-    ],
+    "credentialKinds": ["oauth", "personal_token"],
     "identity": "GET /v0/meta/whoami actual user/service-account ID; OAuth scopes returned, PAT scopes unknown -> provider ACL, never copy configured scopes into actual grants",
     "scopes": "schema.bases:read data.records:read data.records:write data.recordComments:write; OAuth/resource grant and base/table/field role both apply",
     "refresh": "PKCES256 mandatory; onehour access/60day refresh pair rotates, previous pair invalidates; uncertain rotation does not retry old pair",
