@@ -2086,9 +2086,16 @@ export function createRouter(deps: RouterDeps) {
       list: authed.botSections.list.handler(async ({ context }) =>
         repos.listBotSections(context.actor),
       ),
-      create: authed.botSections.create.handler(async ({ context, input }) =>
-        repos.createBotSection(context.actor, input),
-      ),
+      create: authed.botSections.create.handler(async ({ context, input }) => {
+        try {
+          return await repos.createBotSection(context.actor, input);
+        } catch (error) {
+          if (error instanceof BotSectionNameConflictError) {
+            throw new ORPCError("CONFLICT", { message: error.message });
+          }
+          throw error;
+        }
+      }),
       update: authed.botSections.update.handler(async ({ context, input }) => {
         try {
           return await repos.updateBotSection(context.actor, input);
@@ -2099,6 +2106,25 @@ export function createRouter(deps: RouterDeps) {
           throw error;
         }
       }),
+      restoreName: authed.botSections.restoreName.handler(async ({ context, input }) => {
+        try {
+          return await repos.restoreBotSectionName(context.actor, input);
+        } catch (error) {
+          if (error instanceof BotSectionNameConflictError) {
+            throw new ORPCError("CONFLICT", { message: error.message });
+          }
+          throw error;
+        }
+      }),
+      reorder: authed.botSections.reorder.handler(async ({ context, input }) =>
+        repos.reorderBotSections(context.actor, input.sectionIds),
+      ),
+      remove: authed.botSections.remove.handler(async ({ context, input }) =>
+        repos.removeBotSection(context.actor, input.sectionId),
+      ),
+      restore: authed.botSections.restore.handler(async ({ context, input }) =>
+        repos.restoreBotSection(context.actor, input),
+      ),
     },
     threads: {
       head: authed.threads.head.handler(async ({ context, input }) => {

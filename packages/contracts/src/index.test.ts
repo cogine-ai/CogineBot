@@ -4,6 +4,8 @@ import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
+  BotSectionNameSchema,
+  BotSectionStoredNameSchema,
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
   CreateBotInput,
@@ -19,15 +21,87 @@ import {
   parseModelContextWindow,
   parseModelMaxImagesPerPrompt,
   parseModelMaxTokens,
+  RemovedBotSectionSchema,
   ReorderBotsInput,
+  RestoreBotSectionInput,
+  RestoreBotSectionNameInput,
   RunActivityRowSchema,
   RunSchema,
   UpdateBotInput,
+  UpdateBotSectionInput,
   UpdateGroupInput,
   usableModelId,
 } from "./index.js";
 
+const localizedUnassignedNames = [
+  "Unassigned",
+  "Nicht zugewiesen",
+  "섹션 없음",
+  "Atanmamış",
+  "असाइन नहीं किया गया",
+  "Não atribuído",
+  "未分组",
+  "Sin asignar",
+  "Без раздела",
+  "Non assigné",
+];
+
 describe("contracts", () => {
+  it("trims sidebar group names and reserves the system unassigned name", () => {
+    expect(BotSectionNameSchema.parse("  Product  ")).toBe("Product");
+    for (const name of [
+      "",
+      " ",
+      ...localizedUnassignedNames,
+      ...localizedUnassignedNames.map((name) => ` ${name.toUpperCase()} `),
+      ...localizedUnassignedNames.map((name) => name.normalize("NFD")),
+    ]) {
+      expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
+      expect(UpdateBotSectionInput.safeParse({ sectionId: "work", name }).success).toBe(false);
+    }
+  });
+
+  it("preserves the encoding of ordinary sidebar group names", () => {
+    const name = "Cafe\u0301";
+    expect(name).not.toBe(name.normalize("NFC"));
+    expect(BotSectionNameSchema.parse(` ${name} `)).toBe(name);
+    expect(UpdateBotSectionInput.parse({ sectionId: "work", name }).name).toBe(name);
+    expect(
+      RestoreBotSectionNameInput.parse({
+        sectionId: "work",
+        name,
+        expectedName: "Non assigne\u0301",
+      }),
+    ).toMatchObject({ name, expectedName: "Non assigne\u0301" });
+  });
+
+  it("keeps historical reserved names readable but rejects restoring them", () => {
+    for (const name of localizedUnassignedNames.flatMap((name) => [name, name.normalize("NFD")])) {
+      const snapshot = {
+        section: {
+          id: "legacy",
+          name,
+          position: 0,
+          createdAt: "2026-10-18",
+          updatedAt: "2026-10-18",
+        },
+        botIds: [],
+        groupIds: [],
+      };
+      expect(RemovedBotSectionSchema.parse(snapshot).section.name).toBe(name);
+      expect(RestoreBotSectionInput.safeParse(snapshot).success).toBe(false);
+      expect(BotSectionStoredNameSchema.parse(` ${name} `)).toBe(name);
+      expect(BotSectionNameSchema.safeParse(name).success).toBe(false);
+      expect(UpdateBotSectionInput.safeParse({ sectionId: "legacy", name }).success).toBe(false);
+      expect(
+        RestoreBotSectionNameInput.safeParse({
+          sectionId: "legacy",
+          name,
+          expectedName: "Product",
+        }).success,
+      ).toBe(false);
+    }
+  });
   it("accepts structured live activity progress", () => {
     expect(MessageBlock.parse({ kind: "progress", text: "Using browser", activity: true })).toEqual(
       { kind: "progress", text: "Using browser", activity: true },

@@ -5900,3 +5900,68 @@ msgstr "URL do endpoint de interações"
 #: src/pages/RoutineNativeEvents.tsx
 msgid "Connect this bot before registering this URL in Discord."
 msgstr "Conecte este bot antes de registrar esta URL no Discord."
+
+#: src/pages/Shell.tsx
+msgid "Could not update sidebar"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Wait for the current change to finish"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Moved and unpinned"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Expand {displayTitle}, {0}"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Section deleted"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Undo"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Move up"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Move down"
+msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Delete section"
+msgstr ""
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section name is required"
+msgstr ""
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section names can be up to 60 characters"
+msgstr ""
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Choose another group name"
+msgstr ""
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "A section with this name already exists"
+msgstr ""
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Could not save section"
+msgstr ""
+
+#: src/pages/shell/inline-section-name.tsx
+msgid "Section name"
+msgstr ""
+
+#: src/pages/BotContextMenu.tsx
+msgctxt "sidebar grouping"
+msgid "Group"
+msgstr ""

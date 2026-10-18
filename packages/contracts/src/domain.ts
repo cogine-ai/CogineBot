@@ -159,6 +159,38 @@ export const GroupDetailSchema = GroupSchema.extend({
 });
 export type GroupDetail = z.infer<typeof GroupDetailSchema>;
 
+export const BotSectionStoredNameSchema = z.string().trim().min(1).max(60);
+// System headings shipped in the web and mobile locale catalogs. Keep these
+// values aligned with those translations without importing application code.
+const RESERVED_BOT_SECTION_NAMES = new Set(
+  [
+    "Unassigned",
+    "Nicht zugewiesen",
+    "섹션 없음",
+    "Atanmamış",
+    "असाइन नहीं किया गया",
+    "Não atribuído",
+    "未分组",
+    "Sin asignar",
+    "Без раздела",
+    "Non assigné",
+  ].map((name) => name.normalize("NFC").toUpperCase()),
+);
+export const BotSectionNameSchema = BotSectionStoredNameSchema.refine(
+  (name) => !RESERVED_BOT_SECTION_NAMES.has(name.normalize("NFC").toUpperCase()),
+  {
+    message: "Choose another group name",
+  },
+);
+
+export const UpdateBotSectionInput = z.object({ sectionId: Id, name: BotSectionNameSchema });
+export const RestoreBotSectionNameInput = z.object({
+  sectionId: Id,
+  name: BotSectionNameSchema,
+  expectedName: BotSectionStoredNameSchema,
+});
+export type RestoreBotSectionNameInput = z.infer<typeof RestoreBotSectionNameInput>;
+
 export const BotSectionSchema = z.object({
   id: Id,
   name: z.string(),
@@ -167,6 +199,19 @@ export const BotSectionSchema = z.object({
   updatedAt: z.string(),
 });
 export type BotSection = z.infer<typeof BotSectionSchema>;
+
+export const RemovedBotSectionSchema = z.object({
+  // Deletion snapshots keep historical names readable; restoration validates them separately.
+  section: BotSectionSchema.extend({ name: BotSectionStoredNameSchema }),
+  botIds: z.array(Id),
+  groupIds: z.array(Id),
+});
+export type RemovedBotSection = z.infer<typeof RemovedBotSectionSchema>;
+
+export const RestoreBotSectionInput = RemovedBotSectionSchema.extend({
+  section: BotSectionSchema.extend({ name: BotSectionNameSchema }),
+});
+export type RestoreBotSectionInput = z.infer<typeof RestoreBotSectionInput>;
 
 /**
  * A space is a real privacy boundary, not just sidebar organization.

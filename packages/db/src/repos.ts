@@ -1,5 +1,18 @@
-import type { Actor, Bot, BotSection, MessageBlock, SpaceBot } from "@rakazo/contracts";
-import { BOT_COLORS } from "@rakazo/contracts";
+import type {
+  Actor,
+  Bot,
+  BotSection,
+  MessageBlock,
+  RemovedBotSection,
+  RestoreBotSectionNameInput,
+  SpaceBot,
+} from "@rakazo/contracts";
+import {
+  BOT_COLORS,
+  BotSectionNameSchema,
+  RestoreBotSectionNameInput as RestoreBotSectionNameSchema,
+  RestoreBotSectionInput as RestoreBotSectionSchema,
+} from "@rakazo/contracts";
 import type { PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
 import { ensureComputerRecord, parseComputerMode } from "./computers.js";
@@ -17,6 +30,22 @@ import { withTransactionRetry } from "./transaction-retry.js";
 
 function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
+}
+
+function mapBotSection(section: {
+  id: string;
+  name: string;
+  position: number;
+  createdAt: Date;
+  updatedAt: Date;
+}): BotSection {
+  return {
+    id: section.id,
+    name: section.name,
+    position: section.position,
+    createdAt: section.createdAt.toISOString(),
+    updatedAt: section.updatedAt.toISOString(),
+  };
 }
 
 function isSpawnKeyConflict(error: unknown): boolean {
@@ -116,6 +145,45 @@ function mapBot(
 }
 
 export function createRepos(prisma: PrismaClient) {
+  async function saveBotSectionName(
+    actor: Actor,
+    input: { sectionId: string; name: string },
+    expectedName?: string,
+  ): Promise<BotSection> {
+    const scope = { spaceId: actor.spaceId, userId: actor.userId };
+    const existing = await prisma.botSection.findFirst({
+      where: { id: input.sectionId, ...scope },
+    });
+    if (!existing) throw new IsolationError();
+    if (existing.name === input.name) return mapBotSection(existing);
+    if (expectedName !== undefined && existing.name !== expectedName) {
+      throw new BotSectionNameConflictError("Section has changed");
+    }
+    try {
+      const section = await prisma.botSection.update({
+        where: {
+          id: existing.id,
+          ...scope,
+          ...(expectedName === undefined ? {} : { name: expectedName }),
+        },
+        data: { name: input.name },
+      });
+      return mapBotSection(section);
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new BotSectionNameConflictError();
+      if (
+        expectedName !== undefined &&
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "P2025"
+      ) {
+        throw new BotSectionNameConflictError("Section has changed");
+      }
+      throw error;
+    }
+  }
+
   async function listBotSectionsForSpaces(
     actor: Actor,
     spaceIds: string[],
@@ -213,7 +281,8 @@ export function createRepos(prisma: PrismaClient) {
       actor: Actor,
       input: { botId?: string; groupId?: string; name: string },
     ) {
-      const { name } = input;
+      const name = BotSectionNameSchema.parse(input.name);
+      if (Boolean(input.botId) === Boolean(input.groupId)) throw new IsolationError();
       return prisma.$transaction(async (tx) => {
         const target = input.botId
           ? await tx.bot.findFirst({
@@ -240,7 +309,7 @@ export function createRepos(prisma: PrismaClient) {
           where: { spaceId: actor.spaceId, userId: actor.userId },
           _max: { position: true },
         });
-        await tx.botSection.createMany({
+        const created = await tx.botSection.createMany({
           data: {
             spaceId: actor.spaceId,
             userId: actor.userId,
@@ -249,6 +318,7 @@ export function createRepos(prisma: PrismaClient) {
           },
           skipDuplicates: true,
         });
+        if (created.count === 0) throw new BotSectionNameConflictError();
         const section = await tx.botSection.findUniqueOrThrow({
           where: {
             spaceId_userId_name: {
@@ -259,56 +329,160 @@ export function createRepos(prisma: PrismaClient) {
           },
         });
         if (input.botId) {
-          await tx.bot.update({ where: { id: target.id }, data: { sectionId: section.id } });
+          await tx.bot.update({
+            where: { id: target.id },
+            data: { sectionId: section.id, pinned: false },
+          });
         } else {
           await tx.chatGroup.update({
             where: { id: target.id },
-            data: { sectionId: section.id },
+            data: { sectionId: section.id, pinned: false },
           });
         }
-        return {
-          id: section.id,
-          name: section.name,
-          position: section.position,
-          createdAt: section.createdAt.toISOString(),
-          updatedAt: section.updatedAt.toISOString(),
-        } satisfies BotSection;
+        return mapBotSection(section);
       });
     },
 
     async updateBotSection(actor: Actor, input: { sectionId: string; name: string }) {
-      const existing = await prisma.botSection.findFirst({
-        where: {
-          id: input.sectionId,
-          spaceId: actor.spaceId,
-          userId: actor.userId,
-        },
-      });
-      if (!existing) throw new IsolationError();
-      if (existing.name === input.name) {
-        return {
-          id: existing.id,
-          name: existing.name,
-          position: existing.position,
-          createdAt: existing.createdAt.toISOString(),
-          updatedAt: existing.updatedAt.toISOString(),
-        } satisfies BotSection;
-      }
-      try {
-        const section = await prisma.botSection.update({
-          where: { id: existing.id },
-          data: { name: input.name },
-        });
-        return {
-          id: section.id,
-          name: section.name,
-          position: section.position,
-          createdAt: section.createdAt.toISOString(),
-          updatedAt: section.updatedAt.toISOString(),
-        } satisfies BotSection;
-      } catch (error) {
-        if (isUniqueViolation(error)) throw new BotSectionNameConflictError();
-        throw error;
+      return saveBotSectionName(actor, { ...input, name: BotSectionNameSchema.parse(input.name) });
+    },
+
+    async restoreBotSectionName(actor: Actor, input: RestoreBotSectionNameInput) {
+      const parsed = RestoreBotSectionNameSchema.parse(input);
+      return saveBotSectionName(actor, parsed, parsed.expectedName);
+    },
+
+    async reorderBotSections(actor: Actor, sectionIds: string[]): Promise<BotSection[]> {
+      return withTransactionRetry(() =>
+        prisma.$transaction(
+          async (tx) => {
+            const sections = await tx.botSection.findMany({
+              where: { spaceId: actor.spaceId, userId: actor.userId },
+            });
+            const ids = new Set(sectionIds);
+            if (
+              ids.size !== sectionIds.length ||
+              ids.size !== sections.length ||
+              sections.some((section) => !ids.has(section.id))
+            ) {
+              throw new IsolationError();
+            }
+            const reordered = [];
+            for (const [position, id] of sectionIds.entries()) {
+              const section = await tx.botSection.update({ where: { id }, data: { position } });
+              reordered.push(mapBotSection(section));
+            }
+            return reordered;
+          },
+          { isolationLevel: "Serializable" },
+        ),
+      );
+    },
+
+    async removeBotSection(actor: Actor, sectionId: string): Promise<RemovedBotSection> {
+      return withTransactionRetry(() =>
+        prisma.$transaction(
+          async (tx) => {
+            const scope = { spaceId: actor.spaceId, userId: actor.userId };
+            const section = await tx.botSection.findFirst({ where: { id: sectionId, ...scope } });
+            if (!section) throw new IsolationError();
+            // Archived conversations keep their organization too, including on undo.
+            const [bots, groups] = await Promise.all([
+              tx.bot.findMany({ where: { ...scope, sectionId }, select: { id: true } }),
+              tx.chatGroup.findMany({ where: { ...scope, sectionId }, select: { id: true } }),
+            ]);
+            await tx.bot.updateMany({ where: { ...scope, sectionId }, data: { sectionId: null } });
+            await tx.chatGroup.updateMany({
+              where: { ...scope, sectionId },
+              data: { sectionId: null },
+            });
+            await tx.botSection.delete({ where: { id: sectionId } });
+            return {
+              section: mapBotSection(section),
+              botIds: bots.map((bot) => bot.id),
+              groupIds: groups.map((group) => group.id),
+            };
+          },
+          { isolationLevel: "Serializable" },
+        ),
+      );
+    },
+
+    async restoreBotSection(actor: Actor, snapshot: RemovedBotSection): Promise<BotSection> {
+      const {
+        section: { name },
+      } = RestoreBotSectionSchema.parse(snapshot);
+      const restore = () =>
+        withTransactionRetry(() =>
+          prisma.$transaction(
+            async (tx) => {
+              const scope = { spaceId: actor.spaceId, userId: actor.userId };
+              const botIds = [...new Set(snapshot.botIds)];
+              const groupIds = [...new Set(snapshot.groupIds)];
+              const [bots, groups, original] = await Promise.all([
+                tx.bot.findMany({
+                  where: { id: { in: botIds } },
+                  select: { id: true, spaceId: true, userId: true },
+                }),
+                tx.chatGroup.findMany({
+                  where: { id: { in: groupIds } },
+                  select: { id: true, spaceId: true, userId: true },
+                }),
+                tx.botSection.findUnique({ where: { id: snapshot.section.id } }),
+              ]);
+              // Deleted members no longer need restoring. Authorize every remaining
+              // record, including archived or already moved items, before any write.
+              if (
+                [...bots, ...groups].some(
+                  (item) => item.spaceId !== actor.spaceId || item.userId !== actor.userId,
+                ) ||
+                (original &&
+                  (original.spaceId !== actor.spaceId || original.userId !== actor.userId))
+              ) {
+                throw new IsolationError();
+              }
+              let section =
+                original ?? (await tx.botSection.findFirst({ where: { ...scope, name } }));
+              if (!section) {
+                const aggregate = await tx.botSection.aggregate({
+                  where: scope,
+                  _max: { position: true },
+                });
+                const position = Math.min(
+                  snapshot.section.position,
+                  (aggregate._max.position ?? -1) + 1,
+                );
+                await tx.botSection.updateMany({
+                  where: { ...scope, position: { gte: position } },
+                  data: { position: { increment: 1 } },
+                });
+                section = await tx.botSection.create({
+                  data: { ...scope, id: snapshot.section.id, name, position },
+                });
+              }
+              // A subsequent move wins over undo; pin choices also remain unchanged.
+              await tx.bot.updateMany({
+                where: { ...scope, id: { in: botIds }, sectionId: null },
+                data: { sectionId: section.id },
+              });
+              await tx.chatGroup.updateMany({
+                where: { ...scope, id: { in: groupIds }, sectionId: null },
+                data: { sectionId: section.id },
+              });
+              return mapBotSection(section);
+            },
+            { isolationLevel: "Serializable" },
+          ),
+        );
+      // A concurrent regular create can win the name/id after our snapshot read
+      // and surface P2002 instead of a serialization conflict. Re-read and reuse
+      // the winner, including repeating every authorization check.
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await restore();
+        } catch (error) {
+          if (!isUniqueViolation(error) || attempt >= 3) throw error;
+        }
       }
     },
 

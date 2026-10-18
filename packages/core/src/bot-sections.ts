@@ -34,14 +34,12 @@ export function groupBotsForSidebar<T extends SectionedBot>(
   }
   for (const section of sections) {
     const members = sectionMembers.get(section.id) ?? [];
-    if (members.length > 0) {
-      grouped.push({ key: `section:${section.id}`, title: section.name, bots: members });
-    }
+    grouped.push({ key: `section:${section.id}`, title: section.name, bots: members });
   }
-  if (unassigned.length > 0) {
+  if (unassigned.length > 0 || sections.length > 0) {
     grouped.push({
       key: "unassigned",
-      title: pinned.length > 0 || sections.length > 0 ? "Unassigned" : null,
+      title: sections.length > 0 ? "Unassigned" : null,
       bots: unassigned,
     });
   }
