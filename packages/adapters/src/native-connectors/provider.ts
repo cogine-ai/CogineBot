@@ -135,6 +135,11 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
   async catalog(context: AdapterContext, query?: string): Promise<ConnectionCatalogItem[]> {
     await this.oauth.expireSessions(context);
     const connected = new Set(await this.listConnectedExternalIds(context));
+    const connectable = new Set(
+      (await this.configurations.statuses())
+        .filter((config) => config.enabled && config.configured)
+        .map((config) => config.appId),
+    );
     return APPS.filter((app) => !query || app.name.toLowerCase().includes(query.toLowerCase())).map(
       (app) => ({
         connectorId: "native",
@@ -143,6 +148,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
         logo: null,
         noAuth: false,
         connected: connected.has(app.slug),
+        connectable: connectable.has(app.slug),
       }),
     );
   }

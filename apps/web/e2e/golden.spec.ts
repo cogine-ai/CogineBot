@@ -177,6 +177,21 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
     .getByText("Gmail", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
   await gmailRow.getByRole("button", { name: "Add", exact: true }).click();
+  // Gmail now offers both its original broker and native source. Keep this
+  // golden journey on the explicit Composio route through the source chooser.
+  const firstDetail = page.getByTestId("connection-detail");
+  const source = firstDetail.getByLabel("Connection source", { exact: true });
+  await expect(
+    source.locator(`option[value='${JSON.stringify(["native", "gmail"])}']`),
+  ).toBeAttached();
+  await source.selectOption(JSON.stringify(["composio", "GMAIL"]));
+  const brokerBegin = page.waitForRequest((request) =>
+    request.url().includes("/rpc/connections/begin"),
+  );
+  await firstDetail.getByRole("button", { name: "Add account", exact: true }).click();
+  expect((await brokerBegin).postDataJSON().json.connectorId).toBe("composio");
+  await expect(firstDetail.getByLabel("Account label")).toHaveCount(1);
+  await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(gmailRow.getByRole("button", { name: "Manage", exact: true })).toBeVisible();
   await expect(page.getByTestId("connection-tile-gmail")).toBeVisible();
   await captureScreenshot(page, testInfo, "11a-connected-plugins");
@@ -234,10 +249,21 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   const linearRow = page
     .getByText("Linear", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
-  const connectPopup = page.waitForEvent("popup");
   await linearRow.getByRole("button", { name: "Add", exact: true }).click();
+  const firstLinearDetail = page.getByTestId("connection-detail");
+  await firstLinearDetail
+    .getByLabel("Connection source", { exact: true })
+    .selectOption(JSON.stringify(["pipedream", "linear"]));
+  const connectPopup = page.waitForEvent("popup");
+  const pipedreamBegin = page.waitForRequest((request) =>
+    request.url().includes("/rpc/connections/begin"),
+  );
+  await firstLinearDetail.getByRole("button", { name: "Add account", exact: true }).click();
+  expect((await pipedreamBegin).postDataJSON().json.connectorId).toBe("pipedream");
   const popup = await connectPopup;
   await popup.close();
+  await expect(firstLinearDetail.getByLabel("Account label")).toHaveCount(1);
+  await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(linearRow.getByRole("button", { name: "Manage", exact: true })).toBeVisible();
   await linearRow.getByRole("button", { name: "Manage", exact: true }).click();
   const linearDetail = page.getByTestId("connection-detail");
