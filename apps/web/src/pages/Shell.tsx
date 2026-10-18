@@ -1218,7 +1218,6 @@ export function ShellPage() {
     const targetGroupId = activeGroupId.current;
     const checkpoint = threadCheckpoint.current;
     const resume = checkpoint?.scope === scope ? checkpoint : undefined;
-    let authoritative = snapshotRef.current;
     const ownsReader = () =>
       !abort.signal.aborted &&
       draftScopeKeyRef.current === scope &&
@@ -1233,8 +1232,7 @@ export function ShellPage() {
       onCursor: (next: { threadId: string; cursor: number }) => {
         if (scope !== null && ownsReader()) threadCheckpoint.current = { ...next, scope };
       },
-      read: async (request: Promise<ThreadSnapshot>) => {
-        const epoch = historyEpoch.current;
+      read: (request: Promise<ThreadSnapshot>) => {
         const consumed = threadCheckpoint.current;
         if (
           ownsReader() &&
@@ -1243,38 +1241,27 @@ export function ShellPage() {
           snapshotRef.current.messages.length > 0
         )
           expandedHistoryThread.current = consumed.threadId;
-        const snap = await request;
-        if (
-          ownsReader() &&
-          epoch === historyEpoch.current &&
-          snapshotRef.current?.threadId === snap.threadId &&
-          snapshotRef.current.cursor >= snap.cursor &&
-          (!authoritative ||
-            authoritative.threadId !== snap.threadId ||
-            snap.cursor >= authoritative.cursor)
-        )
-          authoritative = snap;
-        return snap;
+        return request;
       },
       applyEvent: (event: ProductEvent) => {
         if (!ownsReader()) return;
-        if (authoritative?.threadId === event.threadId && event.seq <= authoritative.cursor) {
-          // The fresh read already owns run/computer/approval state. Replay only
-          // durable history so old execution events cannot roll that state back.
+        const current = snapshotRef.current;
+        if (current?.threadId === event.threadId && event.seq <= current.cursor) {
+          // The committed snapshot already owns run/computer/approval state.
+          // Replay only durable history so old execution events cannot roll it back.
           if (
             event.type === "thread.cleared" ||
             event.type === "thread.message.created" ||
             event.type === "thread.message.updated" ||
             event.type === "thread.message.reaction"
           ) {
-            const current = snapshotRef.current;
             const next = reduceThreadSnapshot(current, event);
             if (current && next) {
               if (
                 (event.type === "thread.message.created" ||
                   event.type === "thread.message.updated") &&
                 typeof event.payload.messageSeq === "number" &&
-                !authoritative.messages.some((message) => message.id === event.payload.messageId)
+                !current.messages.some((message) => message.id === event.payload.messageId)
               )
                 expandedHistoryThread.current = event.threadId;
               commitSnapshot({

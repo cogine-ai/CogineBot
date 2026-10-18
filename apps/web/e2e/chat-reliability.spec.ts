@@ -2227,6 +2227,152 @@ test("returning through an uninitialized chat does not reuse a previous conversa
   expect(errors).toEqual([]);
 });
 
+for (const group of [false, true]) {
+  test(`an event-triggered fresh read protects the ${group ? "group" : "bot"} state from delayed frames`, async ({
+    page,
+  }) => {
+    const { state, errors } = await mockChat(page);
+    const stream = await controlledStream(page);
+    state.sandboxProvider = "docker";
+    const threadId = group ? "thread-crew" : "thread-chief";
+    if (group)
+      state.groups = [
+        {
+          id: "crew",
+          spaceId: "space-primary",
+          name: "Crew",
+          pinned: false,
+          sectionId: null,
+          archivedAt: null,
+          threadId,
+          preview: "Ready",
+          unread: false,
+          members: state.bots
+            .slice(0, 2)
+            .map(({ id, name, color }) => ({ botId: id, name, color })),
+          updatedAt: stamp,
+          createdAt: stamp,
+        },
+      ];
+    let refreshed = false;
+    const snapshot = (data: ThreadSnapshot): ThreadSnapshot => ({
+      ...data,
+      cursor: refreshed ? 270 : 149,
+      messages: [
+        {
+          id: "refresh-marker",
+          threadId,
+          botId: "chief",
+          seq: 0,
+          role: "bot",
+          blocks: [
+            {
+              kind: "text",
+              text: refreshed ? "The authoritative read is committed" : "Initial result",
+            },
+          ],
+          createdAt: stamp,
+        },
+      ],
+      run: refreshed
+        ? {
+            id: "completed-run",
+            botId: "chief",
+            threadId,
+            taskId: "completed-task",
+            status: "completed",
+            trigger: "user",
+            routineId: null,
+            modelProvider: null,
+            modelId: null,
+            error: null,
+            startedAt: stamp,
+            completedAt: stamp,
+            createdAt: stamp,
+          }
+        : null,
+      activeRuns: [],
+      computer: {
+        botId: "chief",
+        mode: "team",
+        kind: "fake",
+        state: "suspended",
+        controlHolder: "none",
+        controlBotId: null,
+        takeoverRequested: false,
+        screenAvailable: false,
+        screenWidth: 1024,
+        screenHeight: 768,
+        homeRevision: null,
+        busyBotName: null,
+        canUpdate: false,
+        terminalAvailable: false,
+      },
+    });
+    state.bootstrap = (route, data) => json(route, { ...data, thread: snapshot(data.thread!) });
+    state.thread = (route, data) => json(route, snapshot(data));
+    await page.route("**/rpc/threads/head", (route) =>
+      json(route, { threadId, cursor: refreshed ? 270 : 149 }),
+    );
+    if (group) {
+      await page.goto("/app/g/crew");
+      await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    } else await ready(page);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    const preview = page.getByTestId("computer-preview");
+    if (!group) {
+      await page.getByTitle("Agent computer").click();
+      await expect(preview).toContainText("Computer is asleep");
+    }
+    refreshed = true;
+    const event: ProductEvent = {
+      id: "updated-150",
+      spaceId: "space-primary",
+      threadId,
+      botId: "chief",
+      seq: 150,
+      type: "thread.message.updated",
+      payload: {
+        messageId: "refresh-marker",
+        messageSeq: 0,
+        role: "bot",
+        blocks: [{ kind: "text", text: "The update triggers a snapshot read" }],
+      },
+      createdAt: stamp,
+    };
+    await stream.emit(event);
+    await expect(
+      page.getByTestId("transcript").locator('[data-message-id="refresh-marker"]'),
+    ).toContainText("The authoritative read is committed");
+    const stop = page
+      .getByTestId("composer-bar")
+      .getByRole("button", { name: "Stop", exact: true });
+    await expect(stop).toHaveCount(0);
+    await stream.emit({
+      ...event,
+      id: "delayed-start-151",
+      seq: 151,
+      type: "run.started",
+      runId: "older-run",
+      payload: { trigger: "user" },
+    });
+    await painted(page);
+    await expect(stop).toHaveCount(0);
+    await stream.emit({
+      ...event,
+      id: "delayed-computer-152",
+      seq: 152,
+      type: "computer.status",
+      payload: { status: "stopped" },
+    });
+    await painted(page);
+    if (!group) await expect(preview).toContainText("Computer is asleep");
+    expect(state.sends).toHaveLength(0);
+    expect(state.uploads).toHaveLength(0);
+    expect(errors).toEqual([]);
+  });
+}
+
 for (const readbackFails of [false, true]) {
   test(`a failed order save ${readbackFails ? "and readback remain visibly unconfirmed" : "reads the authoritative order"} without replay`, async ({
     page,
