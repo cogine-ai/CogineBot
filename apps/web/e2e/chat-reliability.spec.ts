@@ -1884,6 +1884,349 @@ test("a late clear receipt keeps messages already consumed after the clear event
   expect(errors).toEqual([]);
 });
 
+test("a new conversation can load history while the previous page is still pending", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  await controlledStream(page);
+  const messages = (id: string): ThreadMessage[] =>
+    Array.from({ length: 20 }, (_, seq) => ({
+      id: `${id}-${seq}`,
+      threadId: `thread-${id}`,
+      botId: id,
+      seq,
+      role: "bot",
+      blocks: [{ kind: "text", text: `Conversation ${id} message ${seq}` }],
+      createdAt: stamp,
+    }));
+  const latest = (data: ThreadSnapshot): ThreadSnapshot => ({
+    ...data,
+    cursor: 19,
+    messages: messages(data.botId!).slice(10),
+    olderCursor: 10,
+  });
+  state.bootstrap = (route, data) => json(route, { ...data, thread: latest(data.thread!) });
+  state.thread = (route, data) => json(route, latest(data));
+  await page.route("**/rpc/threads/head", (route) =>
+    json(route, { threadId: `thread-${route.request().postDataJSON().json.botId}`, cursor: 19 }),
+  );
+  const aStarted = deferred();
+  const aRelease = deferred();
+  const bStarted = deferred();
+  const bRelease = deferred();
+  state.messages = async (route) => {
+    const id = route.request().postDataJSON().json.botId;
+    (id === "chief" ? aStarted : bStarted).resolve();
+    await (id === "chief" ? aRelease : bRelease).promise;
+    return json(route, {
+      threadId: `thread-${id}`,
+      messages: messages(id).slice(0, 10),
+      olderCursor: null,
+    });
+  };
+  await ready(page);
+  const earlier = page.getByRole("button", { name: "Load earlier messages", exact: true });
+  await earlier.click();
+  await aStarted.promise;
+  await page.getByTestId("bots-sidebar").locator('[data-roster-bot-id="research-one"]').click();
+  await expect(
+    page.getByRole("combobox", { name: "Message Research One", exact: true }),
+  ).toBeVisible();
+  await expect(earlier).toBeEnabled();
+  await earlier.click();
+  await bStarted.promise;
+  const loading = page.getByRole("button", { name: "Loading…", exact: true });
+  await expect(loading).toBeDisabled();
+  const aResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/rpc/threads/messages") &&
+      response.request().postDataJSON().json.botId === "chief",
+  );
+  aRelease.resolve();
+  await aResponse;
+  await painted(page);
+  await expect(loading).toBeDisabled();
+  await expect(page.getByTestId("transcript").locator('[data-message-id="chief-0"]')).toHaveCount(
+    0,
+  );
+  bRelease.resolve();
+  await expect(
+    page.getByTestId("transcript").locator('[data-message-id="research-one-0"]'),
+  ).toHaveCount(1);
+  await expect(loading).toHaveCount(0);
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("a failed bootstrap fallback still applies live messages before draft initialization", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  const stream = await controlledStream(page);
+  state.bootstrap = (route) =>
+    route.fulfill({
+      status: 403,
+      json: {
+        json: {
+          defined: false,
+          code: "FORBIDDEN",
+          status: 403,
+          message: "Bootstrap access interrupted",
+        },
+      },
+    });
+  state.thread = (route, data) => json(route, { ...data, cursor: 149 });
+  await page.route("**/rpc/threads/head", (route) =>
+    json(route, { threadId: `thread-${route.request().postDataJSON().json.botId}`, cursor: 149 }),
+  );
+  await page.goto("/app/chief");
+  await expect(page.getByTestId("bootstrap-status")).toContainText("Bootstrap access interrupted");
+  await expect.poll(stream.cursors).toContain(149);
+  await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeDisabled();
+  const event: ProductEvent = {
+    id: "fallback-live-chief",
+    spaceId: "space-primary",
+    threadId: "thread-chief",
+    botId: "chief",
+    seq: 150,
+    type: "thread.message.created",
+    payload: {
+      messageId: "fallback-live-chief",
+      messageSeq: 0,
+      role: "bot",
+      blocks: [{ kind: "text", text: "A real-time reply during unavailable bootstrap" }],
+    },
+    createdAt: stamp,
+  };
+  await stream.emit(event);
+  const transcript = page.getByTestId("transcript");
+  await expect(transcript.locator('[data-message-id="fallback-live-chief"]')).toContainText(
+    "A real-time reply during unavailable bootstrap",
+  );
+  await page.getByTestId("bots-sidebar").locator('[data-roster-bot-id="research-one"]').click();
+  await expect(
+    page.getByRole("combobox", { name: "Message Research One", exact: true }),
+  ).toBeDisabled();
+  await expect(transcript.locator('[data-message-id="fallback-live-chief"]')).toHaveCount(0);
+  const live = {
+    ...event,
+    id: "fallback-live-research",
+    threadId: "thread-research-one",
+    botId: "research-one",
+    payload: { ...event.payload, messageId: "fallback-live-research" },
+  };
+  await expect
+    .poll(() => state.threadReads.some((read) => read.botId === "research-one"))
+    .toBe(true);
+  // Without bootstrap context the first sidebar click establishes the Space and reloads.
+  await expect.poll(stream.cursors).toContain(149);
+  await stream.emit(live);
+  await expect(transcript.locator('[data-message-id="fallback-live-research"]')).toHaveCount(1);
+  await stream.emit({
+    ...event,
+    id: "late-chief",
+    seq: 151,
+    payload: { ...event.payload, messageId: "late-chief" },
+  });
+  await painted(page);
+  await expect(transcript.locator('[data-message-id="late-chief"]')).toHaveCount(0);
+  await expect(transcript.locator('[data-message-id="fallback-live-research"]')).toHaveCount(1);
+  const requestsBeforeSoftSwitch = (await stream.cursors()).length;
+  await page.getByTestId("bots-sidebar").locator('[data-roster-bot-id="research-two"]').click();
+  await expect(
+    page.getByRole("combobox", { name: "Message Research Two", exact: true }),
+  ).toBeDisabled();
+  await expect
+    .poll(async () => (await stream.cursors()).length)
+    .toBeGreaterThan(requestsBeforeSoftSwitch);
+  await stream.emit({
+    ...live,
+    id: "fallback-live-two",
+    threadId: "thread-research-two",
+    botId: "research-two",
+    payload: { ...live.payload, messageId: "fallback-live-two" },
+  });
+  await expect(transcript.locator('[data-message-id="fallback-live-two"]')).toHaveCount(1);
+  await stream.emit({
+    ...live,
+    id: "late-research-one",
+    seq: 151,
+    payload: { ...live.payload, messageId: "late-research-one" },
+  });
+  await painted(page);
+  await expect(transcript.locator('[data-message-id="late-research-one"]')).toHaveCount(0);
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("finishing bootstrap resets an older-page load from the uninitialized scope", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  const stream = await controlledStream(page);
+  const history: ThreadMessage[] = Array.from({ length: 20 }, (_, seq) => ({
+    id: `scope-history-${seq}`,
+    threadId: "thread-chief",
+    botId: "chief",
+    seq,
+    role: "bot",
+    blocks: [{ kind: "text", text: `Known history ${seq}` }],
+    createdAt: stamp,
+  }));
+  const latest = (data: ThreadSnapshot): ThreadSnapshot => ({
+    ...data,
+    cursor: 19,
+    messages: history.slice(10),
+    olderCursor: 10,
+  });
+  state.bootstrap = (route) =>
+    route.fulfill({
+      status: 403,
+      json: {
+        json: {
+          defined: false,
+          code: "FORBIDDEN",
+          status: 403,
+          message: "Bootstrap access interrupted",
+        },
+      },
+    });
+  state.thread = (route, data) => json(route, latest(data));
+  await page.route("**/rpc/threads/head", (route) =>
+    json(route, { threadId: "thread-chief", cursor: 19 }),
+  );
+  const started = deferred();
+  const release = deferred();
+  state.messages = async (route) => {
+    started.resolve();
+    await release.promise;
+    return json(route, {
+      threadId: "thread-chief",
+      messages: history.slice(0, 10),
+      olderCursor: null,
+    });
+  };
+  await page.goto("/app/chief");
+  await expect(page.getByTestId("bootstrap-status")).toContainText("Bootstrap access interrupted");
+  await expect.poll(stream.cursors).toContain(19);
+  const earlier = page.getByRole("button", { name: "Load earlier messages", exact: true });
+  await earlier.click();
+  await started.promise;
+  state.bootstrap = (route, data) => json(route, { ...data, thread: latest(data.thread!) });
+  await page.getByTestId("bootstrap-status").getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+  await expect(earlier).toBeEnabled();
+  const response = page.waitForResponse((item) => item.url().endsWith("/rpc/threads/messages"));
+  release.resolve();
+  await response;
+  await painted(page);
+  await expect(
+    page.getByTestId("transcript").locator('[data-message-id="scope-history-0"]'),
+  ).toHaveCount(0);
+  state.messages = (route) =>
+    json(route, { threadId: "thread-chief", messages: history.slice(0, 10), olderCursor: null });
+  await earlier.click();
+  await expect(
+    page.getByTestId("transcript").locator('[data-message-id="scope-history-0"]'),
+  ).toHaveCount(1);
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("returning through an uninitialized chat does not reuse a previous conversation checkpoint", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  const stream = await controlledStream(page);
+  const fresh: ThreadMessage[] = Array.from({ length: 120 }, (_, index) => ({
+    id: `return-fresh-${index}`,
+    threadId: "thread-chief",
+    botId: "chief",
+    seq: 150 + index,
+    role: "bot",
+    blocks: [{ kind: "text", text: `Current reply ${index}` }],
+    createdAt: stamp,
+  }));
+  let returning = false;
+  const current = (data: ThreadSnapshot): ThreadSnapshot => ({
+    ...data,
+    cursor: returning ? 270 : 149,
+    messages: returning ? fresh.slice(-100) : [],
+    olderCursor: returning ? 170 : null,
+  });
+  state.bootstrap = (route, data) => json(route, { ...data, thread: current(data.thread!) });
+  state.thread = (route, data) =>
+    data.botId === "research-one"
+      ? route.fulfill({
+          status: 403,
+          json: {
+            json: {
+              defined: false,
+              code: "FORBIDDEN",
+              status: 403,
+              message: "Chat access interrupted",
+            },
+          },
+        })
+      : json(route, current(data));
+  await page.route("**/rpc/threads/head", (route) => {
+    const id = route.request().postDataJSON().json.botId;
+    return json(route, { threadId: `thread-${id}`, cursor: returning ? 270 : 149 });
+  });
+  await ready(page);
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await expect.poll(stream.cursors).toContain(149);
+  await page.getByTestId("bots-sidebar").locator('[data-roster-bot-id="research-one"]').click();
+  await expect(page.getByTestId("connection-status")).toContainText("Chat access interrupted");
+  // This chat committed but never established a snapshot/consumed checkpoint.
+  expect((await stream.cursors()).length).toBe(1);
+  returning = true;
+  const event = (
+    seq: number,
+    type: ProductEvent["type"],
+    payload: Record<string, unknown>,
+  ): ProductEvent => ({
+    id: `return-event-${seq}`,
+    spaceId: "space-primary",
+    threadId: "thread-chief",
+    botId: "chief",
+    seq,
+    type,
+    payload,
+    createdAt: stamp,
+  });
+  await stream.replay([
+    event(150, "thread.cleared", {}),
+    ...fresh.map((message, index) =>
+      event(151 + index, "thread.message.created", {
+        messageId: message.id,
+        messageSeq: message.seq,
+        role: "bot",
+        blocks: message.blocks,
+      }),
+    ),
+  ]);
+  await page.goBack();
+  await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  expect((await stream.cursors()).at(-1)).toBe(270);
+  await expect
+    .poll(() =>
+      page
+        .getByTestId("transcript")
+        .locator("[data-message-id]")
+        .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-message-id"))),
+    )
+    .toEqual(fresh.slice(-100).map((message) => message.id));
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
 for (const readbackFails of [false, true]) {
   test(`a failed order save ${readbackFails ? "and readback remain visibly unconfirmed" : "reads the authoritative order"} without replay`, async ({
     page,

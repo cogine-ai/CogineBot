@@ -878,7 +878,9 @@ export function ShellPage() {
     threadId: string;
     cursor: number;
   } | null>(null);
-  if (threadCheckpoint.current?.scope !== draftScopeKey) threadCheckpoint.current = null;
+  useEffect(() => {
+    if (threadCheckpoint.current?.scope !== draftScopeKey) threadCheckpoint.current = null;
+  }, [draftScopeKey]);
   const pendingAttachments = composerDraft.attachments;
   const activePendingAttachments = pendingAttachments;
   const replyTarget = composerDraft.replyTarget;
@@ -1210,20 +1212,26 @@ export function ShellPage() {
     ) => void = commitComputer,
   ) {
     const scope = draftScopeKey;
-    const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
+    const actor = groupSettingsActor.current;
+    const spaceId = selectedSpaceId() ?? actor.spaceId;
+    const targetBotId = activeBotId.current;
+    const targetGroupId = activeGroupId.current;
     const checkpoint = threadCheckpoint.current;
     const resume = checkpoint?.scope === scope ? checkpoint : undefined;
     let authoritative = snapshotRef.current;
     const ownsReader = () =>
       !abort.signal.aborted &&
-      scope !== null &&
       draftScopeKeyRef.current === scope &&
+      actor.userId === groupSettingsActor.current.userId &&
+      actor.spaceId === groupSettingsActor.current.spaceId &&
+      activeBotId.current === targetBotId &&
+      activeGroupId.current === targetGroupId &&
       (selectedSpaceId() ?? groupSettingsActor.current.spaceId) === spaceId;
     return {
       resume,
       ownsReader,
       onCursor: (next: { threadId: string; cursor: number }) => {
-        if (ownsReader()) threadCheckpoint.current = { ...next, scope: scope! };
+        if (scope !== null && ownsReader()) threadCheckpoint.current = { ...next, scope };
       },
       read: async (request: Promise<ThreadSnapshot>) => {
         const epoch = historyEpoch.current;
@@ -1685,7 +1693,8 @@ export function ShellPage() {
     if (!pendingJump) pinnedAroundRef.current = null;
     if (active || !pendingJump) expandedHistoryThread.current = null;
     historyEpoch.current += 1;
-  }, [active?.id, activeGroup?.id]);
+    setLoadingOlder(false);
+  }, [active?.id, activeGroup?.id, draftScopeKey]);
 
   useEffect(() => {
     if (!active) return;
