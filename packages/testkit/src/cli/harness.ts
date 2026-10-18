@@ -86,6 +86,8 @@ async function main() {
     });
 
     if (integration) {
+      const remainingLifecycleSuite =
+        "packages/adapters/src/native-connectors/remaining-lifecycle.postgres.test.ts";
       const suites = [
         "packages/testkit/src/pi-offline.postgres.test.ts",
         "packages/testkit/src/usage-accounting.postgres.test.ts",
@@ -114,6 +116,7 @@ async function main() {
         "packages/testkit/src/connections.test.ts",
         "packages/adapters/src/native-connectors/config.postgres.test.ts",
         "packages/adapters/src/native-connectors/oauth.postgres.test.ts",
+        remainingLifecycleSuite,
         "packages/adapters/src/native-connectors/mcp.postgres.test.ts",
         "packages/adapters/src/native-connectors/events/events.postgres.test.ts",
         "packages/adapters/src/native-connectors/events/hooks.postgres.test.ts",
@@ -165,6 +168,10 @@ async function main() {
             ...process.env,
             DATABASE_URL: suiteUrl.toString(),
             REALTIME_DATABASE_URL: suiteUrl.toString(),
+            VERIFY_NATIVE_REMAINING_LIFECYCLE:
+              suite === remainingLifecycleSuite ? "harness_isolated" : "",
+            VERIFY_NATIVE_REMAINING_LIFECYCLE_DATABASE:
+              suite === remainingLifecycleSuite ? database : "",
             OPENROUTER_API_KEY: "",
             MODEL_API_KEY: "",
           });

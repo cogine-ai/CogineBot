@@ -49,6 +49,15 @@ export interface NativeEventReaders {
   gmail?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
   drive?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
   slack?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  sharepoint?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  excel?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  planner?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  teams?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  feishu?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  dingtalk?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  wecom?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  telegram?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
+  discord?(context: NativeSourceReadContext): Promise<NativeSourceReadResult>;
 }
 export class NativeSourceLeaseLost extends Error {
   constructor() {

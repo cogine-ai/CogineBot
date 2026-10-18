@@ -19,6 +19,8 @@ import { NativeHttpClient } from "../http.js";
 import type { NativeOAuthStore } from "../oauth.js";
 import { nativeServiceBase } from "../service-bases.js";
 import { nativeEventReadPermitted, onlyDriveFileScope } from "./authorization.js";
+import { verifyRemainingEventResource } from "./remaining-resources.js";
+import { isRemainingEventSpec, withRemainingNativeRead } from "./remaining-transport.js";
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown): RecordValue => {
@@ -36,7 +38,8 @@ const enc = encodeURIComponent;
 /** Fixed API authorities and NativeOAuthStore are reused; this performs reads only and returns no credentials. */
 export class NativeEventResourceVerifier {
   constructor(
-    private readonly oauth: Pick<NativeOAuthStore, "authorization">,
+    private readonly oauth: Pick<NativeOAuthStore, "authorization"> &
+      Partial<Pick<NativeOAuthStore, "rejectCredential">>,
     private readonly options: { network?: RemoteTransportDependencies } = {},
   ) {}
   async prepare(
@@ -70,20 +73,20 @@ export class NativeEventResourceVerifier {
     const settings = NativeConfigSettingsSchema.parse(initial.config.config);
     const permitted = (live: typeof initial) => {
       const scopes = live.grant.scopes.filter((scope) => settings.scopes.includes(scope));
-      return nativeEventReadPermitted(
-        input.spec,
-        scopes,
-        settings.capabilities,
-        optionalObject(live.grant.principal) ?? {},
-      );
+      return nativeEventReadPermitted(input.spec, scopes, settings.capabilities, {
+        ...(optionalObject(optionalObject(live.auth.identity)?.context) ??
+          optionalObject(live.grant.principal) ??
+          {}),
+        configuredScopes: settings.scopes,
+      });
     };
     if (!permitted(initial))
       throw new NativeActionError(
         "insufficient_scope",
         "This event requires read access not granted to the selected connection.",
       );
-    const revalidate = async () => {
-      const live = await this.oauth.authorization(input.connectionId, context);
+    const revalidate = async (force = false) => {
+      const live = await this.oauth.authorization(input.connectionId, context, force);
       if (
         live.connection.userId !== scope.userId ||
         live.connection.spaceId !== scope.spaceId ||
@@ -102,6 +105,41 @@ export class NativeEventResourceVerifier {
         );
       return live;
     };
+    if (isRemainingEventSpec(input.spec)) {
+      const spec = input.spec;
+      await withRemainingNativeRead(
+        initial,
+        revalidate,
+        signal,
+        async (api, principal) => {
+          if (settings.boundSpaceId && settings.boundSpaceId !== scope.spaceId)
+            throw new NativeActionError(
+              "authorization_required",
+              "This application belongs to a different space.",
+            );
+          await verifyRemainingEventResource(spec, api, principal);
+        },
+        this.options.network,
+        (version) =>
+          this.oauth.rejectCredential?.(input.connectionId, context, version) ?? Promise.resolve(),
+      );
+      const live = await revalidate();
+      return {
+        input,
+        proof: {
+          ...scope,
+          connectionId: input.connectionId,
+          authorizationRevision: revision,
+          grantId: live.grant.id,
+          authGeneration: live.grant.authGeneration,
+          configId: live.config.id,
+          configRevision: live.config.revision,
+          appId,
+          resource: nativeEventResource(input.spec),
+          spec: input.spec,
+        },
+      };
+    }
     const http = new NativeHttpClient(
       nativeServiceBase(appId),
       async () => ({ kind: "bearer", value: (await revalidate()).auth.tokens.accessToken }),
@@ -202,7 +240,10 @@ export class NativeEventResourceVerifier {
             throw new NativeActionError("resource_unavailable", "The exact thread is unavailable.");
         }
       } else if (input.spec.kind.startsWith("calendar.")) {
-        const spec = input.spec as Extract<typeof input.spec, { calendarId: string }>;
+        const spec = input.spec as Extract<
+          typeof input.spec,
+          { kind: "calendar.event_changed" | "calendar.event_starting" }
+        >;
         const page = await get(`/calendars/${enc(spec.calendarId)}/events`, {
           maxResults: 1,
           singleEvents: false,

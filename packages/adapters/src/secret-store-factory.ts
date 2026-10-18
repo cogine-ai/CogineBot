@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type {
   AdapterContext,
@@ -11,6 +12,18 @@ import type { InfisicalSecretStoreOptions } from "./infisical-secret-store.js";
 import { INFISICAL_REF_PREFIX, InfisicalSecretStore } from "./infisical-secret-store.js";
 import { SecretChanges } from "./secret-changes.js";
 import { EncryptedSecretStore } from "./secrets.js";
+
+const deferredNotifications = new AsyncLocalStorage<Array<() => Promise<void>>>();
+/** Publish cache invalidations after a caller releases its database transaction. */
+export async function deferSecretNotifications<T>(work: () => Promise<T>): Promise<T> {
+  if (deferredNotifications.getStore()) return work();
+  const pending: Array<() => Promise<void>> = [];
+  try {
+    return await deferredNotifications.run(pending, work);
+  } finally {
+    for (const publish of pending) await publish();
+  }
+}
 
 export function secretStoreOptionsFromEnv(
   source: NodeJS.ProcessEnv,
@@ -98,6 +111,14 @@ export class ComposedSecretStore extends SecretChanges implements SecretStore {
       });
   }
   private async publish(ref: string): Promise<void> {
+    const pending = deferredNotifications.getStore();
+    if (pending) {
+      pending.push(() => this.publishNow(ref));
+      return;
+    }
+    return this.publishNow(ref);
+  }
+  private async publishNow(ref: string): Promise<void> {
     try {
       await this.realtime?.publish(
         "secret-store-change",

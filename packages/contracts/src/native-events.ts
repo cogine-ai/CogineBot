@@ -28,6 +28,54 @@ const NotionCommentTarget = z.discriminatedUnion("type", [
 /** User intent only. Owner, source generation, cursor, secrets and execution options are server-owned. */
 export const NativeRoutineEventSpecSchema = z
   .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("sharepoint.list_item.changed"), siteId: Id, listId: Id }).strict(),
+    z
+      .object({
+        kind: z.literal("excel.range.changed"),
+        driveId: Id,
+        itemId: Id,
+        worksheetId: Id,
+        address: z
+          .string()
+          .regex(/^\$?[A-Za-z]{1,3}\$?[1-9]\d{0,6}(?::\$?[A-Za-z]{1,3}\$?[1-9]\d{0,6})?$/),
+      })
+      .strict(),
+    z.object({ kind: z.literal("planner.task.changed"), planId: Id }).strict(),
+    z
+      .object({ kind: z.literal("teams.channel_message.created"), teamId: Id, channelId: Id })
+      .strict(),
+    z.object({ kind: z.literal("feishu.calendar_event.changed"), calendarId: Id }).strict(),
+    z
+      .object({
+        kind: z.literal("dingtalk.calendar_event.changed"),
+        userId: Id,
+        calendarId: Id,
+        timeMin: IsoDate,
+        timeMax: IsoDate,
+      })
+      .strict(),
+    z.object({ kind: z.literal("wecom.schedule.changed"), calendarId: Id }).strict(),
+    z
+      .object({
+        kind: z.literal("telegram.pinned_message.changed"),
+        chatId: z.string().regex(/^-?[1-9][0-9]{0,18}$/),
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("discord.channel_message.created"),
+        channelId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("discord.command.invoked"),
+        guildId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        channelId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        commandId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        commandName: z.string().regex(/^[a-z0-9_-]{1,32}$/),
+      })
+      .strict(),
     z.object({ kind: z.literal("calendar.event_changed"), ...CalendarFields }).strict(),
     z
       .object({
@@ -69,6 +117,15 @@ export const NativeRoutineEventSpecSchema = z
   ])
   .superRefine((value, context) => {
     if (
+      value.kind === "dingtalk.calendar_event.changed" &&
+      Date.parse(value.timeMin) >= Date.parse(value.timeMax)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["timeMax"],
+        message: "The event window must end after it starts.",
+      });
+    if (
       (value.kind === "gmail.message_received" || value.kind === "gmail.thread_or_label_changed") &&
       !value.threadId &&
       !value.labelIds?.length
@@ -81,6 +138,16 @@ export const NativeRoutineEventSpecSchema = z
   });
 export type NativeRoutineEventSpec = z.infer<typeof NativeRoutineEventSpecSchema>;
 export const NativeRoutineEventKindSchema = z.enum([
+  "sharepoint.list_item.changed",
+  "excel.range.changed",
+  "planner.task.changed",
+  "teams.channel_message.created",
+  "feishu.calendar_event.changed",
+  "dingtalk.calendar_event.changed",
+  "wecom.schedule.changed",
+  "telegram.pinned_message.changed",
+  "discord.channel_message.created",
+  "discord.command.invoked",
   "calendar.event_changed",
   "calendar.event_starting",
   "notion.page_content_changed",
@@ -156,10 +223,48 @@ export interface NativeEventResource {
     | "discussion"
     | "mailbox"
     | "drive_file"
-    | "slack_channel";
+    | "slack_channel"
+    | "sharepoint_list"
+    | "excel_range"
+    | "planner_plan"
+    | "teams_channel"
+    | "enterprise_calendar"
+    | "telegram_chat"
+    | "discord_channel"
+    | "discord_command";
   id: string;
 }
 export function nativeEventResource(spec: NativeRoutineEventSpec): NativeEventResource {
+  switch (spec.kind) {
+    case "sharepoint.list_item.changed":
+      return { type: "sharepoint_list", id: JSON.stringify([spec.siteId, spec.listId]) };
+    case "excel.range.changed":
+      return {
+        type: "excel_range",
+        id: JSON.stringify([spec.driveId, spec.itemId, spec.worksheetId, spec.address]),
+      };
+    case "planner.task.changed":
+      return { type: "planner_plan", id: spec.planId };
+    case "teams.channel_message.created":
+      return { type: "teams_channel", id: JSON.stringify([spec.teamId, spec.channelId]) };
+    case "feishu.calendar_event.changed":
+    case "wecom.schedule.changed":
+      return { type: "enterprise_calendar", id: spec.calendarId };
+    case "dingtalk.calendar_event.changed":
+      return {
+        type: "enterprise_calendar",
+        id: JSON.stringify([spec.userId, spec.calendarId, spec.timeMin, spec.timeMax]),
+      };
+    case "telegram.pinned_message.changed":
+      return { type: "telegram_chat", id: spec.chatId };
+    case "discord.channel_message.created":
+      return { type: "discord_channel", id: spec.channelId };
+    case "discord.command.invoked":
+      return {
+        type: "discord_command",
+        id: JSON.stringify([spec.guildId, spec.channelId, spec.commandId, spec.commandName]),
+      };
+  }
   if (spec.kind === "gmail.message_received" || spec.kind === "gmail.thread_or_label_changed")
     return { type: "mailbox", id: "me" };
   if (spec.kind === "drive.file_changed" || spec.kind === "drive.file_trashed")
@@ -182,9 +287,12 @@ export function nativeEventResource(spec: NativeRoutineEventSpec): NativeEventRe
   if (target.type === "block") return { type: "block", id: target.blockId.toLowerCase() };
   return { type: "discussion", id: target.discussionId.toLowerCase() };
 }
-export function nativeEventApp(
-  spec: NativeRoutineEventSpec,
-): "google-calendar" | "notion" | "gmail" | "google-drive" | "slack" {
+export function nativeEventApp(spec: NativeRoutineEventSpec): NativeEventAppId {
+  const family = spec.kind.split(".")[0];
+  if (["sharepoint", "excel", "planner", "teams", "dingtalk", "wecom", "discord"].includes(family!))
+    return family as NativeEventAppId;
+  if (family === "feishu") return "feishu-lark";
+  if (family === "telegram") return "telegram-bot";
   return spec.kind.startsWith("calendar.")
     ? "google-calendar"
     : spec.kind.startsWith("gmail.")
@@ -196,6 +304,22 @@ export function nativeEventApp(
           : "notion";
 }
 
+export type NativeEventAppId =
+  | "google-calendar"
+  | "notion"
+  | "gmail"
+  | "google-drive"
+  | "slack"
+  | "sharepoint"
+  | "excel"
+  | "planner"
+  | "teams"
+  | "feishu-lark"
+  | "dingtalk"
+  | "wecom"
+  | "telegram-bot"
+  | "discord";
+
 /** Only a trusted verifier can construct this; it is not a public API parameter. */
 export interface NativeEventAuthorizationProof extends NativeEventScope {
   connectionId: string;
@@ -204,7 +328,7 @@ export interface NativeEventAuthorizationProof extends NativeEventScope {
   authGeneration: number;
   configId: string;
   configRevision: number;
-  appId: "google-calendar" | "notion" | "gmail" | "google-drive" | "slack";
+  appId: NativeEventAppId;
   resource: NativeEventResource;
   spec: NativeRoutineEventSpec;
 }
@@ -232,8 +356,16 @@ export const NativeEventObservationSchema = z
           "mailbox",
           "drive_file",
           "slack_channel",
+          "sharepoint_list",
+          "excel_range",
+          "planner_plan",
+          "teams_channel",
+          "enterprise_calendar",
+          "telegram_chat",
+          "discord_channel",
+          "discord_command",
         ]),
-        id: Id,
+        id: z.string().min(1).max(8192),
       })
       .strict(),
     eventIdentity: Id,
@@ -248,6 +380,10 @@ export const NativeEventObservationSchema = z
         "gmail_history",
         "drive_changes",
         "slack_events",
+        "microsoft_read",
+        "enterprise_read",
+        "bot_read",
+        "discord_interaction",
       ])
       .default("visible_state_change"),
     eventId: Id.optional(),
@@ -266,6 +402,11 @@ export const NativeEventObservationSchema = z
     channelId: Id.optional(),
     messageTs: Id.optional(),
     threadTs: Id.optional(),
+    sourceMetadata: z.record(z.string(), z.unknown()).optional(),
+    interactionId: Id.optional(),
+    guildId: Id.optional(),
+    commandId: Id.optional(),
+    commandName: z.string().max(32).optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -303,3 +444,42 @@ export const NativeEventObservationSchema = z
       });
   });
 export type NativeEventObservation = z.infer<typeof NativeEventObservationSchema>;
+
+/** Server-produced verified interaction; no token or raw provider payload enters the existing queue. */
+export const NativeDiscordSignalJobSchema = z
+  .object({
+    triggerId: Id,
+    triggerVersion: z.number().int().positive(),
+    userId: Id,
+    spaceId: Id,
+    configId: Id,
+    configRevision: z.number().int().positive(),
+    connectionId: Id,
+    authorizationRevision: Revision,
+    grantId: Id,
+    authGeneration: z.number().int().positive(),
+    interaction: z
+      .object({
+        id: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        applicationId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        guildId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        channelId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        commandId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        commandName: z.string().regex(/^[a-z0-9_-]{1,32}$/),
+        userId: z.string().regex(/^[1-9][0-9]{5,20}$/),
+        options: z
+          .array(
+            z
+              .object({
+                name: z.string().regex(/^[a-z0-9_-]{1,32}$/),
+                type: z.union([z.literal(3), z.literal(4), z.literal(5)]),
+                value: z.union([z.string().max(6000), z.number().int().safe(), z.boolean()]),
+              })
+              .strict(),
+          )
+          .max(25),
+      })
+      .strict(),
+  })
+  .strict();
+export type NativeDiscordSignalJob = z.infer<typeof NativeDiscordSignalJobSchema>;

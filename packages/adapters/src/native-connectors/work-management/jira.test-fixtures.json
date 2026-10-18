@@ -1,0 +1,350 @@
+{
+  "version": 1,
+  "contractSha256": "fdfe2400891629369532e09d8e7367c7f6d91a3d7a56b8c1c5316c5741683cb5",
+  "fixtures": [
+    {
+      "id": "jira.projects.list",
+      "input": {},
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/rest/api/3/project/search",
+            "query": {
+              "startAt": 0,
+              "maxResults": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "values": [
+                {
+                  "id": "9",
+                  "key": "FIX",
+                  "name": "Fixture"
+                }
+              ],
+              "startAt": 0,
+              "maxResults": 30,
+              "isLast": true
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "9"
+          }
+        ],
+        "hasMore": false
+      }
+    },
+    {
+      "id": "jira.issues.search",
+      "input": {
+        "jql": "project = FIX"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/rest/api/3/search/jql",
+            "body": {
+              "jql": "project = FIX",
+              "maxResults": 30,
+              "fields": [
+                "summary",
+                "description",
+                "status",
+                "issuetype",
+                "project",
+                "assignee",
+                "reporter",
+                "labels",
+                "created",
+                "updated",
+                "duedate",
+                "attachment"
+              ]
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "issues": [
+                {
+                  "id": "101",
+                  "key": "FIX-7",
+                  "fields": {
+                    "summary": "Fixture",
+                    "status": {
+                      "name": "Open"
+                    }
+                  }
+                }
+              ],
+              "isLast": false,
+              "nextPageToken": "opaque-next"
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "key": "FIX-7"
+          }
+        ],
+        "nextPageToken": "opaque-next",
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "jira.issues.get",
+      "input": {
+        "issue": "FIX-7"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/rest/api/3/issue/FIX-7",
+            "query": {
+              "fields": "summary,description,status,issuetype,project,assignee,reporter,labels,created,updated,duedate,attachment"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "101",
+              "key": "FIX-7",
+              "fields": {
+                "summary": "Fixture",
+                "status": {
+                  "name": "Open"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "101",
+        "key": "FIX-7"
+      }
+    },
+    {
+      "id": "jira.issues.create",
+      "input": {
+        "projectId": "9",
+        "issueTypeId": "1",
+        "summary": "Fixture",
+        "description": "Fixture description"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/rest/api/3/issue",
+            "body": {
+              "fields": {
+                "summary": "Fixture",
+                "description": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Fixture description"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "project": {
+                  "id": "9"
+                },
+                "issuetype": {
+                  "id": "1"
+                }
+              }
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": "101",
+              "key": "FIX-7"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "101",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "jira.issues.update",
+      "input": {
+        "issue": "FIX-7",
+        "changes": {
+          "summary": "Updated",
+          "assigneeAccountId": "fixture-person"
+        }
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "PUT",
+            "path": "/rest/api/3/issue/FIX-7",
+            "body": {
+              "fields": {
+                "summary": "Updated",
+                "assignee": {
+                  "accountId": "fixture-person"
+                }
+              }
+            }
+          },
+          "response": {
+            "status": 204,
+            "body": null
+          }
+        }
+      ],
+      "output": {
+        "issue": "FIX-7",
+        "updated": true,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "jira.transitions.list",
+      "input": {
+        "issue": "FIX-7"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/rest/api/3/issue/FIX-7/transitions"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "transitions": [
+                {
+                  "id": "31",
+                  "name": "Done",
+                  "to": {
+                    "id": "10",
+                    "name": "Done"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "31",
+            "name": "Done"
+          }
+        ]
+      }
+    },
+    {
+      "id": "jira.issues.transition",
+      "input": {
+        "issue": "FIX-7",
+        "transitionId": "31"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/rest/api/3/issue/FIX-7/transitions",
+            "body": {
+              "transition": {
+                "id": "31"
+              }
+            }
+          },
+          "response": {
+            "status": 204,
+            "body": null
+          }
+        }
+      ],
+      "output": {
+        "transitioned": true,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "jira.comments.create",
+      "input": {
+        "issue": "FIX-7",
+        "body": "Fixture comment"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/rest/api/3/issue/FIX-7/comment",
+            "body": {
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Fixture comment"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": "88",
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Fixture comment"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      }
+    }
+  ]
+}

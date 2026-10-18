@@ -1,0 +1,594 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-18",
+  "appId": "gitlab",
+  "actions": [
+    {
+      "id": "gitlab.projects.list",
+      "description": "List projects where the selected GitLab user is a member.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "search": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read_api", "api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "X-Next-Page integer; never follow Link URL",
+      "output": "items,nextPage,hasMore,allPagesRead",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": 9
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["items"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "gitlab.issues.list",
+      "description": "List issues in one accessible GitLab project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "state": {
+            "enum": ["opened", "closed", "all"]
+          },
+          "search": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["project"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects/{project}/issues"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read_api", "api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "X-Next-Page",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": 101
+          }
+        ],
+        "hasMore": true,
+        "nextPage": 2,
+        "allPagesRead": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextPage": {
+            "type": ["integer", "null"]
+          },
+          "allPagesRead": {
+            "type": "boolean"
+          }
+        },
+        "required": ["items", "hasMore", "nextPage", "allPagesRead"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "gitlab.issues.get",
+      "description": "Read one GitLab project issue by its project-local IID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "issue_iid": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": ["project", "issue_iid"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects/{project}/issues/{issue_iid}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read_api", "api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": 101,
+        "iid": 7
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "iid": {
+            "type": "integer"
+          }
+        },
+        "required": ["id", "iid"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "gitlab.issues.create",
+      "description": "Create an issue in one GitLab project as the selected user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "labels": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "assignee_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "maxItems": 50
+          }
+        },
+        "required": ["project", "title"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/projects/{project}/issues"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": 101,
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "gitlab.comments.create",
+      "description": "Add a note to one GitLab issue as the selected user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "issue_iid": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          }
+        },
+        "required": ["project", "issue_iid", "body"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/projects/{project}/issues/{issue_iid}/notes"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": 88,
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "gitlab.merge_requests.list",
+      "description": "List merge requests in one GitLab project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "state": {
+            "enum": ["opened", "closed", "locked", "merged", "all"]
+          }
+        },
+        "required": ["project"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects/{project}/merge_requests"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read_api", "api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "X-Next-Page",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": 101
+          }
+        ],
+        "hasMore": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": ["items", "hasMore"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "gitlab.merge_requests.get",
+      "description": "Read one GitLab merge request by project-local IID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "merge_request_iid": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": ["project", "merge_request_iid"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects/{project}/merge_requests/{merge_request_iid}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read_api", "api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": 101,
+        "iid": 7
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "iid": {
+            "type": "integer"
+          }
+        },
+        "required": ["id", "iid"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "gitlab.pipelines.list",
+      "description": "Read pipeline status in one GitLab project without starting a pipeline.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "enum": [
+              "created",
+              "waiting_for_resource",
+              "preparing",
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "canceled",
+              "skipped",
+              "manual",
+              "scheduled"
+            ]
+          }
+        },
+        "required": ["project"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects/{project}/pipelines"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read_api", "api"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "X-Next-Page",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": 77,
+            "status": "success"
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["items"],
+        "additionalProperties": true
+      }
+    }
+  ],
+  "sources": [
+    "https://docs.gitlab.com/api/oauth2/",
+    "https://docs.gitlab.com/api/rest/authentication/",
+    "https://docs.gitlab.com/api/personal_access_tokens/",
+    "https://docs.gitlab.com/api/issues/",
+    "https://docs.gitlab.com/api/notes/",
+    "https://docs.gitlab.com/api/merge_requests/",
+    "https://docs.gitlab.com/api/pipelines/",
+    "https://docs.gitlab.com/api/projects/"
+  ],
+  "errorPolicy": "401 reauthorize;403 permissions;404 unavailable;409/412 version conflict;429 Retry-After;5xx/transport uncertain writes never replay; partial/malformed responses rejected",
+  "events": "No new inbound webhook consumer or task mechanism in this contract. Existing explicit Routine behavior unchanged. Provider events require separately verified subscription/lifecycle and are not implied by OAuth.",
+  "acceptance": [
+    "exact action inventory/digest",
+    "strict input and no business URL/auth",
+    "actual request method/path/body",
+    "actor+scope guards",
+    "cursor extraction without URL following",
+    "write checkpoint before dispatch",
+    "unknown write no automatic replay",
+    "static identity and OAuth refresh actual scopes",
+    "rotating refresh uncertainty and account/site mismatch"
+  ],
+  "real_verified": false,
+  "revision": 3,
+  "supersedesSha256": "f4f9e7522fb929010b56d04f8ba0eb251a9f0f0072f660c666b433a7c1a94042",
+  "revisionReason": "Terminal continuation fields permit null; Asana explicitly configured and introspected default Full permissions is an alternative, never expanded or mixed with granular scopes."
+}

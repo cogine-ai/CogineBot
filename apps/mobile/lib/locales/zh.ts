@@ -1,4 +1,10 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "App installation": "应用安装身份",
+  "Telegram bot token": "Telegram 机器人令牌",
+  "Discord bot token": "Discord 机器人令牌",
+  "Private app token": "私有应用令牌",
+  "HubSpot private app token": "HubSpot 私有应用令牌",
+  "Connect application": "连接应用",
   "Choose another group name": "请使用其他分组名称",
   "Uninstall this source?": "卸载此来源？",
   "Share this server's tools with all bots in this space.": "向此空间的所有伙伴共享此服务器工具。",
@@ -904,4 +910,16 @@ export const ZH_MESSAGES: Record<string, string> = {
   "This application is not available for direct connection.": "此应用暂不支持直接连接。",
   "This app is not available.": "此应用不可用。",
   "Try again": "重试",
+  "Authorizing this Figma account replaces its previous authorization for this application.":
+    "重新授权此 Figma 账号会替换该应用的旧授权。",
+  "App credentials": "应用凭据",
+  "SharePoint event": "SharePoint 事件",
+  "Excel event": "Excel 事件",
+  "Planner event": "Planner 事件",
+  "Teams event": "Teams 事件",
+  "Feishu / Lark event": "飞书 / Lark 事件",
+  "DingTalk event": "钉钉事件",
+  "WeCom event": "企业微信事件",
+  "Telegram bot event": "Telegram 机器人事件",
+  "Discord bot event": "Discord 机器人事件",
 };

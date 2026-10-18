@@ -4819,14 +4819,20 @@ export function createRouter(deps: RouterDeps) {
         return {
           canConfigure: context.actor.isDeploymentOwner ?? false,
           callbackUri: deps.nativeConnectors.configurations.callbackUri,
-          configurations: await deps.nativeConnectors.configurations.statuses(),
+          configurations: await deps.nativeConnectors.configurations.statuses(
+            context.actor.spaceId,
+          ),
         };
       }),
       configuration: authed.nativeConnectors.configuration.handler(async ({ context, input }) => {
         if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
         if (!deps.nativeConnectors) throw new ORPCError("NOT_IMPLEMENTED");
         try {
-          return await deps.nativeConnectors.configurations.configuration(input.id, true);
+          return await deps.nativeConnectors.configurations.configuration(
+            input.id,
+            true,
+            context.actor.spaceId,
+          );
         } catch {
           throw new ORPCError("NOT_FOUND");
         }

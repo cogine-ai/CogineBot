@@ -5665,6 +5665,258 @@ msgstr "이름"
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "언제든 실제 작업을 맡길 수 있는<0/>나만의 Agent 팀"
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Agent ID"
+msgstr "에이전트 ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed channel IDs"
+msgstr "허용된 채널 ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed chat IDs"
+msgstr "허용된 채팅 ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "App ID"
+msgstr "앱 ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "App credentials"
+msgstr "앱 자격 증명"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "App secret"
+msgstr "앱 시크릿"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "AppKey"
+msgstr "AppKey"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Cloud site ID"
+msgstr "클라우드 사이트 ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connect application"
+msgstr "앱 연결"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Corp ID"
+msgstr "기업 ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Delete messages"
+msgstr "메시지 삭제"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Discord bot token"
+msgstr "Discord 봇 토큰"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit messages"
+msgstr "메시지 수정"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "GitLab origin"
+msgstr "GitLab 주소"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "HubSpot account"
+msgstr "HubSpot 계정"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "HubSpot account ID (optional)"
+msgstr "HubSpot 계정 ID(선택 사항)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "HubSpot private app token"
+msgstr "HubSpot 비공개 앱 토큰"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Microsoft tenant ID (optional)"
+msgstr "Microsoft 테넌트 ID(선택 사항)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Platform"
+msgstr "플랫폼"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Private app token"
+msgstr "비공개 앱 토큰"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read messages"
+msgstr "메시지 읽기"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Register commands"
+msgstr "명령 등록"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Send messages"
+msgstr "메시지 보내기"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Server ID"
+msgstr "서버 ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Team ID (optional)"
+msgstr "팀 ID(선택 사항)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Telegram bot token"
+msgstr "Telegram 봇 토큰"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "This server is bound to the current space."
+msgstr "이 서버는 현재 스페이스에 연결됩니다."
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "User permissions"
+msgstr "사용자 권한"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Authorization callbacks"
+msgstr "인증 콜백"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Encryption key"
+msgstr "암호화 키"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "This application is bound to the current space."
+msgstr "이 앱은 현재 스페이스에 연결됩니다."
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Authorizing this Figma account replaces its previous authorization for this application."
+msgstr "이 Figma 계정을 인증하면 이 앱의 기존 인증이 대체됩니다."
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Suite ID"
+msgstr "Suite ID"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Corp ID (optional)"
+msgstr "기업 ID(선택 사항)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Tenant ID (optional)"
+msgstr "테넌트 ID(선택 사항)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "SharePoint list item changed"
+msgstr "SharePoint 목록 항목 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Excel range changed"
+msgstr "Excel 범위 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Planner task changed"
+msgstr "Planner 작업 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Teams channel message"
+msgstr "Teams 채널의 새 메시지"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Feishu / Lark calendar changed"
+msgstr "Feishu / Lark 캘린더 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "DingTalk calendar changed"
+msgstr "DingTalk 캘린더 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "WeCom schedule changed"
+msgstr "WeCom 일정 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Telegram pinned message changed"
+msgstr "Telegram 고정 메시지 변경"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Discord channel message"
+msgstr "Discord 채널의 새 메시지"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discord command invoked"
+msgstr "Discord 명령 호출"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Site ID"
+msgstr "사이트 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "List ID"
+msgstr "목록 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Drive ID"
+msgstr "드라이브 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Workbook item ID"
+msgstr "통합 문서 파일 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Worksheet ID"
+msgstr "워크시트 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Cell range (A1 notation)"
+msgstr "셀 범위(A1 표기법)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Plan ID"
+msgstr "플랜 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Team ID"
+msgstr "팀 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "User ID"
+msgstr "사용자 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Start time (ISO 8601)"
+msgstr "시작 시간(ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "End time (ISO 8601)"
+msgstr "종료 시간(ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Chat ID"
+msgstr "채팅 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command ID"
+msgstr "명령 ID"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command name"
+msgstr "명령 이름"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event callback URL"
+msgstr "이벤트 콜백 URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Save this application to get its event callback URL."
+msgstr "이 앱을 저장하면 이벤트 콜백 URL이 표시됩니다."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Interactions endpoint URL"
+msgstr "상호작용 엔드포인트 URL"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect this bot before registering this URL in Discord."
+msgstr "이 봇을 연결한 후 Discord에 이 URL을 등록하세요."
+
 #: src/pages/Shell.tsx
 msgid "Could not update sidebar"
 msgstr ""

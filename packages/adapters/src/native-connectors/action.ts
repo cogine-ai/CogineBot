@@ -3,7 +3,7 @@ export interface NativeRequest {
   /** Relative to the adapter's fixed/configured API authority; never a model URL. */
   path: string;
   /** Trusted adapter constant selecting an app-allowlisted fixed API, never business input. */
-  service?: "drive" | "drive-upload";
+  service?: "drive" | "drive-upload" | "dropbox-content" | "telegram-file";
   query?: Record<string, string | number | boolean | readonly string[] | undefined>;
   headers?: Record<string, string>;
   body?: unknown;

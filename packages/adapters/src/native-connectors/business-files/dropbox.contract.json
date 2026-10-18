@@ -1,0 +1,395 @@
+{
+  "version": 3,
+  "appId": "dropbox",
+  "name": "Dropbox",
+  "actions": [
+    {
+      "id": "dropbox.files.list",
+      "description": "List a folder page or continue a Dropbox cursor.",
+      "method": "POST",
+      "path": "/2/files/list_folder[/continue]",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "recursive": {
+            "type": "boolean"
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id"]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.metadata.read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.files.search",
+      "description": "Search Dropbox filenames and indexed text.",
+      "method": "POST",
+      "path": "/2/files/search_v2|search/continue_v2",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id"]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.metadata.read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.files.get",
+      "description": "Read exact Dropbox file or folder metadata.",
+      "method": "POST",
+      "path": "/2/files/get_metadata",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "metadata"],
+        "properties": {
+          "action_id": {
+            "const": "dropbox.files.get"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.metadata.read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.files.download",
+      "description": "Download one private file into a bounded local artifact.",
+      "method": "POST",
+      "path": "/2/files/download",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "metadata"],
+        "properties": {
+          "action_id": {
+            "const": "dropbox.files.download"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.content.read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.files.upload",
+      "description": "Upload a local artifact without overwriting another revision.",
+      "method": "POST",
+      "path": "/2/files/upload",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expectedRev": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": ["path", "artifactId"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "metadata"],
+        "properties": {
+          "action_id": {
+            "const": "dropbox.files.upload"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.content.write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.folders.create",
+      "description": "Create a folder at an exact path.",
+      "method": "POST",
+      "path": "/2/files/create_folder_v2",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "metadata"],
+        "properties": {
+          "action_id": {
+            "const": "dropbox.folders.create"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.content.write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.files.move",
+      "description": "Move a file or folder without autorenaming.",
+      "method": "POST",
+      "path": "/2/files/move_v2",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fromPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "toPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": ["fromPath", "toPath"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "metadata"],
+        "properties": {
+          "action_id": {
+            "const": "dropbox.files.move"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.content.write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.files.delete",
+      "description": "Delete a file or folder at an expected revision when available.",
+      "method": "POST",
+      "path": "/2/files/delete_v2",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "expectedRev": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "metadata"],
+        "properties": {
+          "action_id": {
+            "const": "dropbox.files.delete"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["files.content.write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "dropbox.shared_links.create",
+      "description": "Create a view-only shared link with an explicit visibility.",
+      "method": "POST",
+      "path": "/2/sharing/create_shared_link_with_settings",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "visibility": {
+            "enum": ["public", "team_only"]
+          },
+          "allowDownload": {
+            "type": "boolean"
+          }
+        },
+        "required": ["path", "visibility"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id"]
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "verified account app or user-level OAuth",
+        "acceptedAnyOfScopes": ["sharing.write"]
+      },
+      "externalEffect": "mutates selected CRM account or sharing permission; receipt before dispatch, unknown outcome never automatically replayed",
+      "pagination": "single complete response or exact provider cursor; no assumed synchronization"
+    }
+  ],
+  "authorization": {
+    "credentialKinds": ["oauth"],
+    "identity": "POST /2/users/get_current_account actual account_id; team namespace/root_info actual context; user tokens only, no arbitrary Dropbox-API-Select-User; FullAccount.team null or absent means personal account; a present team object needs actual stable team.id",
+    "scopes": "account_info.read files.metadata.read files.content.read files.content.write; app-folder/fullDropbox access chosen in appconsole sharing.write only for explicitly requested shared link; never default to public or retry a rejected team-only request as public",
+    "refresh": "token_access_type=offline; shortlived access, reusable refresh, PKCES256; compare same account on refresh",
+    "events": "User webhook is hint-only and list_folder cursor is authority; no full sync or automatic subscription",
+    "rate": "429 Retry-After; per app/user namespace writes; propagate not automatic replay",
+    "limits": "content.dropboxapi.com fixed trustedservice; artifact max10MiB; upload add/strict_conflict or exactrev update; noautorename; no asyncjobsuccessclaim"
+  },
+  "sources": [
+    "https://docs.dropboxapi.com/dropbox-api/docs/oauth",
+    "https://www.dropbox.com/developers/documentation/http/documentation#files-list_folder",
+    "https://www.dropbox.com/developers/documentation/http/documentation#files-upload",
+    "https://www.dropbox.com/developers/documentation/http/documentation#files-download",
+    "https://docs.dropboxapi.com/dropbox-api/api-reference/user-endpoints/sharing/create-shared-link-with-settings"
+  ],
+  "errorPolicy": "401expired;403scope/ACL;404resource;409/412conflict;429retryAfter;5xxunavailable; acknowledgedunknownwrite never replay; never expose diagnostics/tokens",
+  "acceptance": [
+    "everyaction exactmethod/path/body fixture",
+    "schemaunknownfield rejection beforeHTTP",
+    "wrongactor/subject/tenant rejection",
+    "paginationneverpretendallpages",
+    "401/403/404/429 mapping",
+    "writecheckpoint beforedispatch and no replay afterunknown",
+    "authidentity/scopes/refreshnegative tests"
+  ],
+  "responseParsing": "Metadata union requires .tag; concrete download/upload FileMetadata and create_folder_v2 FolderMetadata do not. Exact file size/rev/id required."
+}

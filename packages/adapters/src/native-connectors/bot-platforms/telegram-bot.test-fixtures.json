@@ -1,0 +1,939 @@
+{
+  "contractSha256": "9dfbb8f3b63f6938c89fbf14c98fcf455b0d9baa57a82d5e0f006ef1c2b30ec6",
+  "fixtures": [
+    {
+      "id": "telegram.chats.get",
+      "input": {
+        "chat_id": "-1001234567890"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": -1001234567890,
+        "type": "supergroup",
+        "title": "Fixture chat"
+      }
+    },
+    {
+      "id": "telegram.pinned.get",
+      "input": {
+        "chat_id": "-1001234567890"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                },
+                "pinned_message": {
+                  "message_id": 17,
+                  "date": 1792281600,
+                  "chat": {
+                    "id": -1001234567890,
+                    "type": "supergroup"
+                  },
+                  "from": {
+                    "id": 100001,
+                    "is_bot": true,
+                    "username": "fixture_bot",
+                    "first_name": "Fixture"
+                  },
+                  "text": "Hello"
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "chat_id": "-1001234567890",
+        "pinned_message": {
+          "message_id": 17,
+          "date": 1792281600,
+          "chat": {
+            "id": -1001234567890,
+            "type": "supergroup"
+          },
+          "from": {
+            "id": 100001,
+            "is_bot": true,
+            "username": "fixture_bot",
+            "first_name": "Fixture"
+          },
+          "text": "Hello"
+        },
+        "historyAvailable": false
+      }
+    },
+    {
+      "id": "telegram.messages.send",
+      "input": {
+        "chat_id": "-1001234567890",
+        "text": "Hello",
+        "buttons": [
+          [
+            {
+              "text": "Open",
+              "url": "https://example.test/docs"
+            }
+          ]
+        ]
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/sendMessage",
+            "body": {
+              "chat_id": "-1001234567890",
+              "text": "Hello",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    {
+                      "text": "Open",
+                      "url": "https://example.test/docs"
+                    }
+                  ]
+                ]
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "message_id": 17,
+                "date": 1792281600,
+                "chat": {
+                  "id": -1001234567890,
+                  "type": "supergroup"
+                },
+                "from": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "text": "Hello"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "message_id": 17,
+        "chat": {
+          "id": -1001234567890,
+          "type": "supergroup"
+        },
+        "text": "Hello",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "telegram.messages.reply",
+      "input": {
+        "chat_id": "-1001234567890",
+        "text": "Hello",
+        "buttons": [
+          [
+            {
+              "text": "Open",
+              "url": "https://example.test/docs"
+            }
+          ]
+        ],
+        "message_id": 12
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/sendMessage",
+            "body": {
+              "chat_id": "-1001234567890",
+              "text": "Hello",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    {
+                      "text": "Open",
+                      "url": "https://example.test/docs"
+                    }
+                  ]
+                ]
+              },
+              "reply_parameters": {
+                "message_id": 12,
+                "chat_id": "-1001234567890",
+                "allow_sending_without_reply": false
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "message_id": 17,
+                "date": 1792281600,
+                "chat": {
+                  "id": -1001234567890,
+                  "type": "supergroup"
+                },
+                "from": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "text": "Hello"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "message_id": 17,
+        "chat": {
+          "id": -1001234567890,
+          "type": "supergroup"
+        },
+        "text": "Hello",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "telegram.messages.edit",
+      "input": {
+        "chat_id": "-1001234567890",
+        "text": "Hello",
+        "buttons": [
+          [
+            {
+              "text": "Open",
+              "url": "https://example.test/docs"
+            }
+          ]
+        ],
+        "message_id": 17
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/editMessageText",
+            "body": {
+              "chat_id": "-1001234567890",
+              "text": "Hello",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    {
+                      "text": "Open",
+                      "url": "https://example.test/docs"
+                    }
+                  ]
+                ]
+              },
+              "message_id": 17
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "message_id": 17,
+                "date": 1792281600,
+                "chat": {
+                  "id": -1001234567890,
+                  "type": "supergroup"
+                },
+                "from": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "text": "Hello"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "message_id": 17,
+        "chat": {
+          "id": -1001234567890,
+          "type": "supergroup"
+        },
+        "text": "Hello",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "telegram.messages.delete",
+      "input": {
+        "chat_id": "-1001234567890",
+        "message_id": 17
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/deleteMessage",
+            "body": {
+              "chat_id": "-1001234567890",
+              "message_id": 17
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": true
+            }
+          }
+        }
+      ],
+      "output": {
+        "chat_id": "-1001234567890",
+        "message_id": 17,
+        "deleted": true,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "telegram.files.send",
+      "input": {
+        "chat_id": "-1001234567890",
+        "artifactId": "fixture-artifact",
+        "caption": "File"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/sendDocument",
+            "multipart": {
+              "fields": {
+                "chat_id": "-1001234567890",
+                "caption": "File"
+              },
+              "files": {
+                "document": {
+                  "name": "fixture.txt",
+                  "text": "abc",
+                  "type": "text/plain"
+                }
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "message_id": 17,
+                "date": 1792281600,
+                "chat": {
+                  "id": -1001234567890,
+                  "type": "supergroup"
+                },
+                "from": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "text": "Hello",
+                "document": {
+                  "file_id": "opaque",
+                  "file_unique_id": "stable",
+                  "file_name": "fixture.txt",
+                  "file_size": 3
+                }
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "message_id": 17,
+        "document": {
+          "file_unique_id": "stable"
+        },
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "telegram.messages.react",
+      "input": {
+        "chat_id": "-1001234567890",
+        "message_id": 17,
+        "emoji": "👍"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getMe"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": 100001,
+                "is_bot": true,
+                "username": "fixture_bot",
+                "first_name": "Fixture"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChat",
+            "query": {
+              "chat_id": "-1001234567890"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Fixture chat",
+                "permissions": {
+                  "can_send_messages": true,
+                  "can_send_documents": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/getChatMember",
+            "query": {
+              "chat_id": "-1001234567890",
+              "user_id": "100001"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "user": {
+                  "id": 100001,
+                  "is_bot": true,
+                  "username": "fixture_bot",
+                  "first_name": "Fixture"
+                },
+                "status": "administrator"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/setMessageReaction",
+            "body": {
+              "chat_id": "-1001234567890",
+              "message_id": 17,
+              "reaction": [
+                {
+                  "type": "emoji",
+                  "emoji": "👍"
+                }
+              ]
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": true
+            }
+          }
+        }
+      ],
+      "output": {
+        "chat_id": "-1001234567890",
+        "message_id": 17,
+        "reaction_set": true,
+        "write_outcome": "confirmed"
+      }
+    }
+  ]
+}

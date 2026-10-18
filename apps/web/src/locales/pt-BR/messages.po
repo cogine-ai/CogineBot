@@ -5665,6 +5665,258 @@ msgstr "O seu nome"
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Sua equipe de agentes sempre ativos<0/>, a quem você pode dar trabalho de verdade."
 
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Agent ID"
+msgstr "ID do agente"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed channel IDs"
+msgstr "IDs dos canais permitidos"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Allowed chat IDs"
+msgstr "IDs dos chats permitidos"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "App ID"
+msgstr "ID do aplicativo"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "App credentials"
+msgstr "Credenciais do aplicativo"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "App secret"
+msgstr "Segredo do aplicativo"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "AppKey"
+msgstr "AppKey"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Cloud site ID"
+msgstr "ID do site na nuvem"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Connect application"
+msgstr "Conectar aplicativo"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Corp ID"
+msgstr "ID da empresa"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Delete messages"
+msgstr "Excluir mensagens"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Discord bot token"
+msgstr "Token do bot do Discord"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Edit messages"
+msgstr "Editar mensagens"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "GitLab origin"
+msgstr "Endereço do GitLab"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "HubSpot account"
+msgstr "Conta do HubSpot"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "HubSpot account ID (optional)"
+msgstr "ID da conta do HubSpot (opcional)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "HubSpot private app token"
+msgstr "Token do aplicativo privado do HubSpot"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Microsoft tenant ID (optional)"
+msgstr "ID do locatário Microsoft (opcional)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Platform"
+msgstr "Plataforma"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Private app token"
+msgstr "Token do aplicativo privado"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Read messages"
+msgstr "Ler mensagens"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Register commands"
+msgstr "Registrar comandos"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Send messages"
+msgstr "Enviar mensagens"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Server ID"
+msgstr "ID do servidor"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Team ID (optional)"
+msgstr "ID da equipe (opcional)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Telegram bot token"
+msgstr "Token do bot do Telegram"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "This server is bound to the current space."
+msgstr "Este servidor está vinculado ao espaço atual."
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "User permissions"
+msgstr "Permissões do usuário"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Authorization callbacks"
+msgstr "Callbacks de autorização"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Encryption key"
+msgstr "Chave de criptografia"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "This application is bound to the current space."
+msgstr "Este aplicativo está vinculado ao espaço atual."
+
+#: src/components/integrations/NativeAccountConnect.tsx
+msgid "Authorizing this Figma account replaces its previous authorization for this application."
+msgstr "Autorizar esta conta do Figma substitui sua autorização anterior para este aplicativo."
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Suite ID"
+msgstr "ID da suíte"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Corp ID (optional)"
+msgstr "ID da empresa (opcional)"
+
+#: src/components/integrations/NativeApplicationSetup.tsx
+msgid "Tenant ID (optional)"
+msgstr "ID do locatário (opcional)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "SharePoint list item changed"
+msgstr "Item de lista do SharePoint alterado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Excel range changed"
+msgstr "Intervalo do Excel alterado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Planner task changed"
+msgstr "Tarefa do Planner alterada"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Teams channel message"
+msgstr "Nova mensagem em um canal do Teams"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Feishu / Lark calendar changed"
+msgstr "Calendário do Feishu / Lark alterado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "DingTalk calendar changed"
+msgstr "Calendário do DingTalk alterado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "WeCom schedule changed"
+msgstr "Evento do WeCom alterado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Telegram pinned message changed"
+msgstr "Mensagem fixada do Telegram alterada"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "New Discord channel message"
+msgstr "Nova mensagem em um canal do Discord"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Discord command invoked"
+msgstr "Comando do Discord invocado"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Site ID"
+msgstr "ID do site"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "List ID"
+msgstr "ID da lista"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Drive ID"
+msgstr "ID da unidade"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Workbook item ID"
+msgstr "ID do arquivo da pasta de trabalho"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Worksheet ID"
+msgstr "ID da planilha"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Cell range (A1 notation)"
+msgstr "Intervalo de células (notação A1)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Plan ID"
+msgstr "ID do plano"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Team ID"
+msgstr "ID da equipe"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "User ID"
+msgstr "ID do usuário"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Start time (ISO 8601)"
+msgstr "Horário de início (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "End time (ISO 8601)"
+msgstr "Horário de término (ISO 8601)"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Chat ID"
+msgstr "ID do chat"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command ID"
+msgstr "ID do comando"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Command name"
+msgstr "Nome do comando"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Event callback URL"
+msgstr "URL de callback de eventos"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Save this application to get its event callback URL."
+msgstr "Salve este aplicativo para obter sua URL de callback de eventos."
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Interactions endpoint URL"
+msgstr "URL do endpoint de interações"
+
+#: src/pages/RoutineNativeEvents.tsx
+msgid "Connect this bot before registering this URL in Discord."
+msgstr "Conecte este bot antes de registrar esta URL no Discord."
+
 #: src/pages/Shell.tsx
 msgid "Could not update sidebar"
 msgstr ""

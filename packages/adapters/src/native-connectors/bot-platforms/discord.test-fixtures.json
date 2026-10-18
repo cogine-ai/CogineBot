@@ -1,0 +1,1520 @@
+{
+  "contractSha256": "f8efd4dc7fbf77972bf133f52834c21fa752f2c44608dbac9118bd61b7759917",
+  "fixtures": [
+    {
+      "id": "discord.channels.get",
+      "input": {
+        "channel_id": "100004"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "id": "100004",
+        "guild_id": "100003",
+        "type": 0,
+        "name": "fixture"
+      }
+    },
+    {
+      "id": "discord.messages.list",
+      "input": {
+        "channel_id": "100004",
+        "limit": 1
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004/messages",
+            "query": {
+              "limit": 1
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100005",
+                "channel_id": "100004",
+                "author": {
+                  "id": "100001",
+                  "bot": true,
+                  "username": "fixture_bot"
+                },
+                "content": "Hello",
+                "timestamp": "2026-10-18T00:00:00.000Z",
+                "type": 0,
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ],
+                "referenced_message": {
+                  "id": "100099",
+                  "channel_id": "100004",
+                  "author": {
+                    "id": "100001",
+                    "bot": true,
+                    "username": "fixture_bot"
+                  },
+                  "content": "Reference",
+                  "attachments": [
+                    {
+                      "id": "100006",
+                      "filename": "fixture.txt",
+                      "size": 3,
+                      "content_type": "text/plain",
+                      "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                    }
+                  ]
+                },
+                "embeds": [
+                  {
+                    "type": "rich",
+                    "title": "Fixture",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "image": {
+                      "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "width": 10,
+                      "height": 10
+                    },
+                    "author": {
+                      "name": "Creator",
+                      "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                      "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "100005",
+            "channel_id": "100004",
+            "author": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            },
+            "content": "Hello",
+            "timestamp": "2026-10-18T00:00:00.000Z",
+            "type": 0,
+            "attachments": [
+              {
+                "id": "100006",
+                "filename": "fixture.txt",
+                "size": 3,
+                "content_type": "text/plain"
+              }
+            ],
+            "referenced_message": {
+              "id": "100099",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Reference",
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain"
+                }
+              ]
+            },
+            "embeds": [
+              {
+                "type": "rich",
+                "title": "Fixture",
+                "image": {
+                  "width": 10,
+                  "height": 10
+                },
+                "author": {
+                  "name": "Creator"
+                }
+              }
+            ]
+          }
+        ],
+        "hasMore": true,
+        "nextBefore": "100005",
+        "nextAfter": "100005",
+        "allPagesRead": false,
+        "messageContentPolicy": "provider_filtered_fields_preserved"
+      }
+    },
+    {
+      "id": "discord.messages.get",
+      "input": {
+        "channel_id": "100004",
+        "message_id": "100005"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004/messages/100005"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100005",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Hello",
+              "timestamp": "2026-10-18T00:00:00.000Z",
+              "type": 0,
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                }
+              ],
+              "referenced_message": {
+                "id": "100099",
+                "channel_id": "100004",
+                "author": {
+                  "id": "100001",
+                  "bot": true,
+                  "username": "fixture_bot"
+                },
+                "content": "Reference",
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ]
+              },
+              "embeds": [
+                {
+                  "type": "rich",
+                  "title": "Fixture",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "image": {
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "width": 10,
+                    "height": 10
+                  },
+                  "author": {
+                    "name": "Creator",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "100005",
+        "channel_id": "100004",
+        "author": {
+          "id": "100001",
+          "bot": true,
+          "username": "fixture_bot"
+        },
+        "content": "Hello",
+        "timestamp": "2026-10-18T00:00:00.000Z",
+        "type": 0,
+        "attachments": [
+          {
+            "id": "100006",
+            "filename": "fixture.txt",
+            "size": 3,
+            "content_type": "text/plain"
+          }
+        ],
+        "referenced_message": {
+          "id": "100099",
+          "channel_id": "100004",
+          "author": {
+            "id": "100001",
+            "bot": true,
+            "username": "fixture_bot"
+          },
+          "content": "Reference",
+          "attachments": [
+            {
+              "id": "100006",
+              "filename": "fixture.txt",
+              "size": 3,
+              "content_type": "text/plain"
+            }
+          ]
+        },
+        "embeds": [
+          {
+            "type": "rich",
+            "title": "Fixture",
+            "image": {
+              "width": 10,
+              "height": 10
+            },
+            "author": {
+              "name": "Creator"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "discord.messages.send",
+      "input": {
+        "channel_id": "100004",
+        "content": "Hello"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/channels/100004/messages",
+            "body": {
+              "content": "Hello",
+              "allowed_mentions": {
+                "parse": []
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100005",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Hello",
+              "timestamp": "2026-10-18T00:00:00.000Z",
+              "type": 0,
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                }
+              ],
+              "referenced_message": {
+                "id": "100099",
+                "channel_id": "100004",
+                "author": {
+                  "id": "100001",
+                  "bot": true,
+                  "username": "fixture_bot"
+                },
+                "content": "Reference",
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ]
+              },
+              "embeds": [
+                {
+                  "type": "rich",
+                  "title": "Fixture",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "image": {
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "width": 10,
+                    "height": 10
+                  },
+                  "author": {
+                    "name": "Creator",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "100005",
+        "channel_id": "100004",
+        "author": {
+          "id": "100001",
+          "bot": true,
+          "username": "fixture_bot"
+        },
+        "content": "Hello",
+        "timestamp": "2026-10-18T00:00:00.000Z",
+        "type": 0,
+        "attachments": [
+          {
+            "id": "100006",
+            "filename": "fixture.txt",
+            "size": 3,
+            "content_type": "text/plain"
+          }
+        ],
+        "write_outcome": "confirmed",
+        "referenced_message": {
+          "id": "100099",
+          "channel_id": "100004",
+          "author": {
+            "id": "100001",
+            "bot": true,
+            "username": "fixture_bot"
+          },
+          "content": "Reference",
+          "attachments": [
+            {
+              "id": "100006",
+              "filename": "fixture.txt",
+              "size": 3,
+              "content_type": "text/plain"
+            }
+          ]
+        },
+        "embeds": [
+          {
+            "type": "rich",
+            "title": "Fixture",
+            "image": {
+              "width": 10,
+              "height": 10
+            },
+            "author": {
+              "name": "Creator"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "discord.messages.update",
+      "input": {
+        "channel_id": "100004",
+        "message_id": "100005",
+        "content": "Hello"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004/messages/100005"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100005",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Hello",
+              "timestamp": "2026-10-18T00:00:00.000Z",
+              "type": 0,
+              "attachments": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "PATCH",
+            "path": "/channels/100004/messages/100005",
+            "body": {
+              "content": "Hello",
+              "allowed_mentions": {
+                "parse": []
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100005",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Hello",
+              "timestamp": "2026-10-18T00:00:00.000Z",
+              "type": 0,
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "content_type": "text/plain",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                }
+              ],
+              "referenced_message": {
+                "id": "100099",
+                "channel_id": "100004",
+                "author": {
+                  "id": "100001",
+                  "bot": true,
+                  "username": "fixture_bot"
+                },
+                "content": "Reference",
+                "attachments": [
+                  {
+                    "id": "100006",
+                    "filename": "fixture.txt",
+                    "size": 3,
+                    "content_type": "text/plain",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                ]
+              },
+              "embeds": [
+                {
+                  "type": "rich",
+                  "title": "Fixture",
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                  "image": {
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "proxy_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "width": 10,
+                    "height": 10
+                  },
+                  "author": {
+                    "name": "Creator",
+                    "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture",
+                    "icon_url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "100005",
+        "channel_id": "100004",
+        "author": {
+          "id": "100001",
+          "bot": true,
+          "username": "fixture_bot"
+        },
+        "content": "Hello",
+        "timestamp": "2026-10-18T00:00:00.000Z",
+        "type": 0,
+        "attachments": [
+          {
+            "id": "100006",
+            "filename": "fixture.txt",
+            "size": 3,
+            "content_type": "text/plain"
+          }
+        ],
+        "write_outcome": "confirmed",
+        "referenced_message": {
+          "id": "100099",
+          "channel_id": "100004",
+          "author": {
+            "id": "100001",
+            "bot": true,
+            "username": "fixture_bot"
+          },
+          "content": "Reference",
+          "attachments": [
+            {
+              "id": "100006",
+              "filename": "fixture.txt",
+              "size": 3,
+              "content_type": "text/plain"
+            }
+          ]
+        },
+        "embeds": [
+          {
+            "type": "rich",
+            "title": "Fixture",
+            "image": {
+              "width": 10,
+              "height": 10
+            },
+            "author": {
+              "name": "Creator"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "discord.messages.delete",
+      "input": {
+        "channel_id": "100004",
+        "message_id": "100005"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004/messages/100005"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100005",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Hello",
+              "timestamp": "2026-10-18T00:00:00.000Z",
+              "type": 0,
+              "attachments": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "DELETE",
+            "path": "/channels/100004/messages/100005"
+          },
+          "response": {
+            "status": 204,
+            "body": null
+          }
+        }
+      ],
+      "output": {
+        "channel_id": "100004",
+        "message_id": "100005",
+        "deleted": true,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "discord.reactions.create",
+      "input": {
+        "channel_id": "100004",
+        "message_id": "100005",
+        "emoji": "👍"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004/messages/100005"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100005",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Hello",
+              "timestamp": "2026-10-18T00:00:00.000Z",
+              "type": 0,
+              "attachments": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "PUT",
+            "path": "/channels/100004/messages/100005/reactions/%F0%9F%91%8D/@me"
+          },
+          "response": {
+            "status": 204,
+            "body": null
+          }
+        }
+      ],
+      "output": {
+        "channel_id": "100004",
+        "message_id": "100005",
+        "reaction_added": true,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "discord.attachments.download",
+      "input": {
+        "channel_id": "100004",
+        "message_id": "100005",
+        "attachment_id": "100006"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004/messages/100005"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100005",
+              "channel_id": "100004",
+              "author": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "content": "Hello",
+              "timestamp": "2026-10-18T00:00:00.000Z",
+              "type": 0,
+              "attachments": [
+                {
+                  "id": "100006",
+                  "filename": "fixture.txt",
+                  "size": 3,
+                  "url": "https://cdn.discordapp.com/attachments/100004/100006/fixture.txt?ex=fixture&is=fixture&hm=fixture"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "channel_id": "100004",
+        "message_id": "100005",
+        "attachment_id": "100006",
+        "artifact": {
+          "id": "new-artifact",
+          "name": "fixture.txt",
+          "mimeType": "text/plain",
+          "size": 3
+        }
+      }
+    },
+    {
+      "id": "discord.commands.list",
+      "input": {},
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/oauth2/applications/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100002",
+              "bot": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "verify_key": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/applications/100002/guilds/100003/commands"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100008",
+                "application_id": "100002",
+                "guild_id": "100003",
+                "type": 1,
+                "name": "summary",
+                "description": "Summarize a topic",
+                "options": [],
+                "default_member_permissions": "0",
+                "version": "100009"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "100008",
+            "application_id": "100002",
+            "guild_id": "100003",
+            "type": 1,
+            "name": "summary",
+            "description": "Summarize a topic",
+            "options": [],
+            "default_member_permissions": "0",
+            "version": "100009"
+          }
+        ]
+      }
+    },
+    {
+      "id": "discord.commands.upsert",
+      "input": {
+        "name": "summary",
+        "description": "Summarize a topic"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/users/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100001",
+              "bot": true,
+              "username": "fixture_bot"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/oauth2/applications/@me"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100002",
+              "bot": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "verify_key": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/channels/100004"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100004",
+              "guild_id": "100003",
+              "type": 0,
+              "name": "fixture",
+              "permission_overwrites": []
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/members/100001"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "user": {
+                "id": "100001",
+                "bot": true,
+                "username": "fixture_bot"
+              },
+              "roles": [],
+              "pending": false,
+              "communication_disabled_until": null
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/guilds/100003/roles"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100003",
+                "permissions": "109632"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "GET",
+            "path": "/applications/100002/guilds/100003/commands"
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "100008",
+                "application_id": "100002",
+                "guild_id": "100003",
+                "type": 1,
+                "name": "summary",
+                "description": "Summarize a topic",
+                "options": [],
+                "default_member_permissions": "0",
+                "version": "100009"
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/applications/100002/guilds/100003/commands",
+            "body": {
+              "name": "summary",
+              "description": "Summarize a topic",
+              "type": 1,
+              "options": [],
+              "default_member_permissions": "0"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "100008",
+              "application_id": "100002",
+              "guild_id": "100003",
+              "type": 1,
+              "name": "summary",
+              "description": "Summarize a topic",
+              "options": [],
+              "default_member_permissions": "0",
+              "version": "100009"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "100008",
+        "application_id": "100002",
+        "guild_id": "100003",
+        "type": 1,
+        "name": "summary",
+        "description": "Summarize a topic",
+        "options": [],
+        "default_member_permissions": "0",
+        "version": "100009",
+        "write_outcome": "confirmed"
+      }
+    }
+  ]
+}

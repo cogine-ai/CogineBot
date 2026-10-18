@@ -24,6 +24,21 @@ export type NativeRoutineTriggerDraft = {
   fileId: string;
   channelId: string;
   threadTs: string;
+  siteId: string;
+  listId: string;
+  driveId: string;
+  itemId: string;
+  worksheetId: string;
+  address: string;
+  planId: string;
+  teamId: string;
+  chatId: string;
+  guildId: string;
+  commandId: string;
+  commandName: string;
+  userId: string;
+  timeMin: string;
+  timeMax: string;
 };
 
 export function emptyNativeRoutineTriggerDraft(): NativeRoutineTriggerDraft {
@@ -47,6 +62,21 @@ export function emptyNativeRoutineTriggerDraft(): NativeRoutineTriggerDraft {
     fileId: "",
     channelId: "",
     threadTs: "",
+    siteId: "",
+    listId: "",
+    driveId: "",
+    itemId: "",
+    worksheetId: "",
+    address: "",
+    planId: "",
+    teamId: "",
+    chatId: "",
+    guildId: "",
+    commandId: "",
+    commandName: "",
+    userId: "",
+    timeMin: "",
+    timeMax: "",
   };
 }
 
@@ -63,6 +93,45 @@ export function draftFromNativeRoutineTrigger(
   };
   const spec = trigger.spec;
   switch (spec.kind) {
+    case "sharepoint.list_item.changed":
+      draft.siteId = spec.siteId;
+      draft.listId = spec.listId;
+      break;
+    case "excel.range.changed":
+      draft.driveId = spec.driveId;
+      draft.itemId = spec.itemId;
+      draft.worksheetId = spec.worksheetId;
+      draft.address = spec.address;
+      break;
+    case "planner.task.changed":
+      draft.planId = spec.planId;
+      break;
+    case "teams.channel_message.created":
+      draft.teamId = spec.teamId;
+      draft.channelId = spec.channelId;
+      break;
+    case "feishu.calendar_event.changed":
+    case "wecom.schedule.changed":
+      draft.calendarId = spec.calendarId;
+      break;
+    case "dingtalk.calendar_event.changed":
+      draft.userId = spec.userId;
+      draft.calendarId = spec.calendarId;
+      draft.timeMin = spec.timeMin;
+      draft.timeMax = spec.timeMax;
+      break;
+    case "telegram.pinned_message.changed":
+      draft.chatId = spec.chatId;
+      break;
+    case "discord.channel_message.created":
+      draft.channelId = spec.channelId;
+      break;
+    case "discord.command.invoked":
+      draft.guildId = spec.guildId;
+      draft.channelId = spec.channelId;
+      draft.commandId = spec.commandId;
+      draft.commandName = spec.commandName;
+      break;
     case "calendar.event_changed":
     case "calendar.event_starting":
       draft.calendarId = spec.calendarId;
@@ -121,6 +190,11 @@ export function resetNativeRoutineTriggerDraft(
 }
 
 export function nativeEventAppForKind(kind: NativeRoutineTriggerDraft["kind"]) {
+  const prefix = kind.split(".")[0];
+  if (["sharepoint", "excel", "planner", "teams", "dingtalk", "wecom", "discord"].includes(prefix!))
+    return prefix;
+  if (prefix === "feishu") return "feishu-lark";
+  if (prefix === "telegram") return "telegram-bot";
   return kind.startsWith("calendar.")
     ? "google-calendar"
     : kind.startsWith("notion.")
@@ -139,7 +213,22 @@ export function nativeEventAccounts(rows: readonly Connection[]): Connection[] {
     (row) =>
       row.connectorId === "native" &&
       row.status === "connected" &&
-      ["google-calendar", "notion", "gmail", "google-drive", "slack"].includes(row.provider),
+      [
+        "google-calendar",
+        "notion",
+        "gmail",
+        "google-drive",
+        "slack",
+        "sharepoint",
+        "excel",
+        "planner",
+        "teams",
+        "feishu-lark",
+        "dingtalk",
+        "wecom",
+        "telegram-bot",
+        "discord",
+      ].includes(row.provider),
   );
 }
 
@@ -167,6 +256,58 @@ function nativeRoutineTriggerIntent(draft: NativeRoutineTriggerDraft) {
     connectionId: draft.connectionId,
   };
   switch (draft.kind) {
+    case "sharepoint.list_item.changed":
+      return {
+        ...base,
+        spec: { kind: draft.kind, siteId: draft.siteId.trim(), listId: draft.listId.trim() },
+      };
+    case "excel.range.changed":
+      return {
+        ...base,
+        spec: {
+          kind: draft.kind,
+          driveId: draft.driveId.trim(),
+          itemId: draft.itemId.trim(),
+          worksheetId: draft.worksheetId.trim(),
+          address: draft.address.trim(),
+        },
+      };
+    case "planner.task.changed":
+      return { ...base, spec: { kind: draft.kind, planId: draft.planId.trim() } };
+    case "teams.channel_message.created":
+      return {
+        ...base,
+        spec: { kind: draft.kind, teamId: draft.teamId.trim(), channelId: draft.channelId.trim() },
+      };
+    case "feishu.calendar_event.changed":
+    case "wecom.schedule.changed":
+      return { ...base, spec: { kind: draft.kind, calendarId: draft.calendarId.trim() } };
+    case "dingtalk.calendar_event.changed":
+      return {
+        ...base,
+        spec: {
+          kind: draft.kind,
+          userId: draft.userId.trim(),
+          calendarId: draft.calendarId.trim(),
+          timeMin: draft.timeMin.trim(),
+          timeMax: draft.timeMax.trim(),
+        },
+      };
+    case "telegram.pinned_message.changed":
+      return { ...base, spec: { kind: draft.kind, chatId: draft.chatId.trim() } };
+    case "discord.channel_message.created":
+      return { ...base, spec: { kind: draft.kind, channelId: draft.channelId.trim() } };
+    case "discord.command.invoked":
+      return {
+        ...base,
+        spec: {
+          kind: draft.kind,
+          guildId: draft.guildId.trim(),
+          channelId: draft.channelId.trim(),
+          commandId: draft.commandId.trim(),
+          commandName: draft.commandName.trim(),
+        },
+      };
     case "calendar.event_changed":
     case "calendar.event_starting":
       return {

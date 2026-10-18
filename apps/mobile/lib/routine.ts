@@ -19,6 +19,33 @@ export function routineStatusLine(routine: Routine): string {
     ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("slack."))
       ? [t("Slack bot event")]
       : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("sharepoint."))
+      ? [t("SharePoint event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("excel."))
+      ? [t("Excel event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("planner."))
+      ? [t("Planner event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("teams."))
+      ? [t("Teams event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("feishu."))
+      ? [t("Feishu / Lark event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("dingtalk."))
+      ? [t("DingTalk event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("wecom."))
+      ? [t("WeCom event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("telegram."))
+      ? [t("Telegram bot event")]
+      : []),
+    ...(routine.nativeTriggers?.some((trigger) => trigger.spec.kind.startsWith("discord."))
+      ? [t("Discord bot event")]
+      : []),
     ...routine.crons.map(formatCron),
     ...(routine.webhookEnabled ? [t("Webhook")] : []),
     ...(routine.githubEnabled ? [t("Git event")] : []),

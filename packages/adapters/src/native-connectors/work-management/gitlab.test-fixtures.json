@@ -1,0 +1,287 @@
+{
+  "version": 1,
+  "contractSha256": "8eea4c5d5d8fe61d6835e7ee21e12000d0d3b4d0b274383fdb94ac39103125cf",
+  "fixtures": [
+    {
+      "id": "gitlab.projects.list",
+      "input": {},
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects",
+            "query": {
+              "page": 1,
+              "per_page": 30,
+              "membership": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": 9,
+                "name": "Fixture",
+                "path_with_namespace": "group/fixture"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": 9
+          }
+        ]
+      }
+    },
+    {
+      "id": "gitlab.issues.list",
+      "input": {
+        "project": "group/fixture",
+        "state": "opened"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects/group%2Ffixture/issues",
+            "query": {
+              "page": 1,
+              "per_page": 30,
+              "state": "opened"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": 101,
+                "iid": 7,
+                "project_id": 9,
+                "title": "Fixture issue",
+                "state": "opened"
+              }
+            ],
+            "headers": {
+              "x-next-page": "2"
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": 101
+          }
+        ],
+        "hasMore": true,
+        "nextPage": 2,
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "gitlab.issues.get",
+      "input": {
+        "project": "9",
+        "issue_iid": 7
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects/9/issues/7"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": 101,
+              "iid": 7,
+              "project_id": 9,
+              "title": "Fixture issue",
+              "state": "opened"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": 101,
+        "iid": 7
+      }
+    },
+    {
+      "id": "gitlab.issues.create",
+      "input": {
+        "project": "9",
+        "title": "Fixture issue",
+        "assignee_ids": [3]
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/projects/9/issues",
+            "body": {
+              "title": "Fixture issue",
+              "assignee_ids": [3]
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": 101,
+              "iid": 7,
+              "project_id": 9,
+              "title": "Fixture issue",
+              "state": "opened"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": 101,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "gitlab.comments.create",
+      "input": {
+        "project": "9",
+        "issue_iid": 7,
+        "body": "Fixture note"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/projects/9/issues/7/notes",
+            "body": {
+              "body": "Fixture note"
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": 88,
+              "body": "Fixture note"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": 88,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "gitlab.merge_requests.list",
+      "input": {
+        "project": "9"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects/9/merge_requests",
+            "query": {
+              "page": 1,
+              "per_page": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": 101,
+                "iid": 7,
+                "project_id": 9,
+                "title": "Fixture issue",
+                "state": "opened",
+                "source_branch": "fixture",
+                "target_branch": "main"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": 101
+          }
+        ],
+        "hasMore": false
+      }
+    },
+    {
+      "id": "gitlab.merge_requests.get",
+      "input": {
+        "project": "9",
+        "merge_request_iid": 7
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects/9/merge_requests/7"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": 101,
+              "iid": 7,
+              "project_id": 9,
+              "title": "Fixture issue",
+              "state": "opened",
+              "source_branch": "fixture",
+              "target_branch": "main"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": 101,
+        "iid": 7
+      }
+    },
+    {
+      "id": "gitlab.pipelines.list",
+      "input": {
+        "project": "9",
+        "ref": "main"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects/9/pipelines",
+            "query": {
+              "page": 1,
+              "per_page": 30,
+              "ref": "main"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": 77,
+                "status": "success",
+                "ref": "main"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": 77,
+            "status": "success"
+          }
+        ]
+      }
+    }
+  ]
+}

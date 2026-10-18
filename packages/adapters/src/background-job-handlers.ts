@@ -38,7 +38,7 @@ export function createBackgroundJobHandlers(deps: {
   messaging?: MessagingSurface;
   cloudAgent?: CloudAgentConnection | null;
   nativeEvents?: Pick<NativeRoutineEventService, "poll" | "notionSignal"> &
-    Partial<Pick<NativeRoutineEventService, "slackSignal" | "slackLifecycle">>;
+    Partial<Pick<NativeRoutineEventService, "slackSignal" | "slackLifecycle" | "discordSignal">>;
 }): BackgroundJobHandlers {
   const deliverMessaging = async (runId?: string) => {
     if (!deps.messaging) return;
@@ -64,6 +64,11 @@ export function createBackgroundJobHandlers(deps: {
       if (!deps.nativeEvents?.slackLifecycle)
         throw new Error("Native Slack event processing is unavailable");
       await deps.nativeEvents.slackLifecycle(payload);
+    },
+    "native.discord.signal": async (payload) => {
+      if (!deps.nativeEvents?.discordSignal)
+        throw new Error("Native Discord event processing is unavailable");
+      await deps.nativeEvents.discordSignal(payload, new AbortController().signal);
     },
     "native.slack.signal": async (payload) => {
       if (!deps.nativeEvents?.slackSignal)

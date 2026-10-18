@@ -11,7 +11,11 @@ import { NativeActionError } from "./action.js";
 import { readNativeBytes } from "./binary.js";
 import { createNativeFetch, nativeAbortable } from "./network.js";
 
-export type NativeCredential = { kind: "bearer" | "api_key" | "raw"; value: string };
+export type NativeCredential =
+  | { kind: "bearer" | "api_key" | "raw"; value: string }
+  | { kind: "header"; header: "X-Figma-Token" | "x-acs-dingtalk-access-token"; value: string }
+  | { kind: "query"; parameter: "access_token"; value: string }
+  | { kind: "telegram_bot"; value: string };
 
 function retryAfter(response: Response): number | undefined {
   const value = response.headers.get("retry-after");
@@ -26,8 +30,55 @@ function httpError(
   body: unknown,
   retry: number | undefined,
   readOnly: boolean,
+  target: URL,
+  headers: Headers,
 ): NativeActionError {
   const record = asRecord(body) ?? {};
+  // These nonstandard statuses are meaningful only at the fixed provider API.
+  // Never classify another authority by an arbitrary error message or header.
+  if (
+    status === 400 &&
+    target.origin === "https://api.linear.app" &&
+    target.pathname === "/graphql" &&
+    Array.isArray(record.errors) &&
+    record.errors.some((error) => asRecord(asRecord(error)?.extensions)?.code === "RATELIMITED")
+  )
+    return new NativeActionError("rate_limited", "The service rate limit was reached.", {
+      retryAfterSeconds: retry,
+    });
+  if (status === 403 && target.origin === "https://api.github.com") {
+    const primary = headers.get("x-ratelimit-remaining") === "0";
+    const retryHeader = headers.get("retry-after");
+    const githubRetry =
+      retry !== undefined &&
+      Number.isSafeInteger(retry) &&
+      (/^\d+$/.test(retryHeader ?? "") || Number.isNaN(Number(retryHeader)))
+        ? retry
+        : undefined;
+    const secondary =
+      githubRetry !== undefined ||
+      (typeof record.message === "string" &&
+        (record.message === "You have exceeded a secondary rate limit" ||
+          /^You have exceeded a secondary rate limit\.(?: |$)/.test(record.message)));
+    if (primary || secondary) {
+      // GitHub's reset is epoch seconds (Linear's similarly named header is ms).
+      const reset = headers.get("x-ratelimit-reset");
+      const epoch = reset && /^\d+$/.test(reset) ? Number(reset) : NaN;
+      const resetWait =
+        primary && Number.isSafeInteger(epoch) && epoch >= 0
+          ? Math.max(0, Math.ceil(epoch - Date.now() / 1000))
+          : undefined;
+      return new NativeActionError("rate_limited", "The service rate limit was reached.", {
+        retryAfterSeconds:
+          githubRetry !== undefined || resetWait !== undefined
+            ? Math.max(githubRetry ?? 0, resetWait ?? 0)
+            : secondary
+              ? 60
+              : undefined,
+        recovery: { status },
+      });
+    }
+  }
   const google = asRecord(record.error) ?? {};
   const reasons = Array.isArray(google.errors) ? google.errors : [];
   const reason = reasons
@@ -121,6 +172,9 @@ export class NativeHttpClient {
       timeoutMs?: number;
       /** Refresh only a definitively rejected token, fenced by its tokenVersion. */
       onUnauthorized?: () => Promise<void>;
+      /** Fixed enterprise APIs can reject a token inside an HTTP 200 JSON envelope. */
+      enterpriseAuthorization?: "feishu" | "wecom" | "dingtalk";
+      onRejectedCredential?: () => Promise<void>;
       /** Drive upload sessions use 308 as a protocol acknowledgement, without following Location. */
       resumableUpload?: boolean;
     },
@@ -164,10 +218,18 @@ export class NativeHttpClient {
     for (let attempt = 0; attempt < 2; attempt++) {
       const auth = await this.credential();
       const headers = new Headers({ ...this.options.headers, ...custom });
-      headers.set(
-        auth.kind === "api_key" ? "X-API-Key" : "Authorization",
-        auth.kind === "bearer" ? `Bearer ${auth.value}` : auth.value,
-      );
+      const target = new URL(url);
+      if (auth.kind === "header") headers.set(auth.header, auth.value);
+      else if (auth.kind === "query") target.searchParams.set(auth.parameter, auth.value);
+      else if (auth.kind === "telegram_bot") {
+        if (!/^\d+:[A-Za-z0-9_-]+$/.test(auth.value))
+          throw new NativeActionError("authorization_expired", "The bot credential is invalid.");
+        target.pathname = new URL(`${this.base}/bot${auth.value}${request.path}`).pathname;
+      } else
+        headers.set(
+          auth.kind === "api_key" ? "X-API-Key" : "Authorization",
+          auth.kind === "bearer" ? `Bearer ${auth.value}` : auth.value,
+        );
       let body: BodyInit | undefined;
       if (request.body !== undefined) {
         if (
@@ -187,7 +249,7 @@ export class NativeHttpClient {
         AbortSignal.timeout(this.options.timeoutMs ?? 30_000),
       );
       try {
-        response = await this.fetch(url, { method: request.method, headers, body, signal });
+        response = await this.fetch(target, { method: request.method, headers, body, signal });
       } catch {
         if (readOnly && attempt === 0 && !this.options.signal.aborted) continue;
         throw new NativeActionError(
@@ -202,7 +264,25 @@ export class NativeHttpClient {
         await response.body?.cancel();
         return { status: 308, body: null, headers: response.headers };
       }
-      const retry = retryAfter(response);
+      let retry = retryAfter(response);
+      const telegramLimited = auth.kind === "telegram_bot" && response.status === 429;
+      if (telegramLimited) {
+        try {
+          const rateBody = await nativeAbortable(readBoundedText(response, 65_536), signal);
+          if (!rateBody.truncated) {
+            const parameters = asRecord(asRecord(JSON.parse(rateBody.text))?.parameters);
+            const seconds = parameters?.retry_after;
+            if (typeof seconds === "number" && Number.isSafeInteger(seconds) && seconds >= 0)
+              retry = Math.max(retry ?? 0, seconds);
+          }
+        } catch {
+          /* A malformed rate response cannot authorize a replay or expose its body. */
+        }
+      }
+      if (response.status === 401 && this.options.enterpriseAuthorization) {
+        await response.body?.cancel();
+        if (await this.enterpriseUnauthorized(attempt, readOnly)) continue;
+      }
       if (response.status === 401 && attempt === 0 && this.options.onUnauthorized) {
         await response.body?.cancel();
         await this.options.onUnauthorized();
@@ -230,6 +310,7 @@ export class NativeHttpClient {
           });
         continue;
       }
+      if (telegramLimited) throw httpError(429, {}, retry, readOnly, target, response.headers);
       let text: string;
       if (response.ok && request.responseType === "bytes") {
         return {
@@ -243,7 +324,8 @@ export class NativeHttpClient {
         if (read.truncated) throw new Error("incomplete");
         text = read.text;
       } catch {
-        if (!response.ok) throw httpError(response.status, {}, retry, readOnly);
+        if (!response.ok)
+          throw httpError(response.status, {}, retry, readOnly, target, response.headers);
         throw new NativeActionError("incomplete_response", "The service response was incomplete.", {
           uncertain: !readOnly,
         });
@@ -253,7 +335,8 @@ export class NativeHttpClient {
         try {
           parsed = JSON.parse(text);
         } catch {
-          if (!response.ok) throw httpError(response.status, {}, retry, readOnly);
+          if (!response.ok)
+            throw httpError(response.status, {}, retry, readOnly, target, response.headers);
           throw new NativeActionError(
             "incomplete_response",
             "The service did not return a valid response.",
@@ -261,12 +344,36 @@ export class NativeHttpClient {
           );
         }
       }
-      if (!response.ok) throw httpError(response.status, parsed, retry, readOnly);
+      if (!response.ok)
+        throw httpError(response.status, parsed, retry, readOnly, target, response.headers);
+      const data = asRecord(parsed);
+      const expired =
+        this.options.enterpriseAuthorization === "feishu"
+          ? [99991663, 99991664, 99991668, 99991669].includes(Number(data?.code))
+          : this.options.enterpriseAuthorization === "wecom"
+            ? [40014, 42001].includes(Number(data?.errcode))
+            : this.options.enterpriseAuthorization === "dingtalk"
+              ? ["InvalidAuthentication", "InvalidAccessToken", "InvalidToken"].includes(
+                  String(data?.code),
+                )
+              : false;
+      if (expired && (await this.enterpriseUnauthorized(attempt, readOnly))) continue;
       return { status: response.status, body: parsed, headers: response.headers };
     }
     throw new NativeActionError(
       "temporarily_unavailable",
       "The service is temporarily unavailable.",
+    );
+  }
+
+  private async enterpriseUnauthorized(attempt: number, readOnly: boolean): Promise<true> {
+    if (attempt === 0 && this.options.onUnauthorized) {
+      await this.options.onUnauthorized();
+      if (readOnly) return true;
+    } else await this.options.onRejectedCredential?.();
+    throw new NativeActionError(
+      "authorization_expired",
+      "The enterprise service rejected this credential. Retry with the renewed authorization or reconnect the account.",
     );
   }
 

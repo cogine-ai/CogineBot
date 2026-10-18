@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import type { BackgroundJob, JobPublisher } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type {
@@ -8,10 +8,12 @@ import type {
   NativeEventScope,
   NativeRoutineEventSpec,
 } from "@rakazo/contracts";
+import { nativeEventApp, nativeEventResource } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, describe, it, vi } from "vitest";
 import { createJobReconciler } from "../../job-reconciler.js";
+import { ingestDiscordRoutine, processDiscordRoutine } from "./discord-interactions.js";
 import type { NativeRoutineTriggerRow } from "./store.js";
 import {
   checkpointNativeEventSource,
@@ -108,10 +110,17 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       );
     }
   });
-  async function fixture() {
+  async function fixture(override?: NativeRoutineEventSpec) {
+    const spec: NativeRoutineEventSpec = override ?? {
+      kind: "calendar.event_changed",
+      calendarId: "primary",
+      target: { kind: "calendar" },
+    };
+    const application = nativeEventApp(spec);
+
     const config = await db.nativeAppConfig.create({
       data: {
-        appId: "google-calendar",
+        appId: application,
         label: "Synthetic event source",
         ownership: "byo",
         credentialKind: "oauth",
@@ -148,7 +157,7 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       data: {
         ...scope,
         connectorId: "native",
-        provider: "google-calendar",
+        provider: application,
         providerRef: grant.id,
         displayName: "Synthetic account",
         status: "connected",
@@ -194,11 +203,6 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
         blocks: [{ type: "text", text: "Synthetic original chat" }],
       },
     });
-    const spec: NativeRoutineEventSpec = {
-      kind: "calendar.event_changed",
-      calendarId: "primary",
-      target: { kind: "calendar" },
-    };
     const proof: NativeEventAuthorizationProof = {
       ...scope,
       connectionId: connection.id,
@@ -207,8 +211,8 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       authGeneration: grant.authGeneration,
       configId: config.id,
       configRevision: config.revision,
-      appId: "google-calendar",
-      resource: { type: "calendar", id: "primary" },
+      appId: application,
+      resource: nativeEventResource(spec),
       spec,
     };
     const trigger = await saveNativeRoutineTrigger(
@@ -240,8 +244,8 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       triggerVersion: row.version,
       connectionId: connection.id,
       authorizationRevision: revision,
-      kind: "calendar.event_changed",
-      resource: { type: "calendar", id: "primary" },
+      kind: spec.kind,
+      resource: nativeEventResource(spec),
       eventId: "synthetic-event",
       eventIdentity: "synthetic-event-version-1",
       observedVersion: "etag-v1",
@@ -272,6 +276,323 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       events: await db.event.count({ where: { threadId: f.thread.id } }),
     };
   }
+  it("Discord signed ingress uses actual active-grant/current-Space/explicit-Routine SQL fences before durable queue publication", async () => {
+    const appId = "223456789012345678",
+      guildId = "323456789012345678",
+      channelId = "423456789012345678",
+      commandId = "523456789012345678",
+      botId = "123456789012345678";
+    const spec: NativeRoutineEventSpec = {
+        kind: "discord.command.invoked",
+        guildId,
+        channelId,
+        commandId,
+        commandName: "review",
+      },
+      f = await fixture(spec);
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519"),
+      key = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    await db.nativeAppConfig.update({
+      where: { id: f.config.id },
+      data: {
+        credentialKind: "bot_token",
+        config: {
+          actor: "bot",
+          scopes: [],
+          capabilities: ["commands"],
+          knowledgeBaseIds: [],
+          boundSpaceId: space,
+          tenantId: guildId,
+          targetIds: [channelId],
+        },
+      },
+    });
+    await db.nativeOAuthGrant.update({
+      where: { id: f.grant.id },
+      data: {
+        subject: botId,
+        tenant: guildId,
+        principal: {
+          actorType: "bot",
+          credentialType: "bot_token",
+          scopeAuthority: "provider_enforced",
+          botId,
+          applicationId: appId,
+          interactionPublicKey: key,
+          boundSpaceId: space,
+          configRevision: f.config.revision,
+          bindingNamespace: "guild",
+          verifiedTargets: [{ id: channelId, guildId }],
+        },
+      },
+    });
+    const interactionId = (((BigInt(Date.now()) - 1420070400000n) << 22n) + 1n).toString(),
+      raw = new TextEncoder().encode(
+        JSON.stringify({
+          type: 2,
+          id: interactionId,
+          application_id: appId,
+          guild_id: guildId,
+          channel_id: channelId,
+          member: { user: { id: "623456789012345678" } },
+          token: "fixture-never-retained-token",
+          data: { id: commandId, type: 1, name: "review" },
+        }),
+      ),
+      timestamp = String(Math.floor(Date.now() / 1000)),
+      signature = sign(
+        null,
+        Buffer.concat([Buffer.from(timestamp), Buffer.from(raw)]),
+        privateKey,
+      ).toString("hex"),
+      headers = new Headers({
+        "x-signature-ed25519": signature,
+        "x-signature-timestamp": timestamp,
+      });
+    const jobs: unknown[] = [],
+      publisher = {
+        enqueue: async (job: unknown) => {
+          jobs.push(job);
+        },
+      };
+    assert.deepEqual(await ingestDiscordRoutine(db, publisher, f.config.id, raw, headers), {
+      type: 4,
+      data: { content: "Routine queued.", flags: 64 },
+    });
+    assert.equal(jobs.length, 1);
+    assert.equal(JSON.stringify(jobs).includes("fixture-never-retained-token"), false);
+    assert.equal((jobs[0] as { payload: { triggerId: string } }).payload.triggerId, f.row.id);
+    await checkpointNativeEventSource(db, scope, {
+      triggerId: f.row.id,
+      triggerVersion: f.row.version,
+      leaseId: f.leaseId,
+      state: { ready: true },
+      nextPollAt: now(),
+      release: true,
+    });
+    const oauth = {
+      authorization: async () => {
+        const connection = await db.connection.findUniqueOrThrow({
+            where: { id: f.connection.id },
+          }),
+          config = await db.nativeAppConfig.findUniqueOrThrow({ where: { id: f.config.id } }),
+          grant = await db.nativeOAuthGrant.findUniqueOrThrow({ where: { id: f.grant.id } });
+        return {
+          connection,
+          config,
+          grant,
+          auth: {
+            tokens: { accessToken: "fixture-discord-read-token", refreshToken: null },
+            identity: {
+              authority: "https://discord.com",
+              subject: botId,
+              tenant: guildId,
+              displayName: "Fixture bot",
+              context: grant.principal as Record<string, unknown>,
+            },
+            scopes: [],
+            expiresAt: null,
+          },
+        };
+      },
+    };
+    const requestPaths: string[] = [],
+      network = {
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 as const }],
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = new URL(
+            typeof input === "string" || input instanceof URL ? input : input.url,
+          );
+          requestPaths.push(url.pathname);
+          assert.equal(
+            new Headers(init?.headers).get("authorization"),
+            "Bot fixture-discord-read-token",
+          );
+          let value: unknown;
+          if (url.pathname.endsWith("/users/@me")) value = { id: botId, bot: true };
+          else if (url.pathname.endsWith(`/channels/${channelId}`))
+            value = { id: channelId, guild_id: guildId, type: 0, permission_overwrites: [] };
+          else if (url.pathname.endsWith(`/members/${botId}`))
+            value = { user: { id: botId }, roles: [] };
+          else if (url.pathname.endsWith("/roles")) value = [{ id: guildId, permissions: "66560" }];
+          else if (url.pathname.endsWith("/oauth2/applications/@me"))
+            value = { id: appId, bot: { id: botId } };
+          else if (url.pathname.endsWith(`/commands/${commandId}`))
+            value = {
+              id: commandId,
+              application_id: appId,
+              guild_id: guildId,
+              name: "review",
+              type: 1,
+            };
+          else throw new Error("Unexpected fixed source request");
+          return new Response(JSON.stringify(value));
+        },
+      };
+    const onCreated = vi.fn(async () => {}),
+      queued = jobs[0];
+    await processDiscordRoutine(
+      db,
+      oauth,
+      publisher,
+      (queued as { payload: unknown }).payload,
+      new AbortController().signal,
+      async () => (prompt) => prompt,
+      onCreated,
+      network,
+    );
+    await processDiscordRoutine(
+      peer,
+      oauth,
+      publisher,
+      (queued as { payload: unknown }).payload,
+      new AbortController().signal,
+      async () => (prompt) => prompt,
+      onCreated,
+      network,
+    );
+    assert.equal(onCreated.mock.calls.length, 1);
+    assert.equal(requestPaths.length, 12);
+    assert.deepEqual(await counts(f), { tasks: 1, runs: 1, messages: 1, events: 0 });
+    await db.routine.update({ where: { id: f.routine.id }, data: { active: false } });
+    jobs.length = 0;
+    assert.deepEqual(await ingestDiscordRoutine(peer, publisher, f.config.id, raw, headers), {
+      type: 4,
+      data: { content: "No Routine is enabled for this command here.", flags: 64 },
+    });
+    assert.equal(jobs.length, 0);
+    await db.nativeOAuthGrant.update({ where: { id: f.grant.id }, data: { revokedAt: now() } });
+    await assert.rejects(ingestDiscordRoutine(db, publisher, f.config.id, raw, headers), {
+      kind: "authorization_required",
+    });
+    assert.deepEqual(await counts(f), { tasks: 1, runs: 1, messages: 1, events: 0 });
+  });
+  it("all ten remaining event intents use the same real PostgreSQL exact-account fence and permanent receipt", async () => {
+    const cases: Array<{
+      spec: NativeRoutineEventSpec;
+      evidence: NativeEventObservation["evidence"];
+      metadata: Record<string, unknown>;
+      fields?: Partial<NativeEventObservation>;
+    }> = [
+      {
+        spec: { kind: "sharepoint.list_item.changed", siteId: "site", listId: "list" },
+        evidence: "microsoft_read",
+        metadata: { siteId: "site", listId: "list", itemId: "item" },
+      },
+      {
+        spec: {
+          kind: "excel.range.changed",
+          driveId: "drive",
+          itemId: "workbook",
+          worksheetId: "sheet",
+          address: "A1:B2",
+        },
+        evidence: "microsoft_read",
+        metadata: { driveId: "drive", fileId: "workbook", worksheetId: "sheet", address: "A1:B2" },
+      },
+      {
+        spec: { kind: "planner.task.changed", planId: "plan" },
+        evidence: "microsoft_read",
+        metadata: { planId: "plan", taskId: "task" },
+      },
+      {
+        spec: { kind: "teams.channel_message.created", teamId: "team", channelId: "channel" },
+        evidence: "microsoft_read",
+        metadata: { teamId: "team", channelId: "channel", messageId: "message" },
+      },
+      {
+        spec: { kind: "feishu.calendar_event.changed", calendarId: "calendar" },
+        evidence: "enterprise_read",
+        metadata: { calendarId: "calendar", eventId: "event" },
+      },
+      {
+        spec: {
+          kind: "dingtalk.calendar_event.changed",
+          userId: "user",
+          calendarId: "calendar",
+          timeMin: "2026-10-18T00:00:00Z",
+          timeMax: "2026-10-19T00:00:00Z",
+        },
+        evidence: "enterprise_read",
+        metadata: { userId: "user", calendarId: "calendar", eventId: "event" },
+      },
+      {
+        spec: { kind: "wecom.schedule.changed", calendarId: "calendar" },
+        evidence: "enterprise_read",
+        metadata: { calendarId: "calendar", scheduleId: "schedule" },
+      },
+      {
+        spec: { kind: "telegram.pinned_message.changed", chatId: "-100123456" },
+        evidence: "bot_read",
+        metadata: { chatId: "-100123456", messageId: null },
+      },
+      {
+        spec: { kind: "discord.channel_message.created", channelId: "423456789012345678" },
+        evidence: "bot_read",
+        metadata: { channelId: "423456789012345678", messageId: "message" },
+        fields: { channelId: "423456789012345678", messageId: "message" },
+      },
+      {
+        spec: {
+          kind: "discord.command.invoked",
+          guildId: "323456789012345678",
+          channelId: "423456789012345678",
+          commandId: "523456789012345678",
+          commandName: "review",
+        },
+        evidence: "discord_interaction",
+        metadata: { userId: "fixture-user", options: [] },
+        fields: {
+          interactionId: "723456789012345678",
+          guildId: "323456789012345678",
+          channelId: "423456789012345678",
+          commandId: "523456789012345678",
+          commandName: "review",
+        },
+      },
+    ];
+    for (const entry of cases) {
+      const f = await fixture(entry.spec),
+        event = {
+          ...f.event,
+          eventId: undefined,
+          evidence: entry.evidence,
+          sourceMetadata: entry.metadata,
+          ...entry.fields,
+        };
+      assert.equal(
+        await claimNativeRoutineEvent(
+          db,
+          scope,
+          { ...event, resource: { ...event.resource, id: "other-resource" } },
+          f.leaseId,
+        ),
+        undefined,
+        entry.spec.kind,
+      );
+      const first = await claimNativeRoutineEvent(db, scope, event, f.leaseId),
+        second = await claimNativeRoutineEvent(peer, scope, event, f.leaseId);
+      assert.equal(first?.created, true, entry.spec.kind);
+      assert.equal(second?.created, false, entry.spec.kind);
+      assert.equal(first?.runId, second?.runId, entry.spec.kind);
+      assert.deepEqual(
+        await counts(f),
+        { tasks: 1, runs: 1, messages: 1, events: 0 },
+        entry.spec.kind,
+      );
+      const task = await db.task.findUniqueOrThrow({ where: { id: first!.taskId } });
+      assert.deepEqual(task.connectionIds, [f.connection.id]);
+      await db.nativeOAuthGrant.update({
+        where: { id: f.grant.id },
+        data: { authGeneration: { increment: 1 } },
+      });
+      assert.equal(
+        await claimNativeRoutineEvent(db, scope, event, f.leaseId),
+        undefined,
+        entry.spec.kind,
+      );
+    }
+  });
   it("actual PostgreSQL creates only the exact Routine Task+Run, pins account/model and never advances cron/chat", async () => {
     const f = await fixture(),
       before = await counts(f),

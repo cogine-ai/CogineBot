@@ -7,6 +7,7 @@ import {
   GOOGLE_DEFAULT_SCOPES,
   GOOGLE_SCOPE_PREFIX,
   NATIVE_APPLICATIONS,
+  nativeApplicationActors,
   nativeApplicationInput,
   nativeGmailCallbackAudience,
 } from "./native-application-options";
@@ -121,4 +122,135 @@ it("credential changes preserve the actual actor and discard incompatible or sec
   expect(changeNativeCredential(freshNativeApplication("linear"), "oauth").scopes).toEqual([
     "read",
   ]);
+});
+
+it("uses public provider profiles for remaining app credentials, actor and scope defaults", async () => {
+  const { NATIVE_REMAINING_PROFILES } = await import("@rakazo/contracts");
+  for (const [appId, profile] of Object.entries(NATIVE_REMAINING_PROFILES)) {
+    const draft = freshNativeApplication(NativeAppIdSchema.parse(appId));
+    expect(draft.credentialKind).toBe(profile.credentialKinds[0]);
+    expect(draft.actor).toBe(profile.actors[0]);
+    expect(draft.scopes).toEqual(profile.defaultScopes);
+  }
+  expect(freshNativeApplication("hubspot").actor).toBe("app");
+});
+it("HubSpot private credentials switch back to account actor and discard the client secret", () => {
+  const draft = changeNativeCredential(
+    { ...freshNativeApplication("hubspot"), actor: "user", clientSecret: "fixture-secret" },
+    "personal_token",
+  );
+  expect(draft.actor).toBe("app");
+  expect(draft.clientSecret).toBeUndefined();
+});
+it("target IDs and platform configuration round-trip without exposing saved credentials", () => {
+  const input = nativeApplicationInput({
+    ...freshNativeApplication("discord"),
+    credentialKind: "bot_token",
+    actor: "bot",
+    label: "Bot",
+    ownership: "official",
+    tenantId: "123456",
+    targetIdsText: "12345, 23456\n12345",
+    clientSecret: "fixture-token",
+  });
+  expect(input.targetIds).toEqual(["12345", "23456"]);
+  expect(input).not.toHaveProperty("targetIdsText");
+  const edited = draftNativeApplication({
+    ...input,
+    id: "fixture",
+    revision: 2,
+    hasClientSecret: true,
+    callbackUri: "https://instance.example.test/callback",
+  });
+  const saved = nativeApplicationInput(edited);
+  expect(saved.targetIds).toEqual(["12345", "23456"]);
+  expect(saved).not.toHaveProperty("clientSecret");
+  expect(saved.expectedRevision).toBe(2);
+  expect(NativeConfigInputSchema.safeParse(input).success).toBe(true);
+});
+it("Feishu/Lark region and WeCom agent stay scoped to their real application", () => {
+  const lark = nativeApplicationInput({
+    ...freshNativeApplication("feishu-lark"),
+    label: "Lark",
+    region: "lark",
+    clientId: "fixture",
+    clientSecret: "fixture-secret",
+  });
+  expect(lark.region).toBe("lark");
+  const wecom = nativeApplicationInput({
+    ...freshNativeApplication("wecom"),
+    label: "WeCom",
+    credentialKind: "machine_key",
+    actor: "app",
+    clientId: "corp",
+    agentId: "1000001",
+    clientSecret: "fixture-secret",
+  });
+  expect(wecom.agentId).toBe("1000001");
+  expect(wecom).not.toHaveProperty("region");
+  const ordinary = nativeApplicationInput({
+    ...freshNativeApplication("airtable"),
+    label: "Fixture",
+    agentId: "forbidden",
+    region: "lark",
+    targetIdsText: "12345",
+  });
+  expect(ordinary).not.toHaveProperty("region");
+  expect(ordinary).not.toHaveProperty("agentId");
+  expect(ordinary).not.toHaveProperty("targetIds");
+});
+
+it("enterprise actors follow the actual authorization protocol rather than the profile union", () => {
+  for (const appId of ["feishu-lark", "dingtalk", "wecom"] as const) {
+    const machine = freshNativeApplication(appId);
+    expect(nativeApplicationActors(machine)).toEqual(["app"]);
+    const oauth = changeNativeCredential(machine, "oauth");
+    const expected = appId === "wecom" ? "app" : "user";
+    expect(oauth.actor).toBe(expected);
+    expect(nativeApplicationActors(oauth)).toEqual([expected]);
+    expect(changeNativeCredential(oauth, "machine_key").actor).toBe("app");
+  }
+});
+it("enterprise callback secrets are write-only, omitted when unchanged, and scoped to supported OAuth", () => {
+  const original = nativeApplicationInput({
+    ...changeNativeCredential(freshNativeApplication("feishu-lark"), "oauth"),
+    label: "Lark OAuth",
+    clientId: "fixture-app",
+    verificationToken: "fixture-verification",
+    encryptionKey: "fixture-encryption",
+  });
+  expect(original).toMatchObject({
+    verificationToken: "fixture-verification",
+    encryptionKey: "fixture-encryption",
+  });
+  const edited = draftNativeApplication({
+    ...original,
+    id: "fixture",
+    revision: 2,
+    hasClientSecret: true,
+    hasVerificationToken: true,
+    hasEncryptionKey: true,
+    callbackUri: "https://instance.example.test/callback",
+  });
+  expect(edited.hasVerificationToken).toBe(true);
+  expect(edited.hasEncryptionKey).toBe(true);
+  const unchanged = nativeApplicationInput(edited);
+  expect(unchanged).not.toHaveProperty("verificationToken");
+  expect(unchanged).not.toHaveProperty("encryptionKey");
+  expect(unchanged).not.toHaveProperty("hasVerificationToken");
+  expect(unchanged).not.toHaveProperty("hasEncryptionKey");
+  expect(
+    nativeApplicationInput({
+      ...freshNativeApplication("dingtalk"),
+      label: "DingTalk",
+      verificationToken: "fixture",
+      encryptionKey: "fixture",
+    }),
+  ).not.toHaveProperty("verificationToken");
+  const machine = changeNativeCredential(
+    { ...edited, verificationToken: "unsaved", encryptionKey: "unsaved" },
+    "machine_key",
+  );
+  expect(machine.verificationToken).toBeUndefined();
+  expect(machine.encryptionKey).toBeUndefined();
 });

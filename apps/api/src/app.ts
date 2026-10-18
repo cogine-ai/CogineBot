@@ -112,6 +112,7 @@ import {
   wakeMessageRoutines,
 } from "./messaging-inbound.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
+import { registerNativeEnterpriseWebhooks } from "./native-enterprise-webhooks.js";
 import { registerNativeEventWebhooks } from "./native-event-webhooks.js";
 import { mountApiRequestBodyLimits } from "./request-body-limit.js";
 import { createRouter } from "./router.js";
@@ -623,6 +624,7 @@ export async function createApp(
     });
   }
   registerNativeEventWebhooks(app, nativeEvents);
+  registerNativeEnterpriseWebhooks(app, native.enterpriseHooks);
   app.get("/api/connectors/oauth/start", async (c) => {
     c.header("referrer-policy", "no-referrer");
     c.header(
@@ -663,6 +665,7 @@ export async function createApp(
         {
           state: c.req.query("state") ?? "",
           code: c.req.query("code"),
+          enterpriseCode: c.req.query("auth_code"),
           denied: Boolean(c.req.query("error")),
           pickedFileIds: c.req.query("picked_file_ids"),
         },

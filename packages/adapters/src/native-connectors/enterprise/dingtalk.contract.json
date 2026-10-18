@@ -1,0 +1,557 @@
+{
+  "slug": "dingtalk",
+  "name": "DingTalk",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "baseUrl": "https://api.dingtalk.com",
+  "actions": [
+    {
+      "id": "dingtalk.messages.send",
+      "description": "Send application robot text to explicit organization users",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 20
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
+        },
+        "required": ["userIds", "text"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/v1.0/robot/oToMessages/batchSend",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/robot_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "dingtalk.calendars.list",
+      "description": "List an explicit organization user calendars",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["userId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/v1.0/calendar/users/{userId}/calendars",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/calendar_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "dingtalk.events.list",
+      "description": "List calendar events in an explicit time window",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "timeMin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "timeMax": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "nextToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": ["userId", "calendarId", "timeMin", "timeMax"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/v1.0/calendar/users/{userId}/calendars/{calendarId}/events",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/calendar_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "dingtalk.events.get",
+      "description": "Read a selected calendar event",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["userId", "calendarId", "eventId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/v1.0/calendar/users/{userId}/calendars/{calendarId}/events/{eventId}",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/calendar_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "dingtalk.events.create",
+      "description": "Create a calendar event with explicit time zone",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "start": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "end": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["userId", "calendarId", "summary", "start", "end"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/v1.0/calendar/users/{userId}/calendars/{calendarId}/events",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/calendar_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "dingtalk.events.update",
+      "description": "Update the selected event after checking its observed updateTime",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "start": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "end": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "expectedUpdateTime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["userId", "calendarId", "eventId", "expectedUpdateTime"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "PUT",
+        "path": "/v1.0/calendar/users/{userId}/calendars/{calendarId}/events/{eventId}",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/calendar_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown",
+      "concurrency": "Observed updateTime preflight only: upstream offers no atomic ETag/CAS guarantee; refuse mismatch, never promise race-free overwrite."
+    },
+    {
+      "id": "dingtalk.tasks.get",
+      "description": "Read a selected To Do task",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["unionId", "taskId"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "GET",
+        "path": "/v1.0/todo/users/{unionId}/tasks/{taskId}",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/todo_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "read",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "dingtalk.tasks.create",
+      "description": "Create a task with explicit executors and optional due date",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "executorIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "minItems": 1,
+            "maxItems": 20
+          },
+          "dueTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": ["unionId", "subject", "executorIds"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "POST",
+        "path": "/v1.0/todo/users/{unionId}/tasks",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/todo_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown"
+    },
+    {
+      "id": "dingtalk.tasks.update",
+      "description": "Update or complete a selected task after checking modifiedTime",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "done": {
+            "type": "boolean"
+          },
+          "dueTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "expectedModifiedTime": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": ["unionId", "taskId", "expectedModifiedTime"],
+        "additionalProperties": false
+      },
+      "upstream": {
+        "method": "PUT",
+        "path": "/v1.0/todo/users/{unionId}/tasks/{taskId}",
+        "documentation": "https://github.com/alibabacloud-go/dingtalk/blob/master/todo_1_0/client.go"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [],
+        "actors": ["app", "user"],
+        "machinePermissions": "Platform-enforced app/resource ACL; no fabricated OAuth scopes",
+        "subject": "exact selected region/app/tenant/user connection; never a sibling account"
+      },
+      "output": {
+        "required": "Validate exact provider success envelope and stable resource ID or bounded collection. Empty/partial/malformed responses fail. Message acceptance is not proof of delivery."
+      },
+      "effect": {
+        "kind": "external-write",
+        "receipt": "existing ExternalEffect exact input/actor/operation; ACK persisted, uncertain write never replayed; no new task or retry system"
+      },
+      "paging": "one bounded page with authoritative has_more/page_token; no automatic full scan",
+      "errors": "HTTP 401/403/429/5xx and provider logical errors mapped without secret diagnostics; write network loss/5xx/partial ACK remains unknown",
+      "concurrency": "Observed modifiedTime preflight only: upstream offers no atomic ETag/CAS guarantee; refuse mismatch, never promise race-free overwrite."
+    }
+  ],
+  "contractRevision": 2
+}

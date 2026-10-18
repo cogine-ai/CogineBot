@@ -78,6 +78,7 @@ const hash = (value: unknown) => createHash("sha256").update(stable(value)).dige
 export class CollaborationRun {
   readonly receipt: Data;
   mutated = false;
+  private accepted = false;
   constructor(
     readonly definition: CollaborationDefinition,
     readonly context: NativeActionContext,
@@ -117,8 +118,25 @@ export class CollaborationRun {
     request: NativeRequest,
     write = false,
     stage = "dispatching",
+    options?: { acceptedStatus: 202 },
   ): Promise<NativeResponse> {
     this.context.signal.throwIfAborted();
+    if (options) {
+      const paths: Record<string, RegExp> = {
+        "outlook.drafts.send": /^\/me\/messages\/[^/?#]+\/send$/,
+        "outlook.messages.reply": /^\/me\/messages\/[^/?#]+\/reply$/,
+        "outlook_calendar.events.cancel": /^\/me\/events\/[^/?#]+\/cancel$/,
+      };
+      if (
+        options.acceptedStatus !== 202 ||
+        !write ||
+        request.method !== "POST" ||
+        request.service ||
+        request.query ||
+        !paths[this.definition.id]?.test(request.path)
+      )
+        invalid("Accepted acknowledgements are only supported by the fixed Microsoft actions.");
+    }
     if (write) {
       try {
         await this.checkpoint({ stage, dispatch_state: "in_flight" });
@@ -166,8 +184,13 @@ export class CollaborationRun {
       });
     }
     if (write) {
-      if (response.status === 202)
-        return this.unknown("The service accepted the request without a final outcome.");
+      if (response.status === 202) {
+        if (!options || ![null, undefined, ""].includes(response.body as null | undefined | string))
+          return this.unknown(
+            "The service accepted the request without a verified acknowledgement.",
+          );
+        this.accepted = true;
+      }
       this.mutated = true;
     }
     return response;
@@ -177,6 +200,15 @@ export class CollaborationRun {
       try {
         await this.checkpoint({
           ...receipt,
+          ...(this.accepted
+            ? {
+                accepted: true,
+                accepted_status: 202,
+                deliveryVerified: false,
+                terminalStateVerified: false,
+                write_outcome: "accepted",
+              }
+            : {}),
           stage: "committed",
           dispatch_state: "acknowledged",
           complete: true,
@@ -186,7 +218,13 @@ export class CollaborationRun {
           "The remote result was confirmed but its receipt could not be saved. Do not repeat the write.",
         );
       }
-      return { ...output, write_outcome: "confirmed" };
+      return {
+        ...output,
+        ...(this.accepted
+          ? { accepted: true, deliveryVerified: false, terminalStateVerified: false }
+          : {}),
+        write_outcome: this.accepted ? "accepted" : "confirmed",
+      };
     }
     return output;
   }
@@ -226,8 +264,11 @@ export function collaborationActions(
               "ts",
               "file_id",
               "scheduled_message_id",
+              "accepted",
+              "deliveryVerified",
+              "terminalStateVerified",
             ]),
-            write_outcome: "confirmed",
+            write_outcome: run.receipt.write_outcome === "accepted" ? "accepted" : "confirmed",
             recovered_from_exact_ack: true,
             resource_snapshot_current: false,
           };

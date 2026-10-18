@@ -1,0 +1,432 @@
+{
+  "slug": "onedrive",
+  "name": "OneDrive",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "onedrive.children.list",
+      "description": "List a folder in an explicit drive",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Files.Read",
+          "Files.ReadWrite",
+          "Files.Read.All",
+          "Files.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/items/{itemId}/children",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-list-children?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user",
+        "rootDefault": "root when itemId omitted; enables first-account discovery without guessed IDs"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "onedrive.items.get",
+      "description": "Read file or folder metadata",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["itemId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Files.Read",
+          "Files.ReadWrite",
+          "Files.Read.All",
+          "Files.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/items/{itemId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-get?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "onedrive.items.search",
+      "description": "Search an explicit drive",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 250
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Files.Read",
+          "Files.ReadWrite",
+          "Files.Read.All",
+          "Files.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/root/search(q='{OData-single-quote-escaped-query}')",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-search?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "onedrive.files.download",
+      "description": "Download a bounded file to a local artifact",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["itemId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "Files.Read",
+          "Files.ReadWrite",
+          "Files.Read.All",
+          "Files.ReadWrite.All"
+        ],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/drives/{driveId}/items/{itemId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user",
+        "followUp": {
+          "source": "Graph response @microsoft.graph.downloadUrl only",
+          "authorization": "none; never send Graph bearer to download host",
+          "transport": "public HTTPS, allowlisted commercial CDN suffix, pinned DNS, no redirects, bounded artifact size, verify exact metadata size"
+        }
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "onedrive.files.upload",
+      "description": "Upload a bounded local artifact without replacing an existing file",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^/\\\\:*?\"<>|]+$"
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["parentId", "name", "artifactId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite", "Files.ReadWrite.All"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "PUT",
+        "path": "/drives/{driveId}/items/{parentId}:/{name}:/content",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-put-content?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user",
+        "query": {
+          "@microsoft.graph.conflictBehavior": "fail"
+        }
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "onedrive.folders.create",
+      "description": "Create a folder with conflict behavior fail",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "required": ["parentId", "name"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite", "Files.ReadWrite.All"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/drives/{driveId}/items/{parentId}/children",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-post-children?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "onedrive.items.move",
+      "description": "Move an item within the same drive using ETag",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["itemId", "parentId", "expectedEtag"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite", "Files.ReadWrite.All"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "PATCH",
+        "path": "/drives/{driveId}/items/{itemId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-update?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "onedrive.links.create",
+      "description": "Create an explicit organization or anonymous sharing link",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "driveId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "type": {
+            "enum": ["view", "edit"]
+          },
+          "scope": {
+            "enum": ["organization", "anonymous"]
+          }
+        },
+        "required": ["itemId", "type", "scope"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Files.ReadWrite", "Files.ReadWrite.All"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/drives/{driveId}/items/{itemId}/createLink",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/driveitem-createlink?view=graph-rest-1.0",
+        "ownDriveDefault": "/me/drive when driveId omitted, exact authenticated user"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    }
+  ],
+  "contractRevision": 2
+}

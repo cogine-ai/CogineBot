@@ -1,0 +1,554 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-18",
+  "appId": "confluence",
+  "actions": [
+    {
+      "id": "confluence.spaces.list",
+      "description": "List accessible spaces on the verified Confluence Cloud site.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/wiki/api/v2/spaces"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:space:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "cursor only parsed from _links.next; no URL follow",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "9"
+          }
+        ],
+        "hasMore": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": ["items", "hasMore"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "confluence.pages.search",
+      "description": "Search Confluence pages using CQL, always constrained to page content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cql": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["cql"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/wiki/rest/api/search",
+        "queryConstraint": "type=page AND (<cql>)"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["search:confluence", "read:content-details:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "cursor from _links.next",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "content": {
+              "id": "12"
+            }
+          }
+        ],
+        "nextCursor": "opaque-next",
+        "allPagesRead": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "nextCursor": {
+            "type": ["string", "null"]
+          },
+          "allPagesRead": {
+            "type": "boolean"
+          }
+        },
+        "required": ["items", "nextCursor", "allPagesRead"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "confluence.pages.get",
+      "description": "Read a Confluence page including storage-format content and current version.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["page_id"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/wiki/api/v2/pages/{page_id}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:page:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "12",
+        "version": {
+          "number": 3
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "object"
+          }
+        },
+        "required": ["id", "version"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "confluence.pages.create",
+      "description": "Create a Confluence page with storage-format body in one space.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "parentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          }
+        },
+        "required": ["spaceId", "title", "body"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/wiki/api/v2/pages"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["write:page:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "12",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "confluence.pages.update",
+      "description": "Update a Confluence page only from the exact expected version.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": ["page_id", "title", "body", "expectedVersion"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "PUT",
+        "path": "/wiki/api/v2/pages/{page_id}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["write:page:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "12",
+        "version": {
+          "number": 4
+        },
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "object"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "version", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "confluence.comments.list",
+      "description": "List footer comments on one Confluence page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["page_id"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/wiki/api/v2/pages/{page_id}/footer-comments"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:comment:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "cursor from _links.next",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "88"
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["items"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "confluence.comments.create",
+      "description": "Add a storage-format footer comment to one Confluence page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          }
+        },
+        "required": ["page_id", "body"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/wiki/api/v2/footer-comments"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["write:comment:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "confluence.attachments.list",
+      "description": "List attachment metadata on a Confluence page without downloading external URLs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["page_id"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/wiki/api/v2/pages/{page_id}/attachments"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:attachment:confluence"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "cursor from _links.next",
+      "output": "attachment metadata only, no binary download",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "33",
+            "fileSize": 1200
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["items"],
+        "additionalProperties": true
+      }
+    }
+  ],
+  "sources": [
+    "https://developer.atlassian.com/cloud/confluence/oauth-2-3lo-apps/",
+    "https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/",
+    "https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-space/",
+    "https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-comment/",
+    "https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-attachment/",
+    "https://developer.atlassian.com/cloud/confluence/rest/v1/api-group-search/"
+  ],
+  "errorPolicy": "401 reauthorize;403 permissions;404 unavailable;409/412 version conflict;429 Retry-After;5xx/transport uncertain writes never replay; partial/malformed responses rejected",
+  "events": "No new inbound webhook consumer or task mechanism in this contract. Existing explicit Routine behavior unchanged. Provider events require separately verified subscription/lifecycle and are not implied by OAuth.",
+  "acceptance": [
+    "exact action inventory/digest",
+    "strict input and no business URL/auth",
+    "actual request method/path/body",
+    "actor+scope guards",
+    "cursor extraction without URL following",
+    "write checkpoint before dispatch",
+    "unknown write no automatic replay",
+    "static identity and OAuth refresh actual scopes",
+    "rotating refresh uncertainty and account/site mismatch"
+  ],
+  "real_verified": false,
+  "revision": 3,
+  "supersedesSha256": "6c885ab066fc807df6983e1ebe9b14b26537d3a1342608ad1a7fbd37bd3b0fbb",
+  "revisionReason": "Terminal continuation fields permit null; Asana explicitly configured and introspected default Full permissions is an alternative, never expanded or mixed with granular scopes."
+}

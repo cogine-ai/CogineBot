@@ -1,0 +1,527 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-18",
+  "appId": "trello",
+  "actions": [
+    {
+      "id": "trello.boards.list",
+      "description": "List boards available to the selected Trello member.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/members/me/boards"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "provider collection; no fabricated pagination/complete sync guarantee",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "board-fixture"
+          }
+        ],
+        "allPagesRead": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "allPagesRead": {
+            "type": "boolean"
+          }
+        },
+        "required": ["items", "allPagesRead"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "trello.lists.list",
+      "description": "List all lists on one accessible Trello board.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "board_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["board_id"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/boards/{board_id}/lists"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "list-fixture"
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["items"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "trello.cards.list",
+      "description": "Read a board card collection with an explicit open, closed or all filter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "board_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "filter": {
+            "enum": ["all", "closed", "none", "open", "visible"]
+          }
+        },
+        "required": ["board_id"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/boards/{board_id}/cards"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "provider board collection; API limits may reject large boards, never silently truncate",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "card-fixture"
+          }
+        ],
+        "collectionScope": "all"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "collectionScope": {
+            "type": "string"
+          }
+        },
+        "required": ["items", "collectionScope"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "trello.cards.get",
+      "description": "Read one Trello card and its list, dates and members.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "card_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["card_id"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/cards/{card_id}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "card-fixture"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "trello.cards.create",
+      "description": "Create a Trello card in an existing list.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "idList": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "desc": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "due": {
+            "type": ["string", "null"],
+            "maxLength": 64
+          },
+          "idMembers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "maxItems": 100
+          }
+        },
+        "required": ["idList", "name"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/cards"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["write:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "card-fixture",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "trello.cards.update",
+      "description": "Update or move a Trello card, including due date, completion and members.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "card_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16384
+              },
+              "desc": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50000
+              },
+              "idList": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "due": {
+                "type": ["string", "null"],
+                "maxLength": 64
+              },
+              "dueComplete": {
+                "type": "boolean"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "idMembers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "maxItems": 100
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": ["card_id", "changes"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "PUT",
+        "path": "/cards/{card_id}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["write:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "card-fixture",
+        "idList": "next-list",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "idList": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "idList", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "trello.checklists.get",
+      "description": "Read a Trello checklist and its check items.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "checklist_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["checklist_id"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/checklists/{checklist_id}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["read:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "checklist-fixture"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "trello.comments.create",
+      "description": "Add a comment to one Trello card as the selected member.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "card_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          }
+        },
+        "required": ["card_id", "text"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/cards/{card_id}/actions/comments"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["write:board:trello"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["id", "write_outcome"],
+        "additionalProperties": true
+      }
+    }
+  ],
+  "sources": [
+    "https://developer.atlassian.com/cloud/trello/guides/rest-api/oauth-2-confidential-client-usage/",
+    "https://developer.atlassian.com/cloud/trello/guides/rest-api/oauth-2-client-configuration/",
+    "https://developer.atlassian.com/cloud/trello/rest/api-group-cards/",
+    "https://developer.atlassian.com/cloud/trello/rest/api-group-boards/",
+    "https://developer.atlassian.com/cloud/trello/rest/api-group-checklists/",
+    "https://developer.atlassian.com/cloud/trello/rest/api-group-members/"
+  ],
+  "errorPolicy": "401 reauthorize;403 permissions;404 unavailable;409/412 version conflict;429 Retry-After;5xx/transport uncertain writes never replay; partial/malformed responses rejected",
+  "events": "No new inbound webhook consumer or task mechanism in this contract. Existing explicit Routine behavior unchanged. Provider events require separately verified subscription/lifecycle and are not implied by OAuth.",
+  "acceptance": [
+    "exact action inventory/digest",
+    "strict input and no business URL/auth",
+    "actual request method/path/body",
+    "actor+scope guards",
+    "cursor extraction without URL following",
+    "write checkpoint before dispatch",
+    "unknown write no automatic replay",
+    "static identity and OAuth refresh actual scopes",
+    "rotating refresh uncertainty and account/site mismatch"
+  ],
+  "real_verified": false,
+  "revision": 3,
+  "supersedesSha256": "f6798f3ee5dad56860a126dea617f0fccf4a5f09f0f8db41aef0fa077758815a",
+  "revisionReason": "Terminal continuation fields permit null; Asana explicitly configured and introspected default Full permissions is an alternative, never expanded or mixed with granular scopes."
+}

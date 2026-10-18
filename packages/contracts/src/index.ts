@@ -20,6 +20,8 @@ export * from "./native-connectors.js";
 export * from "./native-event-hooks.js";
 export * from "./native-event-jobs.js";
 export * from "./native-events.js";
+export * from "./native-remaining-apps.js";
+export * from "./native-remaining-profiles.js";
 export * from "./native-slack-events.js";
 export * from "./openai-compatible-ui.js";
 export * from "./reactions.js";

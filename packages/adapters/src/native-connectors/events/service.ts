@@ -2,6 +2,7 @@ import type { BackgroundJob } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type { NativeEventScope, NativeRoutineEventSpec } from "@rakazo/contracts";
 import {
+  type NativeDiscordSignalJobSchema,
   NativeNotionSignalJobSchema,
   NativeSlackLifecycleJobSchema,
   NativeSlackSignalJobSchema,
@@ -16,6 +17,7 @@ import { NativeActionError } from "../action.js";
 import { NativeConfigSettingsSchema } from "../config.js";
 import type { NativeOAuthStore } from "../oauth.js";
 import { ensureCalendarChannel } from "./calendar-watch.js";
+import { ingestDiscordRoutine, processDiscordRoutine } from "./discord-interactions.js";
 import { createGmailPushVerifier } from "./google-push.js";
 import { readDriveChanges, readGmailChanges } from "./google-readers.js";
 import {
@@ -31,6 +33,8 @@ import {
   readNotionChanges,
   readNotionWebhook,
 } from "./readers.js";
+import { readRemainingEvent } from "./remaining-readers.js";
+import { withRemainingNativeRead } from "./remaining-transport.js";
 import type { CalendarEventChannel, NotionEventSignal } from "./signals.js";
 import {
   InvalidNativeEventSignal,
@@ -49,6 +53,7 @@ import {
 } from "./store.js";
 import {
   nativeGoogleWatchBinding,
+  pinnedEventAuthorization,
   withNativeCalendarChannelApi,
   withNativeEventReadApi,
   withNativeGoogleWatchApi,
@@ -65,6 +70,11 @@ import {
 
 type SignalJob = z.infer<typeof NativeNotionSignalJobSchema>;
 type NativeSignalJob =
+  | {
+      name: "native.discord.signal";
+      payload: z.infer<typeof NativeDiscordSignalJobSchema>;
+      replaceKey?: string;
+    }
   | { name: "native.notion.signal"; payload: SignalJob; replaceKey?: string }
   | {
       name: "native.slack.signal";
@@ -88,7 +98,8 @@ export class NativeRoutineEventService {
   private readonly gmailPush: ReturnType<typeof createGmailPushVerifier>;
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly oauth: Pick<NativeOAuthStore, "authorization">,
+    private readonly oauth: Pick<NativeOAuthStore, "authorization"> &
+      Partial<Pick<NativeOAuthStore, "rejectCredential">>,
     readonly hooks: NativeNotionHookStore,
     private readonly jobs: NativeEventJobPublisher,
     private readonly events: Pick<ThreadEvents, "append">,
@@ -97,6 +108,27 @@ export class NativeRoutineEventService {
     readonly slackHooks?: NativeSlackHookStore,
   ) {
     this.gmailPush = createGmailPushVerifier({ network });
+  }
+  ingestDiscord(
+    configId: string,
+    raw: Uint8Array,
+    headers: Headers | Record<string, string>,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    return ingestDiscordRoutine(this.prisma, this.jobs, configId, raw, headers);
+  }
+  discordSignal(raw: unknown, signal: AbortSignal): Promise<void> {
+    return processDiscordRoutine(
+      this.prisma,
+      this.oauth,
+      this.jobs,
+      raw,
+      signal,
+      (scope) => this.prompt(scope),
+      (runId) => this.fired(runId),
+      this.network,
+    );
   }
   async close(): Promise<void> {
     await this.gmailPush.close();
@@ -174,6 +206,15 @@ export class NativeRoutineEventService {
             this.network,
           );
         },
+        sharepoint: async (context) => this.readRemaining(context),
+        excel: async (context) => this.readRemaining(context),
+        planner: async (context) => this.readRemaining(context),
+        teams: async (context) => this.readRemaining(context),
+        feishu: async (context) => this.readRemaining(context),
+        dingtalk: async (context) => this.readRemaining(context),
+        wecom: async (context) => this.readRemaining(context),
+        telegram: async (context) => this.readRemaining(context),
+        discord: async (context) => this.readRemaining(context),
         gmail: async (context) => this.readGoogle(context, "gmail"),
         drive: async (context) => this.readGoogle(context, "google-drive"),
         slack: async (context) =>
@@ -222,6 +263,39 @@ export class NativeRoutineEventService {
       async (row, result) =>
         this.jobs.enqueue(nativeSourceJob(row.id, row.version, result.nextPollAt)),
       async (runId) => this.fired(runId),
+    );
+  }
+  private async readRemaining(context: NativeSourceReadContext) {
+    const revalidate = pinnedEventAuthorization(this.oauth, context),
+      bound = await revalidate();
+    return withRemainingNativeRead(
+      bound,
+      revalidate,
+      context.signal,
+      (api, principal) =>
+        readRemainingEvent(
+          {
+            ...context,
+            emit: async (event) => {
+              await revalidate();
+              return context.emit(event);
+            },
+          },
+          api,
+          principal,
+        ),
+      this.network,
+      (version) =>
+        this.oauth.rejectCredential?.(
+          context.row.connectionId,
+          {
+            ...context.scope,
+            operationId: `native-source:${context.row.id}:${context.row.version}`,
+            traceId: "native-source",
+            signal: context.signal,
+          },
+          version,
+        ) ?? Promise.resolve(),
     );
   }
   private async readGoogle(context: NativeSourceReadContext, app: "gmail" | "google-drive") {

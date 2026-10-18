@@ -1,0 +1,403 @@
+{
+  "slug": "outlook-mail",
+  "name": "Outlook Mail",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "outlook.messages.list",
+      "description": "List mailbox messages",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          },
+          "folderId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "search": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 250
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.Read", "Mail.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/messages",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook.messages.get",
+      "description": "Read a mailbox message",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["messageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.Read", "Mail.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/messages/{messageId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/message-get?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook.drafts.create",
+      "description": "Create a draft with bounded local attachments",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "contentType": {
+                "enum": ["text", "html"]
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              }
+            },
+            "required": ["contentType", "content"],
+            "additionalProperties": false
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email",
+              "maxLength": 254
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email",
+              "maxLength": 254
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "artifactId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              },
+              "required": ["artifactId"],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 5
+          }
+        },
+        "required": ["subject", "body", "to"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/messages",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      },
+      "attachmentLimitBytes": 2999999
+    },
+    {
+      "id": "outlook.drafts.send",
+      "description": "Send an existing draft once",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["messageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.Send"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/messages/{messageId}/send",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/message-send?view=graph-rest-1.0"
+      },
+      "output": {
+        "httpStatus": 202,
+        "emptyBody": true,
+        "accepted": true,
+        "deliveryVerified": false,
+        "terminalStateVerified": false,
+        "receipt": "same effect exact id+actor+input accepted ACK persists; repeated invocation recovers receipt, no resend",
+        "uncertain": "network/408/5xx/missing response/ACK store failure; never infer terminal success"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook.messages.reply",
+      "description": "Reply to an existing message once",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "comment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          }
+        },
+        "required": ["messageId", "comment"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.Send"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/messages/{messageId}/reply",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/message-reply?view=graph-rest-1.0"
+      },
+      "output": {
+        "httpStatus": 202,
+        "emptyBody": true,
+        "accepted": true,
+        "deliveryVerified": false,
+        "terminalStateVerified": false,
+        "receipt": "same effect exact id+actor+input accepted ACK persists; repeated invocation recovers receipt, no resend",
+        "uncertain": "network/408/5xx/missing response/ACK store failure; never infer terminal success"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook.messages.move",
+      "description": "Move a message to an explicit folder",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "destinationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["messageId", "destinationId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/messages/{messageId}/move",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/message-move?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook.attachments.list",
+      "description": "List message attachments",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["messageId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.Read", "Mail.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/messages/{messageId}/attachments",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/message-list-attachments?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook.attachments.download",
+      "description": "Download a bounded file attachment into a local artifact",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "attachmentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["messageId", "attachmentId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Mail.Read", "Mail.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/messages/{messageId}/attachments/{attachmentId}/$value",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/attachment-get?view=graph-rest-1.0",
+        "responseType": "bytes",
+        "preflight": "GET same attachment metadata id,type,name,size,contentType; only fileAttachment <=10MiB; reference/item unsupported explicitly"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    }
+  ],
+  "contractRevision": 2
+}

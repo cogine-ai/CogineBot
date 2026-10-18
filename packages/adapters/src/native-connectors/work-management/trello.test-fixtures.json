@@ -1,0 +1,270 @@
+{
+  "version": 1,
+  "contractSha256": "92dfc1fee7ec4c4882d2ceea4d7eebdafbb3ce07511c94a7e9b71e4649b6babd",
+  "fixtures": [
+    {
+      "id": "trello.boards.list",
+      "input": {},
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/members/me/boards",
+            "query": {
+              "fields": "id,name,desc,closed,idOrganization,url,dateLastActivity"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "board-fixture",
+                "name": "Fixture board"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "board-fixture"
+          }
+        ],
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "trello.lists.list",
+      "input": {
+        "board_id": "board-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/boards/board-fixture/lists/all",
+            "query": {
+              "fields": "id,idBoard,name,closed,pos"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "list-fixture",
+                "name": "Fixture list",
+                "idBoard": "board-fixture"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "list-fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": "trello.cards.list",
+      "input": {
+        "board_id": "board-fixture",
+        "filter": "all"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/boards/board-fixture/cards/all",
+            "query": {
+              "fields": "id,idBoard,idList,name,desc,closed,due,dueComplete,start,idMembers,idLabels,idChecklists,dateLastActivity,url,shortUrl,pos"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": [
+              {
+                "id": "card-fixture",
+                "idBoard": "board-fixture",
+                "idList": "list-fixture",
+                "name": "Fixture card"
+              }
+            ]
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "card-fixture"
+          }
+        ],
+        "collectionScope": "all"
+      }
+    },
+    {
+      "id": "trello.cards.get",
+      "input": {
+        "card_id": "card-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/cards/card-fixture"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "card-fixture",
+              "idBoard": "board-fixture",
+              "idList": "list-fixture",
+              "name": "Fixture card"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "card-fixture"
+      }
+    },
+    {
+      "id": "trello.cards.create",
+      "input": {
+        "idList": "list-fixture",
+        "name": "Fixture card",
+        "idMembers": ["member1", "member2"]
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/cards",
+            "body": {
+              "idList": "list-fixture",
+              "name": "Fixture card",
+              "idMembers": "member1,member2"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "card-fixture",
+              "idBoard": "board-fixture",
+              "idList": "list-fixture",
+              "name": "Fixture card"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "card-fixture",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "trello.cards.update",
+      "input": {
+        "card_id": "card-fixture",
+        "changes": {
+          "idList": "next-list",
+          "due": null
+        }
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "PUT",
+            "path": "/cards/card-fixture",
+            "body": {
+              "idList": "next-list",
+              "due": null
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "card-fixture",
+              "idBoard": "board-fixture",
+              "idList": "next-list",
+              "name": "Fixture card",
+              "due": null
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "card-fixture",
+        "idList": "next-list",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "trello.checklists.get",
+      "input": {
+        "checklist_id": "checklist-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/checklists/checklist-fixture"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "checklist-fixture",
+              "idCard": "card-fixture",
+              "name": "Fixture checklist",
+              "checkItems": [
+                {
+                  "id": "item-fixture",
+                  "name": "Fixture item",
+                  "state": "incomplete"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "checklist-fixture"
+      }
+    },
+    {
+      "id": "trello.comments.create",
+      "input": {
+        "card_id": "card-fixture",
+        "text": "Fixture comment"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/cards/card-fixture/actions/comments",
+            "body": {
+              "text": "Fixture comment"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "88",
+              "type": "commentCard",
+              "data": {
+                "text": "Fixture comment"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      }
+    }
+  ]
+}

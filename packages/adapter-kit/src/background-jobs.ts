@@ -1,4 +1,5 @@
 import {
+  NativeDiscordSignalJobSchema,
   NativeNotionSignalJobSchema,
   NativeSlackLifecycleJobSchema,
   NativeSlackSignalJobSchema,
@@ -15,6 +16,7 @@ import type {
 const payloadSchemas = {
   "native.source.poll": NativeSourceJobPayloadSchema,
   "native.notion.signal": NativeNotionSignalJobSchema,
+  "native.discord.signal": NativeDiscordSignalJobSchema,
   "native.slack.signal": NativeSlackSignalJobSchema,
   "native.slack.lifecycle": NativeSlackLifecycleJobSchema,
   "run.continue": z.object({ runId: z.string().min(1) }),

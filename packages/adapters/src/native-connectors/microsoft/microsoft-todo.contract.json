@@ -1,0 +1,483 @@
+{
+  "slug": "microsoft-todo",
+  "name": "Microsoft To Do",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "microsoft_todo.lists.list",
+      "description": "List To Do task lists",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.Read", "Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/todo/lists",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todo-list-lists?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "microsoft_todo.lists.create",
+      "description": "Create a To Do list",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["displayName"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/todo/lists",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todo-post-lists?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "microsoft_todo.tasks.list",
+      "description": "List tasks within a selected list",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["listId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.Read", "Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/todo/lists/{listId}/tasks",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todotasklist-list-tasks?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "microsoft_todo.tasks.get",
+      "description": "Read one To Do task",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["listId", "taskId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.Read", "Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/todo/lists/{listId}/tasks/{taskId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todotask-get?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "microsoft_todo.tasks.create",
+      "description": "Create a task with optional due time and reminder",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "contentType": {
+                "enum": ["text", "html"]
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              }
+            },
+            "required": ["contentType", "content"],
+            "additionalProperties": false
+          },
+          "dueDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "reminderDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "isReminderOn": {
+            "type": "boolean"
+          },
+          "importance": {
+            "enum": ["low", "normal", "high"]
+          },
+          "status": {
+            "enum": ["notStarted", "inProgress", "completed", "waitingOnOthers", "deferred"]
+          }
+        },
+        "required": ["listId", "title"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/todo/lists/{listId}/tasks",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todotasklist-post-tasks?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "microsoft_todo.tasks.update",
+      "description": "Update or complete a task using its ETag",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "contentType": {
+                "enum": ["text", "html"]
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              }
+            },
+            "required": ["contentType", "content"],
+            "additionalProperties": false
+          },
+          "dueDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "reminderDateTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "isReminderOn": {
+            "type": "boolean"
+          },
+          "importance": {
+            "enum": ["low", "normal", "high"]
+          },
+          "status": {
+            "enum": ["notStarted", "inProgress", "completed", "waitingOnOthers", "deferred"]
+          }
+        },
+        "required": ["listId", "taskId", "expectedEtag"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "PATCH",
+        "path": "/me/todo/lists/{listId}/tasks/{taskId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todotask-update?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below.",
+        "empty204": "exact request resource_id and acknowledged mutation; no fabricated snapshot"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "microsoft_todo.checklist.list",
+      "description": "List checklist items within a task",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["listId", "taskId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.Read", "Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/todo/lists/{listId}/tasks/{taskId}/checklistItems",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todotask-list-checklistitems?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "microsoft_todo.checklist.create",
+      "description": "Add a checklist item to a task",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "isChecked": {
+            "type": "boolean"
+          }
+        },
+        "required": ["listId", "taskId", "displayName"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Tasks.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/todo/lists/{listId}/tasks/{taskId}/checklistItems",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/todotask-post-checklistitems?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    }
+  ],
+  "contractRevision": 2
+}

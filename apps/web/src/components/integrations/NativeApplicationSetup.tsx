@@ -5,7 +5,7 @@ import type {
   NativeConfigStatus,
   NativeSetupState,
 } from "@rakazo/contracts";
-import { NativeConfigInputSchema } from "@rakazo/contracts";
+import { NativeConfigInputSchema, remainingNativeProfile } from "@rakazo/contracts";
 import {
   Button,
   Field,
@@ -29,7 +29,10 @@ import {
   GOOGLE_SCOPE_PREFIX as GOOGLE,
   GOOGLE_DEFAULT_SCOPES,
   nativeApplicationInput as input,
+  nativeApplicationActors,
+  nativeApplicationCredentialKinds,
   nativeGmailCallbackAudience,
+  nativeOwnerSuppliesCredential,
 } from "./native-application-options";
 
 type CredentialKind = NativeConfigInput["credentialKind"];
@@ -73,7 +76,10 @@ export function NativeApplicationSetup({
     };
   }, [reload]);
 
-  function kindLabel(kind: CredentialKind) {
+  function kindLabel(kind: CredentialKind, appId?: NativeAppId) {
+    if (kind === "personal_token" && appId === "hubspot") return t`Private app token`;
+    if (kind === "machine_key" && appId && ["feishu-lark", "dingtalk", "wecom"].includes(appId))
+      return t`App credentials`;
     return kind === "mcp_oauth" || kind === "oauth"
       ? t`Account authorization`
       : kind === "machine_key"
@@ -242,7 +248,9 @@ export function NativeApplicationSetup({
             "files:read",
             ...(draft.actor === "user" ? ["search:read"] : []),
           ]
-        : [];
+        : draft
+          ? [...(remainingNativeProfile(draft.appId)?.scopes ?? [])]
+          : [];
   const googleApp = Boolean(draft && GOOGLE_DEFAULT_SCOPES[draft.appId]);
   const capabilities =
     draft?.appId === "knowai"
@@ -266,12 +274,43 @@ export function NativeApplicationSetup({
         }))
       : capabilities
     : [];
-  const credentialOptions: Partial<Record<NativeAppId, CredentialKind[]>> = {
-    notion: ["oauth", "internal_token", "personal_token"],
-    github: ["personal_token", "github_app_installation", "oauth"],
-    linear: ["personal_token", "oauth"],
-    slack: ["bot_token", "personal_token", "oauth"],
-  };
+  const credentialOptions = draft
+    ? nativeApplicationCredentialKinds(draft.appId, draft.ownership)
+    : [];
+  const actorOptions = draft ? nativeApplicationActors(draft) : [];
+  const remainingCapabilities = draft
+    ? [...(remainingNativeProfile(draft.appId)?.capabilities ?? [])]
+    : [];
+  const capabilityLabel = (capability: string) =>
+    capability === "read"
+      ? t`Read messages`
+      : capability === "send"
+        ? t`Send messages`
+        : capability === "edit"
+          ? t`Edit messages`
+          : capability === "delete"
+            ? t`Delete messages`
+            : capability === "reactions"
+              ? t`Reactions`
+              : capability === "files"
+                ? t`Files`
+                : capability === "commands"
+                  ? t`Register commands`
+                  : capability;
+  const enterpriseApp = Boolean(
+    draft && ["feishu-lark", "dingtalk", "wecom"].includes(draft.appId),
+  );
+  const botApp = Boolean(draft && ["telegram-bot", "discord"].includes(draft.appId));
+  const ownerCredential = Boolean(draft && nativeOwnerSuppliesCredential(draft));
+  const tenantApp = Boolean(
+    draft &&
+      (enterpriseApp ||
+        ["jira", "confluence", "dropbox", "hubspot", "discord"].includes(draft.appId) ||
+        draft.appId.startsWith("outlook-") ||
+        ["onedrive", "microsoft-todo", "sharepoint", "excel", "planner", "teams"].includes(
+          draft.appId,
+        )),
+  );
   if (loading && !state)
     return (
       <p className="text-sm text-muted-foreground">
@@ -335,7 +374,7 @@ export function NativeApplicationSetup({
                   <p className="truncate text-sm font-medium text-foreground">{entry.label}</p>
                   <p className="text-xs text-muted-foreground">
                     {APPS.find((app) => app.id === entry.appId)?.name} ·{" "}
-                    {kindLabel(entry.credentialKind)} ·{" "}
+                    {kindLabel(entry.credentialKind, entry.appId)} ·{" "}
                     {!entry.enabled
                       ? t`Disabled`
                       : entry.configured
@@ -442,9 +481,22 @@ export function NativeApplicationSetup({
                   className="w-full"
                   value={draft.ownership}
                   disabled={busy}
-                  onChange={(event) =>
-                    update({ ownership: event.target.value === "official" ? "official" : "byo" })
-                  }
+                  onChange={(event) => {
+                    const ownership = event.target.value === "official" ? "official" : "byo";
+                    if (
+                      draft.appId === "feishu-lark" &&
+                      ownership === "official" &&
+                      draft.credentialKind === "machine_key"
+                    ) {
+                      update(changeNativeCredential({ ...draft, ownership }, "oauth"));
+                    } else
+                      update({
+                        ownership,
+                        ...(["telegram-bot", "discord"].includes(draft.appId)
+                          ? { clientSecret: undefined }
+                          : {}),
+                      });
+                  }}
                 >
                   <NativeSelectOption value="byo">
                     <Trans>Your application</Trans>
@@ -470,7 +522,7 @@ export function NativeApplicationSetup({
               onChange={(event) => update({ label: event.target.value })}
             />
           </Field>
-          {!draft.id && credentialOptions[draft.appId] ? (
+          {!draft.id && credentialOptions.length > 1 ? (
             <Field>
               <FieldLabel htmlFor={`${id}-kind`}>
                 <Trans>Authorization</Trans>
@@ -482,34 +534,38 @@ export function NativeApplicationSetup({
                 disabled={busy}
                 onChange={(event) => {
                   const kind = event.target.value;
-                  if (credentialOptions[draft.appId]?.includes(kind as CredentialKind))
+                  if (credentialOptions.includes(kind as CredentialKind))
                     update(changeNativeCredential(draft, kind as CredentialKind));
                 }}
               >
-                {credentialOptions[draft.appId]!.map((kind) => (
+                {credentialOptions.map((kind) => (
                   <NativeSelectOption key={kind} value={kind}>
                     {kind === "personal_token" && draft.appId === "linear"
                       ? t`Personal API key`
                       : kind === "personal_token" && draft.appId === "slack"
                         ? t`User token`
-                        : kindLabel(kind)}
+                        : kind === "personal_token" && draft.appId === "hubspot"
+                          ? t`Private app token`
+                          : enterpriseApp && kind === "machine_key"
+                            ? t`App credentials`
+                            : kindLabel(kind)}
                   </NativeSelectOption>
                 ))}
               </NativeSelect>
             </Field>
           ) : null}
-          {["github", "linear", "slack"].includes(draft.appId) ? (
+          {actorOptions.length > 1 || ["github", "linear", "slack"].includes(draft.appId) ? (
             <Field>
               <FieldLabel htmlFor={`${id}-actor`}>
                 <Trans>Acts as</Trans>
               </FieldLabel>
               <NativeSelect
                 id={`${id}-actor`}
-                value={draft.actor ?? "user"}
-                disabled={busy || draft.credentialKind !== "oauth" || draft.appId === "github"}
+                value={draft.actor ?? actorOptions[0]}
+                disabled={busy || actorOptions.length < 2}
                 onChange={(event) => {
-                  const actor = event.target.value;
-                  if (actor === "user" || actor === "app" || actor === "bot")
+                  const actor = event.target.value as NonNullable<Draft["actor"]>;
+                  if (actorOptions.includes(actor))
                     update({
                       actor,
                       ...(draft.appId === "slack" && actor === "bot"
@@ -521,26 +577,21 @@ export function NativeApplicationSetup({
                     });
                 }}
               >
-                {draft.actor === "installation" ? (
-                  <NativeSelectOption value="installation">
-                    <Trans>App installation</Trans>
+                {actorOptions.map((actor) => (
+                  <NativeSelectOption key={actor} value={actor}>
+                    {actor === "installation"
+                      ? t`App installation`
+                      : actor === "bot"
+                        ? t`Bot`
+                        : actor === "app"
+                          ? draft.appId === "hubspot"
+                            ? t`HubSpot account`
+                            : t`Application`
+                          : draft.appId === "hubspot"
+                            ? t`User permissions`
+                            : t`User`}
                   </NativeSelectOption>
-                ) : null}
-                {draft.appId !== "slack" || draft.credentialKind !== "bot_token" ? (
-                  <NativeSelectOption value="user">
-                    <Trans>User</Trans>
-                  </NativeSelectOption>
-                ) : null}
-                {draft.appId === "linear" && draft.credentialKind === "oauth" ? (
-                  <NativeSelectOption value="app">
-                    <Trans>Application</Trans>
-                  </NativeSelectOption>
-                ) : null}
-                {draft.appId === "slack" && draft.credentialKind !== "personal_token" ? (
-                  <NativeSelectOption value="bot">
-                    <Trans>Bot</Trans>
-                  </NativeSelectOption>
-                ) : null}
+                ))}
               </NativeSelect>
             </Field>
           ) : null}
@@ -576,18 +627,22 @@ export function NativeApplicationSetup({
               </Field>
             </div>
           ) : null}
-          {draft.appId === "coginex" || draft.appId === "knowai" ? (
+          {draft.appId === "coginex" || draft.appId === "knowai" || draft.appId === "gitlab" ? (
             <Field>
               <FieldLabel htmlFor={`${id}-endpoint`}>
-                {draft.appId === "coginex" ? t`MCP endpoint` : t`API origin`}
+                {draft.appId === "coginex"
+                  ? t`MCP endpoint`
+                  : draft.appId === "gitlab"
+                    ? t`GitLab origin`
+                    : t`API origin`}
               </FieldLabel>
               <Input
                 id={`${id}-endpoint`}
                 type="url"
                 value={draft.endpoint ?? ""}
-                required
+                required={draft.appId !== "gitlab"}
                 disabled={busy}
-                placeholder="https://"
+                placeholder={draft.appId === "gitlab" ? "https://gitlab.com" : "https://"}
                 onChange={(event) => update({ endpoint: event.target.value })}
               />
             </Field>
@@ -610,7 +665,11 @@ export function NativeApplicationSetup({
               </Field>
               <Field>
                 <FieldLabel htmlFor={`${id}-client`}>
-                  <Trans>Client ID</Trans>
+                  {draft.appId === "wecom"
+                    ? t`Suite ID`
+                    : draft.appId === "feishu-lark"
+                      ? t`App ID`
+                      : t`Client ID`}
                 </FieldLabel>
                 <Input
                   id={`${id}-client`}
@@ -643,6 +702,224 @@ export function NativeApplicationSetup({
                 ) : null}
               </Field>
             </>
+          ) : null}
+          {draft.credentialKind === "oauth" && ["feishu-lark", "wecom"].includes(draft.appId) ? (
+            draft.enterpriseCallbackUri ? (
+              <Field>
+                <FieldLabel htmlFor={`${id}-enterprise-callback`}>
+                  <Trans>Event callback URL</Trans>
+                </FieldLabel>
+                <Input
+                  id={`${id}-enterprise-callback`}
+                  value={draft.enterpriseCallbackUri}
+                  readOnly
+                  onFocus={(event) => event.target.select()}
+                />
+              </Field>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                <Trans>Save this application to get its event callback URL.</Trans>
+              </p>
+            )
+          ) : null}
+          {draft.appId === "discord" && draft.id && draft.capabilities.includes("commands") ? (
+            <Field>
+              <FieldLabel htmlFor={`${id}-discord-interaction`}>
+                <Trans>Interactions endpoint URL</Trans>
+              </FieldLabel>
+              <Input
+                id={`${id}-discord-interaction`}
+                value={new URL(
+                  `/api/connectors/events/discord/${encodeURIComponent(draft.id)}`,
+                  state.callbackUri,
+                ).toString()}
+                readOnly
+                onFocus={(event) => event.target.select()}
+              />
+              <p className="text-xs text-muted-foreground">
+                <Trans>Connect this bot before registering this URL in Discord.</Trans>
+              </p>
+            </Field>
+          ) : null}
+          {enterpriseApp ? (
+            <>
+              {draft.appId === "feishu-lark" ? (
+                <Field>
+                  <FieldLabel htmlFor={`${id}-region`}>
+                    <Trans>Platform</Trans>
+                  </FieldLabel>
+                  <NativeSelect
+                    id={`${id}-region`}
+                    required
+                    value={draft.region ?? ""}
+                    disabled={busy}
+                    onChange={(event) =>
+                      update({ region: event.target.value === "lark" ? "lark" : "feishu" })
+                    }
+                  >
+                    <NativeSelectOption value="feishu">飞书</NativeSelectOption>
+                    <NativeSelectOption value="lark">Lark</NativeSelectOption>
+                  </NativeSelect>
+                </Field>
+              ) : null}
+              {draft.credentialKind !== "oauth" && draft.appId !== "wecom" ? (
+                <Field>
+                  <FieldLabel htmlFor={`${id}-enterprise-client`}>
+                    {draft.appId === "dingtalk" ? t`AppKey` : t`App ID`}
+                  </FieldLabel>
+                  <Input
+                    id={`${id}-enterprise-client`}
+                    value={draft.clientId ?? ""}
+                    required
+                    autoComplete="off"
+                    disabled={busy}
+                    onChange={(event) => update({ clientId: event.target.value })}
+                  />
+                </Field>
+              ) : null}
+              {draft.appId === "wecom" ? (
+                <Field>
+                  <FieldLabel htmlFor={`${id}-agent`}>
+                    <Trans>Agent ID</Trans>
+                  </FieldLabel>
+                  <Input
+                    id={`${id}-agent`}
+                    value={draft.agentId ?? ""}
+                    required
+                    inputMode="numeric"
+                    pattern="[0-9]+"
+                    disabled={busy}
+                    onChange={(event) => update({ agentId: event.target.value })}
+                  />
+                </Field>
+              ) : null}
+            </>
+          ) : null}
+          {enterpriseApp && draft.credentialKind === "machine_key" ? (
+            <p className="text-xs text-muted-foreground">
+              <Trans>This application is bound to the current space.</Trans>
+            </p>
+          ) : null}
+          {draft.credentialKind === "oauth" && ["feishu-lark", "wecom"].includes(draft.appId) ? (
+            <details>
+              <summary className="cursor-pointer text-sm font-medium">
+                <Trans>Authorization callbacks</Trans>
+              </summary>
+              <div className="mt-3 space-y-3">
+                {(
+                  [
+                    {
+                      key: "verificationToken",
+                      label: t`Verification token`,
+                      saved: draft.hasVerificationToken,
+                    },
+                    {
+                      key: "encryptionKey",
+                      label: t`Encryption key`,
+                      saved: draft.hasEncryptionKey,
+                    },
+                  ] as const
+                ).map((field) => (
+                  <Field key={field.key}>
+                    <FieldLabel htmlFor={`${id}-${field.key}`}>{field.label}</FieldLabel>
+                    <Input
+                      id={`${id}-${field.key}`}
+                      type="password"
+                      autoComplete="new-password"
+                      spellCheck={false}
+                      maxLength={512}
+                      value={draft[field.key] ?? ""}
+                      disabled={busy}
+                      onChange={(event) => update({ [field.key]: event.target.value })}
+                    />
+                    {field.saved ? (
+                      <p className="text-xs text-muted-foreground">
+                        <Trans>Leave blank to keep the saved secret.</Trans>
+                      </p>
+                    ) : null}
+                  </Field>
+                ))}
+              </div>
+            </details>
+          ) : null}
+          {ownerCredential ? (
+            <Field>
+              <FieldLabel htmlFor={`${id}-owner-secret`}>
+                {botApp
+                  ? draft.appId === "discord"
+                    ? t`Discord bot token`
+                    : t`Telegram bot token`
+                  : t`App secret`}
+              </FieldLabel>
+              <Input
+                id={`${id}-owner-secret`}
+                type="password"
+                autoComplete="new-password"
+                spellCheck={false}
+                value={draft.clientSecret ?? ""}
+                required={!draft.hasClientSecret}
+                maxLength={8192}
+                disabled={busy}
+                onChange={(event) => update({ clientSecret: event.target.value })}
+              />
+              {draft.hasClientSecret ? (
+                <p className="text-xs text-muted-foreground">
+                  <Trans>Leave blank to keep the saved secret.</Trans>
+                </p>
+              ) : null}
+            </Field>
+          ) : null}
+          {tenantApp ? (
+            <Field>
+              <FieldLabel htmlFor={`${id}-resource-tenant`}>
+                {enterpriseApp
+                  ? ["dingtalk", "wecom"].includes(draft.appId)
+                    ? draft.credentialKind === "machine_key"
+                      ? t`Corp ID`
+                      : t`Corp ID (optional)`
+                    : t`Tenant ID (optional)`
+                  : draft.appId === "jira" || draft.appId === "confluence"
+                    ? t`Cloud site ID`
+                    : draft.appId === "discord"
+                      ? t`Server ID`
+                      : draft.appId === "hubspot"
+                        ? t`HubSpot account ID (optional)`
+                        : draft.appId === "dropbox"
+                          ? t`Team ID (optional)`
+                          : t`Microsoft tenant ID (optional)`}
+              </FieldLabel>
+              <Input
+                id={`${id}-resource-tenant`}
+                value={draft.tenantId ?? ""}
+                required={
+                  ["jira", "confluence", "discord"].includes(draft.appId) ||
+                  (["dingtalk", "wecom"].includes(draft.appId) &&
+                    draft.credentialKind === "machine_key")
+                }
+                disabled={busy}
+                onChange={(event) => update({ tenantId: event.target.value })}
+              />
+            </Field>
+          ) : null}
+          {draft.appId === "discord" ? (
+            <p className="text-xs text-muted-foreground">
+              <Trans>This server is bound to the current space.</Trans>
+            </p>
+          ) : null}
+          {botApp ? (
+            <Field>
+              <FieldLabel htmlFor={`${id}-targets`}>
+                {draft.appId === "telegram-bot" ? t`Allowed chat IDs` : t`Allowed channel IDs`}
+              </FieldLabel>
+              <Input
+                id={`${id}-targets`}
+                value={draft.targetIdsText}
+                required
+                disabled={busy}
+                placeholder={t`Separate IDs with commas`}
+                onChange={(event) => update({ targetIdsText: event.target.value })}
+              />
+            </Field>
           ) : null}
           {draft.appId === "gmail" ? (
             <details>
@@ -735,11 +1012,12 @@ export function NativeApplicationSetup({
               </div>
             </details>
           ) : null}
-          {draft.credentialKind === "machine_key" ||
-          draft.credentialKind === "internal_token" ||
-          draft.credentialKind === "personal_token" ||
-          draft.credentialKind === "bot_token" ||
-          draft.credentialKind === "github_app_installation" ? (
+          {!ownerCredential &&
+          (draft.credentialKind === "machine_key" ||
+            draft.credentialKind === "internal_token" ||
+            draft.credentialKind === "personal_token" ||
+            draft.credentialKind === "bot_token" ||
+            draft.credentialKind === "github_app_installation") ? (
             <p className="text-xs text-muted-foreground">
               <Trans>Members enter their credentials when connecting from Apps.</Trans>
             </p>
@@ -812,6 +1090,25 @@ export function NativeApplicationSetup({
                     onCheckedChange={(value) => checked("scopes", scope, value)}
                   />
                   <FieldLabel htmlFor={`${id}-scope-${scope}`}>{scope}</FieldLabel>
+                </Field>
+              ))}
+            </fieldset>
+          ) : null}
+          {remainingCapabilities.length ? (
+            <fieldset className="space-y-2" disabled={busy}>
+              <legend className="mb-2 text-sm font-medium">
+                <Trans>Permissions</Trans>
+              </legend>
+              {remainingCapabilities.map((capability) => (
+                <Field key={capability} orientation="horizontal">
+                  <Switch
+                    id={`${id}-capability-${capability}`}
+                    checked={draft.capabilities.includes(capability)}
+                    onCheckedChange={(value) => checked("capabilities", capability, value)}
+                  />
+                  <FieldLabel htmlFor={`${id}-capability-${capability}`}>
+                    {capabilityLabel(capability)}
+                  </FieldLabel>
                 </Field>
               ))}
             </fieldset>

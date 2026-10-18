@@ -1,0 +1,580 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-18",
+  "appId": "asana",
+  "actions": [
+    {
+      "id": "asana.workspaces.list",
+      "description": "List workspaces accessible to the selected Asana user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/workspaces"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["workspaces:read", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "next_page.offset; URI never followed",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "gid": "workspace-fixture"
+          }
+        ],
+        "hasMore": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": ["items", "hasMore"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "asana.projects.list",
+      "description": "List projects in one Asana workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workspace_gid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "offset": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "required": ["workspace_gid"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/workspaces/{workspace_gid}/projects"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["projects:read", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "next_page.offset",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "gid": "project-fixture"
+          }
+        ],
+        "nextCursor": "opaque-next"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "nextCursor": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["items", "nextCursor"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "asana.tasks.list",
+      "description": "List tasks in one Asana project with opaque offset pagination.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_gid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "offset": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "completed_since": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["project_gid"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects/{project_gid}/tasks"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["tasks:read", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "next_page.offset",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "gid": "task-fixture"
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["items"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "asana.tasks.get",
+      "description": "Read an Asana task with supported task fields.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_gid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["task_gid"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/tasks/{task_gid}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["tasks:read", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "gid": "task-fixture"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "gid": {
+            "type": "string"
+          }
+        },
+        "required": ["gid"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "asana.tasks.create",
+      "description": "Create an Asana task in a workspace with optional project, assignee and due date.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "maxItems": 100
+          },
+          "assignee": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "due_on": {
+            "type": ["string", "null"],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": ["workspace", "name"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/tasks"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["tasks:write", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "gid": "task-fixture",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "gid": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["gid", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "asana.tasks.update",
+      "description": "Update an Asana task including assignee, due date or completion.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_gid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10000
+              },
+              "notes": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50000
+              },
+              "assignee": {
+                "type": ["string", "null"],
+                "maxLength": 256
+              },
+              "due_on": {
+                "type": ["string", "null"],
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "completed": {
+                "type": "boolean"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": ["task_gid", "changes"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "PUT",
+        "path": "/tasks/{task_gid}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["tasks:write", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "gid": "task-fixture",
+        "completed": true,
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "gid": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["gid", "completed", "write_outcome"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "asana.stories.list",
+      "description": "Read stories and comments attached to one Asana task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_gid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "offset": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["task_gid"],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/tasks/{task_gid}/stories"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["stories:read", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "next_page.offset",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "gid": "story-fixture"
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["items"],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "asana.comments.create",
+      "description": "Add a text comment to one Asana task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_gid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          }
+        },
+        "required": ["task_gid", "text"],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/tasks/{task_gid}/stories"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["stories:write", "default"],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true,
+        "scopeAuthority": "POST /-/token_info, not token response or requested scopes"
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "gid": "story-fixture",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "gid": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": ["gid", "write_outcome"],
+        "additionalProperties": true
+      }
+    }
+  ],
+  "sources": [
+    "https://developers.asana.com/docs/oauth",
+    "https://developers.asana.com/docs/oauth-scopes",
+    "https://developers.asana.com/docs/authentication",
+    "https://developers.asana.com/reference/gettasks",
+    "https://developers.asana.com/reference/createtask",
+    "https://developers.asana.com/reference/createtaskstory"
+  ],
+  "errorPolicy": "401 reauthorize;403 permissions;404 unavailable;409/412 version conflict;429 Retry-After;5xx/transport uncertain writes never replay; partial/malformed responses rejected",
+  "events": "No new inbound webhook consumer or task mechanism in this contract. Existing explicit Routine behavior unchanged. Provider events require separately verified subscription/lifecycle and are not implied by OAuth.",
+  "acceptance": [
+    "exact action inventory/digest",
+    "strict input and no business URL/auth",
+    "actual request method/path/body",
+    "actor+scope guards",
+    "cursor extraction without URL following",
+    "write checkpoint before dispatch",
+    "unknown write no automatic replay",
+    "static identity and OAuth refresh actual scopes",
+    "rotating refresh uncertainty and account/site mismatch"
+  ],
+  "real_verified": false,
+  "revision": 3,
+  "supersedesSha256": "3eef4e198711c993e3e7c9be21ad9a4c247d05d2fc05252aac4ec98c79eea15a",
+  "revisionReason": "Terminal continuation fields permit null; Asana explicitly configured and introspected default Full permissions is an alternative, never expanded or mixed with granular scopes."
+}

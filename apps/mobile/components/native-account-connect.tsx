@@ -13,7 +13,11 @@ import { useI18n } from "../lib/i18n";
 import type { IntegrationsCacheScope } from "../lib/integrations-cache";
 import { integrationsCacheScope, isIntegrationsScopeCurrent } from "../lib/integrations-cache";
 import { native, useThemedStyles } from "../lib/native";
-import { nativeConnectionMethodLabel } from "../lib/native-connection-method";
+import {
+  nativeApplicationName,
+  nativeConnectionMethodLabel,
+  nativeCredentialLabel,
+} from "../lib/native-connection-method";
 import { errorText } from "../lib/user-error";
 import { MenuPicker } from "./menu-picker";
 import { NativeActionButton } from "./native-action-button";
@@ -87,6 +91,7 @@ export function NativeAccountConnect({
       (entry) => entry.appId === appId && entry.enabled && entry.configured,
     ) ?? [];
   const selected = configurations.find((entry) => entry.id === selectedId);
+  const usesConfiguredCredential = selected?.usesConfiguredCredential === true;
   const oauth = selected?.credentialKind === "oauth" || selected?.credentialKind === "mcp_oauth";
   const canChooseDriveFiles =
     appId === "google-drive" &&
@@ -94,18 +99,7 @@ export function NativeAccountConnect({
     !previousConnectionId &&
     selected.driveFilePickerAvailable === true;
   const webCredential = selected?.credentialKind === "github_app_installation";
-  const credentialLabel =
-    selected?.credentialKind === "machine_key"
-      ? t("Machine API key")
-      : selected?.credentialKind === "internal_token"
-        ? t("Internal integration token")
-        : selected?.credentialKind === "bot_token"
-          ? t("Slack bot token")
-          : appId === "linear"
-            ? t("Linear API key")
-            : appId === "slack"
-              ? t("Slack user token")
-              : t("Personal access token");
+  const credentialLabel = nativeCredentialLabel(appId, selected?.credentialKind, t);
   async function openWebSettings() {
     if (!webUrl || !scope.current || !isIntegrationsScopeCurrent(scope.current)) return;
     try {
@@ -127,7 +121,7 @@ export function NativeAccountConnect({
       configId: selected.id,
       ...(authorizationFlow ? { authorizationFlow } : {}),
       ...(previousConnectionId ? { previousConnectionId } : {}),
-      ...(!oauth ? { credential: credential.trim() } : {}),
+      ...(!oauth && !usesConfiguredCredential ? { credential: credential.trim() } : {}),
     });
     if (!parsed.success) {
       setError(t("Enter a valid credential"));
@@ -151,25 +145,7 @@ export function NativeAccountConnect({
       <Text accessibilityRole="header" style={styles.title}>
         {previousConnectionId ? t("Reconnect account") : t("Connect account")}
       </Text>
-      <Text style={styles.secondary}>
-        {
-          {
-            coginex: "CogineX",
-            knowai: "Knowai",
-            "google-calendar": "Google Calendar",
-            gmail: "Gmail",
-            "google-drive": "Google Drive",
-            "google-docs": "Google Docs",
-            "google-sheets": "Google Sheets",
-            "google-slides": "Google Slides",
-            "google-tasks": "Google Tasks",
-            notion: "Notion",
-            github: "GitHub",
-            linear: "Linear",
-            slack: "Slack",
-          }[appId]
-        }
-      </Text>
+      <Text style={styles.secondary}>{nativeApplicationName(appId)}</Text>
       {loading ? <ActivityIndicator /> : null}
       {!loading && state && !configurations.length ? (
         <Text style={styles.secondary}>
@@ -202,7 +178,7 @@ export function NativeAccountConnect({
           />
         )
       ) : null}
-      {selected && !oauth && !webCredential ? (
+      {selected && !oauth && !webCredential && !usesConfiguredCredential ? (
         <View style={styles.content}>
           <Text style={styles.label}>{credentialLabel}</Text>
           <TextInput
@@ -229,6 +205,13 @@ export function NativeAccountConnect({
             </Text>
           ) : null}
         </View>
+      ) : null}
+      {appId === "figma" && selected?.credentialKind === "oauth" ? (
+        <Text style={styles.secondary}>
+          {t(
+            "Authorizing this Figma account replaces its previous authorization for this application.",
+          )}
+        </Text>
       ) : null}
       {webCredential ? (
         <View style={styles.content}>
@@ -302,16 +285,18 @@ export function NativeAccountConnect({
       {configurations.length && !webCredential ? (
         <NativeActionButton
           label={
-            oauth
-              ? t("Authorize account")
-              : selected?.credentialKind === "machine_key"
-                ? t("Connect machine")
-                : selected?.credentialKind === "internal_token"
-                  ? t("Connect integration")
-                  : t("Connect account")
+            usesConfiguredCredential
+              ? t("Connect application")
+              : oauth
+                ? t("Authorize account")
+                : selected?.credentialKind === "machine_key"
+                  ? t("Connect machine")
+                  : selected?.credentialKind === "internal_token"
+                    ? t("Connect integration")
+                    : t("Connect account")
           }
           busy={busy}
-          disabled={!selected || (!oauth && !credential.trim())}
+          disabled={!selected || (!oauth && !usesConfiguredCredential && !credential.trim())}
           onPress={() => void submit()}
         />
       ) : null}

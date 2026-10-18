@@ -1,0 +1,303 @@
+{
+  "version": 1,
+  "contractSha256": "9f5dce4f006e3e8feb5de055131491ad16a598efefc4097b67af12ff190a855d",
+  "fixtures": [
+    {
+      "id": "asana.workspaces.list",
+      "input": {},
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/workspaces",
+            "query": {
+              "limit": 30,
+              "opt_fields": "gid,name,resource_type,is_organization"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": [
+                {
+                  "gid": "workspace-fixture",
+                  "name": "Fixture"
+                }
+              ],
+              "next_page": null
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "gid": "workspace-fixture"
+          }
+        ],
+        "hasMore": false
+      }
+    },
+    {
+      "id": "asana.projects.list",
+      "input": {
+        "workspace_gid": "workspace-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/workspaces/workspace-fixture/projects",
+            "query": {
+              "limit": 30,
+              "opt_fields": "gid,name,resource_type,archived,permalink_url,workspace"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": [
+                {
+                  "gid": "project-fixture",
+                  "name": "Fixture"
+                }
+              ],
+              "next_page": {
+                "offset": "opaque-next",
+                "uri": "https://untrusted.example/never-follow"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "gid": "project-fixture"
+          }
+        ],
+        "nextCursor": "opaque-next"
+      }
+    },
+    {
+      "id": "asana.tasks.list",
+      "input": {
+        "project_gid": "project-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects/project-fixture/tasks",
+            "query": {
+              "limit": 30,
+              "opt_fields": "gid,resource_type,name,notes,completed,completed_at,modified_at,created_at,due_on,due_at,assignee,projects,workspace,parent,permalink_url"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": [
+                {
+                  "gid": "task-fixture",
+                  "name": "Fixture task",
+                  "resource_type": "task",
+                  "completed": false
+                }
+              ],
+              "next_page": null
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "gid": "task-fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": "asana.tasks.get",
+      "input": {
+        "task_gid": "task-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/tasks/task-fixture",
+            "query": {
+              "opt_fields": "gid,resource_type,name,notes,completed,completed_at,modified_at,created_at,due_on,due_at,assignee,projects,workspace,parent,permalink_url"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "gid": "task-fixture",
+                "name": "Fixture task",
+                "resource_type": "task",
+                "completed": false
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "gid": "task-fixture"
+      }
+    },
+    {
+      "id": "asana.tasks.create",
+      "input": {
+        "workspace": "workspace-fixture",
+        "name": "Fixture task",
+        "projects": ["project-fixture"],
+        "assignee": "person-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/tasks",
+            "body": {
+              "data": {
+                "workspace": "workspace-fixture",
+                "name": "Fixture task",
+                "projects": ["project-fixture"],
+                "assignee": "person-fixture"
+              }
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "data": {
+                "gid": "task-fixture",
+                "name": "Fixture task",
+                "resource_type": "task",
+                "completed": false
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "gid": "task-fixture",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "asana.tasks.update",
+      "input": {
+        "task_gid": "task-fixture",
+        "changes": {
+          "completed": true,
+          "due_on": "2026-10-19"
+        }
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "PUT",
+            "path": "/tasks/task-fixture",
+            "body": {
+              "data": {
+                "completed": true,
+                "due_on": "2026-10-19"
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": {
+                "gid": "task-fixture",
+                "name": "Fixture task",
+                "resource_type": "task",
+                "completed": true
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "gid": "task-fixture",
+        "completed": true,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "asana.stories.list",
+      "input": {
+        "task_gid": "task-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/tasks/task-fixture/stories",
+            "query": {
+              "limit": 30,
+              "opt_fields": "gid,resource_type,resource_subtype,text,created_at,created_by,type,is_pinned"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "data": [
+                {
+                  "gid": "story-fixture",
+                  "text": "Fixture comment"
+                }
+              ],
+              "next_page": null
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "gid": "story-fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": "asana.comments.create",
+      "input": {
+        "task_gid": "task-fixture",
+        "text": "Fixture comment"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/tasks/task-fixture/stories",
+            "body": {
+              "data": {
+                "text": "Fixture comment"
+              }
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "data": {
+                "gid": "story-fixture",
+                "text": "Fixture comment"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "gid": "story-fixture",
+        "write_outcome": "confirmed"
+      }
+    }
+  ]
+}

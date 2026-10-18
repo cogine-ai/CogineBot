@@ -1,0 +1,410 @@
+{
+  "version": 2,
+  "appId": "airtable",
+  "name": "Airtable",
+  "actions": [
+    {
+      "id": "airtable.bases.list",
+      "description": "List Airtable bases shared with this token.",
+      "method": "GET",
+      "path": "/v0/meta/bases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id"]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["schema.bases:read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "airtable.tables.list",
+      "description": "Read table and field schema in a base.",
+      "method": "GET",
+      "path": "/v0/meta/bases/{baseId}/tables",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "baseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["baseId"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id"]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["schema.bases:read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "airtable.records.list",
+      "description": "Read one page of Airtable records.",
+      "method": "GET",
+      "path": "/v0/{baseId}/{tableId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "baseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "offset": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "view": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "filterByFormula": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": ["baseId", "tableId"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id"]
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["data.records:read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "airtable.records.get",
+      "description": "Read an Airtable record.",
+      "method": "GET",
+      "path": "/v0/{baseId}/{tableId}/{recordId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "baseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "recordId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["baseId", "tableId", "recordId"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "record"],
+        "properties": {
+          "action_id": {
+            "const": "airtable.records.get"
+          },
+          "record": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": true,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["data.records:read"]
+      },
+      "externalEffect": "none",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "airtable.records.create",
+      "description": "Create one record without typecasting field schema.",
+      "method": "POST",
+      "path": "/v0/{baseId}/{tableId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "baseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "fields": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": true
+          }
+        },
+        "required": ["baseId", "tableId", "fields"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "record"],
+        "properties": {
+          "action_id": {
+            "const": "airtable.records.create"
+          },
+          "record": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["data.records:write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "airtable.records.update",
+      "description": "Update record fields after a best-effort field precheck.",
+      "method": "PATCH",
+      "path": "/v0/{baseId}/{tableId}/{recordId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "baseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "recordId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expectedFields": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": true
+          },
+          "fields": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": true
+          }
+        },
+        "required": ["baseId", "tableId", "recordId", "expectedFields", "fields"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "record"],
+        "properties": {
+          "action_id": {
+            "const": "airtable.records.update"
+          },
+          "record": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["data.records:write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "airtable.records.delete",
+      "description": "Delete one selected Airtable record.",
+      "method": "DELETE",
+      "path": "/v0/{baseId}/{tableId}/{recordId}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "baseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "recordId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["baseId", "tableId", "recordId"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "record"],
+        "properties": {
+          "action_id": {
+            "const": "airtable.records.delete"
+          },
+          "record": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["data.records:write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    },
+    {
+      "id": "airtable.comments.create",
+      "description": "Post a comment on an Airtable record.",
+      "method": "POST",
+      "path": "/v0/{baseId}/{tableId}/{recordId}/comments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "baseId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "tableId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "recordId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          }
+        },
+        "required": ["baseId", "tableId", "recordId", "text"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["action_id", "comment"],
+        "properties": {
+          "action_id": {
+            "const": "airtable.comments.create"
+          },
+          "comment": {
+            "type": "object"
+          }
+        }
+      },
+      "readOnly": false,
+      "authorization": {
+        "actor": "user",
+        "acceptedAnyOfScopes": ["data.recordComments:write"]
+      },
+      "externalEffect": "write resource on selected account; notifications may be emitted",
+      "pagination": "single page; explicit continuation, never claim full collection without terminal provider metadata"
+    }
+  ],
+  "authorization": {
+    "credentialKinds": ["oauth", "personal_token"],
+    "identity": "GET /v0/meta/whoami actual user/service-account ID; OAuth scopes returned, PAT scopes unknown -> provider ACL, never copy configured scopes into actual grants",
+    "scopes": "schema.bases:read data.records:read data.records:write data.recordComments:write; OAuth/resource grant and base/table/field role both apply",
+    "refresh": "PKCES256 mandatory; onehour access/60day refresh pair rotates, previous pair invalidates; uncertain rotation does not retry old pair",
+    "events": "Webhooks need base grant, payload MAC and cursor expiry/renewal; no implicit subscription in connect",
+    "rate": "5requests/sec/base plus plan quotas;429 cooldown, no write auto replay",
+    "limits": "100records/page; create/update one record; no typecast; file attachment field values/links are content only, not downloads; update fields best-effort compare"
+  },
+  "sources": [
+    "https://airtable.com/developers/web/api/oauth-reference",
+    "https://airtable.com/developers/web/api/get-user-id-scopes",
+    "https://airtable.com/developers/web/api/list-records",
+    "https://airtable.com/developers/web/api/create-records",
+    "https://airtable.com/developers/web/api/get-base-schema",
+    "https://airtable.com/developers/web/api/create-comment"
+  ],
+  "errorPolicy": "401expired;403scope/ACL;404resource;409/412conflict;429retryAfter;5xxunavailable; acknowledgedunknownwrite never replay; never expose diagnostics/tokens",
+  "acceptance": [
+    "everyaction exactmethod/path/body fixture",
+    "schemaunknownfield rejection beforeHTTP",
+    "wrongactor/subject/tenant rejection",
+    "paginationneverpretendallpages",
+    "401/403/404/429 mapping",
+    "writecheckpoint beforedispatch and no replay afterunknown",
+    "authidentity/scopes/refreshnegative tests"
+  ]
+}

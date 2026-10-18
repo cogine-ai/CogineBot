@@ -1,0 +1,562 @@
+{
+  "slug": "outlook-calendar",
+  "name": "Outlook Calendar",
+  "contractVersion": 1,
+  "frozenAt": "2026-10-18",
+  "realVerified": false,
+  "actions": [
+    {
+      "id": "outlook_calendar.calendars.list",
+      "description": "List own calendars",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.Read", "Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/calendars",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/user-list-calendars?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook_calendar.events.list",
+      "description": "List calendar occurrences in an explicit time window",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "startDateTime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "endDateTime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          }
+        },
+        "required": ["calendarId", "startDateTime", "endDateTime"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.Read", "Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/calendars/{calendarId}/calendarView",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook_calendar.events.get",
+      "description": "Read a calendar event",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["eventId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.Read", "Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "GET",
+        "path": "/me/events/{eventId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/event-get?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook_calendar.events.create",
+      "description": "Create an event and explicitly requested invitations",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "contentType": {
+                "enum": ["text", "html"]
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              }
+            },
+            "required": ["contentType", "content"],
+            "additionalProperties": false
+          },
+          "start": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "end": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "location": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "attendees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "format": "email",
+                  "maxLength": 254
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "type": {
+                  "enum": ["required", "optional", "resource"]
+                }
+              },
+              "required": ["address"],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "isAllDay": {
+            "type": "boolean"
+          }
+        },
+        "required": ["calendarId", "subject", "start", "end"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/calendars/{calendarId}/events",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/calendar-post-events?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook_calendar.events.update",
+      "description": "Update an event using its read ETag",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "contentType": {
+                "enum": ["text", "html"]
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              }
+            },
+            "required": ["contentType", "content"],
+            "additionalProperties": false
+          },
+          "start": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "end": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "location": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "attendees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "format": "email",
+                  "maxLength": 254
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "type": {
+                  "enum": ["required", "optional", "resource"]
+                }
+              },
+              "required": ["address"],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "isAllDay": {
+            "type": "boolean"
+          }
+        },
+        "required": ["eventId", "expectedEtag"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "PATCH",
+        "path": "/me/events/{eventId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/event-update?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook_calendar.events.cancel",
+      "description": "Cancel an organized event and notify attendees",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "comment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          }
+        },
+        "required": ["eventId"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/events/{eventId}/cancel",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/event-cancel?view=graph-rest-1.0"
+      },
+      "output": {
+        "httpStatus": 202,
+        "emptyBody": true,
+        "accepted": true,
+        "deliveryVerified": false,
+        "terminalStateVerified": false,
+        "receipt": "same effect exact id+actor+input accepted ACK persists; repeated invocation recovers receipt, no resend",
+        "uncertain": "network/408/5xx/missing response/ACK store failure; never infer terminal success"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook_calendar.events.delete",
+      "description": "Delete the selected event from the calendar",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expectedEtag": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": ["eventId", "expectedEtag"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": false
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "DELETE",
+        "path": "/me/events/{eventId}",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/event-delete?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below.",
+        "empty204": "exact request resource_id and acknowledged mutation; no fabricated snapshot"
+      },
+      "effect": {
+        "kind": "external-write",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    },
+    {
+      "id": "outlook_calendar.schedule.get",
+      "description": "Read organizational free/busy schedules",
+      "readOnly": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "schedules": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email",
+              "maxLength": 254
+            },
+            "minItems": 1,
+            "maxItems": 20
+          },
+          "startTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "endTime": {
+            "type": "object",
+            "properties": {
+              "dateTime": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "timeZone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["dateTime", "timeZone"],
+            "additionalProperties": false
+          },
+          "availabilityViewInterval": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 1440
+          }
+        },
+        "required": ["schedules", "startTime", "endTime"],
+        "additionalProperties": false
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": ["Calendars.ReadBasic", "Calendars.Read", "Calendars.ReadWrite"],
+        "actor": "delegated-user",
+        "businessAccountOnly": true
+      },
+      "upstream": {
+        "baseUrl": "https://graph.microsoft.com/v1.0",
+        "method": "POST",
+        "path": "/me/calendar/getSchedule",
+        "documentation": "https://learn.microsoft.com/en-us/graph/api/calendar-getschedule?view=graph-rest-1.0"
+      },
+      "output": {
+        "shape": "bounded resource/collection + stable IDs; next opaque cursor on paged collections",
+        "requiredResponse": "Stable resource ID for object; strict collection value array and validated same-collection opaque nextCursor; per-action response rules below."
+      },
+      "effect": {
+        "kind": "read",
+        "unknownOutcome": "Use existing ExternalEffect exact actor/input receipt. Never replay an in-flight or uncertain mutation. 408/5xx/network/truncated ack => result_unknown."
+      }
+    }
+  ],
+  "contractRevision": 2
+}
