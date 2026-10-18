@@ -1,0 +1,636 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-18",
+  "appId": "todoist",
+  "actions": [
+    {
+      "id": "todoist.projects.list",
+      "description": "List active Todoist projects with an explicit continuation cursor.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/projects"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "data:read",
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "next_cursor",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "9"
+          }
+        ],
+        "hasMore": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "hasMore"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "todoist.tasks.list",
+      "description": "List active Todoist tasks, optionally within a project, section or parent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "section_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "parent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/tasks"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "data:read",
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "next_cursor; active tasks only",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "task-fixture"
+          }
+        ],
+        "nextCursor": "opaque-next"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "todoist.tasks.get",
+      "description": "Read one Todoist task with the selected user account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/tasks/{task_id}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "data:read",
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "task-fixture"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "todoist.tasks.create",
+      "description": "Create a Todoist task including supported due date, hierarchy and priority.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "section_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "parent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "due_string": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "due_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/tasks"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "task:add",
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "task-fixture",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "todoist.tasks.update",
+      "description": "Update a Todoist task without silently combining conflicting due-date formats.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10000
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50000
+              },
+              "due_string": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "due_date": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "priority": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4
+              },
+              "labels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "maxItems": 100
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "task_id",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/tasks/{task_id}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "task-fixture",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "todoist.tasks.close",
+      "description": "Close a Todoist task; recurring tasks follow Todoist rescheduling behavior.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/tasks/{task_id}/close"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "task_id,closed=true,write_outcome; recurring tasks reschedule per Todoist semantics",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "task_id": "task-fixture",
+        "closed": true,
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "closed",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "todoist.tasks.reopen",
+      "description": "Reopen a Todoist task under Todoist recurring-task semantics.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/tasks/{task_id}/reopen"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "task_id,closed=false,write_outcome; recurring tasks per Todoist semantics",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "task_id": "task-fixture",
+        "closed": false,
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "closed",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "todoist.comments.create",
+      "description": "Add a comment to one Todoist task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          }
+        },
+        "required": [
+          "task_id",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/comments"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "data:read_write"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    }
+  ],
+  "sources": [
+    "https://developer.todoist.com/api/v1/"
+  ],
+  "errorPolicy": "401 reauthorize;403 permissions;404 unavailable;409/412 version conflict;429 Retry-After;5xx/transport uncertain writes never replay; partial/malformed responses rejected",
+  "events": "No new inbound webhook consumer or task mechanism in this contract. Existing explicit Routine behavior unchanged. Provider events require separately verified subscription/lifecycle and are not implied by OAuth.",
+  "acceptance": [
+    "exact action inventory/digest",
+    "strict input and no business URL/auth",
+    "actual request method/path/body",
+    "actor+scope guards",
+    "cursor extraction without URL following",
+    "write checkpoint before dispatch",
+    "unknown write no automatic replay",
+    "static identity and OAuth refresh actual scopes",
+    "rotating refresh uncertainty and account/site mismatch"
+  ],
+  "real_verified": false,
+  "revision": 3,
+  "supersedesSha256": "9647bea7e2cbf1e057ba623ff400f6189446be4d6db985fbd3875f8f24aca70f",
+  "revisionReason": "Terminal continuation fields permit null; Asana explicitly configured and introspected default Full permissions is an alternative, never expanded or mixed with granular scopes."
+}

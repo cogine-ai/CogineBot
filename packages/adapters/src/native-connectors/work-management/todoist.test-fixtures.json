@@ -1,0 +1,253 @@
+{
+  "version": 1,
+  "contractSha256": "17db6fcd5867e5b500c799ef100afa6254e3ee3c0f97bf193cb5ea0ab52a2e83",
+  "fixtures": [
+    {
+      "id": "todoist.projects.list",
+      "input": {},
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/projects",
+            "query": {
+              "limit": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "results": [
+                {
+                  "id": "9",
+                  "name": "Fixture"
+                }
+              ],
+              "next_cursor": null
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "9"
+          }
+        ],
+        "hasMore": false
+      }
+    },
+    {
+      "id": "todoist.tasks.list",
+      "input": {
+        "project_id": "9"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/tasks",
+            "query": {
+              "project_id": "9",
+              "limit": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "results": [
+                {
+                  "id": "task-fixture",
+                  "content": "Fixture task",
+                  "project_id": "9",
+                  "priority": 2
+                }
+              ],
+              "next_cursor": "opaque-next"
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "task-fixture"
+          }
+        ],
+        "nextCursor": "opaque-next"
+      }
+    },
+    {
+      "id": "todoist.tasks.get",
+      "input": {
+        "task_id": "task-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/tasks/task-fixture"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "task-fixture",
+              "content": "Fixture task",
+              "project_id": "9",
+              "priority": 2
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "task-fixture"
+      }
+    },
+    {
+      "id": "todoist.tasks.create",
+      "input": {
+        "content": "Fixture task",
+        "project_id": "9",
+        "due_date": "2026-10-19"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/tasks",
+            "body": {
+              "content": "Fixture task",
+              "project_id": "9",
+              "due_date": "2026-10-19"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "task-fixture",
+              "content": "Fixture task",
+              "project_id": "9",
+              "priority": 2
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "task-fixture",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "todoist.tasks.update",
+      "input": {
+        "task_id": "task-fixture",
+        "changes": {
+          "content": "Updated",
+          "priority": 4
+        }
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/tasks/task-fixture",
+            "body": {
+              "content": "Updated",
+              "priority": 4
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "task-fixture",
+              "content": "Updated",
+              "project_id": "9",
+              "priority": 4
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "task-fixture",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "todoist.tasks.close",
+      "input": {
+        "task_id": "task-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/tasks/task-fixture/close"
+          },
+          "response": {
+            "status": 204,
+            "body": null
+          }
+        }
+      ],
+      "output": {
+        "task_id": "task-fixture",
+        "closed": true,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "todoist.tasks.reopen",
+      "input": {
+        "task_id": "task-fixture"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/tasks/task-fixture/reopen"
+          },
+          "response": {
+            "status": 204,
+            "body": null
+          }
+        }
+      ],
+      "output": {
+        "task_id": "task-fixture",
+        "closed": false,
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "todoist.comments.create",
+      "input": {
+        "task_id": "task-fixture",
+        "content": "Fixture comment"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/comments",
+            "body": {
+              "task_id": "task-fixture",
+              "content": "Fixture comment"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "88",
+              "task_id": "task-fixture",
+              "content": "Fixture comment"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      }
+    }
+  ]
+}

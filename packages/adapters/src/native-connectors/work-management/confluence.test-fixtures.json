@@ -1,0 +1,340 @@
+{
+  "version": 1,
+  "contractSha256": "300464786d44abd1ad8ec67f84dd3749dc9eef7ec51a44b74079e78334b627ac",
+  "fixtures": [
+    {
+      "id": "confluence.spaces.list",
+      "input": {},
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/wiki/api/v2/spaces",
+            "query": {
+              "limit": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "results": [
+                {
+                  "id": "9",
+                  "key": "FIX",
+                  "name": "Fixture"
+                }
+              ],
+              "_links": {}
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "9"
+          }
+        ],
+        "hasMore": false
+      }
+    },
+    {
+      "id": "confluence.pages.search",
+      "input": {
+        "cql": "type=page"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/wiki/rest/api/search",
+            "query": {
+              "cql": "type=page AND (type=page)",
+              "limit": 30,
+              "excerpt": "none"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "results": [
+                {
+                  "title": "Fixture",
+                  "content": {
+                    "id": "12",
+                    "type": "page",
+                    "title": "Fixture"
+                  }
+                }
+              ],
+              "_links": {
+                "next": "/wiki/rest/api/search?cursor=opaque-next"
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "content": {
+              "id": "12"
+            }
+          }
+        ],
+        "nextCursor": "opaque-next",
+        "allPagesRead": false
+      }
+    },
+    {
+      "id": "confluence.pages.get",
+      "input": {
+        "page_id": "12"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/wiki/api/v2/pages/12",
+            "query": {
+              "body-format": "storage"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "12",
+              "title": "Fixture",
+              "status": "current",
+              "spaceId": "9",
+              "version": {
+                "number": 3
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "12",
+        "version": {
+          "number": 3
+        }
+      }
+    },
+    {
+      "id": "confluence.pages.create",
+      "input": {
+        "spaceId": "9",
+        "title": "Fixture",
+        "body": "<p>Fixture</p>"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/wiki/api/v2/pages",
+            "body": {
+              "spaceId": "9",
+              "title": "Fixture",
+              "status": "current",
+              "body": {
+                "representation": "storage",
+                "value": "<p>Fixture</p>"
+              }
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": "12",
+              "title": "Fixture",
+              "status": "current",
+              "spaceId": "9",
+              "version": {
+                "number": 3
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "12",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "confluence.pages.update",
+      "input": {
+        "page_id": "12",
+        "title": "Fixture",
+        "body": "<p>Updated</p>",
+        "expectedVersion": 3
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/wiki/api/v2/pages/12"
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "12",
+              "title": "Fixture",
+              "status": "current",
+              "spaceId": "9",
+              "version": {
+                "number": 3
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "PUT",
+            "path": "/wiki/api/v2/pages/12",
+            "body": {
+              "id": "12",
+              "title": "Fixture",
+              "status": "current",
+              "body": {
+                "representation": "storage",
+                "value": "<p>Updated</p>"
+              },
+              "version": {
+                "number": 4
+              }
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "id": "12",
+              "title": "Fixture",
+              "status": "current",
+              "spaceId": "9",
+              "version": {
+                "number": 4
+              }
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "12",
+        "version": {
+          "number": 4
+        },
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "confluence.comments.list",
+      "input": {
+        "page_id": "12"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/wiki/api/v2/pages/12/footer-comments",
+            "query": {
+              "limit": 30,
+              "body-format": "storage"
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "results": [
+                {
+                  "id": "88",
+                  "pageId": "12"
+                }
+              ],
+              "_links": {}
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "88"
+          }
+        ]
+      }
+    },
+    {
+      "id": "confluence.comments.create",
+      "input": {
+        "page_id": "12",
+        "body": "<p>Fixture comment</p>"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "POST",
+            "path": "/wiki/api/v2/footer-comments",
+            "body": {
+              "pageId": "12",
+              "body": {
+                "representation": "storage",
+                "value": "<p>Fixture comment</p>"
+              }
+            }
+          },
+          "response": {
+            "status": 201,
+            "body": {
+              "id": "88",
+              "pageId": "12"
+            }
+          }
+        }
+      ],
+      "output": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      }
+    },
+    {
+      "id": "confluence.attachments.list",
+      "input": {
+        "page_id": "12"
+      },
+      "steps": [
+        {
+          "request": {
+            "method": "GET",
+            "path": "/wiki/api/v2/pages/12/attachments",
+            "query": {
+              "limit": 30
+            }
+          },
+          "response": {
+            "status": 200,
+            "body": {
+              "results": [
+                {
+                  "id": "33",
+                  "title": "fixture.pdf",
+                  "fileSize": 1200
+                }
+              ],
+              "_links": {}
+            }
+          }
+        }
+      ],
+      "output": {
+        "items": [
+          {
+            "id": "33",
+            "fileSize": 1200
+          }
+        ]
+      }
+    }
+  ]
+}

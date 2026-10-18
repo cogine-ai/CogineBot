@@ -1,0 +1,620 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-18",
+  "appId": "jira",
+  "actions": [
+    {
+      "id": "jira.projects.list",
+      "description": "List Jira projects accessible on the verified selected Cloud site.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "startAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/rest/api/3/project/search"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "read:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "startAt+maxResults; isLast",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "9"
+          }
+        ],
+        "hasMore": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "hasMore"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "jira.issues.search",
+      "description": "Search Jira issues with JQL using the enhanced token-paginated search API.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "jql": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          },
+          "nextPageToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "jql"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "POST",
+        "path": "/rest/api/3/search/jql"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "read:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "nextPageToken; isLast",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "key": "FIX-7"
+          }
+        ],
+        "nextPageToken": "opaque-next",
+        "allPagesRead": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "nextPageToken": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "allPagesRead": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "nextPageToken",
+          "allPagesRead"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "jira.issues.get",
+      "description": "Read an issue and its selected fields on this Jira site.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/rest/api/3/issue/{issue}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "read:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "101",
+        "key": "FIX-7"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "jira.issues.create",
+      "description": "Create a Jira issue with a project, issue type and plain-text description converted to ADF.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "issueTypeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          },
+          "assigneeAccountId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "projectId",
+          "issueTypeId",
+          "summary"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/rest/api/3/issue"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "write:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "101",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "jira.issues.update",
+      "description": "Update supported Jira issue fields; this API has no claimed atomic compare-and-swap.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50000
+              },
+              "assigneeAccountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "labels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "maxItems": 100
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "issue",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "PUT",
+        "path": "/rest/api/3/issue/{issue}"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "write:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "issue": "FIX-7",
+        "updated": true,
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "updated": {
+            "type": "boolean"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "updated",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "jira.transitions.list",
+      "description": "List workflow transitions currently available for a Jira issue.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": true,
+      "upstream": {
+        "method": "GET",
+        "path": "/rest/api/3/issue/{issue}/transitions"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "read:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "read",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "items": [
+          {
+            "id": "31",
+            "name": "Done"
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "jira.issues.transition",
+      "description": "Apply one available Jira workflow transition as the selected user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "transitionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "issue",
+          "transitionId"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/rest/api/3/issue/{issue}/transitions"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "write:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "transitioned": true,
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "transitioned": {
+            "type": "boolean"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "transitioned",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    },
+    {
+      "id": "jira.comments.create",
+      "description": "Add a plain-text comment to a Jira issue, converted to ADF.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50000
+          }
+        },
+        "required": [
+          "issue",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "readOnly": false,
+      "upstream": {
+        "method": "POST",
+        "path": "/rest/api/3/issue/{issue}/comment"
+      },
+      "authorization": {
+        "acceptedAnyOfScopes": [
+          "write:jira-work"
+        ],
+        "actor": "verified selected user; bound provider/site; no global default",
+        "actualGrantedScopesRequired": true
+      },
+      "effect": {
+        "kind": "write",
+        "existingExternalEffectReceipt": true,
+        "unknownWriteNeverReplay": true
+      },
+      "pagination": "none",
+      "output": "resource",
+      "concurrency": "Confluence page update sends exact next version; other APIs have no claimed atomic CAS",
+      "attachments": "Metadata only; no arbitrary URL fetch or implicit attachment writes",
+      "exampleOutput": {
+        "id": "88",
+        "write_outcome": "confirmed"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "write_outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "write_outcome"
+        ],
+        "additionalProperties": true
+      }
+    }
+  ],
+  "sources": [
+    "https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/",
+    "https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/",
+    "https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/",
+    "https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/",
+    "https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/"
+  ],
+  "errorPolicy": "401 reauthorize;403 permissions;404 unavailable;409/412 version conflict;429 Retry-After;5xx/transport uncertain writes never replay; partial/malformed responses rejected",
+  "events": "No new inbound webhook consumer or task mechanism in this contract. Existing explicit Routine behavior unchanged. Provider events require separately verified subscription/lifecycle and are not implied by OAuth.",
+  "acceptance": [
+    "exact action inventory/digest",
+    "strict input and no business URL/auth",
+    "actual request method/path/body",
+    "actor+scope guards",
+    "cursor extraction without URL following",
+    "write checkpoint before dispatch",
+    "unknown write no automatic replay",
+    "static identity and OAuth refresh actual scopes",
+    "rotating refresh uncertainty and account/site mismatch"
+  ],
+  "real_verified": false,
+  "revision": 3,
+  "supersedesSha256": "e1f4a195c722dd6beb448af94b336505dd0b63093935e81f0e84f7976bf8b90a",
+  "revisionReason": "Terminal continuation fields permit null; Asana explicitly configured and introspected default Full permissions is an alternative, never expanded or mixed with granular scopes."
+}
