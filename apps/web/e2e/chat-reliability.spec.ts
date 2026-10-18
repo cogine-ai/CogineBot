@@ -7,6 +7,7 @@ import type {
   Me,
   Space,
   SpaceNavigation,
+  ThreadMessage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
 import { captureScreenshot, openNewBot } from "./helpers";
@@ -63,6 +64,19 @@ function deferred() {
 async function json(route: Route, value: unknown) {
   await route.fulfill({ json: { json: value } });
 }
+async function internalReadFailure(route: Route) {
+  return route.fulfill({
+    status: 500,
+    json: {
+      json: {
+        defined: false,
+        code: "INTERNAL_SERVER_ERROR",
+        status: 500,
+        message: "Temporary read failure",
+      },
+    },
+  });
+}
 function account(id: string, name: string): Connection {
   return {
     id,
@@ -94,6 +108,9 @@ async function mockChat(page: Page) {
       account("mail-secondary", "Mail Secondary"),
     ],
     sends: [] as Array<Record<string, unknown>>,
+    sendSpaces: [] as string[],
+    uploads: [] as Array<Record<string, unknown>>,
+    orders: [] as string[][],
     threadReads: [] as Array<{ botId: string; spaceId: string }>,
     listRequests: 0,
     bootstrapRequests: 0,
@@ -102,6 +119,9 @@ async function mockChat(page: Page) {
     bootstrap: null as null | ((route: Route, snapshot: AppBootstrap) => Promise<void>),
     onboarding: null as null | ((route: Route) => Promise<void>),
     thread: null as null | ((route: Route, snapshot: ThreadSnapshot) => Promise<void>),
+    send: null as null | ((route: Route, input: Record<string, unknown>) => Promise<void>),
+    reorder: null as null | ((route: Route, botIds: string[]) => Promise<void>),
+    messages: null as null | ((route: Route) => Promise<void>),
   };
   const me = (spaceId = "space-primary"): Me => ({
     ticketBoardEnabled: false,
@@ -242,13 +262,35 @@ async function mockChat(page: Page) {
     }
     if (path === "threads/head")
       return json(route, { threadId: `thread-${input.botId ?? "chief"}`, cursor: -1 });
+    if (path === "threads/messages") {
+      if (state.messages) return state.messages(route);
+      return json(route, {
+        threadId: `thread-${input.botId ?? "chief"}`,
+        messages: [],
+        olderCursor: null,
+      });
+    }
     if (path === "threads/subscribe")
       return route.fulfill({ contentType: "text/event-stream", body: "" });
     if (path === "threads/send") {
-      state.sends.push(request.postDataJSON().json);
+      const payload = request.postDataJSON().json as Record<string, unknown>;
+      state.sends.push(payload);
+      state.sendSpaces.push(spaceId);
+      if (state.send) return state.send(route, payload);
       return json(route, { runId: "run-synthetic", taskId: "task-synthetic", seq: 0 });
     }
-    if (path === "artifacts/create") return json(route, { id: "synthetic-attachment" });
+    if (path === "artifacts/create") {
+      state.uploads.push(request.postDataJSON().json);
+      return json(route, { id: "synthetic-attachment" });
+    }
+    if (path === "artifacts/listSpace") return json(route, { items: [], nextCursor: null });
+    if (path === "bots/reorder") {
+      const botIds = request.postDataJSON().json.botIds as string[];
+      state.orders.push([...botIds]);
+      if (state.reorder) return state.reorder(route, botIds);
+      state.bots = botIds.map((id) => state.bots.find((row) => row.id === id)!);
+      return json(route, { ok: true });
+    }
     if (path === "bots/create") {
       const created = bot("created-bot", input.name);
       state.bots = [created, ...state.bots];
@@ -319,6 +361,89 @@ async function highlighted(page: Page, name: string) {
     "true",
     { timeout: 3000 },
   );
+}
+
+/** Keep an actual ORPC-decoded SSE body open without a server, model or heartbeat sleeps. */
+async function controlledStream(page: Page) {
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    const openStreams = new Set<ReadableStreamDefaultController<Uint8Array>>();
+    let failed: boolean | number = false;
+    let requests = 0;
+    Object.defineProperty(window, "reliabilityStream", {
+      value: {
+        get requests() {
+          return requests;
+        },
+        fail(value: boolean | number) {
+          failed = value;
+          if (value) {
+            for (const controller of openStreams)
+              controller.error(new TypeError("Failed to fetch"));
+            openStreams.clear();
+          }
+        },
+      },
+    });
+    window.fetch = async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (new URL(url, window.location.href).pathname !== "/rpc/threads/subscribe")
+        return nativeFetch(input, init);
+      requests += 1;
+      if (typeof failed === "number") {
+        const code =
+          failed === 401 ? "UNAUTHORIZED" : failed === 403 ? "FORBIDDEN" : "INTERNAL_SERVER_ERROR";
+        return Response.json(
+          { json: { defined: false, code, status: failed, message: "Chat access interrupted" } },
+          { status: failed },
+        );
+      }
+      if (failed) throw new TypeError("Failed to fetch");
+      const request = new Request(input, init);
+      const target = (await request.clone().json()).json as { botId?: string };
+      let current: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          current = controller;
+          openStreams.add(controller);
+          const event = {
+            id: "synthetic-heartbeat",
+            spaceId: "space-primary",
+            threadId: `thread-${target.botId ?? "chief"}`,
+            botId: target.botId ?? "chief",
+            seq: 0,
+            type: "heartbeat",
+            payload: {},
+            createdAt: "2026-10-17T00:00:00.000Z",
+          };
+          controller.enqueue(
+            new TextEncoder().encode(
+              `event: message\ndata: ${JSON.stringify({ json: event })}\n\n`,
+            ),
+          );
+          request.signal.addEventListener(
+            "abort",
+            () => {
+              if (openStreams.delete(controller)) controller.error(request.signal.reason);
+            },
+            { once: true },
+          );
+        },
+        cancel() {
+          if (current) openStreams.delete(current);
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    };
+  });
+  return (failed: boolean | number) =>
+    page.evaluate(
+      (value) =>
+        (
+          window as unknown as { reliabilityStream: { fail: (value: boolean | number) => void } }
+        ).reliabilityStream.fail(value),
+      failed,
+    );
 }
 
 test("mention highlight retains the same Bot across equivalent refresh and roster reorder", async ({
@@ -426,22 +551,607 @@ test("connected account highlight survives refreshed candidates without altering
   expect(errors).toEqual([]);
 });
 
-test("bootstrap failure followed by a rejected fallback refresh is handled and can recover", async ({
+for (const failure of ["network", 500] as const) {
+  test(`bootstrap ${failure} failure followed by a rejected fallback refresh can recover`, async ({
+    page,
+  }, testInfo) => {
+    const { state, errors, unknown } = await mockChat(page);
+    state.bootstrap = (route) =>
+      failure === 500 ? internalReadFailure(route) : route.abort("failed");
+    state.list = (route) => route.abort("failed");
+    await page.goto("/app/chief");
+    await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+    await expect(
+      page.locator('[data-testid="composer-bar"] [role="combobox"]:enabled'),
+    ).toHaveCount(0);
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "false");
+    await captureScreenshot(page, testInfo, "initial-waiting-for-connection");
+    expect(errors).toEqual([]);
+    state.bootstrap = null;
+    state.list = null;
+    const attempts = state.bootstrapRequests;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(attempts);
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+    const recovered = page.getByRole("combobox", { name: "Message Chief", exact: true });
+    await expect(recovered).toBeEnabled();
+    await recovered.fill("@Research");
+    await page.getByRole("option", { name: "@Research Two", exact: true }).click();
+    await recovered.fill("Recovered in the correct Space.\nThe attachment stays scoped.");
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "recovery-notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("isolated recovery attachment"),
+      });
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
+    await recovered.press("Enter");
+    await expect.poll(() => state.sends.length).toBe(1);
+    expect(state.sends[0]).toMatchObject({
+      botId: "chief",
+      mentions: [{ kind: "bot", id: "research-two" }],
+      artifactIds: ["synthetic-attachment"],
+    });
+    expect(state.sends[0].text).toContain("Recovered in the correct Space.");
+    expect(state.sendSpaces).toEqual(["space-primary"]);
+    expect(state.uploads[0].botId).toBe("chief");
+    await expect(recovered).toHaveValue("");
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(0);
+    await expect(page.getByTestId("composer-error")).toHaveCount(0);
+    expect(errors).toEqual([]);
+    expect(unknown).toEqual([]);
+  });
+}
+
+test("Chinese initial connection feedback fits the 800px desktop layout", async ({
+  page,
+}, testInfo) => {
+  const { state, errors } = await mockChat(page);
+  await page.addInitScript(() => localStorage.setItem("rakazo.uiLocale", "zh-CN"));
+  await page.setViewportSize({ width: 800, height: 900 });
+  await page.emulateMedia({ colorScheme: "light" });
+  state.bootstrap = (route) => route.abort("internetdisconnected");
+  state.list = (route) => route.abort("internetdisconnected");
+  await page.goto("/app/chief");
+  const status = page.getByTestId("bootstrap-status");
+  await expect(status).toContainText("等待连接");
+  await expect(status.getByRole("button", { name: "重试", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(800);
+  await captureScreenshot(page, testInfo, "initial-waiting-zh-CN-light-800");
+  expect(state.sends).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("initialization retries on its timer even while the fallback roster request is hanging", async ({
   page,
 }) => {
-  const { state, errors, unknown } = await mockChat(page);
-  state.bootstrap = (route) => route.abort("failed");
-  state.list = (route) => route.abort("failed");
+  const { state, errors } = await mockChat(page);
+  await page.clock.install();
+  const listStarted = deferred();
+  const releaseList = deferred();
+  state.bootstrap = (route) => route.abort("internetdisconnected");
+  state.list = async (route, data) => {
+    listStarted.resolve();
+    await releaseList.promise;
+    await json(route, data);
+  };
+  try {
+    await page.goto("/app/chief");
+    await listStarted.promise;
+    await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+    const initialRequests = state.bootstrapRequests;
+    state.bootstrap = null;
+    // No focus event or manual Retry: initialization must not depend on a stuck roster read.
+    await page.clock.fastForward(3_100);
+    await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(initialRequests);
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeEnabled();
+    await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+    expect(state.sends).toHaveLength(0);
+    expect(errors).toEqual([]);
+  } finally {
+    releaseList.resolve();
+  }
+});
+
+test("a hanging initialization times out, retries once and ignores its late snapshot", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  await page.clock.install();
+  const initialStarted = deferred();
+  const releaseInitial = deferred();
+  const deliveries: Array<Promise<void>> = [];
+  let recovering = false;
+  state.bootstrap = async (route, data) => {
+    if (!recovering) {
+      initialStarted.resolve();
+      const delivered = deferred();
+      deliveries.push(delivered.promise);
+      await releaseInitial.promise;
+      try {
+        await json(route, { ...data, me: { ...data.me, spaceId: "space-obsolete" } });
+      } catch {
+        // A request genuinely cancelled at timeout cannot deliver its late response.
+      } finally {
+        delivered.resolve();
+      }
+      return;
+    }
+    return json(route, data);
+  };
   await page.goto("/app/chief");
-  await expect.poll(() => state.listRequests).toBeGreaterThan(0);
-  await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 0)));
+  await initialStarted.promise;
+  await expect(page.locator('[data-testid="composer-bar"] [role="combobox"]:enabled')).toHaveCount(
+    0,
+  );
+  // Development StrictMode may consume a primed request in its first effect mount.
+  // The live mount must remain single-flight while every initial read is held.
+  await expect(
+    page.getByTestId("bootstrap-status").getByRole("button", { name: "Retry" }),
+  ).toBeDisabled();
+  const initialRequests = state.bootstrapRequests;
+  for (let attempt = 0; attempt < 3; attempt += 1)
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.clock.fastForward(100);
+  expect(state.bootstrapRequests).toBe(initialRequests);
+  recovering = true;
+  await page.clock.fastForward(15_001);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => state.bootstrapRequests).toBe(initialRequests + 1);
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  releaseInitial.resolve();
+  await Promise.all(deliveries);
+  await painted(page);
+  await expect(page.getByTestId("sidebar-current-space")).toHaveText("Primary Space");
+  await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeEnabled();
+  await page.clock.fastForward(30_000);
+  expect(state.bootstrapRequests).toBe(initialRequests + 1);
   expect(errors).toEqual([]);
+});
+
+test("returning from Files preserves scoped text, Bot mentions and attachments through initialization failure", async ({
+  page,
+}, testInfo) => {
+  const { state, errors } = await mockChat(page);
+  await controlledStream(page);
+  await ready(page);
+  const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+  await composer.fill("@Research");
+  await page.getByRole("option", { name: "@Research One", exact: true }).click();
+  const text = "Unsent notes before Files.\nKeep both lines and the attachment.";
+  await composer.fill(text);
+  await page
+    .getByTestId("composer-bar")
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "unsent-notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("keep this File across a Shell remount"),
+    });
+  await page.getByTestId("sidebar-files-trigger").click();
+  await expect(page.getByRole("heading", { name: "Files", exact: true })).toBeVisible();
+  await expect(page.getByText("No artifacts found.")).toBeVisible();
+  const attempts = state.bootstrapRequests;
+  state.bootstrap = (route) => route.abort("internetdisconnected");
+  await page.goBack();
+  await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(attempts);
+  await expect(page.getByTestId("bootstrap-status")).toBeVisible();
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
   state.bootstrap = null;
-  state.list = null;
-  await refresh(page, state);
-  await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
+  await page
+    .getByTestId("bootstrap-status")
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(composer).toHaveValue(text);
+  await expect(page.getByTestId("mention-chip")).toHaveText(["Research One"]);
+  await expect(page.getByRole("button", { name: "Remove unsent-notes.txt" })).toBeVisible();
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "recovered-files-return-keeps-draft");
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
   expect(errors).toEqual([]);
-  expect(unknown).toEqual([]);
+});
+
+test("a lost send receipt is never replayed automatically, and manual retry retains newer edits", async ({
+  page,
+}, testInfo) => {
+  const { state, errors } = await mockChat(page);
+  await controlledStream(page);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.clock.install();
+  const accepted = new Map<string, { runId: string; taskId: string; seq: number }>();
+  const retryStarted = deferred();
+  const releaseRetry = deferred();
+  state.send = async (route, payload) => {
+    const nonce = payload.clientNonce as string;
+    const receipt = accepted.get(nonce) ?? {
+      runId: `run-${accepted.size}`,
+      taskId: `task-${accepted.size}`,
+      seq: 0,
+    };
+    accepted.set(nonce, receipt);
+    if (state.sends.length === 1) return route.abort("internetdisconnected");
+    retryStarted.resolve();
+    await releaseRetry.promise;
+    return json(route, receipt);
+  };
+  await ready(page);
+  const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+  await composer.fill("A sent message whose receipt was lost.\nDo not enqueue a second send.");
+  await page
+    .getByTestId("composer-bar")
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "submitted.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("an uploaded attachment with a confirmed receipt"),
+    });
+  await composer.press("Enter");
+  await expect(page.getByTestId("composer-error")).toHaveText(
+    "Send not confirmed. Your draft is kept.",
+  );
+  await expect(composer).toHaveValue(
+    "A sent message whose receipt was lost.\nDo not enqueue a second send.",
+  );
+  await expect(page.getByRole("button", { name: "Remove submitted.txt" })).toBeVisible();
+  await page.clock.fastForward(60_000);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await refresh(page, state);
+  expect(state.sends).toHaveLength(1);
+  expect(state.uploads).toHaveLength(1);
+  await page.getByTestId("minimize-bots-sidebar").click();
+  await expect(page.getByTestId("bots-sidebar")).toHaveAttribute("data-collapsed", "true");
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "send-unconfirmed-preserves-text-and-attachment");
+  await composer.press("Enter");
+  await retryStarted.promise;
+  expect(state.sends).toHaveLength(2);
+  expect(state.sends[1]).toEqual(state.sends[0]);
+  expect(state.uploads).toHaveLength(1);
+  expect(accepted.size).toBe(1);
+  await composer.fill("A newer unsent draft stays here after the old receipt returns.");
+  await page
+    .getByTestId("composer-bar")
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "newer.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("a newer unsent attachment"),
+    });
+  releaseRetry.resolve();
+  await expect(page.getByTestId("composer-error")).toHaveCount(0);
+  await expect(composer).toHaveValue(
+    "A newer unsent draft stays here after the old receipt returns.",
+  );
+  await expect(page.getByRole("button", { name: "Remove submitted.txt" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Remove newer.txt" })).toBeVisible();
+  expect(state.sends).toHaveLength(2);
+  expect(state.uploads).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+for (const failure of ["network", 500] as const) {
+  test(`an interrupted ${failure} stream preserves editing and sending while reconnecting, then clears its hint`, async ({
+    page,
+  }, testInfo) => {
+    const { state, errors } = await mockChat(page);
+    const failStream = await controlledStream(page);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.emulateMedia({ colorScheme: "light" });
+    await ready(page);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+    await composer.fill("An existing draft remains editable.\nThe second line stays intact.");
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "stream-notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("keep while the separate reading channel reconnects"),
+      });
+    await failStream(failure === "network" ? true : failure);
+    await expect(page.getByTestId("connection-status")).toContainText("Reconnecting");
+    await expect(composer).toBeEnabled();
+    await expect(composer).toHaveValue(
+      "An existing draft remains editable.\nThe second line stays intact.",
+    );
+    await expect(page.getByRole("button", { name: "Remove stream-notes.txt" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      800,
+    );
+    await captureScreenshot(page, testInfo, "stream-reconnecting-light-800-keeps-editing");
+    await composer.press("Enter");
+    await expect.poll(() => state.sends.length).toBe(1);
+    await expect(composer).toHaveValue("");
+    await expect(page.getByTestId("composer-error")).toHaveCount(0);
+    await failStream(false);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    expect(state.sends).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("HTTP 500 snapshot and head reads recover automatically with the draft and attachment intact", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  const failStream = await controlledStream(page);
+  await ready(page);
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+  const text = "Keep this draft while chat reads fail.\nKeep its attachment too.";
+  await composer.fill(text);
+  await page
+    .getByTestId("composer-bar")
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "read-recovery.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("scoped attachment during read-only server failure"),
+    });
+  let unavailable = true;
+  let headFailures = 0;
+  const recoveredMessage: ThreadMessage = {
+    id: "read-recovery-message",
+    threadId: "thread-chief",
+    botId: "chief",
+    seq: 1,
+    role: "bot",
+    blocks: [{ kind: "text", text: "New reply completed while the chat was reconnecting." }],
+    createdAt: stamp,
+  };
+  state.thread = (route, data) =>
+    unavailable
+      ? internalReadFailure(route)
+      : json(route, { ...data, cursor: 5, messages: [recoveredMessage] });
+  await page.route("**/rpc/threads/head", async (route) => {
+    if (unavailable) {
+      headFailures += 1;
+      return internalReadFailure(route);
+    }
+    return json(route, { threadId: "thread-chief", cursor: 5 });
+  });
+  await failStream(500);
+  await expect(page.getByTestId("connection-status")).toContainText("Reconnecting");
+  // Restart the reader once to exercise both initial snapshot and head fallback failures.
+  await page
+    .getByTestId("connection-status")
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await expect.poll(() => headFailures).toBeGreaterThanOrEqual(2);
+  await expect(composer).toHaveValue(text);
+  await expect(page.getByRole("button", { name: "Remove read-recovery.txt" })).toBeVisible();
+  await expect(composer).toBeEnabled();
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  unavailable = false;
+  await failStream(false);
+  await expect(
+    page.getByText("New reply completed while the chat was reconnecting.", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await expect(composer).toHaveValue(text);
+  await expect(page.getByRole("button", { name: "Remove read-recovery.txt" })).toBeVisible();
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("an explicit initialization permission error waits for user retry without an automatic retry loop", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  await page.clock.install();
+  state.bootstrap = (route) =>
+    route.fulfill({
+      status: 403,
+      json: { json: { defined: false, code: "FORBIDDEN", status: 403, message: "Access denied" } },
+    });
+  await page.goto("/app/chief");
+  await expect(page.getByTestId("bootstrap-status")).toContainText("Access denied");
+  const initialRequests = state.bootstrapRequests;
+  await page.clock.fastForward(30_000);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  expect(state.bootstrapRequests).toBe(initialRequests);
+  expect(state.sends).toHaveLength(0);
+  state.bootstrap = null;
+  await page
+    .getByTestId("bootstrap-status")
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  expect(state.bootstrapRequests).toBe(initialRequests + 1);
+  expect(errors).toEqual([]);
+});
+
+for (const status of [401, 403]) {
+  test(`a ${status} chat read stops its retry loop, keeps the draft and restarts only on explicit retry`, async ({
+    page,
+  }) => {
+    const { state, errors } = await mockChat(page);
+    const failStream = await controlledStream(page);
+    await page.clock.install();
+    await ready(page);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+    await composer.fill("Keep this draft when only this chat read is rejected.");
+    await failStream(status);
+    await expect(page.getByTestId("connection-status")).toContainText("Chat access interrupted");
+    const attempts = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { reliabilityStream: { requests: number } }).reliabilityStream
+            .requests,
+      );
+    const stoppedAt = await attempts();
+    await page.clock.fastForward(30_000);
+    expect(await attempts()).toBe(stoppedAt);
+    await expect(composer).toHaveValue("Keep this draft when only this chat read is rejected.");
+    await expect(composer).toBeEnabled();
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    expect(state.sends).toHaveLength(0);
+    await failStream(false);
+    await page
+      .getByTestId("connection-status")
+      .getByRole("button", { name: "Retry", exact: true })
+      .click();
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    await expect(composer).toHaveValue("Keep this draft when only this chat read is rejected.");
+    expect(await attempts()).toBeGreaterThan(stoppedAt);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("retrying the same chat connection preserves loaded earlier messages and reading position", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  const failStream = await controlledStream(page);
+  const history: ThreadMessage[] = Array.from({ length: 46 }, (_, index) => ({
+    id: `history-${index}`,
+    threadId: "thread-chief",
+    botId: "chief",
+    seq: index,
+    role: "bot",
+    blocks: [
+      { kind: "text", text: `Earlier conversation message ${index}: keep this reading position.` },
+    ],
+    createdAt: stamp,
+  }));
+  const latest = (data: ThreadSnapshot): ThreadSnapshot => ({
+    ...data,
+    cursor: 45,
+    messages: history.slice(20),
+    olderCursor: 20,
+  });
+  state.bootstrap = (route, data) => json(route, { ...data, thread: latest(data.thread!) });
+  state.thread = (route, data) => json(route, latest(data));
+  state.messages = (route) =>
+    json(route, { threadId: "thread-chief", messages: history.slice(0, 20), olderCursor: null });
+  await ready(page);
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  const transcript = page.getByTestId("transcript");
+  const earlier = transcript.locator('[data-message-id="history-7"]');
+  await expect(earlier).toHaveCount(1);
+  await earlier.scrollIntoViewIfNeeded();
+  await failStream(403);
+  await expect(page.getByTestId("connection-status")).toContainText("Chat access interrupted");
+  const before = await transcript.evaluate((element) => element.scrollTop);
+  const offsetBefore = await earlier.evaluate((element) => {
+    const transcript = element.closest('[data-testid="transcript"]')!;
+    return element.getBoundingClientRect().top - transcript.getBoundingClientRect().top;
+  });
+  await failStream(false);
+  await page
+    .getByTestId("connection-status")
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await expect(earlier).toHaveCount(1);
+  const offsetAfter = await earlier.evaluate((element) => {
+    const transcript = element.closest('[data-testid="transcript"]')!;
+    return element.getBoundingClientRect().top - transcript.getBoundingClientRect().top;
+  });
+  expect(
+    Math.abs((await transcript.evaluate((element) => element.scrollTop)) - before),
+  ).toBeLessThanOrEqual(2);
+  expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThanOrEqual(2);
+  expect(state.sends).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+for (const readbackFails of [false, true]) {
+  test(`a failed order save ${readbackFails ? "and readback remain visibly unconfirmed" : "reads the authoritative order"} without replay`, async ({
+    page,
+  }, testInfo) => {
+    const { state, errors } = await mockChat(page);
+    await page.clock.install();
+    await ready(page);
+    const sidebar = page.getByTestId("bots-sidebar");
+    const rows = sidebar.locator(
+      '[data-sidebar-group^="space:space-primary:"] [data-roster-bot-id]',
+    );
+    const order = () =>
+      rows.evaluateAll((items) => items.map((row) => row.getAttribute("data-roster-bot-id")));
+    await expect.poll(order).toEqual(["chief", "research-one", "research-two"]);
+    const saveStarted = deferred();
+    const releaseSave = deferred();
+    state.reorder = async (route) => {
+      saveStarted.resolve();
+      await releaseSave.promise;
+      return route.abort("internetdisconnected");
+    };
+    state.list = readbackFails ? (route) => route.abort("internetdisconnected") : null;
+    await sidebar.locator('[data-roster-bot-id="research-two"]').focus();
+    await page.keyboard.press("Alt+ArrowUp");
+    await saveStarted.promise;
+    await expect.poll(order).toEqual(["chief", "research-two", "research-one"]);
+    await expect(page.getByTestId("roster-order-status")).toContainText("Saving");
+    const before = state.listRequests;
+    releaseSave.resolve();
+    await expect.poll(() => state.listRequests).toBeGreaterThan(before);
+    if (readbackFails) {
+      await expect(page.getByTestId("roster-order-status")).toContainText("Order not confirmed");
+      await expect.poll(order).toEqual(["chief", "research-two", "research-one"]);
+      await captureScreenshot(page, testInfo, "order-save-and-readback-unconfirmed");
+    } else {
+      await expect.poll(order).toEqual(["chief", "research-one", "research-two"]);
+      await expect(page.getByTestId("roster-order-status")).toHaveCount(0);
+    }
+    state.list = null;
+    await page.clock.fastForward(12_000);
+    await refresh(page, state);
+    await expect.poll(order).toEqual(["chief", "research-one", "research-two"]);
+    await expect(page.getByTestId("roster-order-status")).toHaveCount(0);
+    expect(state.orders).toEqual([["chief", "research-two", "research-one"]]);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("a newer explicit order is saved after an older order fails without reapplying the old order", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  await ready(page);
+  const sidebar = page.getByTestId("bots-sidebar");
+  const rows = sidebar.locator('[data-sidebar-group^="space:space-primary:"] [data-roster-bot-id]');
+  const order = () =>
+    rows.evaluateAll((items) => items.map((row) => row.getAttribute("data-roster-bot-id")));
+  const firstStarted = deferred();
+  const releaseFirst = deferred();
+  state.reorder = async (route, ids) => {
+    if (state.orders.length === 1) {
+      firstStarted.resolve();
+      await releaseFirst.promise;
+      return route.abort("internetdisconnected");
+    }
+    state.bots = ids.map((id) => state.bots.find((row) => row.id === id)!);
+    return json(route, { ok: true });
+  };
+  const moving = sidebar.locator('[data-roster-bot-id="research-two"]');
+  await moving.focus();
+  await page.keyboard.press("Alt+ArrowUp");
+  await firstStarted.promise;
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect.poll(order).toEqual(["research-two", "chief", "research-one"]);
+  releaseFirst.resolve();
+  await expect.poll(() => state.orders.length).toBe(2);
+  await expect(page.getByTestId("roster-order-status")).toHaveCount(0);
+  await refresh(page, state);
+  await expect.poll(order).toEqual(["research-two", "chief", "research-one"]);
+  expect(state.orders).toEqual([
+    ["chief", "research-two", "research-one"],
+    ["research-two", "chief", "research-one"],
+  ]);
+  expect(errors).toEqual([]);
 });
 
 for (const refreshFails of [false, true]) {
@@ -499,62 +1209,6 @@ for (const refreshFails of [false, true]) {
   });
 }
 
-test("a bootstrap started before creation cannot remove a subsequently created Bot", async ({
-  page,
-}) => {
-  const { state, errors } = await mockChat(page);
-  const bootstrapStarted = deferred();
-  const releaseBootstrap = deferred();
-  const releaseRefetch = deferred();
-  const bootstrapResponses: Array<Promise<Error | null>> = [];
-  let delivered = 0;
-  page.on("response", (response) => {
-    if (new URL(response.url()).pathname === "/rpc/bootstrap")
-      bootstrapResponses.push(response.finished());
-  });
-  state.bootstrap = async (route, snapshot) => {
-    bootstrapStarted.resolve();
-    await releaseBootstrap.promise;
-    await json(route, snapshot);
-    delivered += 1;
-  };
-  await page.goto("/app/chief");
-  await bootstrapStarted.promise;
-  await refresh(page, state);
-  await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
-  await openNewBot(page);
-  const form = page.getByTestId("create-bot-form");
-  await form.locator("label:has-text('Name') input").fill("Created Companion");
-  await form.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
-  const input = page.getByRole("combobox", { name: "Message Created Companion", exact: true });
-  await expect(input).toBeEnabled();
-  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
-  // Stop subscription/poll recovery from hiding a late bootstrap's stale snapshot write.
-  state.thread = async (route, snapshot) => {
-    await releaseRefetch.promise;
-    await json(route, snapshot);
-  };
-  state.list = async (route, snapshot) => {
-    await releaseRefetch.promise;
-    await json(route, snapshot);
-  };
-  releaseBootstrap.resolve();
-  await expect.poll(() => delivered).toBe(state.bootstrapRequests);
-  await expect.poll(() => bootstrapResponses.length).toBe(state.bootstrapRequests);
-  await Promise.all(bootstrapResponses);
-  await painted(page);
-  try {
-    expect(await page.getByTestId("shell-root").getAttribute("data-ready")).toBe("true");
-    expect(await input.isEnabled()).toBe(true);
-    expect(await page.locator('[data-roster-bot-id="created-bot"]').isVisible()).toBe(true);
-    expect(new URL(page.url()).pathname).toBe("/app/created-bot");
-    expect(errors).toEqual([]);
-  } finally {
-    releaseRefetch.resolve();
-  }
-});
-
 test("switching Space during post-create onboarding leaves the other Space isolated", async ({
   page,
 }) => {
@@ -573,7 +1227,10 @@ test("switching Space during post-create onboarding leaves the other Space isola
   await form.getByRole("button", { name: "Create", exact: true }).click();
   await onboardingStarted.promise;
   await page.getByTestId("space-menu-trigger").click();
-  await page.getByRole("button", { name: "Other Space", exact: true }).click();
+  const spaceMenu = page.locator('[data-slot="popover-content"]').filter({
+    has: page.getByTestId("create-new-space"),
+  });
+  await spaceMenu.getByRole("button", { name: "Other Space", exact: true }).click();
   releaseOnboarding.resolve();
   await expect(page).toHaveURL(/\/app\/other-chief$/);
   await expect(page.getByTestId("sidebar-current-space")).toHaveText("Other Space");

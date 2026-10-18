@@ -1787,6 +1787,7 @@ msgid "Could not load this artifact."
 msgstr ""
 
 #: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
 msgid "Could not load this chat."
 msgstr "यह चैट लोड नहीं हो सकी."
 
@@ -3829,6 +3830,10 @@ msgstr "या एक API कुंजी कनेक्ट करें"
 msgid "Or paste an API key"
 msgstr "या एक API कुंजी पेस्ट करें"
 
+#: src/pages/Shell.tsx
+msgid "Order not confirmed"
+msgstr "क्रम की पुष्टि नहीं हुई"
+
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
 msgstr "संगठन API कुंजी"
@@ -4078,8 +4083,8 @@ msgstr ""
 msgid "Reconnect OAuth"
 msgstr "OAuth पुनः कनेक्ट करें"
 
-#: src/App.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/pages/Shell.tsx
 msgid "Reconnecting"
 msgstr "पुनः कनेक्ट हो रहा है"
 
@@ -4356,6 +4361,7 @@ msgstr ""
 #: src/components/AccountAccess.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/Shell.tsx
 msgid "Retry"
 msgstr "फिर कोशिश करें"
 
@@ -4521,6 +4527,7 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Saving…"
@@ -4616,6 +4623,10 @@ msgstr "हटाने का कोड भेजें"
 #: src/components/AskCard.tsx
 msgid "Send it"
 msgstr "इसे भेजें"
+
+#: src/pages/Shell.tsx
+msgid "Send not confirmed. Your draft is kept."
+msgstr "भेजने की पुष्टि नहीं हुई। आपका ड्राफ़्ट सुरक्षित है।"
 
 #: src/pages/Auth.tsx
 msgid "Send reset link"
@@ -5489,6 +5500,11 @@ msgstr "वॉइस चैट"
 #: src/lib/model-connection-preflight.ts
 msgid "Wait a moment and test again."
 msgstr "थोड़ी देर रुकें और फिर से परीक्षण करें।"
+
+#: src/App.tsx
+#: src/pages/Shell.tsx
+msgid "Waiting for connection"
+msgstr "कनेक्शन की प्रतीक्षा"
 
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for first signed event"

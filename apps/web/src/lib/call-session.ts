@@ -260,6 +260,7 @@ function speakFarewell(payload: Record<string, unknown>) {
 
 function commit(next: ThreadSnapshot | null) {
   if (!next) return null;
+  if (thread?.threadId === next.threadId && next.cursor < thread.cursor) return thread;
   thread = next;
   reactToThread();
   return next;
