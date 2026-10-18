@@ -3,6 +3,8 @@ import { initialBootstrapTarget } from "./bootstrap-target";
 import { markOnce } from "./performance";
 import { rpc } from "./rpc";
 
+const BOOTSTRAP_TIMEOUT_MS = 15_000;
+
 let ticketBoardEnabled: boolean | undefined;
 const capabilityListeners = new Set<() => void>();
 export function getTicketBoardEnabled() {
@@ -42,12 +44,27 @@ export function takeInitialBootstrap(botId?: string) {
   return requestBootstrap(botId);
 }
 
-function requestBootstrap(botId?: string) {
+async function requestBootstrap(botId?: string) {
   markOnce("rk:renderer:bootstrap-request-start");
-  return rpc.bootstrap(botId ? { botId } : {}).then((bootstrap) => {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      const error = new DOMException("Bootstrap request timed out", "TimeoutError");
+      controller.abort(error);
+      reject(error);
+    }, BOOTSTRAP_TIMEOUT_MS);
+  });
+  try {
+    const bootstrap = await Promise.race([
+      rpc.bootstrap(botId ? { botId } : {}, { signal: controller.signal }),
+      deadline,
+    ]);
     markOnce("rk:renderer:bootstrap-response");
     ticketBoardEnabled = bootstrap.me.ticketBoardEnabled;
     for (const listener of capabilityListeners) listener();
     return bootstrap;
-  });
+  } finally {
+    clearTimeout(timeout);
+  }
 }

@@ -1787,6 +1787,7 @@ msgid "Could not load this artifact."
 msgstr ""
 
 #: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
 msgid "Could not load this chat."
 msgstr "Não foi possível carregar este chat."
 
@@ -3829,6 +3830,10 @@ msgstr "Ou conecte uma chave de API"
 msgid "Or paste an API key"
 msgstr "Ou cole uma chave de API"
 
+#: src/pages/Shell.tsx
+msgid "Order not confirmed"
+msgstr "Ordem não confirmada"
+
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
 msgstr "Chave da API da organização"
@@ -4078,8 +4083,8 @@ msgstr ""
 msgid "Reconnect OAuth"
 msgstr "Reconectar OAuth"
 
-#: src/App.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/pages/Shell.tsx
 msgid "Reconnecting"
 msgstr "Reconectando"
 
@@ -4356,6 +4361,7 @@ msgstr ""
 #: src/components/AccountAccess.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/Shell.tsx
 msgid "Retry"
 msgstr "Tentar novamente"
 
@@ -4521,6 +4527,7 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Saving…"
@@ -4616,6 +4623,10 @@ msgstr "Enviar código de exclusão"
 #: src/components/AskCard.tsx
 msgid "Send it"
 msgstr "Enviar"
+
+#: src/pages/Shell.tsx
+msgid "Send not confirmed. Your draft is kept."
+msgstr "Envio não confirmado. Seu rascunho foi mantido."
 
 #: src/pages/Auth.tsx
 msgid "Send reset link"
@@ -5489,6 +5500,11 @@ msgstr "Conversa por voz"
 #: src/lib/model-connection-preflight.ts
 msgid "Wait a moment and test again."
 msgstr "Aguarde um momento e teste novamente."
+
+#: src/App.tsx
+#: src/pages/Shell.tsx
+msgid "Waiting for connection"
+msgstr "Aguardando conexão"
 
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for first signed event"

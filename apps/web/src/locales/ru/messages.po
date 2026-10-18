@@ -1787,6 +1787,7 @@ msgid "Could not load this artifact."
 msgstr ""
 
 #: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
 msgid "Could not load this chat."
 msgstr "Не удалось загрузить этот чат."
 
@@ -3829,6 +3830,10 @@ msgstr "Или подключить API-ключ"
 msgid "Or paste an API key"
 msgstr "Или вставьте ключ API"
 
+#: src/pages/Shell.tsx
+msgid "Order not confirmed"
+msgstr "Порядок не подтверждён"
+
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
 msgstr "Ключ API организации"
@@ -4078,8 +4083,8 @@ msgstr ""
 msgid "Reconnect OAuth"
 msgstr "Переподключить OAuth"
 
-#: src/App.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/pages/Shell.tsx
 msgid "Reconnecting"
 msgstr "Повторное подключение"
 
@@ -4356,6 +4361,7 @@ msgstr "Восстановление вашего рабочего простр�
 #: src/components/AccountAccess.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/Shell.tsx
 msgid "Retry"
 msgstr "Повторить"
 
@@ -4521,6 +4527,7 @@ msgstr "Сохранение..."
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Saving…"
@@ -4616,6 +4623,10 @@ msgstr "Отправить код удаления"
 #: src/components/AskCard.tsx
 msgid "Send it"
 msgstr "Отправить"
+
+#: src/pages/Shell.tsx
+msgid "Send not confirmed. Your draft is kept."
+msgstr "Отправка не подтверждена. Черновик сохранён."
 
 #: src/pages/Auth.tsx
 msgid "Send reset link"
@@ -5489,6 +5500,11 @@ msgstr "Голосовой чат"
 #: src/lib/model-connection-preflight.ts
 msgid "Wait a moment and test again."
 msgstr "Подождите немного и повторите тест."
+
+#: src/App.tsx
+#: src/pages/Shell.tsx
+msgid "Waiting for connection"
+msgstr "Ожидание подключения"
 
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for first signed event"

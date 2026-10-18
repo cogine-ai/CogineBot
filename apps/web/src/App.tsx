@@ -258,7 +258,7 @@ function SessionUnavailable({ refetch }: { refetch: () => Promise<void> }) {
   return (
     <div className="grid h-full place-items-center bg-background px-6 text-center">
       <div className="flex flex-col items-center">
-        <LoadingState label={t`Reconnecting`} />
+        <LoadingState label={t`Waiting for connection`} />
         <p className="mt-3 text-[13.5px] text-muted-foreground/80">
           <Trans>Can&apos;t reach the server.</Trans>
         </p>

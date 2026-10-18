@@ -241,4 +241,245 @@ describe("thread subscription recovery", () => {
     channel.end();
     await running;
   });
+
+  it("reports ready only after a valid snapshot and an active stream frame", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus.mock.calls).toEqual([["loading"]]);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus.mock.calls).toEqual([["loading"], ["ready"]]);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenCalledTimes(2);
+    channel.end();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith("recovering");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(onStatus).toHaveBeenLastCalledWith("recovering");
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("keeps a failed snapshot recovering despite healthy heartbeats", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, state, callbacks } = setup(null);
+    const failure = new Error("snapshot offline");
+    callbacks.refresh.mockRejectedValueOnce(failure).mockImplementation(async () => {
+      state.committed = head;
+    });
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(0);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(250);
+    expect(onStatus).toHaveBeenLastCalledWith("recovering", failure);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus.mock.calls.some(([status]) => status === "ready")).toBe(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("reports failed initial and head reads while preserving head recovery", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    const initialFailure = new Error("initial offline");
+    const headFailure = new Error("head offline");
+    callbacks.loadInitial.mockRejectedValueOnce(initialFailure);
+    callbacks.loadHead.mockRejectedValueOnce(headFailure);
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(onStatus.mock.calls).toEqual([
+      ["loading"],
+      ["recovering", initialFailure],
+      ["recovering", headFailure],
+    ]);
+    expect(callbacks.loadHead).toHaveBeenCalledTimes(2);
+    channel.send(event(11));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("reports stream and reconnect snapshot failures without marking a heartbeat ready", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    const streamFailure = new Error("stream offline");
+    const snapshotFailure = new Error("refresh offline");
+    let finishSnapshot!: () => void;
+    callbacks.subscribe.mockRejectedValueOnce(streamFailure);
+    callbacks.refresh.mockRejectedValueOnce(snapshotFailure).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSnapshot = resolve;
+        }),
+    );
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(onStatus.mock.calls).toEqual([
+      ["loading"],
+      ["recovering", streamFailure],
+      ["recovering", snapshotFailure],
+    ]);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus.mock.calls.some(([status]) => status === "ready")).toBe(false);
+    finishSnapshot();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("recovers a failed reconnect snapshot while the replacement stream keeps heartbeating", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    const snapshotFailure = new Error("refresh offline");
+    callbacks.refresh.mockRejectedValueOnce(snapshotFailure);
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(0);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    channel.end();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith("recovering", snapshotFailure);
+    await vi.advanceTimersByTimeAsync(250);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callbacks.subscribe).toHaveBeenCalledTimes(2);
+    expect(callbacks.refresh).toHaveBeenCalledTimes(2);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("shares a pending snapshot recovery with another reconnect instead of starting parallel reads", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    let finishSnapshot!: () => void;
+    callbacks.refresh.mockRejectedValueOnce(new Error("offline")).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSnapshot = resolve;
+        }),
+    );
+    const running = runThreadSubscription({ ...callbacks, onStatus: vi.fn() });
+    await vi.advanceTimersByTimeAsync(0);
+    channel.end();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(callbacks.refresh).toHaveBeenCalledTimes(2);
+    channel.end();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(callbacks.refresh).toHaveBeenCalledTimes(2);
+    finishSnapshot();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(callbacks.refresh).toHaveBeenCalledTimes(2);
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("preserves snapshot request cadence for callers without a status observer", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    callbacks.refresh.mockRejectedValueOnce(new Error("offline"));
+    const running = runThreadSubscription(callbacks);
+    await vi.advanceTimersByTimeAsync(0);
+    channel.end();
+    await vi.advanceTimersByTimeAsync(250);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(callbacks.refresh).toHaveBeenCalledTimes(1);
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("reports an idle stream as recovering and waits for a fresh frame", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(0);
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(IDLE_TIMEOUT_MS);
+    expect(onStatus).toHaveBeenLastCalledWith("recovering");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(onStatus).toHaveBeenLastCalledWith("recovering");
+    channel.send(heartbeat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    abort.abort();
+    channel.end();
+    await running;
+  });
+
+  it("isolates observer exceptions and suppresses late frames after abort", async () => {
+    vi.useFakeTimers();
+    const { abort, channel, callbacks } = setup();
+    const onStatus = vi.fn(() => {
+      throw new Error("observer failed");
+    });
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    await vi.advanceTimersByTimeAsync(0);
+    channel.send(event(11));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callbacks.applyEvent).toHaveBeenCalledExactlyOnceWith(event(11));
+    expect(onStatus.mock.calls).toEqual([["loading"], ["ready"]]);
+    abort.abort();
+    channel.send(event(12));
+    await running;
+    expect(onStatus).toHaveBeenCalledTimes(2);
+    expect(callbacks.applyEvent).toHaveBeenCalledTimes(1);
+    expect(callbacks.onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a scoped observer stop recovery after a permanent read error", async () => {
+    const { abort, callbacks } = setup();
+    const forbidden = new Error("forbidden");
+    callbacks.loadInitial.mockRejectedValueOnce(forbidden);
+    const onStatus = vi.fn((_status: string, error?: unknown) => {
+      if (error === forbidden) abort.abort();
+    });
+    await runThreadSubscription({ ...callbacks, onStatus });
+    expect(onStatus.mock.calls).toEqual([["loading"], ["recovering", forbidden]]);
+    expect(callbacks.loadHead).not.toHaveBeenCalled();
+    expect(callbacks.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("does not notify after an aborted initial read settles late", async () => {
+    const { abort, callbacks } = setup();
+    let reject!: (reason: unknown) => void;
+    callbacks.loadInitial.mockReturnValue(
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    const onStatus = vi.fn();
+    const running = runThreadSubscription({ ...callbacks, onStatus });
+    abort.abort();
+    reject(new Error("late failure"));
+    await running;
+    expect(onStatus.mock.calls).toEqual([["loading"]]);
+  });
 });

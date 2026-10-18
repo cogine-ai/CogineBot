@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import type { Routine, ThreadMessage } from "@rakazo/contracts";
+import type { Me, Routine, ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -17,6 +17,69 @@ async function openComposer(page: Page, prefix: string) {
   await expect(composer).toBeVisible();
   return composer;
 }
+
+test("bootstrap failure recovers the trusted Space before sending a preserved attachment", async ({
+  page,
+}, testInfo) => {
+  const composer = await openComposer(page, "bootstrap-recovery");
+  const botId = activeBotId(page);
+  const me = await rpc<Me>(page, "me", {});
+  let unavailable = true;
+  let attempts = 0;
+  await page.route("**/rpc/bootstrap", (route) => {
+    attempts += 1;
+    return unavailable ? route.abort("internetdisconnected") : route.continue();
+  });
+  await page.reload();
+  await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+  await expect(page.getByTestId("composer-bar").getByRole("combobox")).toBeDisabled();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "false");
+  const failedAttempts = attempts;
+  unavailable = false;
+  await page
+    .getByTestId("bootstrap-status")
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await expect.poll(() => attempts).toBeGreaterThan(failedAttempts);
+  await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+  await expect(composer).toBeEnabled();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await composer.fill("Recovered with the original Space.\nKeep the attachment with this message.");
+  await page
+    .getByTestId("composer-bar")
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "bootstrap-recovered.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("isolated bootstrap recovery"),
+    });
+  await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
+  await captureScreenshot(page, testInfo, "bootstrap-recovered-before-send");
+  const sentRequest = page.waitForRequest("**/rpc/threads/send");
+  const sentResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/rpc/threads/send") && response.ok(),
+  );
+  await composer.press("Enter");
+  const request = await sentRequest;
+  expect(request.headers()["x-rakazo-space-id"]).toBe(me.spaceId);
+  expect(request.postDataJSON().json.botId).toBe(botId);
+  expect(request.postDataJSON().json.artifactIds).toHaveLength(1);
+  const receipt = (await (await sentResponse).json()).json;
+  expect(receipt.runId).toBeTruthy();
+  expect(receipt.taskId).toBeTruthy();
+  await expect(composer).toHaveValue("");
+  await expect(page.getByTestId("attachment-preview")).toHaveCount(0);
+  const snapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  const sent = snapshot.messages.filter(
+    (message) =>
+      message.role === "user" &&
+      message.blocks.some(
+        (block) =>
+          block.kind === "text" && block.text.includes("Recovered with the original Space."),
+      ),
+  );
+  expect(sent).toHaveLength(1);
+});
 
 test("a failed send keeps the message and its attachment in the composer", async ({
   page,

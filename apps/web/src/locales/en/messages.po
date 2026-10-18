@@ -1787,6 +1787,7 @@ msgid "Could not load this artifact."
 msgstr "Could not load this artifact."
 
 #: src/pages/PeerMessagesOverlay.tsx
+#: src/pages/Shell.tsx
 msgid "Could not load this chat."
 msgstr "Could not load this chat."
 
@@ -3829,6 +3830,10 @@ msgstr "Or connect an API key"
 msgid "Or paste an API key"
 msgstr "Or paste an API key"
 
+#: src/pages/Shell.tsx
+msgid "Order not confirmed"
+msgstr "Order not confirmed"
+
 #: src/pages/memory-providers/SupermemorySettingsForm.tsx
 msgid "Organization API key"
 msgstr "Organization API key"
@@ -4078,8 +4083,8 @@ msgstr "Reconnect account"
 msgid "Reconnect OAuth"
 msgstr "Reconnect OAuth"
 
-#: src/App.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/pages/Shell.tsx
 msgid "Reconnecting"
 msgstr "Reconnecting"
 
@@ -4356,6 +4361,7 @@ msgstr "Restoring your workspace"
 #: src/components/AccountAccess.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/Shell.tsx
 msgid "Retry"
 msgstr "Retry"
 
@@ -4521,6 +4527,7 @@ msgstr "Saving..."
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
+#: src/pages/Shell.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Saving…"
@@ -4616,6 +4623,10 @@ msgstr "Send deletion code"
 #: src/components/AskCard.tsx
 msgid "Send it"
 msgstr "Send it"
+
+#: src/pages/Shell.tsx
+msgid "Send not confirmed. Your draft is kept."
+msgstr "Send not confirmed. Your draft is kept."
 
 #: src/pages/Auth.tsx
 msgid "Send reset link"
@@ -5489,6 +5500,11 @@ msgstr "Voice chat"
 #: src/lib/model-connection-preflight.ts
 msgid "Wait a moment and test again."
 msgstr "Wait a moment and test again."
+
+#: src/App.tsx
+#: src/pages/Shell.tsx
+msgid "Waiting for connection"
+msgstr "Waiting for connection"
 
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for first signed event"
