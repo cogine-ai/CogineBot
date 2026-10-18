@@ -17,11 +17,35 @@ import { NativeConfigSettingsSchema, NativeConfigStore } from "./config.js";
 import { enterpriseConfigSecret } from "./enterprise-config-secret.js";
 import { NativeOAuthStore } from "./oauth.js";
 
+function remainingLifecycleDatabaseTarget(
+  url: URL,
+  mode: string | undefined,
+  harnessDatabase: string | undefined,
+): string {
+  const database = url.pathname.slice(1);
+  const isolated =
+    mode === "isolated" &&
+    url.hostname === "127.0.0.1" &&
+    /^native_remaining_[a-z0-9_]+$/.test(database);
+  const harness =
+    mode === "harness_isolated" &&
+    ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) &&
+    /^integration_(0|[1-9][0-9]*)$/.test(database) &&
+    database === harnessDatabase;
+  if (
+    !["postgres:", "postgresql:"].includes(url.protocol) ||
+    Number(url.port) <= 1024 ||
+    (!isolated && !harness)
+  )
+    throw new Error("Remaining lifecycle tests require an explicitly isolated local database");
+  return database;
+}
+
 // Explicit opt-in plus an isolated database name protects this independent canary.
 const describeIsolated =
-  process.env.VERIFY_DATABASE &&
+  process.env.VERIFY_DATABASE === "1" &&
   process.env.DATABASE_URL &&
-  process.env.VERIFY_NATIVE_REMAINING_LIFECYCLE === "isolated"
+  ["isolated", "harness_isolated"].includes(process.env.VERIFY_NATIVE_REMAINING_LIFECYCLE ?? "")
     ? describe.sequential
     : describe.skip;
 const SECRET = "synthetic-owner-managed-credential";
@@ -57,8 +81,19 @@ describeIsolated("remaining native lifecycle and binding fences (isolated Postgr
   });
   beforeAll(async () => {
     const url = new URL(process.env.DATABASE_URL!);
-    expect(url.hostname).toBe("127.0.0.1");
-    expect(url.pathname).toMatch(/^\/native_remaining_[a-z0-9_]+$/);
+    const database = remainingLifecycleDatabaseTarget(
+      url,
+      process.env.VERIFY_NATIVE_REMAINING_LIFECYCLE,
+      process.env.VERIFY_NATIVE_REMAINING_LIFECYCLE_DATABASE,
+    );
+    if (process.env.VERIFY_NATIVE_REMAINING_LIFECYCLE === "isolated") {
+      expect(url.hostname).toBe("127.0.0.1");
+      expect(url.pathname).toMatch(/^\/native_remaining_[a-z0-9_]+$/);
+    } else {
+      expect(["127.0.0.1", "localhost", "[::1]"]).toContain(url.hostname);
+      expect(url.pathname).toMatch(/^\/integration_(0|[1-9][0-9]*)$/);
+      expect(database).toBe(process.env.VERIFY_NATIVE_REMAINING_LIFECYCLE_DATABASE);
+    }
     expect(Number(url.port)).toBeGreaterThan(1024);
     first = createDb(url.toString(), { poolMax: 3, applicationName: "remaining-lifecycle-first" });
     second = createDb(url.toString(), {
@@ -69,7 +104,7 @@ describeIsolated("remaining native lifecycle and binding fences (isolated Postgr
       Array<{ version: string; database: string }>
     >`SELECT version(), current_database() AS database`;
     expect(proof[0]!.version).toContain("PostgreSQL");
-    expect(proof[0]!.database).toMatch(/^native_remaining_/);
+    expect(proof[0]!.database).toBe(database);
     await first.prisma.organization.create({
       data: {
         id: organizationId,
