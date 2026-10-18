@@ -473,6 +473,8 @@ export function reduceThreadSnapshot(
     };
   }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
+    const messageSeq = event.payload.messageSeq;
+    if (typeof messageSeq !== "number") return prev;
     const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
     const blocks = (event.payload.blocks as ThreadMessage["blocks"]) ?? [];
     const id = String(event.payload.messageId ?? event.id);
@@ -480,7 +482,7 @@ export function reduceThreadSnapshot(
     const next: ThreadMessage = {
       id,
       threadId: event.threadId,
-      seq: event.seq,
+      seq: messageSeq,
       role,
       blocks,
       botId: event.botId,
@@ -495,7 +497,22 @@ export function reduceThreadSnapshot(
     const liveId = progressMessageId(event);
     const { remaining } = takeLiveMessage(prev.messages, liveId);
     const without = remaining.filter((message) => !replacedSubagent(message, replacedSubagentIds));
-    return { ...prev, cursor: event.seq, messages: upsertMessageById(without, next) };
+    const messages = upsertMessageById(without, next);
+    // A refreshed latest page can precede older replay frames.
+    if (!known) {
+      const before = messages.findIndex(
+        (message) =>
+          typeof message.seq === "number" &&
+          message.seq > messageSeq &&
+          !message.id.startsWith("progress:") &&
+          !message.id.startsWith("subagent:"),
+      );
+      if (before >= 0) {
+        messages.pop();
+        messages.splice(before, 0, next);
+      }
+    }
+    return { ...prev, cursor: event.seq, messages };
   }
   return prev;
 }

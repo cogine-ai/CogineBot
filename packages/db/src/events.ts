@@ -485,6 +485,7 @@ export async function sendUserMessage(
         runId: run?.id ?? busy?.id,
         payload: {
           messageId: message.id,
+          messageSeq: message.seq,
           role: "user",
           blocks: input.blocks,
           // Carries the call id on the live event so a spoken turn groups into the
@@ -712,7 +713,7 @@ async function commitAnswerRunInput(
       botId: run.botId,
       type: "thread.message.created",
       runId: input.runId,
-      payload: { messageId: utterance.id, role: "user", blocks, callId },
+      payload: { messageId: utterance.id, messageSeq: utterance.seq, role: "user", blocks, callId },
     });
   }
 
@@ -796,7 +797,7 @@ async function commitAnswerRunInput(
     botId: run.botId,
     type: "thread.message.updated",
     runId: input.runId,
-    payload: { messageId: message.id, role: "bot", blocks },
+    payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
   });
   return { threadId: updated.threadId, seq: updated.seq };
 }
@@ -893,7 +894,12 @@ export async function pauseRunForInput(
       botId: input.botId,
       type: "thread.message.created",
       runId: input.runId,
-      payload: { messageId: message.id, role: "bot", blocks: input.blocks },
+      payload: {
+        messageId: message.id,
+        messageSeq: message.seq,
+        role: "bot",
+        blocks: input.blocks,
+      },
     });
     const waitingEvent = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
@@ -1219,7 +1225,12 @@ async function finalizeRunOnce(
           botId: input.botId,
           type: "thread.message.created",
           runId: input.runId,
-          payload: { messageId: message.id, role: "bot", blocks: completedBlocks },
+          payload: {
+            messageId: message.id,
+            messageSeq: message.seq,
+            role: "bot",
+            blocks: completedBlocks,
+          },
         });
       }
     }

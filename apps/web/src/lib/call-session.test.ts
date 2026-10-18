@@ -129,7 +129,7 @@ describe("call session", () => {
         threadId: "thread-1",
         botId: "call-bot",
         type,
-        payload: { messageId: "live-message", role: "bot", blocks: [] },
+        payload: { messageId: "live-message", messageSeq: 2, role: "bot", blocks: [] },
         createdAt: "2026-09-20T00:00:00.000Z",
       });
       const live = feed?.currentSnapshot();
@@ -973,7 +973,7 @@ function userMessageEvent(callId: string): ProductEvent {
     threadId: "thread-1",
     botId: "call-bot",
     type: "thread.message.created",
-    payload: { messageId: "message-user", role: "user", blocks: [], callId },
+    payload: { messageId: "message-user", messageSeq: 0, role: "user", blocks: [], callId },
     createdAt: "2026-09-20T00:00:00.000Z",
   } as ProductEvent;
 }

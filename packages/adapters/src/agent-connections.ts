@@ -341,7 +341,12 @@ export async function messageConnectedAgent(
         botId: target.id,
         type: "thread.message.created",
         runId: nextRun.id,
-        payload: { messageId: inbound.id, role: "user", blocks: [inboundBlock] },
+        payload: {
+          messageId: inbound.id,
+          messageSeq: inbound.seq,
+          role: "user",
+          blocks: [inboundBlock],
+        },
       });
       const outboundEvent = await appendEventInTransaction(tx, {
         spaceId: run.spaceId,
@@ -349,7 +354,12 @@ export async function messageConnectedAgent(
         botId: run.botId,
         type: "thread.message.created",
         runId: run.id,
-        payload: { messageId: outbound.id, role: "bot", blocks: [outboundBlock] },
+        payload: {
+          messageId: outbound.id,
+          messageSeq: outbound.seq,
+          role: "bot",
+          blocks: [outboundBlock],
+        },
       });
       return {
         runId: nextRun.id,

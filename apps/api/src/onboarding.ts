@@ -85,7 +85,7 @@ async function post(
       threadId: target.threadId,
       botId: target.botId,
       type: "thread.message.created",
-      payload: { messageId: message.id, role: "bot", blocks },
+      payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
     });
     return { message, event };
   });
@@ -153,7 +153,7 @@ export async function promptFocus(
       threadId: target.threadId,
       botId: target.botId,
       type: "thread.message.created",
-      payload: { messageId: message.id, role: "bot", blocks },
+      payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
     });
     return { message, event };
   });
@@ -189,7 +189,7 @@ export async function dismissFocus(
       threadId: target.threadId,
       botId: target.botId,
       type: "thread.message.updated",
-      payload: { messageId: pending.id, role: "bot", blocks },
+      payload: { messageId: pending.id, messageSeq: pending.seq, role: "bot", blocks },
     });
     return { messageId: pending.id, blocks, event };
   });
@@ -227,7 +227,7 @@ export async function chooseFocus(
       threadId: target.threadId,
       botId: target.botId,
       type: "thread.message.updated",
-      payload: { messageId: pending.id, role: "bot", blocks },
+      payload: { messageId: pending.id, messageSeq: pending.seq, role: "bot", blocks },
     });
     return { messageId: pending.id, blocks, event };
   });

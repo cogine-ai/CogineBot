@@ -873,6 +873,12 @@ export function ShellPage() {
     useComposerDraft(draftScopeKey);
   const draftScopeKeyRef = useRef(draftScopeKey);
   draftScopeKeyRef.current = draftScopeKey;
+  const threadCheckpoint = useRef<{
+    scope: string;
+    threadId: string;
+    cursor: number;
+  } | null>(null);
+  if (threadCheckpoint.current?.scope !== draftScopeKey) threadCheckpoint.current = null;
   const pendingAttachments = composerDraft.attachments;
   const activePendingAttachments = pendingAttachments;
   const replyTarget = composerDraft.replyTarget;
@@ -1171,14 +1177,136 @@ export function ShellPage() {
     });
   }
 
+  function invalidateHistoryRequests() {
+    historyEpoch.current += 1;
+    jumpGeneration.current += 1;
+    setScrollRequest(null);
+    setLoadingOlder(false);
+    if (searchParamsRef.current.has("m")) {
+      const next = new URLSearchParams(searchParamsRef.current);
+      next.delete("m");
+      next.delete("attention");
+      setSearchParams(next, { replace: true });
+    }
+  }
+
+  function clearHistoryWindow() {
+    expandedHistoryThread.current = null;
+    pinnedAroundRef.current = null;
+    invalidateHistoryRequests();
+  }
+
+  function retryCurrentThread() {
+    if (threadCheckpoint.current?.scope === draftScopeKey) invalidateHistoryRequests();
+    else clearHistoryWindow();
+    setThreadRetry((value) => value + 1);
+  }
+
+  function createThreadReader(
+    abort: AbortController,
+    commitReaderComputer: (
+      next: ComputerStatus | null,
+      event: ProductEvent,
+    ) => void = commitComputer,
+  ) {
+    const scope = draftScopeKey;
+    const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
+    const checkpoint = threadCheckpoint.current;
+    const resume = checkpoint?.scope === scope ? checkpoint : undefined;
+    let authoritative = snapshotRef.current;
+    const ownsReader = () =>
+      !abort.signal.aborted &&
+      scope !== null &&
+      draftScopeKeyRef.current === scope &&
+      (selectedSpaceId() ?? groupSettingsActor.current.spaceId) === spaceId;
+    return {
+      resume,
+      ownsReader,
+      onCursor: (next: { threadId: string; cursor: number }) => {
+        if (ownsReader()) threadCheckpoint.current = { ...next, scope: scope! };
+      },
+      read: async (request: Promise<ThreadSnapshot>) => {
+        const epoch = historyEpoch.current;
+        const consumed = threadCheckpoint.current;
+        if (
+          ownsReader() &&
+          consumed?.scope === scope &&
+          snapshotRef.current?.threadId === consumed.threadId &&
+          snapshotRef.current.messages.length > 0
+        )
+          expandedHistoryThread.current = consumed.threadId;
+        const snap = await request;
+        if (
+          ownsReader() &&
+          epoch === historyEpoch.current &&
+          snapshotRef.current?.threadId === snap.threadId &&
+          snapshotRef.current.cursor >= snap.cursor &&
+          (!authoritative ||
+            authoritative.threadId !== snap.threadId ||
+            snap.cursor >= authoritative.cursor)
+        )
+          authoritative = snap;
+        return snap;
+      },
+      applyEvent: (event: ProductEvent) => {
+        if (!ownsReader()) return;
+        if (authoritative?.threadId === event.threadId && event.seq <= authoritative.cursor) {
+          // The fresh read already owns run/computer/approval state. Replay only
+          // durable history so old execution events cannot roll that state back.
+          if (
+            event.type === "thread.cleared" ||
+            event.type === "thread.message.created" ||
+            event.type === "thread.message.updated" ||
+            event.type === "thread.message.reaction"
+          ) {
+            const current = snapshotRef.current;
+            const next = reduceThreadSnapshot(current, event);
+            if (current && next) {
+              if (
+                (event.type === "thread.message.created" ||
+                  event.type === "thread.message.updated") &&
+                typeof event.payload.messageSeq === "number" &&
+                !authoritative.messages.some((message) => message.id === event.payload.messageId)
+              )
+                expandedHistoryThread.current = event.threadId;
+              commitSnapshot({
+                ...current,
+                cursor: Math.max(current.cursor, event.seq),
+                messages: next.messages,
+                olderCursor: next.olderCursor,
+              });
+            }
+          }
+          return;
+        }
+        applyThreadEvent(
+          event,
+          commitSnapshot,
+          (next) => commitReaderComputer(next, event),
+          snapshotRef,
+          computerRef,
+        );
+      },
+    };
+  }
+
   async function refreshGroupThread(id: string, signal?: AbortSignal) {
     const scrollElement = messageScroll.current;
     const stickToEnd = !scrollElement || transcriptIsNearEnd(scrollElement);
     markOnce("rk:renderer:thread-request-start");
+    const epoch = historyEpoch.current;
+    const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
     const request = ++groupRefreshEpoch.current;
     const snap = await rpc.threads.get({ groupId: id }, signal ? { signal } : undefined);
     markOnce("rk:renderer:thread-response");
-    if (activeGroupId.current !== id || request !== groupRefreshEpoch.current) return snap;
+    if (
+      signal?.aborted ||
+      (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId ||
+      activeGroupId.current !== id ||
+      epoch !== historyEpoch.current ||
+      request !== groupRefreshEpoch.current
+    )
+      return snap;
     const reconciled = reconcileRefreshedThread(
       snapshotRef.current,
       snap,
@@ -1205,12 +1333,15 @@ export function ShellPage() {
     const stickToEnd = !scrollElement || transcriptIsNearEnd(scrollElement);
     markOnce("rk:renderer:thread-request-start");
     const epoch = historyEpoch.current;
+    const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
     const request = ++threadRefreshEpoch.current;
     // Apply threads.get as soon as it returns so stop/takeover status is not held behind
     // routines/skills/screen fetches (progress can advance the cursor meanwhile).
     const snap = await rpc.threads.get({ botId: id }, signal ? { signal } : undefined);
     markOnce("rk:renderer:thread-response");
     if (
+      signal?.aborted ||
+      (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId ||
       activeBotId.current !== id ||
       epoch !== historyEpoch.current ||
       request !== threadRefreshEpoch.current
@@ -1239,6 +1370,8 @@ export function ShellPage() {
       refreshComputerScreen(id).catch(() => null),
     ]).then(([routines, skills]) => {
       if (
+        signal?.aborted ||
+        (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId ||
         activeBotId.current !== id ||
         epoch !== historyEpoch.current ||
         request !== threadRefreshEpoch.current
@@ -1293,6 +1426,7 @@ export function ShellPage() {
     const scrollElement = messageScroll.current;
     const previousHeight = scrollElement?.scrollHeight ?? 0;
     const epoch = historyEpoch.current;
+    const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
     const before = snapshot.olderCursor;
     setLoadingOlder(true);
     try {
@@ -1303,6 +1437,7 @@ export function ShellPage() {
       ]);
       if (
         epoch !== historyEpoch.current ||
+        (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId ||
         activeBotId.current !== targetBotId ||
         activeGroupId.current !== targetGroupId
       )
@@ -1317,12 +1452,26 @@ export function ShellPage() {
       commitSnapshot(prependThreadMessagePage(current.snapshot, page));
       window.requestAnimationFrame(() => {
         const element = messageScroll.current;
-        if (element) element.scrollTop += element.scrollHeight - previousHeight;
+        if (
+          epoch === historyEpoch.current &&
+          (selectedSpaceId() ?? groupSettingsActor.current.spaceId) === spaceId &&
+          activeBotId.current === targetBotId &&
+          activeGroupId.current === targetGroupId &&
+          element &&
+          element === scrollElement
+        )
+          element.scrollTop += element.scrollHeight - previousHeight;
       });
     } catch {
       // Leave the existing page and approval controls intact; the next load can retry.
     } finally {
-      setLoadingOlder(false);
+      if (
+        epoch === historyEpoch.current &&
+        (selectedSpaceId() ?? groupSettingsActor.current.spaceId) === spaceId &&
+        activeBotId.current === targetBotId &&
+        activeGroupId.current === targetGroupId
+      )
+        setLoadingOlder(false);
     }
   }
 
@@ -1554,22 +1703,30 @@ export function ShellPage() {
       setScreenUrl(null);
     }
     const abort = new AbortController();
+    const reader = createThreadReader(abort);
     void runThreadSubscription({
       signal: abort.signal,
+      resume: reader.resume,
+      onCursor: reader.onCursor,
       onStatus: observeThreadConnection(`bot:${active.id}`, abort),
       loadInitial: async () => {
         const primed = bootstrappedThread.current;
         bootstrappedThread.current = null;
         // Pending search jumps load the around-page separately; avoid replacing it with latest.
-        return primed?.botId === active.id
-          ? primed
-          : pendingJump
-            ? rpc.threads.get({ botId: active.id }, { signal: threadSnapshotSignal(abort.signal) })
-            : refreshThread(active.id, threadSnapshotSignal(abort.signal));
+        return reader.read(
+          primed?.botId === active.id
+            ? Promise.resolve(primed)
+            : pendingJump
+              ? rpc.threads.get(
+                  { botId: active.id },
+                  { signal: threadSnapshotSignal(abort.signal) },
+                )
+              : refreshThread(active.id, threadSnapshotSignal(abort.signal)),
+        );
       },
       loadHead: () =>
         rpc.threads.head({ botId: active.id }, { signal: threadSnapshotSignal(abort.signal) }),
-      refresh: () => refreshThread(active.id, threadSnapshotSignal(abort.signal)),
+      refresh: () => reader.read(refreshThread(active.id, threadSnapshotSignal(abort.signal))),
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) =>
         rpc.threads.subscribe({ botId: active.id, cursor }, { signal: abort.signal }),
@@ -1582,10 +1739,9 @@ export function ShellPage() {
           }
         }
       },
-      applyEvent: (event) =>
-        applyThreadEvent(event, commitSnapshot, commitComputer, snapshotRef, computerRef),
+      applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
-        if (event.type === "thread.cleared") setPeerConversation(null);
+        if (!reader.ownsReader()) return;
         const currentBot = botsRef.current.find((bot) => bot.id === active.id);
         notifyBrowserForEvent(
           event,
@@ -1598,9 +1754,7 @@ export function ShellPage() {
         );
         if (event.type === "thread.cleared") {
           setPeerConversation(null);
-          expandedHistoryThread.current = null;
-          pinnedAroundRef.current = null;
-          historyEpoch.current += 1;
+          clearHistoryWindow();
         }
         if (event.type === "bot.archived") {
           void refreshBots(true).catch(() => undefined);
@@ -1650,6 +1804,7 @@ export function ShellPage() {
     markBotReadIfVisible,
     notifyBrowserForEvent,
     observeThreadConnection,
+    draftScopeKey,
     threadRetry,
   ]);
 
@@ -1677,30 +1832,32 @@ export function ShellPage() {
     document.addEventListener("visibilitychange", markVisibleGroupRead);
     const pendingJump = searchParamsRef.current.get("m");
     const abort = new AbortController();
+    const reader = createThreadReader(abort, (next, event) => {
+      if (isComputerStatusEvent(event) && event.botId !== computerBotIdRef.current) return;
+      commitComputer(next);
+    });
     void runThreadSubscription({
       signal: abort.signal,
+      resume: reader.resume,
+      onCursor: reader.onCursor,
       onStatus: observeThreadConnection(`group:${groupId}`, abort),
       loadInitial: () =>
-        pendingJump
-          ? rpc.threads.get({ groupId }, { signal: threadSnapshotSignal(abort.signal) })
-          : refreshGroupThread(groupId, threadSnapshotSignal(abort.signal)),
+        reader.read(
+          pendingJump
+            ? rpc.threads.get({ groupId }, { signal: threadSnapshotSignal(abort.signal) })
+            : refreshGroupThread(groupId, threadSnapshotSignal(abort.signal)),
+        ),
       loadHead: () => rpc.threads.head({ groupId }, { signal: threadSnapshotSignal(abort.signal) }),
-      refresh: () => refreshGroupThread(groupId, threadSnapshotSignal(abort.signal)),
+      refresh: () => reader.read(refreshGroupThread(groupId, threadSnapshotSignal(abort.signal))),
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) => rpc.threads.subscribe({ groupId, cursor }, { signal: abort.signal }),
-      applyEvent: (event) =>
-        applyThreadEvent(
-          event,
-          commitSnapshot,
-          (next) => {
-            if (isComputerStatusEvent(event) && event.botId !== computerBotIdRef.current) return;
-            commitComputer(next);
-          },
-          snapshotRef,
-          computerRef,
-        ),
+      applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
-        if (event.type === "thread.cleared") setPeerConversation(null);
+        if (!reader.ownsReader()) return;
+        if (event.type === "thread.cleared") {
+          setPeerConversation(null);
+          clearHistoryWindow();
+        }
         const eventBot = botsRef.current.find((bot) => bot.id === event.botId);
         notifyBrowserForEvent(
           event,
@@ -1749,6 +1906,7 @@ export function ShellPage() {
     notifyBrowserForEvent,
     setConversationUnread,
     observeThreadConnection,
+    draftScopeKey,
     threadRetry,
   ]);
 
@@ -2245,6 +2403,7 @@ export function ShellPage() {
       ? savedGroupUpdates.current.get(target.groupId)
       : undefined;
     const epoch = historyEpoch.current;
+    const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
     const [snap, requestedPage] = await Promise.all([
@@ -2254,7 +2413,12 @@ export function ShellPage() {
     // The epoch check drops a jump that raced a conversation clear (or a bot switch): applying
     // the fetched page would pin deleted messages that every later refresh keeps restoring.
     // jumpId drops an older jump that finished after a newer click.
-    if (epoch !== historyEpoch.current || jumpId !== jumpGeneration.current) return;
+    if (
+      epoch !== historyEpoch.current ||
+      jumpId !== jumpGeneration.current ||
+      (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId
+    )
+      return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
     const messageId = target.attention ? (snap.attentionMessageId ?? null) : target.messageId;
@@ -2262,7 +2426,12 @@ export function ShellPage() {
       messageId && messageId !== target.messageId
         ? await rpc.threads.messages({ ...threadTarget, around: { messageId } })
         : requestedPage;
-    if (epoch !== historyEpoch.current || jumpId !== jumpGeneration.current) return;
+    if (
+      epoch !== historyEpoch.current ||
+      jumpId !== jumpGeneration.current ||
+      (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId
+    )
+      return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
     const current = snapshotRef.current;
@@ -4640,11 +4809,7 @@ export function ShellPage() {
                 {currentThreadConnection.error ??
                   (activeSnapshot ? t`Reconnecting` : t`Waiting for connection`)}
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setThreadRetry((value) => value + 1)}
-              >
+              <Button variant="ghost" size="sm" onClick={retryCurrentThread}>
                 <Trans>Retry</Trans>
               </Button>
             </div>
@@ -5559,18 +5724,23 @@ export function ShellPage() {
             bot={clearTarget.chat}
             onCancel={() => setClearTarget(null)}
             onConfirm={async () => {
+              const actor = groupSettingsActor.current;
+              const spaceId = selectedSpaceId() ?? actor.spaceId;
+              const epoch = historyEpoch.current;
               await rpc.threads.clear(
                 clearTarget.kind === "bot"
                   ? { botId: clearTarget.chat.id }
                   : { groupId: clearTarget.chat.id },
               );
               if (
-                (clearTarget.kind === "bot" && active?.id === clearTarget.chat.id) ||
-                (clearTarget.kind === "group" && activeGroup?.id === clearTarget.chat.id)
+                epoch === historyEpoch.current &&
+                actor.userId === groupSettingsActor.current.userId &&
+                actor.spaceId === groupSettingsActor.current.spaceId &&
+                spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId) &&
+                ((clearTarget.kind === "bot" && activeBotId.current === clearTarget.chat.id) ||
+                  (clearTarget.kind === "group" && activeGroupId.current === clearTarget.chat.id))
               ) {
-                expandedHistoryThread.current = null;
-                pinnedAroundRef.current = null;
-                historyEpoch.current += 1;
+                clearHistoryWindow();
                 updateSnapshot((current) =>
                   current ? { ...current, messages: [], olderCursor: null, run: null } : current,
                 );

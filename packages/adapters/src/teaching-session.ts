@@ -350,12 +350,12 @@ async function findSkillDraftMessage(
   prisma: { message: { findMany: PrismaClient["message"]["findMany"] } },
   threadId: string,
   skillId: string,
-): Promise<{ id: string; blocks: MessageBlock[] } | null> {
+): Promise<{ id: string; seq: number; blocks: MessageBlock[] } | null> {
   const messages = await prisma.message.findMany({
     where: { threadId, role: "bot" },
     orderBy: { seq: "desc" },
     take: 100,
-    select: { id: true, blocks: true },
+    select: { id: true, seq: true, blocks: true },
   });
   for (const message of messages) {
     const blocks = message.blocks as MessageBlock[];
@@ -363,7 +363,7 @@ async function findSkillDraftMessage(
       Array.isArray(blocks) &&
       blocks.some((block) => block.kind === "skill_draft" && block.skillId === skillId)
     ) {
-      return { id: message.id, blocks };
+      return { id: message.id, seq: message.seq, blocks };
     }
   }
   return null;
@@ -408,7 +408,7 @@ async function emitSkillDraftMessages(
         role: "bot",
         blocks,
       });
-      created = { id: message.id, blocks };
+      created = { id: message.id, seq: message.seq, blocks };
     }
     if (await hasSkillDraftCreatedEvent(tx, threadId, skill.id)) return null;
     await appendEventInTransaction(tx, {
@@ -416,7 +416,12 @@ async function emitSkillDraftMessages(
       threadId,
       botId: bot.id,
       type: "thread.message.created",
-      payload: { messageId: created.id, role: "bot", blocks: created.blocks },
+      payload: {
+        messageId: created.id,
+        messageSeq: created.seq,
+        role: "bot",
+        blocks: created.blocks,
+      },
     });
     const draftEvent = await appendEventInTransaction(tx, {
       spaceId: actor.spaceId,

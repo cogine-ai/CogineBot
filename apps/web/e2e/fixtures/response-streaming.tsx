@@ -54,6 +54,7 @@ function reduceComparableTurn(stream: boolean, turn: "live" | "done"): ThreadSna
       type: "thread.message.created",
       payload: {
         messageId: "user-1",
+        messageSeq: 0,
         role: "user",
         blocks: [{ kind: "text", text: USER_TEXT }],
       },
@@ -84,6 +85,7 @@ function reduceComparableTurn(stream: boolean, turn: "live" | "done"): ThreadSna
         type: "thread.message.created",
         payload: {
           messageId: "bot-final",
+          messageSeq: 1,
           role: "bot",
           blocks: [{ kind: "text", text: COMPLETE_TEXT }],
         },

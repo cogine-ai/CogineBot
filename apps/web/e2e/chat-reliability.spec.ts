@@ -4,7 +4,9 @@ import type {
   AppBootstrap,
   Bot,
   Connection,
+  Group,
   Me,
+  ProductEvent,
   Space,
   SpaceNavigation,
   ThreadMessage,
@@ -103,6 +105,8 @@ async function mockChat(page: Page) {
       bot("research-one", "Research One"),
       bot("research-two", "Research Two"),
     ],
+    groups: [] as Group[],
+    sandboxProvider: "none",
     connections: [
       account("mail-primary", "Mail Primary"),
       account("mail-secondary", "Mail Secondary"),
@@ -137,7 +141,7 @@ async function mockChat(page: Page) {
     hostCredentialSource: null,
     computerHost: null,
     canChooseHostComputer: false,
-    sandboxProvider: "none",
+    sandboxProvider: state.sandboxProvider,
     avatarStyle: "organic",
     billingEnabled: false,
   });
@@ -151,7 +155,7 @@ async function mockChat(page: Page) {
       canRename: true,
       canDelete: false,
       bots: state.bots,
-      groups: [],
+      groups: state.groups,
       externalConversations: [],
       botSections: [],
     },
@@ -173,15 +177,21 @@ async function mockChat(page: Page) {
       id: spaceId,
       name: spaceId === "space-other" ? "Other Space" : "Primary Space",
       bots: spaceId === "space-other" ? [other] : state.bots,
-      groups: [],
+      groups: spaceId === "space-other" ? [] : state.groups,
       externalConversations: [],
       botSections: [],
     },
     spaces: spaces(),
   });
-  const snapshot = (id: string): ThreadSnapshot => ({
-    threadId: `thread-${id}`,
-    botId: id,
+  const snapshot = (id: string, groupId?: string): ThreadSnapshot => ({
+    threadId: `thread-${groupId ?? id}`,
+    ...(groupId
+      ? {
+          groupId,
+          groupName: state.groups.find((group) => group.id === groupId)?.name,
+          members: state.groups.find((group) => group.id === groupId)?.members,
+        }
+      : { botId: id }),
     cursor: -1,
     messages: [],
     olderCursor: null,
@@ -237,11 +247,11 @@ async function mockChat(page: Page) {
       const data: AppBootstrap = {
         me: me(spaceId),
         bots: current.current.bots,
-        groups: [],
+        groups: current.current.groups,
         botSections: [],
         archivedBots: [],
         archivedGroups: [],
-        thread: snapshot(input.botId ?? current.current.bots[0].id),
+        thread: snapshot(input.botId ?? current.current.bots[0].id, input.groupId),
         routines: [],
         spaces: current.spaces,
       };
@@ -257,11 +267,14 @@ async function mockChat(page: Page) {
     if (path === "me") return json(route, me(spaceId));
     if (path === "threads/get") {
       state.threadReads.push({ botId: input.botId ?? "chief", spaceId });
-      const data = snapshot(input.botId ?? "chief");
+      const data = snapshot(input.botId ?? "chief", input.groupId);
       return state.thread ? state.thread(route, data) : json(route, data);
     }
     if (path === "threads/head")
-      return json(route, { threadId: `thread-${input.botId ?? "chief"}`, cursor: -1 });
+      return json(route, {
+        threadId: `thread-${input.groupId ?? input.botId ?? "chief"}`,
+        cursor: -1,
+      });
     if (path === "threads/messages") {
       if (state.messages) return state.messages(route);
       return json(route, {
@@ -370,8 +383,11 @@ async function controlledStream(page: Page) {
     const openStreams = new Set<ReadableStreamDefaultController<Uint8Array>>();
     let failed: boolean | number = false;
     let requests = 0;
+    let events: Array<{ seq: number; [key: string]: unknown }> = [];
+    const cursors: number[] = [];
     Object.defineProperty(window, "reliabilityStream", {
       value: {
+        cursors,
         get requests() {
           return requests;
         },
@@ -383,6 +399,17 @@ async function controlledStream(page: Page) {
             openStreams.clear();
           }
         },
+        replay(value: typeof events) {
+          events = value;
+        },
+        emit(event: (typeof events)[number]) {
+          for (const controller of openStreams)
+            controller.enqueue(
+              new TextEncoder().encode(
+                `event: message\ndata: ${JSON.stringify({ json: event })}\n\n`,
+              ),
+            );
+        },
       },
     });
     window.fetch = async (input, init) => {
@@ -390,6 +417,13 @@ async function controlledStream(page: Page) {
       if (new URL(url, window.location.href).pathname !== "/rpc/threads/subscribe")
         return nativeFetch(input, init);
       requests += 1;
+      const request = new Request(input, init);
+      const target = (await request.clone().json()).json as {
+        botId?: string;
+        groupId?: string;
+        cursor: number;
+      };
+      cursors.push(target.cursor);
       if (typeof failed === "number") {
         const code =
           failed === 401 ? "UNAUTHORIZED" : failed === 403 ? "FORBIDDEN" : "INTERNAL_SERVER_ERROR";
@@ -399,17 +433,23 @@ async function controlledStream(page: Page) {
         );
       }
       if (failed) throw new TypeError("Failed to fetch");
-      const request = new Request(input, init);
-      const target = (await request.clone().json()).json as { botId?: string };
       let current: ReadableStreamDefaultController<Uint8Array> | undefined;
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           current = controller;
           openStreams.add(controller);
+          for (const event of events) {
+            if (event.seq > target.cursor)
+              controller.enqueue(
+                new TextEncoder().encode(
+                  `event: message\ndata: ${JSON.stringify({ json: event })}\n\n`,
+                ),
+              );
+          }
           const event = {
             id: "synthetic-heartbeat",
             spaceId: "space-primary",
-            threadId: `thread-${target.botId ?? "chief"}`,
+            threadId: `thread-${target.groupId ?? target.botId ?? "chief"}`,
             botId: target.botId ?? "chief",
             seq: 0,
             type: "heartbeat",
@@ -436,7 +476,7 @@ async function controlledStream(page: Page) {
       return new Response(body, { headers: { "content-type": "text/event-stream" } });
     };
   });
-  return (failed: boolean | number) =>
+  const fail = (failed: boolean | number) =>
     page.evaluate(
       (value) =>
         (
@@ -444,6 +484,30 @@ async function controlledStream(page: Page) {
         ).reliabilityStream.fail(value),
       failed,
     );
+  return Object.assign(fail, {
+    replay: (events: ProductEvent[]) =>
+      page.evaluate(
+        (value) =>
+          (
+            window as unknown as { reliabilityStream: { replay: (events: unknown[]) => void } }
+          ).reliabilityStream.replay(value),
+        events,
+      ),
+    emit: (event: ProductEvent) =>
+      page.evaluate(
+        (value) =>
+          (
+            window as unknown as { reliabilityStream: { emit: (event: unknown) => void } }
+          ).reliabilityStream.emit(value),
+        event,
+      ),
+    cursors: () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { reliabilityStream: { cursors: number[] } }).reliabilityStream
+            .cursors,
+      ),
+  });
 }
 
 test("mention highlight retains the same Bot across equivalent refresh and roster reorder", async ({
@@ -1065,6 +1129,758 @@ test("retrying the same chat connection preserves loaded earlier messages and re
   ).toBeLessThanOrEqual(2);
   expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThanOrEqual(2);
   expect(state.sends).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+for (const scenario of [
+  { group: false, clear: true, expanded: true, race: false },
+  { group: true, clear: true, expanded: true, race: false },
+  { group: false, clear: false, expanded: true, race: false },
+  { group: true, clear: false, expanded: true, race: false },
+  { group: false, clear: false, expanded: false, race: false },
+  { group: false, clear: true, expanded: true, race: true },
+]) {
+  test(`manual retry resumes ${scenario.group ? "group" : "bot"} ${scenario.clear ? "clear" : "valid history"} with ${scenario.expanded ? "expanded" : "current page"} and all new messages${scenario.race ? " after an automatic fresh read" : ""}`, async ({
+    page,
+  }, testInfo) => {
+    const { state, errors, unknown } = await mockChat(page);
+    const stream = await controlledStream(page);
+    const targetId = scenario.group ? "crew" : "chief";
+    const threadId = `thread-${targetId}`;
+    if (scenario.group)
+      state.groups = [
+        {
+          id: targetId,
+          spaceId: "space-primary",
+          name: "Crew",
+          pinned: false,
+          sectionId: null,
+          archivedAt: null,
+          threadId,
+          preview: "Ready",
+          unread: false,
+          members: state.bots
+            .slice(0, 2)
+            .map(({ id, name, color }) => ({ botId: id, name, color })),
+          updatedAt: stamp,
+          createdAt: stamp,
+        },
+      ];
+    const old: ThreadMessage[] = Array.from({ length: 150 }, (_, seq) => ({
+      id: `old-${seq}`,
+      threadId,
+      botId: "chief",
+      seq,
+      role: "bot",
+      blocks: [{ kind: "text", text: `Earlier message ${seq}.` }],
+      createdAt: stamp,
+    }));
+    const incoming: ThreadMessage[] = Array.from({ length: 120 }, (_, index) => ({
+      ...old[0]!,
+      id: `incoming-${index}`,
+      seq: 150 + index,
+      blocks: [{ kind: "text", text: `New message ${index}.` }],
+    }));
+    let recovered = false;
+    let blocked = false;
+    const snapshot = (data: ThreadSnapshot): ThreadSnapshot => ({
+      ...data,
+      cursor: recovered ? 270 : 149,
+      messages: recovered ? incoming.slice(-100) : old.slice(50),
+      olderCursor: recovered ? 170 : 50,
+    });
+    state.bootstrap = (route, data) => json(route, { ...data, thread: snapshot(data.thread!) });
+    state.thread = (route, data) => (blocked ? route.abort("failed") : json(route, snapshot(data)));
+    state.messages = (route) =>
+      json(route, { threadId, messages: old.slice(0, 50), olderCursor: null });
+    await page.route("**/rpc/threads/head", (route) =>
+      json(route, { threadId, cursor: recovered ? 270 : 149 }),
+    );
+    if (scenario.group) {
+      await page.goto(`/app/g/${targetId}`);
+      await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    } else await ready(page);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    if (scenario.expanded)
+      await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+    const transcript = page.getByTestId("transcript");
+    const anchor = transcript.locator(`[data-message-id="old-${scenario.expanded ? 7 : 60}"]`);
+    await expect(anchor).toHaveCount(1);
+    await anchor.scrollIntoViewIfNeeded();
+    const composer = page.getByRole("combobox", {
+      name: scenario.group ? "Message Crew" : "Message Chief",
+      exact: true,
+    });
+    await composer.fill("@Research");
+    await page.getByRole("option", { name: "@Research One", exact: true }).click();
+    const draft = "This draft stays here.\nA second unsent line.";
+    await composer.fill(draft);
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "resume-notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("Synthetic attachment"),
+      });
+    const readsBeforeOutage = state.threadReads.length;
+    blocked = !scenario.race;
+    if (scenario.race) recovered = true;
+    await stream(scenario.race ? true : 403);
+    if (scenario.race) {
+      await expect.poll(() => state.threadReads.length).toBeGreaterThan(readsBeforeOutage);
+      await expect(transcript.locator('[data-message-id^="incoming-"]')).toHaveCount(100);
+      await expect(page.getByTestId("connection-status")).toContainText("Reconnecting");
+    } else
+      await expect(page.getByTestId("connection-status")).toContainText("Chat access interrupted");
+    const anchorOffset = () =>
+      anchor.evaluate(
+        (element) =>
+          element.getBoundingClientRect().top -
+          element.closest('[data-testid="transcript"]')!.getBoundingClientRect().top,
+      );
+    const offsetBefore = await anchorOffset();
+    recovered = true;
+    const event = (
+      seq: number,
+      type: ProductEvent["type"],
+      payload: Record<string, unknown>,
+    ): ProductEvent => ({
+      id: `event-${seq}`,
+      threadId,
+      botId: "chief",
+      spaceId: "space-primary",
+      seq,
+      type,
+      payload,
+      createdAt: stamp,
+    });
+    await stream.replay([
+      ...(scenario.clear ? [event(150, "thread.cleared", {})] : []),
+      ...incoming.map((message, index) =>
+        event(151 + index, index === 0 ? "thread.message.updated" : "thread.message.created", {
+          messageId: message.id,
+          messageSeq: message.seq,
+          role: message.role,
+          blocks: message.blocks,
+        }),
+      ),
+    ]);
+    blocked = false;
+    const beforeRetry = (await stream.cursors()).length;
+    if (!scenario.race) await stream(false);
+    await page.getByTestId("connection-status").getByRole("button", { name: "Retry" }).click();
+    if (scenario.race) {
+      await expect.poll(async () => (await stream.cursors()).length).toBeGreaterThan(beforeRetry);
+      expect((await stream.cursors()).at(-1)).toBe(149);
+      await stream(false);
+    }
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    await expect(transcript.locator('[data-message-id^="old-"]')).toHaveCount(
+      scenario.clear ? 0 : scenario.expanded ? 150 : 100,
+    );
+    const expectedIds = [
+      ...(scenario.clear ? [] : old.slice(scenario.expanded ? 0 : 50)),
+      ...incoming,
+    ].map((message) => message.id);
+    await expect
+      .poll(() =>
+        transcript
+          .locator("[data-message-id]")
+          .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-message-id"))),
+      )
+      .toEqual(expectedIds);
+    const readsBeforeRefresh = state.threadReads.length;
+    await stream(true);
+    await expect.poll(() => state.threadReads.length).toBeGreaterThan(readsBeforeRefresh);
+    await stream(false);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    await expect
+      .poll(() =>
+        transcript
+          .locator("[data-message-id]")
+          .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-message-id"))),
+      )
+      .toEqual(expectedIds);
+    if (!scenario.clear)
+      expect(Math.abs((await anchorOffset()) - offsetBefore)).toBeLessThanOrEqual(2);
+    else await expect(anchor).toHaveCount(0);
+    if (!scenario.expanded) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await stream(403);
+        await expect(page.getByTestId("connection-status")).toContainText(
+          "Chat access interrupted",
+        );
+        await stream(false);
+        await page.getByTestId("connection-status").getByRole("button", { name: "Retry" }).click();
+        await expect(page.getByTestId("connection-status")).toHaveCount(0);
+        await expect
+          .poll(() =>
+            transcript
+              .locator("[data-message-id]")
+              .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-message-id"))),
+          )
+          .toEqual(expectedIds);
+        expect(Math.abs((await anchorOffset()) - offsetBefore)).toBeLessThanOrEqual(2);
+      }
+    }
+    const loadEarlier = page.getByRole("button", { name: "Load earlier messages", exact: true });
+    await expect(loadEarlier).toHaveCount(scenario.clear || scenario.expanded ? 0 : 1);
+    const cursors = await stream.cursors();
+    expect(cursors).toContain(149);
+    expect(cursors.at(-1)).toBe(270);
+    await expect(composer).toHaveValue(draft);
+    await expect(page.getByTestId("mention-chip")).toHaveText(["Research One"]);
+    await expect(page.getByRole("button", { name: "Remove resume-notes.txt" })).toBeVisible();
+    expect(state.sends).toHaveLength(0);
+    expect(state.uploads).toHaveLength(0);
+    expect(errors).toEqual([]);
+    expect(unknown).toEqual([]);
+    await testInfo.attach("resume-observation", {
+      body: JSON.stringify({
+        scenario,
+        cursorRequests: cursors,
+        loadEarlierCount: await loadEarlier.count(),
+        renderedIds: await transcript
+          .locator("[data-message-id]")
+          .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-message-id"))),
+        anchorOffsetBefore: offsetBefore,
+        anchorOffsetAfter: scenario.clear ? null : await anchorOffset(),
+        draftPreserved: (await composer.inputValue()) === draft,
+        mentionCount: await page.getByTestId("mention-chip").count(),
+        attachmentPreserved: await page
+          .getByRole("button", { name: "Remove resume-notes.txt" })
+          .isVisible(),
+        sendCount: state.sends.length,
+        uploadCount: state.uploads.length,
+        errors,
+        unknown,
+      }),
+      contentType: "application/json",
+    });
+    await page.screenshot({ path: testInfo.outputPath("manual-resume.png") });
+  });
+}
+
+for (const manual of [false, true]) {
+  test(`historical execution frames keep authoritative run state during ${manual ? "manual" : "automatic"} recovery`, async ({
+    page,
+  }) => {
+    const { state, errors } = await mockChat(page);
+    const stream = await controlledStream(page);
+    await page.addInitScript(() => {
+      const notifications: string[] = [];
+      Object.defineProperty(window, "testNotifications", { value: notifications });
+      Object.defineProperty(window, "Notification", {
+        value: class {
+          static permission = "granted";
+          constructor(title: string) {
+            notifications.push(title);
+          }
+          close() {}
+        },
+      });
+      Object.defineProperty(document, "hasFocus", { value: () => false });
+    });
+    state.sandboxProvider = "docker";
+    let recovered = false;
+    const snapshot = (data: ThreadSnapshot): ThreadSnapshot => ({
+      ...data,
+      cursor: recovered ? 270 : 149,
+      run: recovered
+        ? {
+            id: "new-run",
+            botId: "chief",
+            threadId: "thread-chief",
+            taskId: "new-task",
+            status: "completed",
+            trigger: "user",
+            routineId: null,
+            modelProvider: null,
+            modelId: null,
+            error: null,
+            startedAt: stamp,
+            completedAt: stamp,
+            createdAt: stamp,
+          }
+        : null,
+      activeRuns: [],
+      computer: {
+        botId: "chief",
+        mode: "team",
+        kind: "fake",
+        state: "suspended",
+        controlHolder: "none",
+        controlBotId: null,
+        takeoverRequested: false,
+        screenAvailable: false,
+        screenWidth: 1024,
+        screenHeight: 768,
+        homeRevision: null,
+        busyBotName: null,
+        canUpdate: false,
+        terminalAvailable: false,
+      },
+    });
+    state.bootstrap = (route, data) => json(route, { ...data, thread: snapshot(data.thread!) });
+    state.thread = (route, data) => json(route, snapshot(data));
+    await page.route("**/rpc/threads/head", (route) =>
+      json(route, { threadId: "thread-chief", cursor: recovered ? 270 : 149 }),
+    );
+    await ready(page);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    await page.getByTitle("Agent computer").click();
+    const preview = page.getByTestId("computer-preview");
+    await expect(preview).toContainText("Computer is asleep");
+    recovered = true;
+    const reads = state.threadReads.length;
+    await stream(manual ? 403 : true);
+    if (manual)
+      await expect(page.getByTestId("connection-status")).toContainText("Chat access interrupted");
+    else await expect.poll(() => state.threadReads.length).toBeGreaterThan(reads);
+    await stream(false);
+    if (manual)
+      await page.getByTestId("connection-status").getByRole("button", { name: "Retry" }).click();
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    const stop = page
+      .getByTestId("composer-bar")
+      .getByRole("button", { name: "Stop", exact: true });
+    await expect(stop).toHaveCount(0);
+    const event: ProductEvent = {
+      id: "old-start",
+      spaceId: "space-primary",
+      threadId: "thread-chief",
+      botId: "chief",
+      runId: "old-run",
+      seq: 150,
+      type: "run.started",
+      payload: { trigger: "user" },
+      createdAt: stamp,
+    };
+    await stream.emit(event);
+    await painted(page);
+    await expect(stop).toHaveCount(0);
+    await stream.emit({ ...event, id: "old-done", seq: 151, type: "run.completed" });
+    await painted(page);
+    await expect(stop).toHaveCount(0);
+    await stream.emit({
+      ...event,
+      id: "old-computer",
+      seq: 152,
+      type: "computer.status",
+      payload: { status: "stopped" },
+    });
+    await painted(page);
+    await expect(preview).toContainText("Computer is asleep");
+    await stream.emit(event); // Duplicate delivery cannot revive the completed run.
+    await painted(page);
+    await expect(stop).toHaveCount(0);
+    const live: ProductEvent = {
+      ...event,
+      id: "live-reply",
+      seq: 271,
+      type: "thread.message.created",
+      payload: {
+        messageId: "live-reply",
+        messageSeq: 270,
+        role: "bot",
+        blocks: [{ kind: "text", text: "One live reply" }],
+      },
+    };
+    await stream.emit(live);
+    await expect(
+      page.getByTestId("transcript").locator('[data-message-id="live-reply"]'),
+    ).toHaveCount(1);
+    const notifications = () =>
+      page.evaluate(() => (window as unknown as { testNotifications: string[] }).testNotifications);
+    await expect.poll(notifications).toEqual(["Chief"]);
+    await stream.emit(live);
+    await painted(page);
+    expect(await notifications()).toEqual(["Chief"]);
+    expect(state.sends).toHaveLength(0);
+    expect(state.uploads).toHaveLength(0);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const pending of ["snapshot", "older page", "around page"] as const) {
+  test(`clearing the conversation rejects a late ${pending} and its old reading anchor`, async ({
+    page,
+  }) => {
+    const { state, errors } = await mockChat(page);
+    const stream = await controlledStream(page);
+    const old: ThreadMessage[] = Array.from({ length: 150 }, (_, seq) => ({
+      id: `clear-old-${seq}`,
+      threadId: "thread-chief",
+      botId: "chief",
+      seq,
+      role: "bot",
+      blocks: [{ kind: "text", text: `Old message ${seq}` }],
+      createdAt: stamp,
+    }));
+    let cleared = false;
+    const current = (data: ThreadSnapshot): ThreadSnapshot => ({
+      ...data,
+      cursor: cleared ? 150 : 149,
+      messages: cleared ? [] : old.slice(50),
+      olderCursor: cleared ? null : 50,
+    });
+    state.bootstrap = (route, data) => json(route, { ...data, thread: current(data.thread!) });
+    state.thread = (route, data) => json(route, current(data));
+    await page.route("**/rpc/threads/head", (route) =>
+      json(route, { threadId: "thread-chief", cursor: cleared ? 150 : 149 }),
+    );
+    await page.route("**/rpc/threads/clear", (route) => {
+      cleared = true;
+      return json(route, { ok: true });
+    });
+    await ready(page);
+    await expect(page.getByTestId("connection-status")).toHaveCount(0);
+    const transcript = page.getByTestId("transcript");
+    const anchor = transcript.locator('[data-message-id="clear-old-60"]');
+    await anchor.scrollIntoViewIfNeeded();
+    const held = deferred();
+    const release = deferred();
+    if (pending === "snapshot") {
+      let captured = false;
+      state.thread = async (route, data) => {
+        const stale = current(data);
+        if (captured) return json(route, stale);
+        captured = true;
+        held.resolve();
+        await release.promise;
+        return json(route, stale);
+      };
+      await stream(true);
+    } else {
+      state.messages = async (route) => {
+        held.resolve();
+        await release.promise;
+        return json(route, {
+          threadId: "thread-chief",
+          messages: old.slice(0, 50),
+          olderCursor: null,
+        });
+      };
+      if (pending === "older page")
+        await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+      else
+        await page.evaluate(() => {
+          window.history.pushState({}, "", "/app/chief?m=clear-old-7");
+          window.dispatchEvent(new PopStateEvent("popstate"));
+        });
+    }
+    await held.promise;
+    const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+    await composer.fill("Keep the unsent draft while clearing history");
+    await page
+      .getByTestId("bots-sidebar")
+      .locator('[data-roster-bot-id="chief"]')
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Clear conversation", exact: true }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Clear", exact: true }).click();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    await expect(transcript.locator("[data-message-id]")).toHaveCount(0);
+    release.resolve();
+    await painted(page);
+    await expect(transcript.locator("[data-message-id]")).toHaveCount(0);
+    await expect(anchor).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages", exact: true }),
+    ).toHaveCount(0);
+    await expect(page).not.toHaveURL(/\?m=/);
+    await expect(composer).toHaveValue("Keep the unsent draft while clearing history");
+    expect(state.sends).toHaveLength(0);
+    expect(state.uploads).toHaveLength(0);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("switching Space discards the old reader checkpoint and late snapshot", async ({ page }) => {
+  const { state, errors } = await mockChat(page);
+  const stream = await controlledStream(page);
+  state.bootstrap = (route, data) =>
+    json(route, {
+      ...data,
+      thread: { ...data.thread!, cursor: data.thread?.botId === "chief" ? 149 : -1 },
+    });
+  await page.route("**/rpc/threads/head", (route) => {
+    const input = route.request().postDataJSON().json;
+    return json(route, {
+      threadId: `thread-${input.botId}`,
+      cursor: input.botId === "chief" ? 149 : -1,
+    });
+  });
+  await ready(page);
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  const held = deferred();
+  const release = deferred();
+  state.thread = async (route, data) => {
+    if (data.botId !== "chief") return json(route, data);
+    held.resolve();
+    await release.promise;
+    return json(route, {
+      ...data,
+      cursor: 999,
+      messages: [
+        {
+          id: "foreign-late",
+          threadId: data.threadId,
+          botId: "chief",
+          seq: 999,
+          role: "bot",
+          blocks: [{ kind: "text", text: "Must stay in the previous Space" }],
+          createdAt: stamp,
+        },
+      ],
+    });
+  };
+  await stream(true);
+  await held.promise;
+  await page.getByTestId("space-menu-trigger").click();
+  await page
+    .locator('[data-slot="popover-content"]')
+    .filter({ has: page.getByTestId("create-new-space") })
+    .getByRole("button", { name: "Other Space", exact: true })
+    .click();
+  await expect(
+    page.getByRole("combobox", { name: "Message Other Chief", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  release.resolve();
+  await painted(page);
+  await expect(
+    page.getByTestId("transcript").locator('[data-message-id="foreign-late"]'),
+  ).toHaveCount(0);
+  expect((await stream.cursors()).at(-1)).toBe(-1);
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("manual retry with no trusted initial checkpoint starts from the fresh authoritative view", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  const stream = await controlledStream(page);
+  state.groups = [
+    {
+      id: "crew",
+      spaceId: "space-primary",
+      name: "Crew",
+      pinned: false,
+      sectionId: null,
+      archivedAt: null,
+      threadId: "thread-crew",
+      preview: "Ready",
+      unread: false,
+      members: state.bots.slice(0, 2).map(({ id, name, color }) => ({ botId: id, name, color })),
+      updatedAt: stamp,
+      createdAt: stamp,
+    },
+  ];
+  let recovered = false;
+  state.bootstrap = (route, data) => json(route, { ...data, thread: null });
+  state.thread = (route, data) =>
+    recovered
+      ? json(route, {
+          ...data,
+          cursor: 270,
+          messages: [
+            {
+              id: "fresh-only",
+              threadId: "thread-crew",
+              botId: "chief",
+              seq: 269,
+              role: "bot",
+              blocks: [{ kind: "text", text: "Only the current authoritative message" }],
+              createdAt: stamp,
+            },
+          ],
+        })
+      : route.fulfill({
+          status: 403,
+          json: {
+            json: {
+              defined: false,
+              code: "FORBIDDEN",
+              status: 403,
+              message: "Chat access interrupted",
+            },
+          },
+        });
+  await page.route("**/rpc/threads/head", (route) =>
+    json(route, { threadId: "thread-crew", cursor: recovered ? 270 : 149 }),
+  );
+  await page.goto("/app/g/crew");
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "false");
+  await expect(page.getByTestId("connection-status")).toContainText("Chat access interrupted");
+  const composer = page.getByRole("combobox", { name: "Message Crew", exact: true });
+  await composer.fill("Draft during the first rejected read");
+  recovered = true;
+  await page.getByTestId("connection-status").getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(page.getByTestId("transcript").locator("[data-message-id]")).toHaveAttribute(
+    "data-message-id",
+    "fresh-only",
+  );
+  expect((await stream.cursors()).at(-1)).toBe(270);
+  await expect(composer).toHaveValue("Draft during the first rejected read");
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+for (const groupTarget of [false, true]) {
+  test(`a completed old clear cannot erase the ${groupTarget ? "group" : "bot"} reached through browser Back`, async ({
+    page,
+  }) => {
+    const { state, errors } = await mockChat(page);
+    await controlledStream(page);
+    state.groups = [
+      {
+        id: "crew",
+        spaceId: "space-primary",
+        name: "Crew",
+        pinned: false,
+        sectionId: null,
+        archivedAt: null,
+        threadId: "thread-crew",
+        preview: "Ready",
+        unread: false,
+        members: state.bots.slice(0, 2).map(({ id, name, color }) => ({ botId: id, name, color })),
+        updatedAt: stamp,
+        createdAt: stamp,
+      },
+    ];
+    const withMessage = (data: ThreadSnapshot): ThreadSnapshot => ({
+      ...data,
+      cursor: 5,
+      messages: [
+        {
+          id: `keep-${data.groupId ?? data.botId}`,
+          threadId: data.threadId,
+          botId: data.botId ?? "chief",
+          seq: 5,
+          role: "bot",
+          blocks: [
+            { kind: "text", text: `Conversation belonging to ${data.groupId ?? data.botId}` },
+          ],
+          createdAt: stamp,
+        },
+      ],
+    });
+    state.bootstrap = (route, data) => json(route, { ...data, thread: withMessage(data.thread!) });
+    state.thread = (route, data) => json(route, withMessage(data));
+    await page.route("**/rpc/threads/head", (route) => {
+      const input = route.request().postDataJSON().json;
+      return json(route, { threadId: `thread-${input.groupId ?? input.botId}`, cursor: 5 });
+    });
+    const started = deferred();
+    const release = deferred();
+    await page.route("**/rpc/threads/clear", async (route) => {
+      started.resolve();
+      await release.promise;
+      return json(route, { ok: true });
+    });
+    await ready(page);
+    const sidebar = page.getByTestId("bots-sidebar");
+    await sidebar
+      .locator(
+        groupTarget ? '[data-roster-group-id="crew"]' : '[data-roster-bot-id="research-one"]',
+      )
+      .click();
+    const draft = "The other conversation draft belongs here";
+    await page
+      .getByRole("combobox", {
+        name: groupTarget ? "Message Crew" : "Message Research One",
+        exact: true,
+      })
+      .fill(draft);
+    await sidebar.locator('[data-roster-bot-id="chief"]').click();
+    await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
+    await sidebar.locator('[data-roster-bot-id="chief"]').click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Clear conversation", exact: true }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Clear", exact: true }).click();
+    await started.promise;
+    // The busy modal blocks sidebar clicks; browser history can still change the route.
+    await page.goBack();
+    const keep = page
+      .getByTestId("transcript")
+      .locator(`[data-message-id="keep-${groupTarget ? "crew" : "research-one"}"]`);
+    await expect(keep).toHaveCount(1);
+    release.resolve();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    await expect(keep).toHaveCount(1);
+    await expect(
+      page.getByRole("combobox", {
+        name: groupTarget ? "Message Crew" : "Message Research One",
+        exact: true,
+      }),
+    ).toHaveValue(draft);
+    expect(state.sends).toHaveLength(0);
+    expect(state.uploads).toHaveLength(0);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("a late clear receipt keeps messages already consumed after the clear event", async ({
+  page,
+}) => {
+  const { state, errors } = await mockChat(page);
+  const stream = await controlledStream(page);
+  state.bootstrap = (route, data) =>
+    json(route, { ...data, thread: { ...data.thread!, cursor: 149 } });
+  await page.route("**/rpc/threads/head", (route) =>
+    json(route, { threadId: "thread-chief", cursor: 149 }),
+  );
+  const started = deferred();
+  const release = deferred();
+  await page.route("**/rpc/threads/clear", async (route) => {
+    started.resolve();
+    await release.promise;
+    return json(route, { ok: true });
+  });
+  await ready(page);
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  await page
+    .getByTestId("bots-sidebar")
+    .locator('[data-roster-bot-id="chief"]')
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Clear conversation", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Clear", exact: true }).click();
+  await started.promise;
+  const event: ProductEvent = {
+    id: "clear-150",
+    spaceId: "space-primary",
+    threadId: "thread-chief",
+    botId: "chief",
+    seq: 150,
+    type: "thread.cleared",
+    payload: {},
+    createdAt: stamp,
+  };
+  await stream.emit(event);
+  await stream.emit({
+    ...event,
+    id: "after-clear-151",
+    seq: 151,
+    type: "thread.message.created",
+    payload: {
+      messageId: "valid-after-clear",
+      messageSeq: 150,
+      role: "bot",
+      blocks: [{ kind: "text", text: "This reply was created after clearing history" }],
+    },
+  });
+  const reply = page.getByTestId("transcript").locator('[data-message-id="valid-after-clear"]');
+  await expect(reply).toHaveCount(1);
+  release.resolve();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  await expect(reply).toHaveCount(1);
+  expect(state.sends).toHaveLength(0);
+  expect(state.uploads).toHaveLength(0);
   expect(errors).toEqual([]);
 });
 

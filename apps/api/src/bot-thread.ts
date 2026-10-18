@@ -24,13 +24,17 @@ export async function updateBlocks(
   blocks: MessageBlock[],
 ): Promise<void> {
   const event = await deps.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    await tx.message.update({ where: { id: messageId }, data: { blocks } });
+    const message = await tx.message.update({
+      where: { id: messageId },
+      data: { blocks },
+      select: { seq: true },
+    });
     return appendEventInTransaction(tx, {
       spaceId: target.spaceId,
       threadId: target.threadId,
       botId: target.botId,
       type: "thread.message.updated",
-      payload: { messageId, role: "bot", blocks },
+      payload: { messageId, messageSeq: message.seq, role: "bot", blocks },
     });
   });
   await deps.events.notify(target.threadId, event.seq);

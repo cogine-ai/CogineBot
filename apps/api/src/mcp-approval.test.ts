@@ -1,4 +1,5 @@
 import type * as db from "@rakazo/db";
+import { appendEventInTransaction } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   connectPendingMcpApprovals,
@@ -32,7 +33,7 @@ function fixture(blocks: unknown[]) {
   const tx = {
     thread: { findMany: vi.fn(async () => [{ id: "group-thread", botId: null }]) },
     message: {
-      findMany: vi.fn(async () => [{ id: "card-message", botId: "bot", blocks }]),
+      findMany: vi.fn(async () => [{ id: "card-message", seq: 7, botId: "bot", blocks }]),
       update: vi.fn(),
     },
   };
@@ -323,6 +324,7 @@ describe("resolveMcpApprovalCards", () => {
     const rows = [
       {
         id: "card-message",
+        seq: 7,
         botId: null,
         threadId: "group-thread",
         thread: { botId: "bot" },
@@ -360,6 +362,7 @@ describe("resolveMcpApprovalCards", () => {
       },
       select: {
         id: true,
+        seq: true,
         botId: true,
         blocks: true,
         threadId: true,
@@ -367,6 +370,13 @@ describe("resolveMcpApprovalCards", () => {
       },
     });
     expect(tx.message.update).toHaveBeenCalledTimes(1);
+    expect(appendEventInTransaction).toHaveBeenLastCalledWith(
+      tx,
+      expect.objectContaining({
+        type: "thread.message.updated",
+        payload: expect.objectContaining({ messageId: "card-message", messageSeq: 7 }),
+      }),
+    );
     expect(tx.message.update).toHaveBeenCalledWith({
       where: { id: "card-message" },
       data: {

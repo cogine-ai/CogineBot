@@ -283,7 +283,7 @@ async function updateSkillDraftMessage(
       threadId: bot.thread.id,
       botId: bot.id,
       type: "thread.message.updated",
-      payload: { messageId: message.id, role: "bot", blocks: nextBlocks },
+      payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks: nextBlocks },
     });
     return;
   }

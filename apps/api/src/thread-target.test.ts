@@ -154,6 +154,7 @@ describe("reaction messages", () => {
         type: "thread.message.created",
         payload: {
           messageId: "reaction-2",
+          messageSeq: 2,
           role: "user",
           blocks: [{ kind: "text", text: "❤️" }],
           replyToMessageId: "parent",

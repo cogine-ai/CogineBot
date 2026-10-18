@@ -1,4 +1,5 @@
 import type * as db from "@rakazo/db";
+import { appendEventInTransaction } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { chooseFocus, markAppConnected } from "./onboarding.js";
 
@@ -7,7 +8,7 @@ vi.mock("@rakazo/db", async (original) => ({
   ...(await original<typeof db>()),
   createThreadMessageInTransaction: vi.fn(async (_tx, input) => {
     posted.push(input);
-    return { id: "posted" };
+    return { id: "posted", seq: 8 };
   }),
   appendEventInTransaction: vi.fn(async () => ({ seq: 1 })),
 }));
@@ -16,8 +17,10 @@ function fixture(catalog: unknown[]) {
   const tx = {
     $executeRaw: vi.fn(),
     message: {
-      findMany: vi.fn(async () => [{ id: "choice", blocks: [{ kind: "choice", answerId: null }] }]),
-      update: vi.fn(),
+      findMany: vi.fn(async () => [
+        { id: "choice", seq: 7, blocks: [{ kind: "choice", answerId: null }] },
+      ]),
+      update: vi.fn(async () => ({ seq: 7 })),
     },
   };
   const deps = {
@@ -74,5 +77,13 @@ it("marks only the authorized connector when provider slugs collide", async () =
   expect(tx.message.update).toHaveBeenCalledWith({
     where: { id: "cards" },
     data: { blocks: [blocks[0], { ...blocks[1], status: "connected" }] },
+    select: { seq: true },
   });
+  expect(appendEventInTransaction).toHaveBeenLastCalledWith(
+    tx,
+    expect.objectContaining({
+      type: "thread.message.updated",
+      payload: expect.objectContaining({ messageId: "cards", messageSeq: 7 }),
+    }),
+  );
 });
