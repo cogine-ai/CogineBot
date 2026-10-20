@@ -100,6 +100,9 @@ describe("redaction", () => {
       const key = `${prefix}_0123456789ABCDEF`;
 
       expect(redactSensitiveText(`Payment failed (${key}).`)).toBe("Payment failed ([Redacted]).");
+      expect(redactSensitiveText(`Processor retry: ${key}_retry`)).toBe(
+        "Processor retry: [Redacted]_retry",
+      );
     },
   );
 

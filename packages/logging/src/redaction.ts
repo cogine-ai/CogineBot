@@ -57,7 +57,7 @@ const SECRET_ASSIGNMENT =
 const JSON_SECRET_FIELD =
   /"(password|passwd|secret|token|authorization|apikey|api_key|accesstoken|refreshtoken|email|cookie)"\s*:\s*"(?:\\.|[^"\\])*"/gi;
 const BARE_SECRET =
-  /\b(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b/g;
+  /\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
 
 export function redactSensitiveText(text: string): string {
   return text
