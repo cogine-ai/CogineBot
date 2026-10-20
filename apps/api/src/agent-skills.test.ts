@@ -151,7 +151,7 @@ describe("skill save preservation", () => {
         "name: Review recipe",
         "description: Original description",
         `blank: ${trailingNewlines === 0 ? '""' : "|2+"}`,
-        ...Array.from({ length: Math.max(0, trailingNewlines - 1) }, () => ""),
+        ...Array.from({ length: trailingNewlines }, () => "  "),
         `detail: ${indicator}`,
         "  First: preserve this",
         "",

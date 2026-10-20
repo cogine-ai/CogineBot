@@ -326,6 +326,11 @@ function decodeYamlBlockScalar(rawLines: string[], header: YamlBlockScalarHeader
     return line.slice(indent!);
   });
 
+  // An empty block has only trailing lines, with no final content newline to add.
+  if (contentLines.every((line) => line === "")) {
+    return header.chomp === "keep" ? "\n".repeat(contentLines.length) : "";
+  }
+
   // Count trailing blank lines before they are folded away for chomp=keep.
   let trailingBlanks = 0;
   for (let i = contentLines.length - 1; i >= 0; i -= 1) {
@@ -486,16 +491,15 @@ function formatYamlBlockScalar(key: string, value: string): string {
   } else {
     indicator = "|2+";
     const core = value.slice(0, -trailing);
-    // keep decoder yields 1 + trailingBlanks newlines; emit trailingBlanks blank lines.
+    // Keep every content line and one blank line per additional trailing newline.
     lines = [...core.split("\n"), ...Array.from({ length: trailing - 1 }, () => "")];
   }
-  // For empty blocks the decoder counts one newline plus the blank content lines.
+  // Empty blocks need keep chomping to retain every blank content line.
   if (/^\n+$/.test(value)) {
     indicator = "|2+";
-    lines = lines.slice(1);
   }
   const indented = lines.map((line) => `  ${line}`).join("\n");
-  return `${key}: ${indicator}${lines.length ? `\n${indented}` : ""}`;
+  return `${key}: ${indicator}\n${indented}`;
 }
 
 function formatYamlLine(key: string, value: unknown): string {
