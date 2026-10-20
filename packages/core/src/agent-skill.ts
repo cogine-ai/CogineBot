@@ -474,16 +474,17 @@ function formatYamlBlockScalar(key: string, value: string): string {
   // Choose chomp so decodeYamlBlockScalar round-trips trailing newlines:
   // strip (0), clip (1), keep (2+). Folded (`>`) style is not preserved — only the string value.
   const trailing = /\n*$/.exec(value)?.[0].length ?? 0;
-  let indicator = "|";
+  // Fix the structural indent so shared leading spaces remain part of the value.
+  let indicator = "|2";
   let lines: string[];
   if (trailing === 0) {
-    indicator = "|-";
+    indicator = "|2-";
     lines = value.split("\n");
   } else if (trailing === 1) {
-    indicator = "|";
+    indicator = "|2";
     lines = value.slice(0, -1).split("\n");
   } else {
-    indicator = "|+";
+    indicator = "|2+";
     const core = value.slice(0, -trailing);
     // keep decoder yields 1 + trailingBlanks newlines; emit trailingBlanks blank lines.
     lines = [...core.split("\n"), ...Array.from({ length: trailing - 1 }, () => "")];

@@ -156,6 +156,11 @@ describe("skill save preservation", () => {
         "    indented step",
         "  Last line",
         ...Array.from({ length: Math.max(0, trailingNewlines - 1) }, () => ""),
+        `indented: ${trailingNewlines === 0 ? "|2-" : trailingNewlines === 1 ? "|2" : "|2+"}`,
+        "    first",
+        "",
+        "      second",
+        ...Array.from({ length: Math.max(0, trailingNewlines - 1) }, () => ""),
         `other: ${indicator}`,
         "  Another block",
         "  with two lines",
@@ -178,6 +183,9 @@ describe("skill save preservation", () => {
       );
       expect(original.frontmatter.other).toBe(
         `Another block\nwith two lines${"\n".repeat(trailingNewlines)}`,
+      );
+      expect(original.frontmatter.indented).toBe(
+        `  first\n\n    second${"\n".repeat(trailingNewlines)}`,
       );
 
       const { service } = setup();
