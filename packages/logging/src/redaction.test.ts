@@ -94,6 +94,22 @@ describe("redaction", () => {
     expect(redacted).toContain("[Redacted]");
   });
 
+  it.each(["sk_live", "sk_test", "rk_live", "rk_test"])(
+    "redacts bare %s payment keys",
+    (prefix) => {
+      const key = `${prefix}_0123456789ABCDEF`;
+
+      expect(redactSensitiveText(`Payment failed (${key}).`)).toBe("Payment failed ([Redacted]).");
+    },
+  );
+
+  it("preserves short payment-key placeholders and publishable keys", () => {
+    const text =
+      "sk_live_0123456789ABCDE rk_test_config pk_live_0123456789ABCDEF payment succeeded";
+
+    expect(redactSensitiveText(text)).toBe(text);
+  });
+
   it("redacts quoted JSON credential fields", () => {
     const redacted = redactSensitiveText(
       '{"password":"hunter2","token":"abc","authorization":"Bearer secret"}',

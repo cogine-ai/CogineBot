@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createConsoleSink } from "./console-sink.js";
 import { createLogger } from "./logger.js";
 import { serializeError } from "./serialize-error.js";
 import { createTestSink } from "./test-sink.js";
@@ -146,4 +147,47 @@ describe("error serialization", () => {
     expect(JSON.stringify(sink.events[0])).not.toContain("supersecret");
     expect(JSON.stringify(sink.events[0])).not.toContain("person@example.com");
   });
+
+  it.each(["json", "pretty"] as const)(
+    "redacts payment keys throughout the event before the %s console sink",
+    (format) => {
+      const secretKey = "sk_live_0123456789ABCDEF";
+      const restrictedKey = "rk_test_0123456789ABCDEF";
+      const sink = createTestSink();
+      const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const logger = createLogger({
+          service: "coginebot-api",
+          sinks: [sink, createConsoleSink({ format })],
+        }).child({ detail: { diagnostic: secretKey } });
+        const error = new Error(`Payment failed (${secretKey})`, {
+          cause: new Error(`Processor refused (${restrictedKey})`),
+        });
+
+        logger.error(`Request failed (${secretKey})`, error, {
+          diagnostics: [{ note: restrictedKey }],
+        });
+
+        expect(sink.events[0]).toMatchObject({
+          message: "Request failed ([Redacted])",
+          detail: { diagnostic: "[Redacted]" },
+          diagnostics: [{ note: "[Redacted]" }],
+          error: {
+            message: "Payment failed ([Redacted])",
+            cause: { message: "Processor refused ([Redacted])" },
+          },
+        });
+        const serialized = JSON.stringify(sink.events[0]);
+        expect(serialized).not.toContain(secretKey);
+        expect(serialized).not.toContain(restrictedKey);
+        expect(output).toHaveBeenCalledOnce();
+        const line = String(output.mock.calls[0]?.[0]);
+        expect(line).toContain("[Redacted]");
+        expect(line).not.toContain(secretKey);
+        expect(line).not.toContain(restrictedKey);
+      } finally {
+        output.mockRestore();
+      }
+    },
+  );
 });
