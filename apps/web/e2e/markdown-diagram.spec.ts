@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import { CHAT_DIAGRAM_MAX_TEXT_SIZE, chatMermaidConfig } from "@rakazo/chat-ui/mermaid";
 import { lightTokens } from "@rakazo/ui-tokens";
@@ -22,7 +22,8 @@ const source = [
 const fence = (body: string) => `\`\`\`mermaid\n${body}\n\`\`\``;
 const diagram = (page: Page) => page.getByTestId("chat-diagram");
 const output = (page: Page) => page.getByTestId("diagram-fixture");
-const libraryRequest = (url: string) => url.includes("mermaid.min");
+const libraryRequest = (request: Request) =>
+  request.resourceType() === "fetch" && request.url().includes("mermaid.min");
 
 async function update(page: Page, markdown: string, streaming = false) {
   await page.evaluate(
@@ -89,7 +90,7 @@ test("ordinary code and unclosed streaming fences do not load the diagram engine
 }) => {
   const loads: string[] = [];
   page.on("request", (request) => {
-    if (libraryRequest(request.url())) loads.push(request.url());
+    if (libraryRequest(request)) loads.push(request.url());
   });
   await page.goto(
     `${fixture}?${new URLSearchParams({ markdown: "```ts\nconst answer = 42;\n```" })}`,
@@ -118,7 +119,7 @@ test("oversized diagrams preserve exact source without loading the engine", asyn
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   const loads: string[] = [];
   page.on("request", (request) => {
-    if (libraryRequest(request.url())) loads.push(request.url());
+    if (libraryRequest(request)) loads.push(request.url());
   });
   await page.goto(`${fixture}?${new URLSearchParams({ markdown: "```text\nReady\n```" })}`);
   await expect(output(page).locator("pre code")).toHaveText("Ready\n");
@@ -171,23 +172,53 @@ test("invalid diagrams fall back to copyable code and the next diagram still ren
   ).toBeVisible();
 });
 
-test("a failed lazy bundle keeps the source available", async ({ page }) => {
-  let blocked = 0;
-  await page.route(/mermaid\.min/, (route) => {
-    blocked += 1;
-    return route.abort("failed");
+for (const failure of ["network failure", "HTML asset response"] as const) {
+  test(`${failure} preserves source and retries the next diagram without reloading`, async ({
+    page,
+  }) => {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    const loads: string[] = [];
+    page.on("request", (request) => {
+      if (libraryRequest(request)) loads.push(request.url());
+    });
+    let blocked = 0;
+    await page.route(/mermaid\.min/, (route) => {
+      if (!libraryRequest(route.request())) return route.continue();
+      blocked += 1;
+      return failure === "network failure"
+        ? route.abort("failed")
+        : route.fulfill({
+            status: 200,
+            contentType: "text/html",
+            body: "<!doctype html><html><body>Missing asset</body></html>",
+          });
+    });
+    const drawingFinished =
+      failure === "HTML asset response"
+        ? page.waitForEvent("framedetached", {
+            predicate: (frame) => frame.url() === "about:srcdoc",
+          })
+        : undefined;
+    await page.goto(fixture);
+    await expect.poll(() => blocked).toBeGreaterThan(0);
+    if (drawingFinished) await drawingFinished;
+    await expect(output(page).getByRole("button", { name: "Copy diagram source" })).toBeVisible();
+    expect(await output(page).locator("pre code").textContent()).toBe(`${source}\n`);
+    await expect(diagram(page).getByRole("img")).toHaveCount(0);
+    await output(page).getByRole("button", { name: "Copy diagram source", exact: true }).click();
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(`${source}\n`);
+    await page.unroute(/mermaid\.min/);
+    const requestsBeforeRetry = loads.length;
+    const retrySource = "flowchart LR\n  accTitle: Recovered flow\n  A[New diagram] --> B[Ready]";
+    await update(page, fence(retrySource));
+    await expect(
+      diagram(page).getByRole("img", { name: "Recovered flow", exact: true }),
+    ).toBeVisible();
+    expect(loads.length).toBeGreaterThan(requestsBeforeRetry);
   });
-  await page.goto(fixture);
-  await expect.poll(() => blocked).toBeGreaterThan(0);
-  await expect(output(page).getByRole("button", { name: "Copy diagram source" })).toBeVisible();
-  await expect(output(page).locator("pre code")).toHaveText(`${source}\n`);
-  await expect(diagram(page).getByRole("img")).toHaveCount(0);
-  await page.unroute(/mermaid\.min/);
-  await page.reload();
-  await expect(
-    diagram(page).getByRole("img", { name: "Purchase flow", exact: true }),
-  ).toBeVisible();
-});
+}
 
 test("the loaded diagram engine can draw a new diagram while offline", async ({
   page,

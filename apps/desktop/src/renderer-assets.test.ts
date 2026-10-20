@@ -36,12 +36,14 @@ describe("bundled desktop renderer", () => {
   });
 
   it("serves a deferred diagram bundle from the packaged renderer", () => {
-    const asset = "assets/mermaid.min-B7fake123.js";
-    expect(bundledRendererCandidates(root, `${origin}/${asset}`, origin, false)).toEqual([
-      path.join(root, asset),
-    ]);
-    expect(contentType(asset)).toBe("text/javascript; charset=utf-8");
-    expect(immutableRendererAsset(path.join(root, asset))).toBe(true);
+    for (const asset of ["assets/mermaid.min-B7fake123.js", "assets/LICENSE-B7fake123"]) {
+      expect(bundledRendererCandidates(root, `${origin}/${asset}`, origin, false)).toEqual([
+        path.join(root, asset),
+      ]);
+      expect(immutableRendererAsset(path.join(root, asset))).toBe(true);
+    }
+    expect(contentType("assets/mermaid.min-B7fake123.js")).toBe("text/javascript; charset=utf-8");
+    expect(contentType("assets/LICENSE-B7fake123")).toBe("application/octet-stream");
   });
 
   it("does not resolve traversal outside the renderer root", () => {

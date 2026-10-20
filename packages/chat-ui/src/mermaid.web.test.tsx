@@ -4,8 +4,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const library = vi.hoisted(() => ({ read: vi.fn(() => "fixed library") }));
-vi.mock("mermaid/LICENSE?raw", () => ({ default: "MIT license notice" }));
+vi.mock("mermaid/dist/mermaid.min.js?url", () => ({ default: "/assets/mermaid.min-fixed.js" }));
+vi.mock("mermaid/LICENSE?url", () => ({ default: "/assets/LICENSE-fixed" }));
+const fetchAsset = vi.fn<typeof fetch>();
 
 const SVG = '<svg viewBox="0 0 120 80"><title>Order flow</title></svg>';
 let appended: ReturnType<typeof vi.spyOn>;
@@ -48,12 +49,15 @@ beforeEach(() => {
   vi.resetModules();
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  library.read.mockReset().mockReturnValue("fixed library");
-  vi.doMock("mermaid/dist/mermaid.min.js?raw", () => ({
-    get default() {
-      return library.read();
-    },
-  }));
+  fetchAsset
+    .mockReset()
+    .mockImplementation(
+      async (input) =>
+        new Response(
+          String(input) === "/assets/mermaid.min-fixed.js" ? "fixed library" : "MIT license notice",
+        ),
+    );
+  vi.stubGlobal("fetch", fetchAsset);
   appended = vi.spyOn(document.body, "appendChild");
   document.documentElement.dataset.theme = "dark";
 });
@@ -70,7 +74,7 @@ describe("isolated diagram drawing", () => {
     const { CHAT_DIAGRAM_MAX_TEXT_SIZE } = await import("./mermaid");
     const { renderMermaidSvg } = await import("./mermaid.web");
     expect(await renderMermaidSvg("x".repeat(CHAT_DIAGRAM_MAX_TEXT_SIZE + 1), "dark")).toBeNull();
-    expect(library.read).not.toHaveBeenCalled();
+    expect(fetchAsset).not.toHaveBeenCalled();
     expect(framesCreated()).toBe(0);
 
     const source = "x".repeat(CHAT_DIAGRAM_MAX_TEXT_SIZE);
@@ -88,12 +92,20 @@ describe("isolated diagram drawing", () => {
 
   it("loads only on demand, isolates permissions, and passes source as data", async () => {
     const { renderMermaidSvg } = await import("./mermaid.web");
-    expect(library.read).not.toHaveBeenCalled();
+    expect(fetchAsset).not.toHaveBeenCalled();
     const timers = vi.spyOn(globalThis, "setTimeout");
     const cancelled = vi.spyOn(globalThis, "clearTimeout");
     const source = 'graph TD; A["</script><script>private source</script>"] --> B';
     const result = renderMermaidSvg(source, "dark");
     const frame = await activeFrame();
+    expect(fetchAsset.mock.calls.map(([url]) => url)).toEqual([
+      "/assets/mermaid.min-fixed.js",
+      "/assets/LICENSE-fixed",
+    ]);
+    for (const [, options] of fetchAsset.mock.calls) {
+      expect(options).toMatchObject({ credentials: "omit", cache: "no-cache" });
+      expect(options?.signal).toBeInstanceOf(AbortSignal);
+    }
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame.referrerPolicy).toBe("no-referrer");
     expect(frame.srcdoc).toContain("default-src 'none'");
@@ -156,6 +168,7 @@ describe("isolated diagram drawing", () => {
     message(lightFrame, { type: "drawn", id: lightRequest.id, svg: SVG });
     await light;
     expect(framesCreated()).toBe(3);
+    expect(fetchAsset).toHaveBeenCalledTimes(2);
   });
 
   it("evicts the oldest result after 64 distinct sources", async () => {
@@ -198,39 +211,132 @@ describe("isolated diagram drawing", () => {
     expect(await next).toBe(SVG);
   });
 
-  it("retries a timed-out script load without caching its failure", async () => {
-    let releaseImport = () => {};
-    const gate = new Promise<void>((resolve) => {
-      releaseImport = resolve;
+  it("aborts a timed-out fetch, ignores its late response, and retries", async () => {
+    let releaseFetch = (_response: Response) => {};
+    const gate = new Promise<Response>((resolve) => {
+      releaseFetch = resolve;
     });
-    vi.doMock("mermaid/dist/mermaid.min.js?raw", async () => {
-      await gate;
-      return {
-        get default() {
-          return library.read();
-        },
-      };
+    let markEntered = () => {};
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    fetchAsset.mockImplementationOnce(() => {
+      markEntered();
+      return gate;
     });
     const { renderMermaidSvg, MERMAID_RENDER_TIMEOUT_MS } = await import("./mermaid.web");
     const pending = renderMermaidSvg("load timeout", "dark");
-    await flush();
+    await entered;
+    const oldSignal = fetchAsset.mock.calls[0]?.[1]?.signal;
+    expect(oldSignal?.aborted).toBe(false);
+    expect(fetchAsset).toHaveBeenCalledTimes(2);
+    expect(framesCreated()).toBe(0);
     await vi.advanceTimersByTimeAsync(MERMAID_RENDER_TIMEOUT_MS);
     expect(await pending).toBeNull();
-    expect(document.querySelector("iframe")).toBeNull();
-    releaseImport();
-    await vi.dynamicImportSettled();
-    await flush();
-    expect(document.querySelector("iframe")).toBeNull();
+    expect(oldSignal?.aborted).toBe(true);
+    expect(framesCreated()).toBe(0);
     const retry = renderMermaidSvg("load timeout", "dark");
+    const frame = await activeFrame();
+    releaseFetch(new Response("late library"));
+    await flush();
+    expect(framesCreated()).toBe(1);
+    expect(document.querySelector("iframe")).toBe(frame);
+    const request = start(frame);
+    message(frame, { type: "drawn", id: request.id, svg: SVG });
+    expect(await retry).toBe(SVG);
+    expect(fetchAsset).toHaveBeenCalledTimes(4);
+    expect(fetchAsset.mock.calls[2]?.[1]?.signal?.aborted).toBe(false);
+  });
+
+  it("recovers when reading an asset response body fails", async () => {
+    const response = new Response("partial library");
+    vi.spyOn(response, "text").mockRejectedValueOnce(new Error("body unavailable"));
+    fetchAsset.mockResolvedValueOnce(response);
+    const { renderMermaidSvg } = await import("./mermaid.web");
+    expect(await renderMermaidSvg("retry body", "dark")).toBeNull();
+    expect(framesCreated()).toBe(0);
+    const retry = renderMermaidSvg("retry body", "dark");
     await finish(await activeFrame());
     expect(await retry).toBe(SVG);
-    expect(framesCreated()).toBe(1);
+    expect(fetchAsset).toHaveBeenCalledTimes(4);
+  });
+
+  it("cancels a cold load and ignores its late failure while the next diagram succeeds", async () => {
+    let rejectFetch = (_error: Error) => {};
+    const gate = new Promise<Response>((_resolve, reject) => {
+      rejectFetch = reject;
+    });
+    let markEntered = () => {};
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    fetchAsset.mockImplementationOnce(() => {
+      markEntered();
+      return gate;
+    });
+    const { renderMermaidSvg } = await import("./mermaid.web");
+    const controller = new AbortController();
+    const cancelled = renderMermaidSvg("cancelled source", "dark", controller.signal);
+    await entered;
+    controller.abort();
+    expect(await cancelled).toBeNull();
+    expect(fetchAsset.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+    expect(framesCreated()).toBe(0);
+    const next = renderMermaidSvg("next source", "dark");
+    const frame = await activeFrame();
+    rejectFetch(new Error("late old fetch failure"));
+    await flush();
+    expect(document.querySelector("iframe")).toBe(frame);
+    expect(fetchAsset.mock.calls[2]?.[1]?.signal?.aborted).toBe(false);
+    await finish(frame);
+    expect(await next).toBe(SVG);
+    const retry = renderMermaidSvg("cancelled source", "dark");
+    await finish(await activeFrame());
+    expect(await retry).toBe(SVG);
+    expect(framesCreated()).toBe(2);
+    expect(fetchAsset).toHaveBeenCalledTimes(4);
+  });
+
+  it("rejects non-success asset responses and retries both fixed assets", async () => {
+    fetchAsset.mockResolvedValueOnce(new Response("unavailable", { status: 503 }));
+    const { renderMermaidSvg } = await import("./mermaid.web");
+    expect(await renderMermaidSvg("retry", "dark")).toBeNull();
+    expect(framesCreated()).toBe(0);
+    expect(fetchAsset.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+    const retry = renderMermaidSvg("retry", "dark");
+    await finish(await activeFrame());
+    expect(await retry).toBe(SVG);
+    expect(fetchAsset).toHaveBeenCalledTimes(4);
+  });
+
+  it("discards an asset load after boot failure and preserves source parse failures", async () => {
+    fetchAsset.mockResolvedValueOnce(
+      new Response("<!doctype html><html>App</html>", {
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    const { renderMermaidSvg } = await import("./mermaid.web");
+    const failed = renderMermaidSvg("first source", "dark");
+    const wrongFrame = await activeFrame();
+    expect(wrongFrame.srcdoc).toContain(encodeURIComponent("<!doctype html><html>App</html>"));
+    message(wrongFrame, { type: "failed" });
+    expect(await failed).toBeNull();
+    const retry = renderMermaidSvg("next source", "dark");
+    await finish(await activeFrame());
+    expect(await retry).toBe(SVG);
+    expect(fetchAsset).toHaveBeenCalledTimes(4);
+
+    const invalid = renderMermaidSvg("invalid source", "dark");
+    const frame = await activeFrame();
+    const request = start(frame);
+    message(frame, { type: "invalid", id: request.id });
+    expect(await invalid).toBeNull();
+    expect(await renderMermaidSvg("invalid source", "dark")).toBeNull();
+    expect(fetchAsset).toHaveBeenCalledTimes(4);
   });
 
   it("retries a failed library load and a failed frame load", async () => {
-    library.read.mockImplementationOnce(() => {
-      throw new Error("chunk unavailable");
-    });
+    fetchAsset.mockRejectedValueOnce(new Error("asset unavailable"));
     const { renderMermaidSvg } = await import("./mermaid.web");
     expect(await renderMermaidSvg("retry", "dark")).toBeNull();
     const retry = renderMermaidSvg("retry", "dark");

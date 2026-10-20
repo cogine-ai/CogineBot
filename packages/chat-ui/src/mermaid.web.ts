@@ -1,30 +1,47 @@
 import type { ResolvedAppearance } from "@rakazo/ui-tokens";
 import { tokensForAppearance } from "@rakazo/ui-tokens";
+import mermaidScriptUrl from "mermaid/dist/mermaid.min.js?url";
+import mermaidLicenseUrl from "mermaid/LICENSE?url";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CHAT_DIAGRAM_MAX_TEXT_SIZE, chatMermaidConfig, mermaidSvgImage } from "./mermaid";
 
 export const MERMAID_RENDER_TIMEOUT_MS = 15_000;
 const MAX_RENDERED = 64;
 const rendered = new Map<string, string | null>();
-let scriptLoad: Promise<string> | undefined;
+type ScriptLoad = { result: Promise<string>; controller: AbortController };
+let scriptLoad: ScriptLoad | undefined;
 let renderQueue: Promise<unknown> = Promise.resolve();
 let renderCount = 0;
 
-// Only the fixed library is loaded here. Its JavaScript executes inside a disposable frame.
-function loadScript() {
+// These fixed build assets are fetched only for a diagram, never executed in the parent page.
+function loadScript(): ScriptLoad {
   if (!scriptLoad) {
-    const load = Promise.all([
-      import("mermaid/dist/mermaid.min.js?raw"),
-      import("mermaid/LICENSE?raw"),
-    ])
-      .then(([script, license]) => `/*! Mermaid\n${license.default}\n*/\n${script.default}`)
+    const controller = new AbortController();
+    const result = Promise.all(
+      [mermaidScriptUrl, mermaidLicenseUrl].map(async (url) => {
+        const response = await fetch(url, {
+          credentials: "omit",
+          cache: "no-cache",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Diagram asset unavailable");
+        return response.text();
+      }),
+    )
+      .then(([script, license]) => `/*! Mermaid\n${license}\n*/\n${script}`)
       .catch((error: unknown) => {
-        if (scriptLoad === load) scriptLoad = undefined;
+        discardScript(load);
         throw error;
       });
+    const load = { result, controller };
     scriptLoad = load;
   }
   return scriptLoad;
+}
+
+function discardScript(load: ScriptLoad) {
+  if (scriptLoad === load) scriptLoad = undefined;
+  load.controller.abort();
 }
 
 // Source and configuration arrive as structured data after this trusted boot script has loaded.
@@ -87,6 +104,7 @@ function draw(
     const finish = (svg: string | null, cache = false) => {
       if (done) return;
       done = true;
+      if (!frame) discardScript(load);
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       window.removeEventListener("message", receive);
@@ -112,6 +130,7 @@ function draw(
           "*",
         );
       } else if (data.type === "failed" && keys === "type") {
+        discardScript(load);
         finish(null);
       } else if (started && data.id === id) {
         if (data.type === "invalid" && keys === "id,type") finish(null, true);
@@ -122,7 +141,6 @@ function draw(
     };
     const timer = setTimeout(() => {
       // A new task gets a new realm, including a fresh library execution queue.
-      if (!frame && scriptLoad === load) scriptLoad = undefined;
       finish(null);
     }, MERMAID_RENDER_TIMEOUT_MS);
     signal?.addEventListener("abort", abort, { once: true });
@@ -131,7 +149,7 @@ function draw(
       finish(null);
       return;
     }
-    load.then(
+    load.result.then(
       (script) => {
         if (done) return;
         try {
