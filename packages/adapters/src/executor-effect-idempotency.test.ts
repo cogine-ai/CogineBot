@@ -1,4 +1,10 @@
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  AgentRunRequest,
+  MemoryCommitRequest,
+  MemoryReadRequest,
+} from "@rakazo/adapter-kit";
+import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
 import {
   legacyScopedToolEffectIdempotencyKey,
   toolEffectIdempotencyKey,
@@ -39,7 +45,7 @@ type ToolCall = {
   executionId: string;
 };
 
-function fixture(runId = "run-1") {
+function fixture(runId = "run-1", options: { catchToolErrors?: boolean } = {}) {
   const effects: Effect[] = [];
   const results: unknown[] = [];
   const scratchpadRows: Array<{
@@ -64,7 +70,36 @@ function fixture(runId = "run-1") {
     trigger: "user",
     leaseFence: 0,
   };
-  const memoryCommit = vi.fn(async () => ({ revision: "rev-1" }));
+  const memoryDocuments = new Map<
+    string,
+    { id: string; path: string; content: string; revision: number }
+  >();
+  const memoryHistory: MemoryCommitRequest[] = [];
+  const memoryKey = (request: MemoryReadRequest, context: AdapterContext) =>
+    JSON.stringify([context.spaceId, context.userId, request.scope, request.botId, request.path]);
+  const memoryRead = vi.fn(async (request: MemoryReadRequest, context: AdapterContext) => {
+    const document = memoryDocuments.get(memoryKey(request, context));
+    return { documents: document ? [{ ...document }] : [] };
+  });
+  const persistMemory = async (request: MemoryCommitRequest, context: AdapterContext) => {
+    const key = memoryKey(request, context);
+    const previous = memoryDocuments.get(key);
+    if (
+      request.expectedRevision !== undefined &&
+      request.expectedRevision !== (previous?.revision ?? 0)
+    )
+      throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
+    const document = {
+      id: previous?.id ?? `document-${memoryDocuments.size + 1}`,
+      path: request.path,
+      content: request.content,
+      revision: (previous?.revision ?? 0) + 1,
+    };
+    memoryDocuments.set(key, document);
+    memoryHistory.push({ ...request });
+    return { ...document };
+  };
+  const memoryCommit = vi.fn(persistMemory);
   const externalEffect = {
     findMany: vi.fn(
       async ({
@@ -185,11 +220,19 @@ function fixture(runId = "run-1") {
     return true;
   });
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
+  const shutdown = new AbortController();
   let calls: ToolCall[] = [];
+  let beforeTool: (() => void) | undefined;
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
     for (const call of calls) {
-      const result = await request.executeTool!(call.name, call.args, call.executionId);
-      results.push(result);
+      beforeTool?.();
+      try {
+        const result = await request.executeTool!(call.name, call.args, call.executionId);
+        results.push(result);
+      } catch (error) {
+        if (!options.catchToolErrors) throw error;
+        results.push({ error: error instanceof Error ? error.message : String(error) });
+      }
     }
     yield { type: "done" as const, text: "Done" };
   });
@@ -204,7 +247,7 @@ function fixture(runId = "run-1") {
     sandbox: { describe: () => ({ capabilities: { graphical: false } }) },
     memory: {
       describe: () => ({ capabilities: {} }),
-      read: async () => ({ documents: [] }),
+      read: memoryRead,
       search: async () => [],
       commit: memoryCommit,
       exportMarkdown: async function* () {},
@@ -213,6 +256,7 @@ function fixture(runId = "run-1") {
     events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets: [],
+    shutdownSignal: shutdown.signal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
 
   return {
@@ -220,6 +264,15 @@ function fixture(runId = "run-1") {
     results,
     scratchpadRows,
     memoryCommit,
+    memoryRead,
+    memoryDocuments,
+    memoryHistory,
+    persistMemory,
+    externalEffect,
+    shutdown,
+    setBeforeTool(callback: () => void) {
+      beforeTool = callback;
+    },
     setCalls(next: ToolCall[]) {
       calls = next;
     },
@@ -234,6 +287,254 @@ function fixture(runId = "run-1") {
 }
 
 describe("mutating tool effect idempotency keys", () => {
+  it("appends facts with normalized paths, revisions and run provenance", async () => {
+    const f = fixture("run-append");
+    f.setCalls([
+      { name: "remember", args: { path: "   ", content: "first fact" }, executionId: "first" },
+      {
+        name: "remember",
+        args: { path: " MEMORY.md ", content: "second fact" },
+        executionId: "second",
+      },
+    ]);
+
+    await f.run();
+
+    expect([...f.memoryDocuments.values()]).toEqual([
+      { id: "document-1", path: "MEMORY.md", content: "first fact\nsecond fact\n", revision: 2 },
+    ]);
+    expect(f.memoryHistory).toEqual([
+      expect.objectContaining({
+        expectedRevision: 0,
+        sourceRunId: "run-append",
+        sourceThreadId: "thread-1",
+      }),
+      expect.objectContaining({
+        expectedRevision: 1,
+        sourceRunId: "run-append",
+        sourceThreadId: "thread-1",
+      }),
+    ]);
+    expect(
+      f.memoryCommit.mock.calls.every(
+        ([, context]) => context.spaceId === "space-1" && context.userId === "user-1",
+      ),
+    ).toBe(true);
+    expect(f.effects.every((effect) => effect.status === "completed")).toBe(true);
+  });
+
+  it("finishes an empty fact without creating a memory document or revision", async () => {
+    const f = fixture();
+    f.setCalls([{ name: "remember", args: { content: " \r\n " }, executionId: "empty" }]);
+    await f.run();
+    expect(f.memoryCommit).not.toHaveBeenCalled();
+    expect(f.memoryHistory).toHaveLength(0);
+    expect(f.memoryDocuments.size).toBe(0);
+    expect(f.results).toEqual([{ ok: true }]);
+    expect(f.effects[0]?.status).toBe("completed");
+  });
+
+  it.each([1, 2])(
+    "re-reads after %i conflicts and preserves competing facts",
+    async (conflicts) => {
+      const f = fixture();
+      for (let i = 0; i < conflicts; i += 1) {
+        f.memoryCommit.mockImplementationOnce(async (request, context) => {
+          await f.persistMemory({ ...request, content: `competing fact ${i}\n` }, context);
+          throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
+        });
+      }
+      f.setCalls([{ name: "remember", args: { content: "new fact" }, executionId: "append" }]);
+      await f.run();
+      expect(f.memoryCommit).toHaveBeenCalledTimes(conflicts + 1);
+      expect(f.memoryCommit.mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({
+          content: `competing fact ${conflicts - 1}\nnew fact\n`,
+          expectedRevision: conflicts,
+        }),
+      );
+      expect(f.results).toEqual([{ ok: true }]);
+    },
+  );
+
+  it("surfaces the third conflict without a fourth read or commit", async () => {
+    const f = fixture("run-conflicts", { catchToolErrors: true });
+    f.memoryCommit.mockRejectedValue(new Error(MEMORY_REVISION_CONFLICT_ERROR));
+    f.setCalls([{ name: "remember", args: { content: "fact" }, executionId: "append" }]);
+    await f.run();
+    expect(f.memoryCommit).toHaveBeenCalledTimes(3);
+    expect(
+      f.memoryRead.mock.calls.filter(([request]) => request.path === "MEMORY.md"),
+    ).toHaveLength(3);
+    expect(f.results).toEqual([{ error: MEMORY_REVISION_CONFLICT_ERROR }]);
+    expect(f.memoryHistory).toHaveLength(0);
+    expect(f.effects.every((effect) => effect.status !== "completed")).toBe(true);
+  });
+
+  it("does not retry unrelated storage errors", async () => {
+    const f = fixture("run-storage-error", { catchToolErrors: true });
+    f.memoryCommit.mockRejectedValue(new Error("storage unavailable"));
+    f.setCalls([{ name: "remember", args: { content: "fact" }, executionId: "append" }]);
+    await f.run();
+    expect(f.memoryCommit).toHaveBeenCalledOnce();
+    expect(f.results).toEqual([{ error: "storage unavailable" }]);
+  });
+
+  it("does not commit or retry when reading memory fails", async () => {
+    const f = fixture("run-read-error", { catchToolErrors: true });
+    const read = f.memoryRead.getMockImplementation()!;
+    f.memoryRead.mockImplementation(async (request, context) => {
+      if (request.path) throw new Error("read unavailable");
+      return read(request, context);
+    });
+    f.setCalls([{ name: "remember", args: { content: "fact" }, executionId: "append" }]);
+    await f.run();
+    expect(f.memoryRead.mock.calls.filter(([request]) => request.path)).toHaveLength(1);
+    expect(f.memoryCommit).not.toHaveBeenCalled();
+    expect(f.results).toEqual([{ error: "read unavailable" }]);
+  });
+
+  it("preserves facts from concurrent runs by re-reading their shared document", async () => {
+    const first = fixture("run-race-first");
+    const second = fixture("run-race-second");
+    const read = first.memoryRead.getMockImplementation()!;
+    let snapshots = 0;
+    let release!: () => void;
+    const bothRead = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    first.memoryRead.mockImplementation(async (request, context) => {
+      const snapshot = await read(request, context);
+      if (request.path) {
+        snapshots += 1;
+        if (snapshots === 2) release();
+        if (snapshots <= 2) await bothRead;
+      }
+      return snapshot;
+    });
+    second.memoryRead.mockImplementation((request, context) => first.memoryRead(request, context));
+    second.memoryCommit.mockImplementation((request, context) =>
+      first.memoryCommit(request, context),
+    );
+    first.setCalls([{ name: "remember", args: { content: "first fact" }, executionId: "first" }]);
+    second.setCalls([
+      { name: "remember", args: { content: "second fact" }, executionId: "second" },
+    ]);
+
+    await Promise.all([first.run(), second.run()]);
+
+    expect(snapshots).toBe(3);
+    expect(first.memoryCommit).toHaveBeenCalledTimes(3);
+    expect(first.memoryHistory).toHaveLength(2);
+    expect([...first.memoryDocuments.values()]).toEqual([
+      expect.objectContaining({ revision: 2, content: "first fact\nsecond fact\n" }),
+    ]);
+    expect(first.memoryHistory.map((request) => request.sourceRunId)).toEqual([
+      "run-race-first",
+      "run-race-second",
+    ]);
+    expect(
+      [...first.effects, ...second.effects].every((effect) => effect.status === "completed"),
+    ).toBe(true);
+  });
+
+  it("stops before a tool entry when cancellation has arrived", async () => {
+    const f = fixture("run-cancel-entry", { catchToolErrors: true });
+    f.setBeforeTool(() => f.shutdown.abort());
+    f.setCalls([{ name: "remember", args: { content: "fact" }, executionId: "append" }]);
+    await f.run();
+    expect(f.memoryRead.mock.calls.filter(([request]) => request.path)).toHaveLength(0);
+    expect(f.memoryCommit).not.toHaveBeenCalled();
+  });
+
+  it("stops after an awaited read when cancellation arrives before commit", async () => {
+    const f = fixture("run-cancel-read", { catchToolErrors: true });
+    const read = f.memoryRead.getMockImplementation()!;
+    f.memoryRead.mockImplementation(async (request, context) => {
+      const snapshot = await read(request, context);
+      if (request.path) {
+        f.shutdown.abort();
+        expect(context.signal.aborted).toBe(true);
+      }
+      return snapshot;
+    });
+    f.setCalls([{ name: "remember", args: { content: "fact" }, executionId: "append" }]);
+    await f.run();
+    expect(f.memoryCommit).not.toHaveBeenCalled();
+    expect(f.memoryHistory).toHaveLength(0);
+    expect(f.effects.every((effect) => effect.status !== "completed")).toBe(true);
+  });
+
+  it("retains a commit already started when cancellation arrives", async () => {
+    const f = fixture("run-cancel-commit", { catchToolErrors: true });
+    f.memoryCommit.mockImplementationOnce(async (request, context) => {
+      const document = await f.persistMemory(request, context);
+      f.shutdown.abort();
+      return document;
+    });
+    f.setCalls([{ name: "remember", args: { content: "fact" }, executionId: "append" }]);
+    await f.run();
+    expect(f.memoryHistory).toHaveLength(1);
+    expect([...f.memoryDocuments.values()][0]?.content).toBe("fact\n");
+  });
+
+  it("deduplicates a persisted write with a lost response on a later permitted invocation", async () => {
+    const first = fixture("run-lost-response", { catchToolErrors: true });
+    first.memoryCommit.mockImplementationOnce(async (request, context) => {
+      await first.persistMemory(request, context);
+      throw new Error("response lost after commit");
+    });
+    const call = { name: "remember", args: { content: "durable fact" }, executionId: "append" };
+    first.setCalls([call]);
+    await first.run();
+    expect(first.results).toEqual([{ error: "response lost after commit" }]);
+    expect(first.memoryHistory).toHaveLength(1);
+    expect(first.memoryCommit).toHaveBeenCalledOnce();
+
+    const later = fixture("run-later-permitted");
+    for (const [key, document] of first.memoryDocuments) later.memoryDocuments.set(key, document);
+    later.setCalls([call]);
+    await later.run();
+    expect(later.memoryRead.mock.calls.some(([request]) => request.path === "MEMORY.md")).toBe(
+      true,
+    );
+    expect(later.memoryCommit).not.toHaveBeenCalled();
+    expect([...later.memoryDocuments.values()][0]?.revision).toBe(1);
+    expect(later.results).toEqual([{ ok: true }]);
+  });
+
+  it("returns uncertainty if the effect result cannot be persisted after the memory commit", async () => {
+    const f = fixture("run-effect-result");
+    const update = f.externalEffect.updateMany.getMockImplementation()!;
+    f.externalEffect.updateMany.mockImplementation(async (request) =>
+      request.data.status === "completed" ? { count: 0 } : update(request),
+    );
+    f.setCalls([{ name: "remember", args: { content: "durable fact" }, executionId: "append" }]);
+    await f.run();
+    expect(f.memoryHistory).toHaveLength(1);
+    expect(f.results).toEqual([expect.objectContaining({ uncertain: true })]);
+    expect(f.effects.every((effect) => effect.status !== "completed")).toBe(true);
+  });
+
+  it("does not replay an existing uncertain memory effect", async () => {
+    const f = fixture("run-uncertain");
+    const args = { content: "durable fact" };
+    f.effects.push({
+      id: "uncertain-1",
+      spaceId: "space-1",
+      runId: "run-uncertain",
+      kind: "remember",
+      idempotencyKey: toolEffectIdempotencyKey("run-uncertain", "remember", args),
+      status: "uncertain",
+      request: args,
+    });
+    f.setCalls([{ name: "remember", args, executionId: "retry" }]);
+    await f.run();
+    expect(f.memoryCommit).not.toHaveBeenCalled();
+    expect(f.memoryRead.mock.calls.filter(([request]) => request.path)).toHaveLength(0);
+    expect(f.results).toEqual([expect.objectContaining({ uncertain: true })]);
+  });
+
   it("executes different tools that share a reused provider tool-call id", async () => {
     const f = fixture("run-a");
     f.setCalls([
@@ -489,7 +790,7 @@ describe("mutating tool effect idempotency keys", () => {
     expect(f.results[0]).toEqual({ ok: true });
   });
 
-  it("executes two identical-args mutating calls in one live run", async () => {
+  it("records two identical live calls but commits a remembered fact only once", async () => {
     const args = { path: "MEMORY.md", content: "same fact" };
     const f = fixture("run-live-repeat");
     f.setCalls([
@@ -499,7 +800,8 @@ describe("mutating tool effect idempotency keys", () => {
 
     await f.run();
 
-    expect(f.memoryCommit).toHaveBeenCalledTimes(2);
+    expect(f.memoryCommit).toHaveBeenCalledOnce();
+    expect(f.memoryHistory).toHaveLength(1);
     expect(f.effects).toHaveLength(2);
     expect(f.effects[0]?.idempotencyKey).toBe(
       toolEffectIdempotencyKey("run-live-repeat", "remember", args),
