@@ -489,8 +489,13 @@ function formatYamlBlockScalar(key: string, value: string): string {
     // keep decoder yields 1 + trailingBlanks newlines; emit trailingBlanks blank lines.
     lines = [...core.split("\n"), ...Array.from({ length: trailing - 1 }, () => "")];
   }
+  // For empty blocks the decoder counts one newline plus the blank content lines.
+  if (/^\n+$/.test(value)) {
+    indicator = "|2+";
+    lines = lines.slice(1);
+  }
   const indented = lines.map((line) => `  ${line}`).join("\n");
-  return `${key}: ${indicator}\n${indented}`;
+  return `${key}: ${indicator}${lines.length ? `\n${indented}` : ""}`;
 }
 
 function formatYamlLine(key: string, value: unknown): string {

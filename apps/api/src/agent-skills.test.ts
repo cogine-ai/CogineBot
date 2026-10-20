@@ -150,6 +150,8 @@ describe("skill save preservation", () => {
         "---",
         "name: Review recipe",
         "description: Original description",
+        `blank: ${trailingNewlines === 0 ? '""' : "|2+"}`,
+        ...Array.from({ length: Math.max(0, trailingNewlines - 1) }, () => ""),
         `detail: ${indicator}`,
         "  First: preserve this",
         "",
@@ -187,6 +189,7 @@ describe("skill save preservation", () => {
       expect(original.frontmatter.indented).toBe(
         `  first\n\n    second${"\n".repeat(trailingNewlines)}`,
       );
+      expect(original.frontmatter.blank).toBe("\n".repeat(trailingNewlines));
 
       const { service } = setup();
       const saved = await service.create(actor, { content: raw });

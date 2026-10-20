@@ -182,6 +182,7 @@ describe("buildSkillMd", () => {
         frontmatter: {
           detail,
           indented: `  first\n\n    second${"\n".repeat(trailingNewlines)}`,
+          blank: "\n".repeat(trailingNewlines),
           other: `Another block\nwith two lines${"\n".repeat(Math.min(trailingNewlines, 2))}`,
           metadata: { owner: "reviewers", enabled: true, version: 2 },
         },
