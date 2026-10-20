@@ -1,6 +1,11 @@
 import { darkTokens, lightTokens } from "@rakazo/ui-tokens";
 import { describe, expect, it } from "vitest";
-import { chatMermaidConfig, isMermaidFence, mermaidSvgImage } from "./mermaid";
+import {
+  CHAT_DIAGRAM_MAX_TEXT_SIZE,
+  chatMermaidConfig,
+  isMermaidFence,
+  mermaidSvgImage,
+} from "./mermaid";
 
 describe("isMermaidFence", () => {
   it("matches the mermaid info string in any case, with or without attributes", () => {
@@ -26,6 +31,8 @@ describe("chatMermaidConfig", () => {
     expect(config.flowchart.htmlLabels).toBe(false);
     expect(config.suppressErrorRendering).toBe(true);
     expect(config.startOnLoad).toBe(false);
+    expect(config.maxTextSize).toBe(CHAT_DIAGRAM_MAX_TEXT_SIZE);
+    expect(config.maxEdges).toBe(500);
     // A diagram's %%{init}%% directive cannot turn either back on.
     expect(config.secure).toEqual(expect.arrayContaining(["securityLevel", "htmlLabels"]));
   });

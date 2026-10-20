@@ -62,6 +62,7 @@ describe("web markdown diagrams", () => {
     );
     expect(html).toContain("const graph = 1;");
     expect(html).toContain("Copy code");
+    expect(html).not.toContain("rk-chat-markdown-diagram-wrap");
     expect(renderer.use).not.toHaveBeenCalled();
   });
 
@@ -74,6 +75,7 @@ describe("web markdown diagrams", () => {
       );
       expect(html).toContain("invalid source\n");
       expect(html).toContain("Copy diagram source");
+      expect(html).toContain("rk-chat-markdown-diagram-wrap");
       expect(html).not.toContain("Show source");
       expect(html).not.toContain('data-testid="chat-diagram"');
     },

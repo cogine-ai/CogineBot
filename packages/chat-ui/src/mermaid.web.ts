@@ -1,7 +1,7 @@
 import type { ResolvedAppearance } from "@rakazo/ui-tokens";
 import { tokensForAppearance } from "@rakazo/ui-tokens";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { chatMermaidConfig, mermaidSvgImage } from "./mermaid";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE, chatMermaidConfig, mermaidSvgImage } from "./mermaid";
 
 export const MERMAID_RENDER_TIMEOUT_MS = 15_000;
 const MAX_RENDERED = 64;
@@ -161,7 +161,7 @@ export function renderMermaidSvg(
   appearance: ResolvedAppearance,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  if (signal?.aborted) return Promise.resolve(null);
+  if (signal?.aborted || source.length > CHAT_DIAGRAM_MAX_TEXT_SIZE) return Promise.resolve(null);
   const key = renderKey(source, appearance);
   const known = rendered.get(key);
   if (known !== undefined) return Promise.resolve(known);

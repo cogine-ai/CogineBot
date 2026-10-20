@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import { chatMermaidConfig } from "@rakazo/chat-ui/mermaid";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE, chatMermaidConfig } from "@rakazo/chat-ui/mermaid";
 import { lightTokens } from "@rakazo/ui-tokens";
 import {
   diagramBootScript,
@@ -112,6 +112,42 @@ test("ordinary code and unclosed streaming fences do not load the diagram engine
     diagram(page).getByRole("img", { name: "Purchase flow", exact: true }),
   ).toBeVisible();
   await expect(output(page)).toContainText("The reply is complete.");
+});
+
+test("oversized diagrams preserve exact source without loading the engine", async ({ page }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const loads: string[] = [];
+  page.on("request", (request) => {
+    if (libraryRequest(request.url())) loads.push(request.url());
+  });
+  await page.goto(`${fixture}?${new URLSearchParams({ markdown: "```text\nReady\n```" })}`);
+  await expect(output(page).locator("pre code")).toHaveText("Ready\n");
+  const oversized = `flowchart LR\n  A["${"x".repeat(CHAT_DIAGRAM_MAX_TEXT_SIZE + 1)}"]`;
+  const expected = `${oversized}\n`;
+  await update(page, fence(oversized));
+  await expect
+    .poll(() =>
+      output(page)
+        .locator("pre code")
+        .evaluate((element, text) => element.textContent === text, expected),
+    )
+    .toBe(true);
+  await expect(diagram(page)).toHaveCount(0);
+  await output(page).getByRole("button", { name: "Copy diagram source", exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (text) => navigator.clipboard.readText().then((copied) => copied === text),
+        expected,
+      ),
+    )
+    .toBe(true);
+  expect(loads).toEqual([]);
+  await update(page, fence(source));
+  await expect(
+    diagram(page).getByRole("img", { name: "Purchase flow", exact: true }),
+  ).toBeVisible();
+  expect(loads.length).toBeGreaterThan(0);
 });
 
 test("invalid diagrams fall back to copyable code and the next diagram still renders", async ({
@@ -347,6 +383,7 @@ test.describe("narrow diagram layout", () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
   test("wide diagrams scroll locally without widening the page", async ({ page }, testInfo) => {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     const wide = [
       "flowchart LR",
       "  accTitle: Wide workflow",
@@ -391,5 +428,26 @@ test.describe("narrow diagram layout", () => {
       element.scrollLeft = 0;
     });
     await captureScreenshot(page, testInfo, "markdown-diagram-wide-mobile");
+
+    const invalid = "flowchart LR\n  A -->[unfinished";
+    const drawingFinished = page.waitForEvent("framedetached", {
+      predicate: (frame) => frame.url() === "about:srcdoc",
+    });
+    await update(page, fence(invalid));
+    await drawingFinished;
+    await expect(diagram(page)).toHaveCount(0);
+    await expect(output(page).locator("pre code")).toHaveText(`${invalid}\n`);
+    const copy = output(page).getByRole("button", { name: "Copy diagram source", exact: true });
+    await expect(copy).toBeVisible();
+    await expect(copy).toHaveCSS("opacity", "1");
+    const copyBox = await copy.boundingBox();
+    expect(copyBox).not.toBeNull();
+    expect(copyBox!.width).toBeGreaterThanOrEqual(44);
+    expect(copyBox!.height).toBeGreaterThanOrEqual(44);
+    await copy.click();
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(`${invalid}\n`);
+    await captureScreenshot(page, testInfo, "markdown-diagram-fallback-mobile");
   });
 });

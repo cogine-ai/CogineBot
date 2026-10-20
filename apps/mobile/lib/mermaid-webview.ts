@@ -1,4 +1,5 @@
 import type { ChatMermaidConfig } from "@rakazo/chat-ui/mermaid";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE } from "@rakazo/chat-ui/mermaid";
 
 export const DIAGRAM_SCRIPT_PATH = "/api/v1/assets/mermaid.js";
 export const DIAGRAM_TIMEOUT_MS = 20_000;
@@ -78,6 +79,7 @@ export function diagramBootScript(
     if (observer) observer.disconnect();
   };
   var source = ${scriptData(source)};
+  if (source.length > ${CHAT_DIAGRAM_MAX_TEXT_SIZE}) return fail();
   var mermaid = window.mermaid;
   if (!mermaid) return fail();
   Promise.resolve().then(function () {

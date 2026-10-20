@@ -102,7 +102,13 @@ function CodeBlock({
   const preRef = useRef<HTMLPreElement>(null);
   const readCode = useCallback(() => source ?? preRef.current?.textContent ?? "", [source]);
   return (
-    <div className="rk-chat-markdown-pre-wrap">
+    <div
+      className={
+        source === undefined
+          ? "rk-chat-markdown-pre-wrap"
+          : "rk-chat-markdown-pre-wrap rk-chat-markdown-diagram-wrap"
+      }
+    >
       <pre {...props} ref={preRef} />
       <CopyButton
         read={readCode}

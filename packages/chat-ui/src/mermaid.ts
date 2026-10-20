@@ -1,5 +1,7 @@
 import type { ColorTokens, ResolvedAppearance } from "@rakazo/ui-tokens";
 
+export const CHAT_DIAGRAM_MAX_TEXT_SIZE = 50_000;
+
 /** True for a fence whose info string names Mermaid (```mermaid, ```Mermaid title="x"). */
 export function isMermaidFence(info: string | undefined | null): boolean {
   return (info ?? "").trim().split(/\s+/)[0]?.toLowerCase() === "mermaid";
@@ -61,6 +63,8 @@ export type ChatMermaidConfig = {
   secure: string[];
   suppressErrorRendering: true;
   htmlLabels: false;
+  maxTextSize: number;
+  maxEdges: number;
   flowchart: { htmlLabels: false };
   theme: "base";
   darkMode: boolean;
@@ -103,6 +107,8 @@ export function chatMermaidConfig(
     ],
     suppressErrorRendering: true,
     htmlLabels: false,
+    maxTextSize: CHAT_DIAGRAM_MAX_TEXT_SIZE,
+    maxEdges: 500,
     flowchart: { htmlLabels: false },
     theme: "base",
     darkMode: appearance === "dark",

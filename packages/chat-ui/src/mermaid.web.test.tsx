@@ -66,6 +66,26 @@ afterEach(() => {
 });
 
 describe("isolated diagram drawing", () => {
+  it("applies the engine text limit before loading or parsing and allows its boundary", async () => {
+    const { CHAT_DIAGRAM_MAX_TEXT_SIZE } = await import("./mermaid");
+    const { renderMermaidSvg } = await import("./mermaid.web");
+    expect(await renderMermaidSvg("x".repeat(CHAT_DIAGRAM_MAX_TEXT_SIZE + 1), "dark")).toBeNull();
+    expect(library.read).not.toHaveBeenCalled();
+    expect(framesCreated()).toBe(0);
+
+    const source = "x".repeat(CHAT_DIAGRAM_MAX_TEXT_SIZE);
+    const result = renderMermaidSvg(source, "dark");
+    const frame = await activeFrame();
+    const request = start(frame);
+    expect(request.source).toBe(source);
+    expect(request.config).toMatchObject({
+      maxTextSize: CHAT_DIAGRAM_MAX_TEXT_SIZE,
+      maxEdges: 500,
+    });
+    message(frame, { type: "drawn", id: request.id, svg: SVG });
+    expect(await result).toBe(SVG);
+  });
+
   it("loads only on demand, isolates permissions, and passes source as data", async () => {
     const { renderMermaidSvg } = await import("./mermaid.web");
     expect(library.read).not.toHaveBeenCalled();
@@ -204,7 +224,7 @@ describe("isolated diagram drawing", () => {
     const retry = renderMermaidSvg("load timeout", "dark");
     await finish(await activeFrame());
     expect(await retry).toBe(SVG);
-    expect(library.read).toHaveBeenCalledTimes(2);
+    expect(framesCreated()).toBe(1);
   });
 
   it("retries a failed library load and a failed frame load", async () => {

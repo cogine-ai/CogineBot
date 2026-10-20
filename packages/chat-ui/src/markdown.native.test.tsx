@@ -168,6 +168,7 @@ import {
   RemoteImagesContext,
   RemoteMarkdownImage,
 } from "./markdown.native";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE } from "./mermaid";
 
 const THREE_COLUMN_TABLE = `| Name | Status | Detail |
 | --- | --- | --- |
@@ -217,6 +218,27 @@ describe("native markdown diagrams", () => {
       );
     }
     expect(renderDiagram).not.toHaveBeenCalled();
+  });
+
+  it("keeps oversized diagrams as code before mounting a renderer and allows the exact limit", () => {
+    const renderDiagram = vi.fn((_props: MermaidDiagramProps) => (
+      <div data-testid="diagram-renderer" />
+    ));
+    const render = (content: string) =>
+      renderToStaticMarkup(
+        <MermaidDiagramContext.Provider value={renderDiagram}>
+          <ChatMarkdown>{`\`\`\`mermaid\n${content}\n\`\`\``}</ChatMarkdown>
+        </MermaidDiagramContext.Provider>,
+      );
+    const atLimit = source.padEnd(CHAT_DIAGRAM_MAX_TEXT_SIZE, " ");
+    const oversized = `${atLimit}x`;
+    const html = render(oversized);
+    expect(renderDiagram).not.toHaveBeenCalled();
+    expect(html).toContain(source.replaceAll(">", "&gt;"));
+    expect(html).not.toContain('data-testid="diagram-renderer"');
+    expect(render(atLimit)).toContain('data-testid="diagram-renderer"');
+    expect(renderDiagram).toHaveBeenCalledTimes(1);
+    expect(renderDiagram.mock.calls[0]?.[0]).toMatchObject({ source: atLimit });
   });
 
   it("renders list, quote and tilde Mermaid fences through the same context", () => {

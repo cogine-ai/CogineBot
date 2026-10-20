@@ -51,7 +51,7 @@ import {
 } from "./markdown";
 
 import { useMarkdownLinkAppOrigin, useMarkdownLinkCopy } from "./markdown-link-prompt";
-import { isMermaidFence } from "./mermaid";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE, isMermaidFence } from "./mermaid";
 
 function keepMarkdownLinkToken(_url: string) {
   return true;
@@ -719,7 +719,9 @@ const DiagramSurfaceContext = createContext<{
 function MermaidFence({ source, fallback }: { source: string; fallback: ReactNode }) {
   const Diagram = useContext(MermaidDiagramContext);
   const { streaming, palette, colorScheme } = useContext(DiagramSurfaceContext);
-  if (!Diagram || streaming || !source.trim()) return fallback;
+  if (!Diagram || streaming || !source.trim() || source.length > CHAT_DIAGRAM_MAX_TEXT_SIZE) {
+    return fallback;
+  }
   return (
     <Diagram source={source} palette={palette} colorScheme={colorScheme} fallback={fallback} />
   );

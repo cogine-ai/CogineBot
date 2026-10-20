@@ -1,4 +1,4 @@
-import { chatMermaidConfig } from "@rakazo/chat-ui/mermaid";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE, chatMermaidConfig } from "@rakazo/chat-ui/mermaid";
 import { darkTokens } from "@rakazo/ui-tokens";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -162,6 +162,26 @@ function bootFixture({ parse = true, height = 100, width = 200, title = "A & B" 
 }
 
 describe("diagram boot", () => {
+  it("rejects oversized source before initializing or parsing and permits the exact boundary", async () => {
+    const fixture = bootFixture();
+    await fixture.run("x".repeat(CHAT_DIAGRAM_MAX_TEXT_SIZE + 1));
+    expect(fixture.mermaid.initialize).not.toHaveBeenCalled();
+    expect(fixture.mermaid.parse).not.toHaveBeenCalled();
+    expect(fixture.mermaid.render).not.toHaveBeenCalled();
+    expect(fixture.posts.map((post) => parseDiagramMessage(post, requestId))).toEqual([
+      { type: "failed" },
+    ]);
+    const boundary = bootFixture();
+    const source = "x".repeat(CHAT_DIAGRAM_MAX_TEXT_SIZE);
+    await boundary.run(source);
+    expect(boundary.mermaid.initialize).toHaveBeenCalledOnce();
+    expect(boundary.mermaid.parse).toHaveBeenCalledWith(source, { suppressErrors: true });
+    expect(boundary.mermaid.render).toHaveBeenCalledOnce();
+    expect(boundary.posts.map((post) => parseDiagramMessage(post, requestId))).toEqual([
+      { type: "drawn", width: 200, height: 100, alt: "A & B" },
+    ]);
+  });
+
   it("embeds hostile source as data, preserving original text without executing it", async () => {
     const source =
       '</script><script>window.compromised=true</script>\u2028"; window.compromised=true; //';
