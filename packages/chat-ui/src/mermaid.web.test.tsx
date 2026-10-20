@@ -374,6 +374,134 @@ describe("isolated diagram drawing", () => {
     expect(framesCreated()).toBe(2);
   });
 
+  it("keeps the same source visible during a theme redraw and replaces it on success", async () => {
+    const { useMermaidSvg } = await import("./mermaid.web");
+    function Result() {
+      return <output>{useMermaidSvg("same source") ?? "source"}</output>;
+    }
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<Result />));
+    await act(async () => finish(await activeFrame()));
+    expect(host.textContent).toBe(SVG);
+    await act(async () => {
+      document.documentElement.dataset.theme = "light";
+      await flush();
+    });
+    const frame = await activeFrame();
+    expect(host.textContent).toBe(SVG);
+    const lightSvg = SVG.replace("Order flow", "Light flow");
+    await act(async () => finish(frame, lightSvg));
+    expect(host.textContent).toBe(lightSvg);
+    await act(async () => root.unmount());
+  });
+
+  it.each(["invalid", "timeout", "failed"])(
+    "falls back when the new theme redraw ends with %s",
+    async (failure) => {
+      const { useMermaidSvg, MERMAID_RENDER_TIMEOUT_MS } = await import("./mermaid.web");
+      function Result() {
+        const svg = useMermaidSvg("same source");
+        return <output>{svg === null ? "failed" : (svg ?? "pending")}</output>;
+      }
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      await act(async () => root.render(<Result />));
+      await act(async () => finish(await activeFrame()));
+      await act(async () => {
+        document.documentElement.dataset.theme = "light";
+        await flush();
+      });
+      const frame = await activeFrame();
+      expect(host.textContent).toBe(SVG);
+      await act(async () => {
+        if (failure === "timeout") {
+          await vi.advanceTimersByTimeAsync(MERMAID_RENDER_TIMEOUT_MS);
+        } else if (failure === "failed") {
+          message(frame, { type: "failed" });
+        } else {
+          const request = start(frame);
+          message(frame, { type: "invalid", id: request.id });
+        }
+        await flush();
+      });
+      expect(host.textContent).toBe("failed");
+      expect(document.querySelector("iframe")).toBeNull();
+      await act(async () => root.unmount());
+    },
+  );
+
+  it("honors a cached failure for the selected theme over an older successful image", async () => {
+    const { renderMermaidSvg, useMermaidSvg } = await import("./mermaid.web");
+    const failed = renderMermaidSvg("same source", "light");
+    const rejectedFrame = await activeFrame();
+    const request = start(rejectedFrame);
+    message(rejectedFrame, { type: "invalid", id: request.id });
+    expect(await failed).toBeNull();
+    function Result() {
+      const svg = useMermaidSvg("same source");
+      return <output>{svg === null ? "failed" : (svg ?? "pending")}</output>;
+    }
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<Result />));
+    await act(async () => finish(await activeFrame()));
+    expect(host.textContent).toBe(SVG);
+    await act(async () => {
+      document.documentElement.dataset.theme = "light";
+      await flush();
+    });
+    expect(host.textContent).toBe("failed");
+    expect(document.querySelector("iframe")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("hides the previous source during a pending redraw and ignores its late generation", async () => {
+    const { useMermaidSvg } = await import("./mermaid.web");
+    function Result({ source }: { source: string }) {
+      return <output>{useMermaidSvg(source) ?? "pending"}</output>;
+    }
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<Result source="A" />));
+    await act(async () => finish(await activeFrame()));
+    expect(host.textContent).toBe(SVG);
+    await act(async () => {
+      document.documentElement.dataset.theme = "light";
+      await flush();
+    });
+    const stale = await activeFrame();
+    const oldWindow = stale.contentWindow;
+    const oldRequest = start(stale);
+    expect(host.textContent).toBe(SVG);
+    await act(async () => root.render(<Result source="B" />));
+    expect(host.textContent).toBe("pending");
+    expect(stale.isConnected).toBe(false);
+    const current = await activeFrame();
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: oldWindow,
+          data: {
+            type: "drawn",
+            id: oldRequest.id,
+            svg: SVG.replace("Order flow", "stale source"),
+          },
+        }),
+      );
+      await flush();
+    });
+    expect(host.textContent).toBe("pending");
+    const nextSvg = SVG.replace("Order flow", "Next source");
+    await act(async () => finish(current, nextSvg));
+    expect(host.textContent).toBe(nextSvg);
+    await act(async () => root.unmount());
+  });
+
   it("cancels old hook generations on A → B → A and on unmount", async () => {
     const { useMermaidSvg } = await import("./mermaid.web");
     function Result({ source }: { source: string }) {

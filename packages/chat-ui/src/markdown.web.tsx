@@ -1,5 +1,14 @@
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
-import { createContext, memo, useCallback, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -138,7 +147,7 @@ function MermaidDiagram({ source, fallback }: { source: string; fallback: ReactN
   const svg = useMermaidSvg(source);
   const [showSource, setShowSource] = useState(false);
   const readSource = useCallback(() => source, [source]);
-  const image = svg ? mermaidSvgImage(svg) : undefined;
+  const image = useMemo(() => (svg ? mermaidSvgImage(svg) : undefined), [svg]);
   if (!image) return fallback;
   return (
     <div className="rk-chat-markdown-pre-wrap rk-chat-markdown-diagram-wrap">

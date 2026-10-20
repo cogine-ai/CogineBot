@@ -79,6 +79,7 @@ describe("diagram script route", () => {
     const read = vi.fn((path: string) =>
       path.endsWith("LICENSE") ? Promise.resolve("license") : load(),
     );
+    vi.resetModules();
     vi.doMock("node:fs/promises", () => ({ readFile: read }));
     const { mountDiagramScript: mount } = await import("./diagram-script.js");
     const isolated = new Hono();

@@ -76,13 +76,71 @@ test("sequence diagrams retain Chinese labels and react to theme changes", async
   const light = await svg(page);
   expect(light).toContain("提交订单");
   expect(light).toContain("确认收货");
+  const watchTransition = () =>
+    page.evaluateHandle(() => {
+      const root = document.querySelector('[data-testid="diagram-fixture"]')!;
+      const observations = { samples: 0, sourceVisible: 0, sourceInserted: 0, imageMissing: 0 };
+      const sample = (mutations: MutationRecord[] = []) => {
+        observations.samples += 1;
+        if (root.querySelector("pre code")) observations.sourceVisible += 1;
+        if (!root.querySelector('[data-testid="chat-diagram"] img')) observations.imageMissing += 1;
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (
+              node instanceof Element &&
+              (node.matches("pre, pre code") || node.querySelector("pre code"))
+            ) {
+              observations.sourceInserted += 1;
+            }
+          }
+        }
+      };
+      const observer = new MutationObserver(sample);
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["src"],
+      });
+      sample();
+      return {
+        stop: () => {
+          observer.disconnect();
+          return observations;
+        },
+      };
+    });
+  const toDark = await watchTransition();
   await page.getByRole("checkbox", { name: "Dark theme" }).check();
   await expect.poll(() => svg(page)).not.toBe(light);
   const dark = await svg(page);
   expect(dark).toContain("提交订单");
+  const darkObservations = await toDark.evaluate((watch) => watch.stop());
+  await toDark.dispose();
+  expect(darkObservations).toEqual({
+    samples: expect.any(Number),
+    sourceVisible: 0,
+    sourceInserted: 0,
+    imageMissing: 0,
+  });
+  expect(darkObservations.samples).toBeGreaterThan(1);
   await captureScreenshot(page, testInfo, "markdown-diagram-sequence-dark");
+  const toCachedLight = await watchTransition();
   await page.getByRole("checkbox", { name: "Dark theme" }).uncheck();
   await expect.poll(() => svg(page)).toBe(light);
+  const lightObservations = await toCachedLight.evaluate((watch) => watch.stop());
+  await toCachedLight.dispose();
+  expect(lightObservations).toEqual({
+    samples: expect.any(Number),
+    sourceVisible: 0,
+    sourceInserted: 0,
+    imageMissing: 0,
+  });
+  expect(lightObservations.samples).toBeGreaterThan(1);
+  await testInfo.attach("theme-transition-observations", {
+    body: JSON.stringify({ uncachedDark: darkObservations, cachedLight: lightObservations }),
+    contentType: "application/json",
+  });
 });
 
 test("ordinary code and unclosed streaming fences do not load the diagram engine", async ({

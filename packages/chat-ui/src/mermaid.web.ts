@@ -205,7 +205,7 @@ function subscribeAppearance(onChange: () => void) {
   return () => observer.disconnect();
 }
 
-/** Undefined while drawing; null preserves the caller's readable source fallback. */
+/** Keep a successful diagram during a theme redraw; null preserves the readable source fallback. */
 export function useMermaidSvg(source: string): string | null | undefined {
   const appearance = useSyncExternalStore<ResolvedAppearance>(
     subscribeAppearance,
@@ -213,18 +213,21 @@ export function useMermaidSvg(source: string): string | null | undefined {
     () => "dark",
   );
   const key = renderKey(source, appearance);
-  const [result, setResult] = useState<{ key: string; svg: string | null }>();
+  const [result, setResult] = useState<{ key: string; source: string; svg: string | null }>();
   useEffect(() => {
     const controller = new AbortController();
     renderMermaidSvg(source, appearance, controller.signal).then(
       (svg) => {
-        if (!controller.signal.aborted) setResult({ key, svg });
+        if (!controller.signal.aborted) setResult({ key, source, svg });
       },
       () => {
-        if (!controller.signal.aborted) setResult({ key, svg: null });
+        if (!controller.signal.aborted) setResult({ key, source, svg: null });
       },
     );
     return () => controller.abort();
   }, [source, appearance, key]);
-  return result?.key === key ? result.svg : rendered.get(key);
+  if (result?.key === key) return result.svg;
+  const cached = rendered.get(key);
+  if (cached !== undefined) return cached;
+  return result?.source === source && result.svg ? result.svg : undefined;
 }
