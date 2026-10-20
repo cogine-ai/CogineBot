@@ -171,6 +171,35 @@ detail: ${detail}---
 });
 
 describe("buildSkillMd", () => {
+  it.each([0, 1, 2, 3])(
+    "preserves multiline metadata with %i trailing newlines across repeated edits",
+    (trailingNewlines) => {
+      const detail = `First: preserve this\n\n  indented step\nLast line${"\n".repeat(trailingNewlines)}`;
+      const input = {
+        name: "Review recipe",
+        description: "Review a change",
+        body: "# Review\n\nKeep the original steps.\n",
+        frontmatter: {
+          detail,
+          other: `Another block\nwith two lines${"\n".repeat(Math.min(trailingNewlines, 2))}`,
+          metadata: { owner: "reviewers", enabled: true, version: 2 },
+        },
+      };
+      let content = buildSkillMd(input);
+      for (let edit = 0; edit < 3; edit += 1) {
+        const parsed = parseSkillMd(content);
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed).toMatchObject({
+          name: input.name,
+          description: input.description,
+          body: input.body,
+          frontmatter: input.frontmatter,
+        });
+        content = buildSkillMd(parsed);
+      }
+    },
+  );
+
   it("round-trips and preserves extra keys", () => {
     const parsed = parseSkillMd(SAMPLE);
     if ("error" in parsed) throw new Error(parsed.error);
