@@ -128,11 +128,14 @@ jobs:
         run: |
           set -euo pipefail
           pnpm test:integration -- --sandbox=fake --runtime=scripted 2>&1 | tee test-report/repository-ci/integration.log
-      - name: Install the Chromium test binary
+      - name: Install Chromium and CJK fonts
         if: matrix.lane == 'web'
         timeout-minutes: 5
         run: |
           set -euo pipefail
+          sudo apt-get update 2>&1 | tee test-report/repository-ci/cjk-fonts-install.log
+          sudo apt-get install --yes --no-install-recommends fonts-noto-cjk 2>&1 | tee -a test-report/repository-ci/cjk-fonts-install.log
+          fc-match 'sans-serif:lang=zh-cn' 2>&1 | tee -a test-report/repository-ci/cjk-fonts-install.log
           pnpm --filter @rakazo/web exec playwright install chromium 2>&1 | tee test-report/repository-ci/chromium-install.log
       - name: Run selected web specs with the official offline harness
         if: matrix.lane == 'web'
