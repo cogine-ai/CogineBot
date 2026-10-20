@@ -1,4 +1,7 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  Diagram: "图表",
+  "Show source": "显示源码",
+  "Show diagram": "显示图表",
   "App installation": "应用安装身份",
   "Telegram bot token": "Telegram 机器人令牌",
   "Discord bot token": "Discord 机器人令牌",

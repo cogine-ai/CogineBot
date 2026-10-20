@@ -240,6 +240,60 @@
   border-radius: 0.65em;
 }
 
+.rk-chat-markdown-diagram-wrap {
+  min-width: 0;
+}
+
+.rk-chat-markdown .rk-chat-markdown-diagram-wrap pre {
+  padding-top: 2.6em;
+}
+
+.rk-chat-markdown-diagram {
+  max-width: 100%;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.75em;
+  background: var(--card);
+  padding: 2.6em 0.9em 0.8em;
+}
+
+.rk-chat-markdown-diagram-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.rk-chat-markdown .rk-chat-markdown-diagram img {
+  width: var(--rk-diagram-width);
+  min-width: var(--rk-diagram-width);
+  max-width: none;
+  margin: 0;
+}
+
+.rk-chat-markdown-diagram-source {
+  position: absolute;
+  top: 0.5em;
+  left: 0.75em;
+  border: 0;
+  border-radius: 0.3em;
+  background: var(--card);
+  color: var(--muted-foreground);
+  padding: 0.1em 0.3em;
+  font: inherit;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.rk-chat-markdown-diagram-source:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.rk-chat-markdown-diagram-source:focus-visible,
+.rk-chat-markdown-diagram-scroll:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .rk-chat-markdown input[type="checkbox"] {
   margin-right: 0.4em;
   accent-color: var(--primary);
@@ -317,4 +371,27 @@ a.rk-chat-link .rk-chat-link-tile > svg {
 
 a.rk-chat-link:hover .rk-chat-link-label {
   text-decoration-color: currentColor;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .rk-chat-markdown-diagram-wrap .rk-chat-markdown-copy {
+    min-width: 44px;
+    min-height: 44px;
+    top: 0.25em;
+    opacity: 1;
+  }
+
+  .rk-chat-markdown-diagram-source {
+    min-width: 44px;
+    min-height: 44px;
+    top: 0.25em;
+  }
+
+  .rk-chat-markdown-diagram {
+    padding-top: 3.75em;
+  }
+
+  .rk-chat-markdown .rk-chat-markdown-diagram-wrap pre {
+    padding-top: 3.75em;
+  }
 }

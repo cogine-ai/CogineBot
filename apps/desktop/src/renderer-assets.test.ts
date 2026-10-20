@@ -35,6 +35,15 @@ describe("bundled desktop renderer", () => {
     ).toBeNull();
   });
 
+  it("serves a deferred diagram bundle from the packaged renderer", () => {
+    const asset = "assets/mermaid.min-B7fake123.js";
+    expect(bundledRendererCandidates(root, `${origin}/${asset}`, origin, false)).toEqual([
+      path.join(root, asset),
+    ]);
+    expect(contentType(asset)).toBe("text/javascript; charset=utf-8");
+    expect(immutableRendererAsset(path.join(root, asset))).toBe(true);
+  });
+
   it("does not resolve traversal outside the renderer root", () => {
     expect(
       bundledRendererCandidates(root, `${origin}/%2e%2e%2fsecret.txt`, origin, false),

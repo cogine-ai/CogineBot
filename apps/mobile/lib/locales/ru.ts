@@ -1,4 +1,7 @@
 export const RU_MESSAGES: Record<string, string> = {
+  Diagram: "Диаграмма",
+  "Show source": "Показать исходный код",
+  "Show diagram": "Показать диаграмму",
   "App installation": "Установка приложения",
   "Telegram bot token": "Токен бота Telegram",
   "Discord bot token": "Токен бота Discord",

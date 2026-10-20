@@ -1,4 +1,7 @@
 export const DE_MESSAGES: Record<string, string> = {
+  Diagram: "Diagramm",
+  "Show source": "Quelltext anzeigen",
+  "Show diagram": "Diagramm anzeigen",
   "App installation": "App-Installation",
   "Telegram bot token": "Telegram-Bot-Token",
   "Discord bot token": "Discord-Bot-Token",
