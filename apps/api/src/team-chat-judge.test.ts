@@ -97,6 +97,7 @@ describe("team chat engagement judge", () => {
         operationKind: "setup",
         provider: "google",
         model: "gemini-3.8-flash",
+        modelCredentialId: null,
         inputTokens: 150,
         outputTokens: 20,
         cacheReadTokens: 40,

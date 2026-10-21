@@ -343,6 +343,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not remove source": "Не удалось удалить источник",
   "Could not restore bot": "Не удалось восстановить бота",
   "Could not revoke connection": "Не удалось отменить соединение",
+  "Could not save": "Не удалось сохранить",
   "Could not save bot": "Не удалось сохранить бота",
   "Could not save group": "Не удалось сохранить группу",
   "Could not save that speech model": "Не удалось сохранить речевую модель",
@@ -957,4 +958,13 @@ export const RU_MESSAGES: Record<string, string> = {
   "WeCom event": "Событие WeCom",
   "Telegram bot event": "Событие бота Telegram",
   "Discord bot event": "Событие бота Discord",
+  Connection: "Подключение",
+  "New connection": "Новое подключение",
+  "Unavailable connection": "Подключение недоступно",
+  "Used by": "Используется в",
+  "Choose a connection for saved models": "Выберите подключение для сохранённых моделей",
+  "Choose another model for these items before disconnecting.":
+    "Выберите другую модель для этих элементов перед отключением.",
+  "Bot model": "Модель бота",
+  "Save model": "Сохранить модель",
 };

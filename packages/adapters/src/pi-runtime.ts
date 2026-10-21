@@ -355,7 +355,12 @@ export class PiAgentRuntime implements AgentRuntime {
                   preparedOptions,
                   (event) => queue.push(event),
                   this.modelCallObserver,
-                  { operationKind: request.usageOperationKind ?? "answer" },
+                  {
+                    operationKind: request.usageOperationKind ?? "answer",
+                    ...(target.config.modelCredentialId === undefined
+                      ? {}
+                      : { modelCredentialId: target.config.modelCredentialId }),
+                  },
                   {
                     ...usageHooks,
                     prepareContext: (ctx, m) => contextPolicy.prepareContext(ctx, m),
@@ -365,7 +370,15 @@ export class PiAgentRuntime implements AgentRuntime {
               target.config.cacheCapabilities?.retentionMode,
             ),
           onSwitch: async (target) => {
-            await request.onModelChange?.(target.config.provider, target.config.id);
+            if (target.config.modelCredentialId === undefined) {
+              await request.onModelChange?.(target.config.provider, target.config.id);
+            } else {
+              await request.onModelChange?.(
+                target.config.provider,
+                target.config.id,
+                target.config.modelCredentialId,
+              );
+            }
             activeStreamTarget = target;
             contextPolicy = createRuntimeContextPolicy(
               { ...request, model: target.config },
@@ -1109,6 +1122,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
           instructions: raw.instructions ? String(raw.instructions) : "",
           model_provider: raw.model_provider ? String(raw.model_provider) : "",
           model_id: raw.model_id ? String(raw.model_id) : "",
+          model_credential_id: raw.model_credential_id ? String(raw.model_credential_id) : "",
         };
       }
       if (tool.name === "spawn_bot") {
@@ -1321,17 +1335,38 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
 
   const requestedProvider = String(args.model_provider ?? "").trim();
   const requestedModelId = String(args.model_id ?? "").trim();
+  const requestedCredentialId = String(args.model_credential_id ?? "").trim();
   const hasBackups = Boolean(host.request.fallbackModels?.length);
   let requestModel = hasBackups ? host.activeModel.config : host.request.model;
   try {
     if (Boolean(requestedProvider) !== Boolean(requestedModelId)) {
       throw new Error("model_provider and model_id must both be set");
     }
+    if (requestedCredentialId && !requestedProvider) {
+      throw new Error("model_credential_id requires model_provider and model_id");
+    }
     if (requestedProvider && requestedModelId) {
       if (!host.request.resolveModel) {
         throw new Error("Per-call subagent model selection is unavailable");
       }
-      requestModel = await host.request.resolveModel(requestedProvider, requestedModelId);
+      const connectionId =
+        requestedCredentialId ||
+        (requestedProvider === requestModel.provider ? requestModel.modelCredentialId : null);
+      if (!connectionId) {
+        throw new Error("Choose a model_credential_id for this helper model");
+      }
+      requestModel = await host.request.resolveModel(
+        requestedProvider,
+        requestedModelId,
+        connectionId,
+      );
+      if (
+        requestModel.provider !== requestedProvider ||
+        requestModel.id !== requestedModelId ||
+        requestModel.modelCredentialId !== connectionId
+      ) {
+        throw new Error("The helper model connection changed");
+      }
     }
   } catch (error) {
     const message = sanitizeError(error instanceof Error ? error.message : String(error));
@@ -1426,7 +1461,13 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
             preparedOptions,
             (event) => host.queue.push(event),
             host.modelCallObserver,
-            { operationKind: "subagent", agentId },
+            {
+              operationKind: "subagent",
+              agentId,
+              ...(target.config.modelCredentialId === undefined
+                ? {}
+                : { modelCredentialId: target.config.modelCredentialId }),
+            },
             {
               prepareContext: contextPolicy.prepareContext,
               imageTokens: estimatePiImageTokens,
@@ -1696,6 +1737,7 @@ function builtinParameters(tool: ConnectorTool) {
       instructions: Type.Optional(Type.String()),
       model_provider: Type.Optional(Type.String()),
       model_id: Type.Optional(Type.String()),
+      model_credential_id: Type.Optional(Type.String()),
     });
   }
   if (tool.name === "spawn_bot") {
@@ -2486,16 +2528,32 @@ function fallbackAwareModelStream(
     while (state.nextIndex < choices.length && !signalAborted()) {
       const choice = choices[state.nextIndex++];
       if (!choice) continue;
-      const key = JSON.stringify([choice.provider, choice.id]);
+      const key = JSON.stringify([choice.provider, choice.id, choice.modelCredentialId ?? null]);
       if (state.attempted.has(key)) continue;
       state.attempted.add(key);
-      if (choice.provider === current.config.provider && choice.id === current.config.id) continue;
+      if (
+        choice.provider === current.config.provider &&
+        choice.id === current.config.id &&
+        (choice.modelCredentialId ?? null) === (current.config.modelCredentialId ?? null)
+      )
+        continue;
       try {
         const config = state.request.resolveFallbackModel
-          ? await state.request.resolveFallbackModel(choice.provider, choice.id)
+          ? choice.modelCredentialId === undefined
+            ? await state.request.resolveFallbackModel(choice.provider, choice.id)
+            : await state.request.resolveFallbackModel(
+                choice.provider,
+                choice.id,
+                choice.modelCredentialId,
+              )
           : (choice as AgentRunRequest["model"]);
         if (signalAborted()) return undefined;
         if (config.provider !== choice.provider || config.id !== choice.id) continue;
+        if (
+          choice.modelCredentialId !== undefined &&
+          config.modelCredentialId !== choice.modelCredentialId
+        )
+          continue;
         // Never borrow the primary or process-wide key for a backup. Production resolves
         // each candidate lazily from the authenticated user's Space-scoped credential store.
         if (!config.apiKey && !config.oauth && config.provider !== OPENAI_COMPATIBLE_PROVIDER_ID) {

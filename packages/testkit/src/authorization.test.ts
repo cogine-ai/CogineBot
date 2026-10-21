@@ -84,13 +84,30 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["updater/apply", {}],
       ["models/list"],
       ["models/credentials"],
+      ["models/references", {}],
+      ["models/backups"],
+      ["models/setBackups", []],
+      [
+        "models/disconnect",
+        { provider: "test", credentialId: "missing-connection", expectedRevision: 1 },
+      ],
+      ["models/probeOpenAiCompatible", { baseUrl: "http://localhost:11434/v1" }],
+      ["models/probeCatalog", { provider: "test", apiKey: "not-a-real-key" }],
       ["models/connect", { provider: "test", apiKey: "not-a-real-key" }],
       ["models/beginOAuth", { provider: "openai-codex" }],
       ["models/submitOAuthCode", { loginId: "missing-login", code: "fake-code" }],
       ["models/completeOAuth", { loginId: "missing-login" }],
       ["models/finishOAuth", { loginId: "missing-login" }],
       ["models/cancelOAuth", { loginId: "missing-login" }],
-      ["models/setDefault", { provider: "test", modelId: "test/model" }],
+      [
+        "models/setDefault",
+        {
+          provider: "test",
+          modelId: "test/model",
+          modelCredentialId: "missing-connection",
+          expectedRevision: 1,
+        },
+      ],
       ["spaces/list"],
       ["spaces/create", { name: "Nope" }],
       ["spaces/rename", { spaceId: "missing-space", name: "Nope" }],
@@ -987,48 +1004,37 @@ describeWithDatabase("API authorization and resource isolation", () => {
     const cookie = await signup(app, `model-defaults-${stamp}@rakazo.test`, "Model Defaults");
     const actor = await rpc<Actor>(app, cookie, "me");
     const support = await rpc<Space>(app, cookie, "spaces/create", { name: "Support models" });
-    const expectSpaceModelDefault = async (spaceId: string, provider: string, modelId: string) => {
-      const preference = await handles.prisma.spaceModelPreference.findFirst({
-        where: { userId: actor.userId, spaceId, isDefault: true },
-        include: { credential: true },
+    const connect = (label: string, models: string[]) =>
+      rpc<ModelCredential>(app, cookie, "models/connect", {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        apiKey: `fake-${label}-key`,
+        label,
+        modelId: models[0],
+        enabledModelIds: models,
       });
-      expect(preference).toMatchObject({ modelId, credential: { provider } });
+    const first = await connect("First", ["a/one", "a/support", "a/two", "a/three"]);
+    const second = await connect("Second", ["b/one", "b/two"]);
+    const select = (credential: ModelCredential, modelId: string, spaceId?: string) =>
+      rpc(
+        app,
+        cookie,
+        "models/setDefault",
+        {
+          provider: "openai-compatible",
+          modelId,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
+        },
+        spaceId,
+      );
+    const expectDefault = async (spaceId: string, credentialId: string, modelId: string) => {
+      expect(
+        await handles.prisma.spaceModelPreference.findFirst({
+          where: { userId: actor.userId, spaceId, isDefault: true },
+        }),
+      ).toMatchObject({ credentialId, modelId });
     };
-
-    const connectedA = await rpc<ModelCredential>(app, cookie, "models/connect", {
-      provider: "provider-a",
-      apiKey: "fake-provider-a-key",
-      label: "Provider A",
-      modelId: "a/one",
-    });
-    expect(connectedA.isDefault).toBe(true);
-    const providerABeforeRotation = await handles.prisma.userModelCredential.findUniqueOrThrow({
-      where: { id: connectedA.id },
-    });
-
-    const rotatedA = await rpc<ModelCredential>(app, cookie, "models/connect", {
-      provider: "provider-a",
-      apiKey: "fake-provider-a-replacement-key",
-      label: "Provider A rotated",
-      modelId: "a/rotated",
-    });
-    const providerAAfterRotation = await handles.prisma.userModelCredential.findUniqueOrThrow({
-      where: { id: connectedA.id },
-    });
-    expect(rotatedA.id).toBe(connectedA.id);
-    expect(providerAAfterRotation.secretId).not.toBe(providerABeforeRotation.secretId);
-    expect(
-      await handles.prisma.secret.findUnique({ where: { id: providerABeforeRotation.secretId } }),
-    ).toBeNull();
-    await expect(
-      handles.prisma.secret.findUniqueOrThrow({ where: { id: providerAAfterRotation.secretId } }),
-    ).resolves.toMatchObject({ userId: actor.userId, spaceId: null, kind: "model" });
-    expect(
-      await handles.prisma.userModelCredential.count({
-        where: { userId: actor.userId, provider: "provider-a" },
-      }),
-    ).toBe(1);
-
     const supportCredentials = await rpc<ModelCredential[]>(
       app,
       cookie,
@@ -1036,49 +1042,58 @@ describeWithDatabase("API authorization and resource isolation", () => {
       {},
       support.id,
     );
-    expect(supportCredentials).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: connectedA.id, provider: "provider-a", isDefault: false }),
-      ]),
+    expect(supportCredentials).toContainEqual(
+      expect.objectContaining({ id: first.id, isDefault: false }),
     );
-    await rpc(
-      app,
-      cookie,
-      "models/setDefault",
-      { provider: "provider-a", modelId: "a/support" },
-      support.id,
-    );
-    await expectSpaceModelDefault(support.id, "provider-a", "a/support");
-    await expectSpaceModelDefault(actor.spaceId, "provider-a", "a/rotated");
-
-    const connectedB = await rpc<ModelCredential>(app, cookie, "models/connect", {
-      provider: "provider-b",
-      apiKey: "fake-provider-b-key",
-      label: "Provider B",
-      modelId: "b/one",
-    });
-    expect(connectedB.isDefault).toBe(true);
-    await expectSpaceModelDefault(actor.spaceId, "provider-b", "b/one");
-
-    await rpc(app, cookie, "models/setDefault", { provider: "provider-a", modelId: "a/two" });
-    await expectSpaceModelDefault(actor.spaceId, "provider-a", "a/two");
-
-    await rpc(app, cookie, "models/setDefault", { provider: "provider-b", modelId: "b/two" });
-    await expectSpaceModelDefault(actor.spaceId, "provider-b", "b/two");
-
-    await rpc(app, cookie, "models/setDefault", { provider: "provider-a", modelId: "a/three" });
-    await expectSpaceModelDefault(actor.spaceId, "provider-a", "a/three");
-    await expectSpaceModelDefault(support.id, "provider-a", "a/support");
+    await select(first, "a/support", support.id);
+    await expectDefault(support.id, first.id, "a/support");
+    await expectDefault(actor.spaceId, second.id, "b/one");
+    await select(first, "a/two");
+    await expectDefault(actor.spaceId, first.id, "a/two");
+    await select(second, "b/two");
+    await expectDefault(actor.spaceId, second.id, "b/two");
+    await select(first, "a/three");
+    await expectDefault(actor.spaceId, first.id, "a/three");
+    await expectDefault(support.id, first.id, "a/support");
     const listed = await rpc<ModelCredential[]>(app, cookie, "models/credentials");
-    expect(JSON.stringify(listed)).not.toContain("fake-provider-a-key");
-    expect(JSON.stringify(listed)).not.toContain("fake-provider-b-key");
-
+    expect(JSON.stringify(listed)).not.toMatch(/fake-First-key|fake-Second-key/);
     const missing = await raw(app, cookie, "models/setDefault", {
-      provider: "missing-provider",
+      provider: "openai-compatible",
       modelId: "missing/model",
+      modelCredentialId: "missing-connection",
+      expectedRevision: 1,
     });
-    expect(missing.status).toBeGreaterThanOrEqual(400);
-    expect(await missing.text()).toMatch(/credential/i);
+    expect(missing.status).toBe(404);
+  });
+
+  it("rotates an existing catalog-provider connection without creating a duplicate", async () => {
+    const cookie = await signup(app, `model-rotation-${stamp}@rakazo.test`, "Model Rotation");
+    const actor = await rpc<Actor>(app, cookie, "me");
+    const first = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      provider: "xai",
+      apiKey: "fake-provider-key",
+      modelId: "grok-4.6",
+    });
+    const before = await handles.prisma.userModelCredential.findUniqueOrThrow({
+      where: { id: first.id },
+    });
+    const rotated = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      provider: "xai",
+      apiKey: "fake-replacement-key",
+      modelId: "grok-4.6",
+    });
+    const after = await handles.prisma.userModelCredential.findUniqueOrThrow({
+      where: { id: first.id },
+    });
+    expect(rotated.id).toBe(first.id);
+    expect(rotated.connectionRevision).toBe(first.connectionRevision + 1);
+    expect(after.secretId).not.toBe(before.secretId);
+    expect(await handles.prisma.secret.findUnique({ where: { id: before.secretId } })).toBeNull();
+    expect(
+      await handles.prisma.userModelCredential.count({
+        where: { userId: actor.userId, provider: "xai" },
+      }),
+    ).toBe(1);
   });
 
   it("deletes only empty, non-default spaces", async () => {
@@ -1475,12 +1490,17 @@ describeWithDatabase("API authorization and resource isolation", () => {
       modelId: "arbitrary-model",
       baseUrl: "http://localhost:8000/v1",
     };
-    await rpc(app, cookie, "models/connect", {
+    const saved = await rpc<ModelCredential>(app, cookie, "models/connect", {
       ...connection,
       apiKey: "fake-saved-key",
       reasoning: false,
     });
-    await rpc(app, cookie, "models/connect", { ...connection, reasoning: true });
+    let updated = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      ...connection,
+      credentialId: saved.id,
+      expectedRevision: saved.connectionRevision,
+      reasoning: true,
+    });
     const actor = await rpc<Actor>(app, cookie, "me");
     expect(
       await handles.executor.resolveModel({
@@ -1493,6 +1513,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       botId: bot.id,
       modelProvider: connection.provider,
       modelId: connection.modelId,
+      modelCredentialId: updated.id,
+      expectedRevision: updated.connectionRevision,
     };
     expect(
       await rpc(app, cookie, "bots/update", { ...update, thinkingLevel: "low" }),
@@ -1500,7 +1522,13 @@ describeWithDatabase("API authorization and resource isolation", () => {
     expect(
       (await raw(app, cookie, "bots/update", { ...update, thinkingLevel: "xhigh" })).status,
     ).toBe(400);
-    await rpc(app, cookie, "models/connect", { ...connection, reasoning: false });
+    updated = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      ...connection,
+      credentialId: updated.id,
+      expectedRevision: updated.connectionRevision,
+      reasoning: false,
+    });
+    update.expectedRevision = updated.connectionRevision;
     expect(
       (await raw(app, cookie, "bots/update", { ...update, thinkingLevel: "low" })).status,
     ).toBe(400);
@@ -1518,7 +1546,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
         thinkingLevel: string | null;
       }
     >(app, cookie, "bots/create", botInput("Model Bot"));
-    await rpc(app, cookie, "models/connect", {
+    const credential = await rpc<ModelCredential>(app, cookie, "models/connect", {
       provider: "xai",
       apiKey: "fake-xai-key-not-real",
       label: "xAI",
@@ -1535,6 +1563,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       botId: bot.id,
       modelProvider: "xai",
       modelId: "grok-4.6",
+      modelCredentialId: credential.id,
+      expectedRevision: credential.connectionRevision,
       thinkingLevel: "high",
     });
     expect(updated).toMatchObject({
@@ -1547,6 +1577,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       botId: bot.id,
       modelProvider: "xai",
       modelId: "not-a-real-grok",
+      modelCredentialId: credential.id,
+      expectedRevision: credential.connectionRevision,
     });
     expect(unknown.status).toBeGreaterThanOrEqual(400);
     expect(await unknown.text()).toMatch(/unknown model/i);
@@ -1555,6 +1587,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       botId: bot.id,
       modelProvider: "anthropic",
       modelId: "claude-opus-4-6",
+      modelCredentialId: credential.id,
+      expectedRevision: credential.connectionRevision,
     });
     expect(disconnected.status).toBeGreaterThanOrEqual(400);
     expect(await disconnected.text()).toMatch(/connect/i);
@@ -1564,63 +1598,33 @@ describeWithDatabase("API authorization and resource isolation", () => {
       modelId: null,
     });
     expect(partialClear.status).toBeGreaterThanOrEqual(400);
-    expect(await partialClear.text()).toMatch(/both be set or both cleared/i);
+    expect(await partialClear.text()).toMatch(/connection and its current revision, or clear/i);
   });
 
-  it("binds a new default to the space preference credential, not a newer unused duplicate", async () => {
+  it("binds a new default to the explicitly chosen connection despite a newer same-provider row", async () => {
     const cookie = await signup(app, `model-duplicates-${stamp}@rakazo.test`, "Model Duplicates");
     const actor = await rpc<Actor>(app, cookie, "me");
-    const olderSecret = await handles.prisma.secret.create({
-      data: {
-        userId: actor.userId,
-        spaceId: null,
-        kind: "model",
-        ciphertext: "encrypted-older-key",
-      },
+    const input = {
+      provider: "openai-compatible",
+      baseUrl: "http://localhost:11434/v1",
+      apiKey: "fake-duplicate-key",
+      modelId: "older/model",
+      enabledModelIds: ["older/model", "newer/selected"],
+    };
+    const older = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      ...input,
+      label: "Older",
     });
-    const newerSecret = await handles.prisma.secret.create({
-      data: {
-        userId: actor.userId,
-        spaceId: null,
-        kind: "model",
-        ciphertext: "encrypted-newer-key",
-      },
+    const newer = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      ...input,
+      label: "Newer",
     });
-    const older = await handles.prisma.userModelCredential.create({
-      data: {
-        userId: actor.userId,
-        provider: "duplicate-provider",
-        label: "Older",
-        secretId: olderSecret.id,
-        createdAt: new Date("2026-01-01T00:00:00.000Z"),
-        updatedAt: new Date("2026-01-02T00:00:00.000Z"),
-      },
-    });
-    const newer = await handles.prisma.userModelCredential.create({
-      data: {
-        userId: actor.userId,
-        provider: "duplicate-provider",
-        label: "Newer",
-        secretId: newerSecret.id,
-        createdAt: new Date("2026-02-01T00:00:00.000Z"),
-        updatedAt: new Date("2026-02-02T00:00:00.000Z"),
-      },
-    });
-    await handles.prisma.spaceModelPreference.create({
-      data: {
-        spaceId: actor.spaceId,
-        userId: actor.userId,
-        credentialId: older.id,
-        modelId: "older/model",
-        isDefault: true,
-      },
-    });
-
     await rpc(app, cookie, "models/setDefault", {
-      provider: "duplicate-provider",
+      provider: input.provider,
       modelId: "newer/selected",
+      modelCredentialId: older.id,
+      expectedRevision: older.connectionRevision,
     });
-
     const preferences = await handles.prisma.spaceModelPreference.findMany({
       where: { userId: actor.userId, spaceId: actor.spaceId },
     });
@@ -1631,11 +1635,12 @@ describeWithDatabase("API authorization and resource isolation", () => {
       isDefault: true,
       modelId: "newer/selected",
     });
-    expect(preferences.find((row) => row.credentialId === newer.id)).toBeUndefined();
+    expect(preferences.find((row) => row.credentialId === newer.id)).toMatchObject({
+      isDefault: false,
+      modelId: "older/model",
+    });
     const listed = await rpc<ModelCredential[]>(app, cookie, "models/credentials");
-    expect(
-      listed.filter((row) => row.provider === "duplicate-provider").map((row) => row.id),
-    ).toEqual([newer.id, older.id]);
+    expect(listed.map((row) => row.id)).toEqual([newer.id, older.id]);
   });
 
   it("never hands out session tokens and asks for the password before account deletion", async () => {
@@ -1913,6 +1918,7 @@ interface Actor {
 }
 
 interface ModelCredential {
+  connectionRevision: number;
   id: string;
   provider: string;
   label: string;

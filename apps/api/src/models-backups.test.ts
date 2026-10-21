@@ -20,7 +20,11 @@ function setup(options: { actor?: Actor; existing?: Array<Record<string, unknown
       rows
         .filter((row) => row.userId === where.userId && row.spaceId === where.spaceId)
         .sort((a, b) => Number(a.position) - Number(b.position))
-        .map(({ provider, modelId }) => ({ provider, modelId })),
+        .map(({ provider, modelId, modelCredentialId }) => ({
+          provider,
+          modelId,
+          modelCredentialId: modelCredentialId ?? null,
+        })),
     ),
     deleteMany: vi.fn(async ({ where }: { where: { userId: string; spaceId: string } }) => {
       for (let index = rows.length - 1; index >= 0; index -= 1) {
@@ -41,13 +45,35 @@ function setup(options: { actor?: Actor; existing?: Array<Record<string, unknown
     provider: "openrouter",
     label: "fixture",
     secretId: "secret-one",
+    connectionRevision: 1,
+    preferences: [],
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
-  const tx = { $queryRaw: vi.fn().mockResolvedValue([{ locked: 1 }]), spaceBackupModel };
+  const userModelCredential = {
+    findFirst: vi.fn(
+      async ({ where }: { where: { id: string; userId: string; provider?: string } }) =>
+        where.id === credential.id &&
+        where.userId === credential.userId &&
+        (!where.provider || where.provider === credential.provider)
+          ? credential
+          : null,
+    ),
+  };
+  const secret = {
+    findFirst: vi.fn().mockResolvedValue({ id: "secret-one", ciphertext: "fixture-ciphertext" }),
+    findMany: vi.fn().mockResolvedValue([{ id: "secret-one", ciphertext: "fixture-ciphertext" }]),
+  };
+  const tx = {
+    $queryRaw: vi.fn().mockResolvedValue([{ locked: 1 }]),
+    spaceBackupModel,
+    userModelCredential,
+    secret,
+  };
   const prisma = {
     spaceBackupModel,
     userModelCredential: {
+      ...userModelCredential,
       findMany: vi.fn(async ({ where }: { where: { userId: string; provider?: string } }) =>
         where.userId === owner.userId && (!where.provider || where.provider === credential.provider)
           ? [credential]
@@ -60,9 +86,7 @@ function setup(options: { actor?: Actor; existing?: Array<Record<string, unknown
       upsert: vi.fn(),
       updateMany: vi.fn(),
     },
-    secret: {
-      findMany: vi.fn().mockResolvedValue([{ id: "secret-one", ciphertext: "fixture-ciphertext" }]),
-    },
+    secret,
     $transaction: vi.fn(async (work: (client: typeof tx) => Promise<unknown>) => work(tx)),
   } as unknown as PrismaClient;
   const deps = {
@@ -128,18 +152,25 @@ describe("model backup settings API", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      json: [{ provider: "openrouter", modelId: "first" }],
+      json: [{ provider: "openrouter", modelId: "first", modelCredentialId: null }],
     });
     expect(spaceBackupModel.findMany).toHaveBeenCalledWith({
       where: { userId: owner.userId, spaceId: owner.spaceId },
       orderBy: { position: "asc" },
-      select: { provider: true, modelId: true },
+      select: { provider: true, modelId: true, modelCredentialId: true },
     });
   });
 
   it("persists an ordered list for a connected usable model without changing the primary", async () => {
     const { call, prisma, spaceBackupModel, rows } = setup();
-    const input = [{ provider: availableModel.provider, modelId: availableModel.id }];
+    const input = [
+      {
+        provider: availableModel.provider,
+        modelId: availableModel.id,
+        modelCredentialId: "credential-one",
+        expectedRevision: 1,
+      },
+    ];
 
     const { response } = await call("models/setBackups", input);
 
@@ -150,6 +181,7 @@ describe("model backup settings API", () => {
         spaceId: owner.spaceId,
         provider: availableModel.provider,
         modelId: availableModel.id,
+        modelCredentialId: "credential-one",
         position: 0,
       },
     ]);
@@ -169,13 +201,23 @@ describe("model backup settings API", () => {
   it("rejects disconnected models, duplicate targets, and lists over the configured bound", async () => {
     const disconnected = setup();
     const invalid = await disconnected.call("models/setBackups", [
-      { provider: "not-connected", modelId: "unknown-model" },
+      {
+        provider: "not-connected",
+        modelId: "unknown-model",
+        modelCredentialId: "missing",
+        expectedRevision: 1,
+      },
     ]);
     expect(invalid.response.status).toBeGreaterThanOrEqual(400);
     expect(disconnected.spaceBackupModel.deleteMany).not.toHaveBeenCalled();
 
     const duplicate = setup();
-    const repeated = { provider: availableModel.provider, modelId: availableModel.id };
+    const repeated = {
+      provider: availableModel.provider,
+      modelId: availableModel.id,
+      modelCredentialId: "credential-one",
+      expectedRevision: 1,
+    };
     const duplicateResponse = await duplicate.call("models/setBackups", [repeated, repeated]);
     expect(duplicateResponse.response.status).toBeGreaterThanOrEqual(400);
     expect(duplicate.spaceBackupModel.deleteMany).not.toHaveBeenCalled();
@@ -184,6 +226,8 @@ describe("model backup settings API", () => {
     const tooMany = Array.from({ length: 11 }, (_, index) => ({
       provider: availableModel.provider,
       modelId: `${availableModel.id}-${index}`,
+      modelCredentialId: "credential-one",
+      expectedRevision: 1,
     }));
     const oversizedResponse = await oversized.call("models/setBackups", tooMany);
     expect(oversizedResponse.response.status).toBeGreaterThanOrEqual(400);
@@ -204,12 +248,17 @@ describe("model backup settings API", () => {
     const { call, spaceBackupModel, rows } = setup({ existing: [existing] });
 
     const { response } = await call("models/setBackups", [
-      { provider: disconnectedModel.provider, modelId: disconnectedModel.id },
+      {
+        provider: disconnectedModel.provider,
+        modelId: disconnectedModel.id,
+        modelCredentialId: "missing",
+        expectedRevision: 1,
+      },
     ]);
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(404);
     await expect(response.json()).resolves.toMatchObject({
-      json: { message: "Connect that model provider first" },
+      json: { message: "Model connection not found." },
     });
     expect(spaceBackupModel.deleteMany).not.toHaveBeenCalled();
     expect(spaceBackupModel.createMany).not.toHaveBeenCalled();

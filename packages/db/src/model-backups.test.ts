@@ -69,7 +69,7 @@ describe("space backup models", () => {
     expect(findMany).toHaveBeenCalledWith({
       where: { userId: scope.userId, spaceId: scope.spaceId },
       orderBy: { position: "asc" },
-      select: { provider: true, modelId: true },
+      select: { provider: true, modelId: true, modelCredentialId: true },
     });
   });
 
@@ -160,6 +160,27 @@ describe("space backup models", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "ReadCommitted",
+    });
+  });
+  it("validates a binding in the same serializable transaction before replacing it", async () => {
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ locked: 1 }]),
+      spaceBackupModel: { deleteMany: vi.fn(), createMany: vi.fn() },
+    };
+    const transaction = vi.fn(async (work: (client: typeof tx) => Promise<unknown>) => work(tx));
+    const validate = vi.fn().mockRejectedValue(new Error("stale connection"));
+    await expect(
+      replaceSpaceBackupModels(
+        { $transaction: transaction } as unknown as PrismaClient,
+        scope,
+        [{ provider: "openai-compatible", modelId: "same", modelCredentialId: "connection" }],
+        validate,
+      ),
+    ).rejects.toThrow("stale connection");
+    expect(validate).toHaveBeenCalledWith(tx);
+    expect(tx.spaceBackupModel.deleteMany).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
     });
   });
 });

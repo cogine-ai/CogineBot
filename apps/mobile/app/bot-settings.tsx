@@ -8,6 +8,7 @@ import {
 } from "@rakazo/contracts";
 import {
   connectedModelChoices,
+  credentialForModel,
   GAZE_BOT_COLORS,
   modelOptionKey,
   parseModelOptionKey,
@@ -54,6 +55,7 @@ export default function BotSettingsScreen() {
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [modelKey, setModelKey] = useState("");
+  const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
   const [autoSpeak, setAutoSpeak] = useState(false);
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
@@ -82,7 +84,7 @@ export default function BotSettingsScreen() {
         setComputerMode(next.computerMode);
         setModelKey(
           next.modelProvider && next.modelId
-            ? modelOptionKey(next.modelProvider, next.modelId)
+            ? modelOptionKey(next.modelProvider, next.modelId, next.modelCredentialId ?? undefined)
             : "",
         );
         setThinkingLevel(next.thinkingLevel ?? "");
@@ -118,11 +120,12 @@ export default function BotSettingsScreen() {
   const selectedModel = storedModel
     ? {
         provider: storedModel.provider,
+        modelCredentialId: storedModel.modelCredentialId,
         modelId: resolveSelectableModelId(catalog, storedModel.provider, storedModel.modelId),
       }
     : null;
   const selectedModelKey = selectedModel
-    ? modelOptionKey(selectedModel.provider, selectedModel.modelId)
+    ? modelOptionKey(selectedModel.provider, selectedModel.modelId, selectedModel.modelCredentialId)
     : "";
 
   const effectiveProvider = selectedModel?.provider ?? me?.defaultProvider ?? null;
@@ -135,9 +138,14 @@ export default function BotSettingsScreen() {
             resolveSelectableModelId(catalog, entry.provider, entry.id) === effectiveModelId,
         )
       : undefined;
-  const effectiveCredential = credentials.find(
-    (entry) => entry.provider === effectiveProvider && entry.modelId === effectiveModelId,
-  );
+  const effectiveCredential = selectedModel
+    ? credentialForModel(
+        credentials,
+        effectiveProvider,
+        effectiveModelId,
+        selectedModel.modelCredentialId,
+      )
+    : credentials.find((entry) => entry.isDefault);
   const thinkingOptions = (
     effectiveCredential?.thinkingLevels ??
     effectiveEntry?.thinkingLevels ??
@@ -175,6 +183,7 @@ export default function BotSettingsScreen() {
 
   function selectModel(key: string) {
     if (key === selectedModelKey) return;
+    setModelRevision(connectedOptions.find((option) => option.key === key)?.connectionRevision);
     setModelKey(key);
     setThinkingLevel("");
   }
@@ -285,6 +294,8 @@ export default function BotSettingsScreen() {
         color?: string;
         modelProvider?: string | null;
         modelId?: string | null;
+        modelCredentialId?: string | null;
+        expectedRevision?: number;
         thinkingLevel?: ThinkingLevel | null;
         autoSpeak?: boolean;
       } = { botId };
@@ -298,11 +309,14 @@ export default function BotSettingsScreen() {
       if (color !== bot.color) input.color = color;
       const modelChanged =
         (selected?.provider ?? null) !== (bot.modelProvider ?? null) ||
-        (selected?.modelId ?? null) !== (bot.modelId ?? null);
+        (selected?.modelId ?? null) !== (bot.modelId ?? null) ||
+        (selected?.modelCredentialId ?? null) !== (bot.modelCredentialId ?? null);
       const thinkingChanged = (thinkingLevel || null) !== (bot.thinkingLevel ?? null);
-      if (modelChanged) {
+      if (modelChanged || thinkingChanged) {
         input.modelProvider = selected?.provider ?? null;
         input.modelId = selected?.modelId ?? null;
+        input.modelCredentialId = selected?.modelCredentialId ?? null;
+        input.expectedRevision = selected ? modelRevision : undefined;
       }
       if (modelMetaReady && (modelChanged || thinkingChanged)) {
         input.thinkingLevel = thinkingOptions.length
@@ -545,7 +559,11 @@ export default function BotSettingsScreen() {
                   choices={thinkingChoices}
                   divider
                   label={t("Thinking")}
-                  onChange={setThinkingLevel}
+                  onChange={(value) => {
+                    if (modelRevision === undefined)
+                      setModelRevision(effectiveCredential?.connectionRevision);
+                    setThinkingLevel(value);
+                  }}
                   value={thinkingLevel}
                 />
               ) : null}

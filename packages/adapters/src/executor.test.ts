@@ -922,8 +922,13 @@ function modelPreference({
       secretId,
       createdAt: now,
       updatedAt: now,
+      connectionRevision: 1,
     },
   };
+}
+
+function boundCredential(preference: ReturnType<typeof modelPreference>) {
+  return { ...preference.credential, preferences: [preference] };
 }
 
 describe("parseUpdateBotPatch", () => {
@@ -1570,6 +1575,7 @@ describe("createRunExecutor", () => {
       model: {
         modelProvider: string | null;
         modelId: string | null;
+        modelCredentialId?: string | null;
         thinkingLevel: string | null;
       },
       claimedModel = model,
@@ -1622,6 +1628,7 @@ describe("createRunExecutor", () => {
       fixture({
         modelProvider: "routine-provider",
         modelId: "routine-model",
+        modelCredentialId: "routine-credential",
         thinkingLevel: "low",
       }),
     ).wakeRoutine("routine-1", scheduledAt.toISOString());
@@ -1631,6 +1638,7 @@ describe("createRunExecutor", () => {
           routineId: "routine-1",
           modelProvider: "routine-provider",
           modelId: "routine-model",
+          modelCredentialId: "routine-credential",
           thinkingLevel: "low",
           modelPinned: true,
         }),
@@ -1649,15 +1657,26 @@ describe("createRunExecutor", () => {
     runCreate.mockClear();
     await executorFor(
       fixture(
-        { modelProvider: "stale-provider", modelId: "stale-model", thinkingLevel: "low" },
-        { modelProvider: "current-provider", modelId: "current-model", thinkingLevel: "high" },
+        {
+          modelProvider: "same-provider",
+          modelId: "same-model",
+          modelCredentialId: "stale-credential",
+          thinkingLevel: "low",
+        },
+        {
+          modelProvider: "same-provider",
+          modelId: "same-model",
+          modelCredentialId: "current-credential",
+          thinkingLevel: "high",
+        },
       ),
     ).wakeRoutine("routine-1", scheduledAt.toISOString());
     expect(runCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          modelProvider: "current-provider",
-          modelId: "current-model",
+          modelProvider: "same-provider",
+          modelId: "same-model",
+          modelCredentialId: "current-credential",
           thinkingLevel: "high",
           modelPinned: true,
         }),
@@ -2544,17 +2563,32 @@ description: Prepare standup notes
         findFirst: vi.fn(async () => ({
           modelProvider: "xai",
           modelId: "grok-4.6",
+          modelCredentialId: "credential-xai",
           thinkingLevel: "high",
         })),
       },
       spaceModelPreference: { findFirst },
-      userModelCredential: { findFirst: vi.fn(async () => null) },
+      userModelCredential: {
+        findFirst: vi.fn(async () =>
+          boundCredential(
+            modelPreference({
+              provider: "xai",
+              secretId: "secret-xai",
+              modelId: "grok-4.6",
+              isDefault: false,
+            }),
+          ),
+        ),
+      },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
-      secret: { findFirst: vi.fn(async () => null), findUnique: vi.fn(async () => null) },
+      secret: {
+        findFirst: vi.fn(async () => ({ id: "secret-xai", ciphertext: "fake-xai-key" })),
+        findUnique: vi.fn(async () => null),
+      },
     } as unknown as PrismaClient;
     const executor = createRunExecutor({
       prisma,
-      secretStore: { load: vi.fn(), put: vi.fn() },
+      secretStore: { load: vi.fn(async () => "fake-xai-key"), put: vi.fn() },
     } as unknown as Parameters<typeof createRunExecutor>[0]);
 
     const model = await executor.resolveModel({
@@ -2568,9 +2602,9 @@ description: Prepare standup notes
       id: "grok-4.6",
       thinkingLevel: "high",
     });
-    expect(findFirst).toHaveBeenCalledWith(
+    expect(prisma.userModelCredential.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ credential: { provider: "xai" } }),
+        where: { id: "credential-xai", userId: "user-1", provider: "xai" },
       }),
     );
   });
@@ -2618,7 +2652,7 @@ description: Prepare standup notes
     );
   });
 
-  it("rejects a free-form selection when the owning preference disappears", async () => {
+  it("rejects a free-form selection whose selected secret is unavailable", async () => {
     const preference = modelPreference({
       provider: "openai-compatible",
       secretId: "secret-compat",
@@ -2654,7 +2688,7 @@ description: Prepare standup notes
         "openai-compatible",
         "private-model",
       ),
-    ).rejects.toThrow("Unknown model for that provider");
+    ).rejects.toThrow("Model connection is unavailable");
   });
 
   it("rejects a saved Codex Spark model for ChatGPT subscription sign-in", async () => {
@@ -2671,6 +2705,7 @@ description: Prepare standup notes
         findFirst: vi.fn(async () => ({
           modelProvider: provider,
           modelId,
+          modelCredentialId: `credential-${provider}`,
           thinkingLevel: null,
         })),
       },
@@ -2684,7 +2719,13 @@ description: Prepare standup notes
           }),
         ),
       },
-      userModelCredential: { findFirst: vi.fn(async () => null) },
+      userModelCredential: {
+        findFirst: vi.fn(async () =>
+          boundCredential(
+            modelPreference({ provider, secretId: "secret-codex", modelId, isDefault: true }),
+          ),
+        ),
+      },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({ id: "secret-codex", ciphertext: plaintext })),
@@ -2716,6 +2757,7 @@ description: Prepare standup notes
         findFirst: vi.fn(async () => ({
           modelProvider: provider,
           modelId,
+          modelCredentialId: `credential-${provider}`,
           thinkingLevel: null,
         })),
       },
@@ -2729,7 +2771,13 @@ description: Prepare standup notes
           }),
         ),
       },
-      userModelCredential: { findFirst: vi.fn(async () => null) },
+      userModelCredential: {
+        findFirst: vi.fn(async () =>
+          boundCredential(
+            modelPreference({ provider, secretId: "secret-codex", modelId, isDefault: true }),
+          ),
+        ),
+      },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({ id: "secret-codex", ciphertext: plaintext })),
@@ -2780,6 +2828,7 @@ description: Prepare standup notes
         findFirst: vi.fn(async () => ({
           modelProvider: provider,
           modelId,
+          modelCredentialId: `credential-${provider}`,
           thinkingLevel: null,
         })),
       },
@@ -2793,7 +2842,13 @@ description: Prepare standup notes
           }),
         ),
       },
-      userModelCredential: { findFirst: vi.fn(async () => null) },
+      userModelCredential: {
+        findFirst: vi.fn(async () =>
+          boundCredential(
+            modelPreference({ provider, secretId: "secret-codex", modelId, isDefault: true }),
+          ),
+        ),
+      },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({ id: "secret-codex", ciphertext: plaintext })),
@@ -2831,11 +2886,23 @@ description: Prepare standup notes
         findFirst: vi.fn(async () => ({
           modelProvider: provider,
           modelId: "scripted",
+          modelCredentialId: `credential-${provider}`,
           thinkingLevel: null,
         })),
       },
       spaceModelPreference: { findFirst },
-      userModelCredential: { findFirst: vi.fn(async () => null) },
+      userModelCredential: {
+        findFirst: vi.fn(async () =>
+          boundCredential(
+            modelPreference({
+              provider,
+              secretId: "secret-scripted",
+              modelId: "scripted",
+              isDefault: true,
+            }),
+          ),
+        ),
+      },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({ id: "secret-scripted", ciphertext: plaintext })),
@@ -2875,6 +2942,7 @@ description: Prepare standup notes
       kind: "openai_compatible",
       baseUrl: "http://127.0.0.1:8000/v1",
       visionModelIds: ["bot-vision-model"],
+      enabledModelIds: ["space-model", "bot-vision-model", "text-only-model"],
       maxImagesPerPrompt: 1,
       maxTokens: 8192,
       contextWindow: 65536,
@@ -2882,12 +2950,24 @@ description: Prepare standup notes
     const bot = {
       modelProvider: provider,
       modelId: "bot-vision-model",
+      modelCredentialId: `credential-${provider}`,
       thinkingLevel: null,
     };
     const prisma = {
       bot: { findFirst: vi.fn(async () => bot) },
       spaceModelPreference: { findFirst },
-      userModelCredential: { findFirst: vi.fn(async () => null) },
+      userModelCredential: {
+        findFirst: vi.fn(async () =>
+          boundCredential(
+            modelPreference({
+              provider,
+              secretId: "secret-openai-compatible",
+              modelId: "space-model",
+              isDefault: true,
+            }),
+          ),
+        ),
+      },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({
@@ -2923,7 +3003,7 @@ description: Prepare standup notes
     });
   });
 
-  it("falls back to the Space default when the override provider has no credential", async () => {
+  it("rejects a missing override connection instead of using the Space default", async () => {
     const findFirst = vi.fn(
       async (args: { where: { credential?: { provider?: string }; isDefault?: boolean } }) => {
         if (args.where.credential?.provider === "xai") return null;
@@ -2943,6 +3023,7 @@ description: Prepare standup notes
         findFirst: vi.fn(async () => ({
           modelProvider: "xai",
           modelId: "grok-4.6",
+          modelCredentialId: "retired-connection",
           thinkingLevel: "high",
         })),
       },
@@ -2958,23 +3039,15 @@ description: Prepare standup notes
       deploymentModelConfigured: true,
     } as unknown as Parameters<typeof createRunExecutor>[0]);
 
-    const model = await executor.resolveModel({
-      userId: "user-1",
-      spaceId: "ws-1",
-      botId: "bot-1",
-    });
-
-    expect(model).toMatchObject({
-      provider: "openrouter",
-      id: "deepseek/deepseek-v4-flash-0731",
-      // Override thinking must drop with the override provider/credential unit.
-      thinkingLevel: null,
-    });
-    expect(findFirst).toHaveBeenCalledWith(
+    await expect(
+      executor.resolveModel({ userId: "user-1", spaceId: "ws-1", botId: "bot-1" }),
+    ).rejects.toThrow("Connect that model provider first");
+    expect(prisma.userModelCredential.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ credential: { provider: "xai" } }),
+        where: { id: "retired-connection", userId: "user-1", provider: "xai" },
       }),
     );
+
     expect(findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ isDefault: true }),

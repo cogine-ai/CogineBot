@@ -1,4 +1,9 @@
-import type { ModelBackupChoice, ModelOAuthBegin, ThinkingLevel } from "@rakazo/contracts";
+import type {
+  ModelBackupChoice,
+  ModelCredentialReference,
+  ModelOAuthBegin,
+  ThinkingLevel,
+} from "@rakazo/contracts";
 import {
   backupChoiceKey,
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
@@ -9,6 +14,7 @@ import {
   MAX_MODEL_BACKUPS,
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
+  modelConnectionLabel,
   moveBackupChoice,
   OPENAI_COMPATIBLE_BASE_URL_HINT,
   OPENAI_COMPATIBLE_PROVIDER_ID,
@@ -17,15 +23,20 @@ import {
   parseModelMaxImagesPerPrompt,
   parseModelMaxTokens,
   sameBackupChoices,
+  sameOpenAiCompatibleBaseUrl,
 } from "@rakazo/contracts";
 import {
   COMPATIBLE_THINKING_LEVELS,
+  canUseCompatibleModelAsDefault,
   clampCatalogThinkingLevel,
+  compatibleModelRows,
   createModelProbe,
   featuredModelProviders,
   filterModelCatalog,
   initialModelProbeState,
   pickCatalogModelId,
+  savedCompatibleModelIds,
+  toggleEnabledModelId,
 } from "@rakazo/core";
 import * as Clipboard from "expo-clipboard";
 import { useFocusEffect } from "expo-router";
@@ -44,6 +55,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { MenuPicker } from "../../components/menu-picker";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
 import { Checkmark, Chevron } from "../../components/row-accessories";
@@ -53,7 +65,13 @@ import type {
   MobileModel,
   MobileModelCredential,
 } from "../../lib/api";
-import { captureApiRequestContext, rpc, selectedSpaceId } from "../../lib/api";
+import {
+  captureApiRequestContext,
+  currentApiBase,
+  currentSpaceSelectionGeneration,
+  rpc,
+  selectedSpaceId,
+} from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
 import { useI18n } from "../../lib/i18n";
 import { presentMessageActionSheet } from "../../lib/message-action-sheet";
@@ -64,6 +82,7 @@ import {
 } from "../../lib/model-auth";
 import { mobileBackupScopeIsCurrent } from "../../lib/model-backups";
 import { native, useResolvedAppearance, useThemedStyles } from "../../lib/native";
+import { currentSessionGeneration } from "../../lib/session";
 import { errorText } from "../../lib/user-error";
 
 function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
@@ -98,6 +117,7 @@ const MODEL_SEARCH_THRESHOLD = 10;
 type ModelSelection = {
   provider?: string;
   modelId?: string;
+  connectionId?: string;
 };
 
 type FeedbackAnchor = "probe" | "model" | "connection";
@@ -110,10 +130,18 @@ export default function Models() {
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
   const [me, setMe] = useState<MobileMe | null>(null);
   const [provider, setProvider] = useState("");
+  const [connectionId, setConnectionId] = useState<string | null>(null);
+  const [connectionRevision, setConnectionRevision] = useState<number | undefined>();
+  const [savedBaseUrl, setSavedBaseUrl] = useState<string | undefined>();
+  const [references, setReferences] = useState<ModelCredentialReference[]>([]);
+  const backupOptionsSnapshotRef = useRef(new Map<string, ModelBackupChoice>());
+  const modelRequestGenerationRef = useRef(0);
+  const selectionRevisionRef = useRef(0);
   // The provider whose optional personal-key form is open.
   const [ownKeyProvider, setOwnKeyProvider] = useState<string | null>(null);
   const [showAllProviders, setShowAllProviders] = useState(false);
   const [modelId, setModelId] = useState("");
+  const [enabledModelIds, setEnabledModelIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState({ provider: "", query: "" });
   const [apiKey, setApiKey] = useState("");
   const [accountId, setAccountId] = useState("");
@@ -129,7 +157,24 @@ export default function Models() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [{ models: probeModels, probing }, setProbe] = useState(initialModelProbeState);
-  const [modelProbe] = useState(() => createModelProbe(setProbe));
+  const probeScopeRef = useRef<{
+    spaceGeneration: number;
+    sessionGeneration: number;
+    apiBase: string;
+  } | null>(null);
+  const [modelProbe] = useState(() =>
+    createModelProbe((next) => {
+      const scope = probeScopeRef.current;
+      setProbe(
+        scope &&
+          scope.spaceGeneration === currentSpaceSelectionGeneration() &&
+          scope.sessionGeneration === currentSessionGeneration() &&
+          scope.apiBase === currentApiBase()
+          ? next
+          : initialModelProbeState,
+      );
+    }),
+  );
   const resetOpenAiCompatibleProbe = modelProbe.reset;
   const [oauth, setOauth] = useState<ModelOAuthBegin | null>(null);
   const [pasteCode, setPasteCode] = useState("");
@@ -200,18 +245,43 @@ export default function Models() {
 
   const load = useCallback(async (preferred: ModelSelection = {}) => {
     setError(null);
-    const [nextMe, nextCatalog, nextCredentials] = await Promise.all([
-      rpc<MobileMe>("me"),
-      rpc<MobileModel[]>("models/list"),
-      rpc<MobileModelCredential[]>("models/credentials"),
+    const generation = ++modelRequestGenerationRef.current;
+    const selectionRevision = selectionRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const requestContext = await captureApiRequestContext();
+    const [nextMe, nextCatalog, nextCredentials, nextReferences] = await Promise.all([
+      rpc<MobileMe>("me", {}, { requestContext }),
+      rpc<MobileModel[]>("models/list", {}, { requestContext }),
+      rpc<MobileModelCredential[]>("models/credentials", {}, { requestContext }),
+      rpc<{ references: ModelCredentialReference[] }>("models/references", {}, { requestContext }),
     ]);
+    if (
+      generation !== modelRequestGenerationRef.current ||
+      selectionRevision !== selectionRevisionRef.current ||
+      spaceGeneration !== currentSpaceSelectionGeneration() ||
+      requestContext.apiBase !== currentApiBase() ||
+      requestContext.sessionGeneration !== currentSessionGeneration()
+    )
+      return;
+    setReferences(nextReferences.references);
+    backupOptionsSnapshotRef.current = new Map(
+      connectedBackupOptions(nextCatalog, nextCredentials).map((option) => [
+        backupChoiceKey(option),
+        option,
+      ]),
+    );
     const nextProvider =
       (preferred.provider && nextCatalog.some((entry) => entry.provider === preferred.provider)
         ? preferred.provider
         : nextMe.defaultProvider) ??
       nextCatalog[0]?.provider ??
       "";
-    const nextCredential = nextCredentials.find((entry) => entry.provider === nextProvider);
+    const nextCredential =
+      nextCredentials.find(
+        (entry) => entry.provider === nextProvider && entry.id === preferred.connectionId,
+      ) ??
+      nextCredentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
+      nextCredentials.find((entry) => entry.provider === nextProvider);
     const nextModel =
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
         ? preferred.modelId?.trim() ||
@@ -229,10 +299,14 @@ export default function Models() {
     setCredentials(nextCredentials);
     resetOpenAiCompatibleProbe();
     setProvider(nextProvider);
+    setConnectionId(nextCredential?.id ?? null);
+    setConnectionRevision(nextCredential?.connectionRevision);
+    setSavedBaseUrl(nextCredential?.baseUrl);
     setModelSearch((current) =>
       current.provider === nextProvider ? current : { provider: nextProvider, query: "" },
     );
     setModelId(nextModel);
+    setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
     if (nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
       setBaseUrl(nextCredential?.baseUrl ?? "");
       setReasoning(nextCredential?.reasoning ?? false);
@@ -266,6 +340,7 @@ export default function Models() {
   const loadBackupModels = useCallback(
     async (expectedMe: MobileMe) => {
       const requestGeneration = ++backupRequestGenerationRef.current;
+      const optionSnapshot = backupOptionsSnapshotRef.current;
       const expected = { userId: expectedMe.userId, spaceId: expectedMe.spaceId };
       backupReadyRef.current = false;
       backupLoadingRef.current = true;
@@ -308,8 +383,14 @@ export default function Models() {
         ) {
           return;
         }
-        setSavedBackupModels([...saved]);
-        setBackupModels([...saved]);
+        const snapshot = saved.map((choice) => {
+          const revision = choice.modelCredentialId
+            ? optionSnapshot.get(backupChoiceKey(choice))?.expectedRevision
+            : undefined;
+          return revision === undefined ? { ...choice } : { ...choice, expectedRevision: revision };
+        });
+        setSavedBackupModels(snapshot);
+        setBackupModels(snapshot);
         backupReadyRef.current = true;
         setBackupReady(true);
       } catch (err) {
@@ -330,7 +411,7 @@ export default function Models() {
   useFocusEffect(
     useCallback(() => {
       void load()
-        .then((nextMe) => loadBackupModels(nextMe))
+        .then((nextMe) => (nextMe ? loadBackupModels(nextMe) : undefined))
         .catch((err: unknown) =>
           publishFeedback("connection", {
             error: errorText(err, t("Could not load model settings")),
@@ -338,6 +419,8 @@ export default function Models() {
         )
         .finally(() => setLoading(false));
       return () => {
+        modelRequestGenerationRef.current += 1;
+        selectionRevisionRef.current += 1;
         backupRequestGenerationRef.current += 1;
         backupReadyRef.current = false;
         backupLoadingRef.current = true;
@@ -441,13 +524,21 @@ export default function Models() {
   const isCloudflareGateway = provider === CLOUDFLARE_AI_GATEWAY_PROVIDER_ID;
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
-  const credential = credentials.find((entry) => entry.provider === provider);
+  const credential = credentials.find(
+    (entry) => entry.provider === provider && entry.id === connectionId,
+  );
+  const providerConnections = credentials.filter((entry) => entry.provider === provider);
+  const connectionReferences = references.filter(
+    (entry) => entry.modelCredentialId === connectionId,
+  );
+  const blockingConnectionReferences = connectionReferences.filter(
+    (entry) => entry.kind !== "space-default",
+  );
+  const unresolvedReferences = references.filter((entry) => entry.unresolved);
   const currentEntry = catalog.find(
     (entry) => entry.provider === me?.defaultProvider && entry.id === me?.defaultModel,
   );
-  const activeCredential = credentials.find(
-    (entry) => entry.provider === me?.defaultProvider && entry.modelId === me?.defaultModel,
-  );
+  const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
   const activeThinkingLabel =
@@ -455,9 +546,15 @@ export default function Models() {
     activeCredential?.reasoning
       ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
       : null;
+  const compatibleRows = compatibleModelRows(
+    savedCompatibleModelIds(credential, baseUrl),
+    enabledModelIds,
+    probeModels,
+  );
   const isActive =
     me?.defaultProvider === selected?.provider &&
-    me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id);
+    me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id) &&
+    (!isOpenAiCompatible || credential?.isDefault === true);
   // Space still bills the host while this provider matches; model id alone is not credentials.
   const usingServerCredentials = provider === me?.hostCredentialProvider;
   const acceptsKey = selected?.auth !== "oauth";
@@ -486,19 +583,35 @@ export default function Models() {
   const builtinLimitSave = !isOpenAiCompatible && Boolean(credential) && apiKey.trim().length === 0;
 
   function updateBaseUrl(nextBaseUrl: string) {
+    selectionRevisionRef.current += 1;
+    if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) setApiKey("");
     setBaseUrl(nextBaseUrl);
+    // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
+    setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
     resetOpenAiCompatibleProbe();
     clearFeedback();
   }
 
   function updateApiKey(nextApiKey: string) {
+    selectionRevisionRef.current += 1;
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
   }
 
-  function chooseProvider(nextProvider: string) {
+  function chooseProvider(nextProvider: string, nextConnectionId?: string | null) {
+    selectionRevisionRef.current += 1;
     cancelOAuth();
-    const nextCredential = credentials.find((entry) => entry.provider === nextProvider);
+    const nextCredential =
+      nextConnectionId === null
+        ? undefined
+        : (credentials.find(
+            (entry) => entry.provider === nextProvider && entry.id === nextConnectionId,
+          ) ??
+          credentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
+          credentials.find((entry) => entry.provider === nextProvider));
+    setConnectionId(nextCredential?.id ?? null);
+    setConnectionRevision(nextCredential?.connectionRevision);
+    setSavedBaseUrl(nextCredential?.baseUrl);
     const nextModelId =
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
         ? (nextCredential?.modelId ?? "")
@@ -525,6 +638,7 @@ export default function Models() {
     setSupportsImages(nextCredential?.supportsImages ?? false);
     setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     setModelId(nextModelId);
+    setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
     setBaseUrl(
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? (nextCredential?.baseUrl ?? "") : "",
     );
@@ -537,13 +651,37 @@ export default function Models() {
 
   async function probeServerModels() {
     if (!baseUrl.trim()) return;
+    const probeScope = {
+      spaceGeneration: currentSpaceSelectionGeneration(),
+      sessionGeneration: currentSessionGeneration(),
+      apiBase: currentApiBase(),
+    };
+    probeScopeRef.current = probeScope;
+    const isCurrent = () =>
+      probeScope.spaceGeneration === currentSpaceSelectionGeneration() &&
+      probeScope.sessionGeneration === currentSessionGeneration() &&
+      probeScope.apiBase === currentApiBase();
     Keyboard.dismiss();
     clearFeedback();
     await modelProbe.probe({
       baseUrl,
       apiKey,
-      request: (input) => rpc<{ models: string[] }>("models/probeOpenAiCompatible", input),
+      request: async (input) => {
+        const requestContext = await captureApiRequestContext();
+        if (!isCurrent()) throw new Error("Model discovery cancelled");
+        return rpc<{ models: string[] }>(
+          "models/probeOpenAiCompatible",
+          {
+            ...input,
+            ...(connectionId && sameOpenAiCompatibleBaseUrl(baseUrl, savedBaseUrl)
+              ? { credentialId: connectionId, expectedBaseUrl: savedBaseUrl }
+              : {}),
+          },
+          { requestContext },
+        );
+      },
       onSuccess: (models) => {
+        if (!isCurrent()) return;
         const next = modelId.trim() || models[0] || "";
         if (next !== modelId) stageCompatibleModelId(next);
         else setModelId(next);
@@ -556,42 +694,81 @@ export default function Models() {
                 : t("Found {count} models.", { count: models.length }),
         });
       },
-      onError: (err) =>
+      onError: (err) => {
+        if (!isCurrent()) return;
         publishFeedback("probe", {
           error: errorText(err, t("Could not reach this model server")),
-        }),
+        });
+      },
     });
   }
 
+  function operationCurrent(
+    revision: number,
+    scope: MobileMe | null,
+    spaceGeneration: number,
+    sessionGeneration: number,
+    context?: ApiRequestContext,
+  ): boolean {
+    const liveMe = meRef.current;
+    return (
+      revision === selectionRevisionRef.current &&
+      spaceGeneration === currentSpaceSelectionGeneration() &&
+      sessionGeneration === currentSessionGeneration() &&
+      liveMe?.userId === scope?.userId &&
+      liveMe?.spaceId === scope?.spaceId &&
+      (!selectedSpaceId() || selectedSpaceId() === scope?.spaceId) &&
+      (!context || context.apiBase === currentApiBase())
+    );
+  }
+
   async function setModelDefault() {
-    if (!selected || !credential) return;
+    const revision = selectionRevisionRef.current;
+    const scope = me;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const sessionGeneration = currentSessionGeneration();
+    if (!selected || !credential || connectionRevision === undefined) return;
     const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
     if (isOpenAiCompatible && !activeModelId) return;
     Keyboard.dismiss();
     clearFeedback();
     setPending("default");
     try {
-      await rpc("models/setDefault", {
-        provider: selected.provider,
-        modelId: activeModelId,
-        // Catalog connections keep the space default effort on the preference;
-        // openai-compatible still owns its level inside the stored endpoint config.
-        ...(!isOpenAiCompatible
-          ? {
-              thinkingLevel: clampCatalogThinkingLevel(
-                thinkingLevel,
-                selected.thinkingLevels,
-              ) as ThinkingLevel | null,
-            }
-          : {}),
-      });
-      await load({ provider, modelId: activeModelId });
+      const requestContext = await captureApiRequestContext();
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
+      await rpc(
+        "models/setDefault",
+        {
+          provider: selected.provider,
+          modelId: activeModelId,
+          modelCredentialId: credential.id,
+          expectedRevision: connectionRevision,
+          // Catalog connections keep the space default effort on the preference;
+          // openai-compatible still owns its level inside the stored endpoint config.
+          ...(!isOpenAiCompatible
+            ? {
+                thinkingLevel: clampCatalogThinkingLevel(
+                  thinkingLevel,
+                  selected.thinkingLevels,
+                ) as ThinkingLevel | null,
+              }
+            : {}),
+        },
+        { requestContext },
+      );
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
+      await load({ provider, modelId: activeModelId, connectionId: connectionId ?? undefined });
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
       publishFeedback("model", {
         notice: isOpenAiCompatible
           ? t("Model updated.")
           : t("Now using {label}.", { label: selected.label }),
       });
     } catch (err) {
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration)) return;
       publishFeedback("model", {
         error: errorText(err, t("Could not change the default model")),
       });
@@ -601,21 +778,41 @@ export default function Models() {
   }
 
   async function disconnectCredential() {
+    const revision = selectionRevisionRef.current;
+    const scope = me;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const sessionGeneration = currentSessionGeneration();
     if (!selected || !credential) return;
     cancelOAuth();
     clearFeedback();
     setPending("disconnect");
     try {
-      await rpc("models/disconnect", { provider: selected.provider });
+      const requestContext = await captureApiRequestContext();
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
+      await rpc(
+        "models/disconnect",
+        {
+          provider: selected.provider,
+          credentialId: connectionId,
+          expectedRevision: connectionRevision,
+        },
+        { requestContext },
+      );
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
       setApiKey("");
       setThinkingLevel(null);
       await load({ provider });
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
       publishFeedback("connection", {
         notice: t("Disconnected {provider}.", {
           provider: selected.providerName ?? selected.provider,
         }),
       });
     } catch (err) {
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration)) return;
       publishFeedback("connection", {
         error: errorText(err, t("Could not disconnect this provider")),
       });
@@ -625,6 +822,7 @@ export default function Models() {
   }
 
   function stageCompatibleModelId(nextModelId: string) {
+    selectionRevisionRef.current += 1;
     setModelId(nextModelId);
     setThinkingLevel(
       clampCatalogThinkingLevel(
@@ -635,6 +833,10 @@ export default function Models() {
   }
 
   async function connectKey() {
+    const revision = selectionRevisionRef.current;
+    const scope = me;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const sessionGeneration = currentSessionGeneration();
     if (!selected) return;
     const savingLimitOnly = !isOpenAiCompatible && !apiKey.trim();
     const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
@@ -697,13 +899,21 @@ export default function Models() {
     if (isOpenAiCompatible && parsedMaxTokens === undefined) return;
     setPending("connect");
     try {
-      await rpc(
+      const requestContext = await captureApiRequestContext();
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
+      const savedConnection = await rpc<MobileModelCredential>(
         "models/connect",
         isOpenAiCompatible
           ? {
               provider: selected.provider,
+              ...(connectionId
+                ? { credentialId: connectionId, expectedRevision: connectionRevision }
+                : {}),
               baseUrl: effectiveBaseUrl,
               modelId: modelId.trim(),
+              // The server adds the default itself.
+              enabledModelIds: enabledModelIds.filter((id) => id !== modelId.trim()),
               reasoning,
               thinkingLevel: stagedThinking,
               maxTokens: parsedMaxTokens,
@@ -727,9 +937,14 @@ export default function Models() {
               maxTokens: parsedMaxTokens ?? null,
               label: selected.providerName ?? selected.provider,
             },
+        { requestContext },
       );
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
       setApiKey("");
-      await load({ provider, modelId });
+      await load({ provider, modelId, connectionId: savedConnection.id });
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
+        return;
       publishFeedback("connection", {
         notice:
           isOpenAiCompatible || savingLimitOnly
@@ -737,6 +952,7 @@ export default function Models() {
             : t("Connected and using {label}.", { label: selected.label }),
       });
     } catch (err) {
+      if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration)) return;
       publishFeedback("connection", {
         error: errorText(err, t("Could not connect this provider")),
       });
@@ -748,11 +964,15 @@ export default function Models() {
   async function finishSubscriptionSignIn(loginId: string, controller: AbortController) {
     await waitForModelOAuth(loginId, controller.signal);
     if (controller.signal.aborted) return;
-    await rpc("models/finishOAuth", { loginId }, { signal: controller.signal });
+    const savedConnection = await rpc<MobileModelCredential>(
+      "models/finishOAuth",
+      { loginId },
+      { signal: controller.signal },
+    );
     if (controller.signal.aborted) return;
     oauthLoginIdRef.current = null;
     setOauth(null);
-    await load({ provider, modelId });
+    await load({ provider, modelId, connectionId: savedConnection.id });
     if (controller.signal.aborted) return;
     publishFeedback("connection", {
       notice: t("Connected and using {label}.", { label: selected?.label ?? t("this model") }),
@@ -878,7 +1098,10 @@ export default function Models() {
           editable={!busy}
           keyboardType="number-pad"
           maxLength={maxLength}
-          onChangeText={onChangeText}
+          onChangeText={(next) => {
+            selectionRevisionRef.current += 1;
+            onChangeText(next);
+          }}
           style={styles.keyInput}
           value={value}
         />
@@ -888,6 +1111,32 @@ export default function Models() {
 
   const compatConfig = isOpenAiCompatible ? (
     <>
+      <MenuPicker
+        label={t("Connection")}
+        value={connectionId ?? ""}
+        choices={[
+          ...(connectionId && !providerConnections.some((entry) => entry.id === connectionId)
+            ? [{ key: connectionId, label: t("Unavailable connection") }]
+            : []),
+          ...providerConnections.map((entry) => ({
+            key: entry.id,
+            label: modelConnectionLabel(entry),
+          })),
+          { key: "", label: t("New connection") },
+        ]}
+        onChange={(value) => chooseProvider(provider, value || null)}
+      />
+      {connectionReferences.length ? (
+        <View style={{ gap: 4 }}>
+          <Text style={styles.sectionTitle}>{t("Used by")}</Text>
+          {connectionReferences.map((entry) => (
+            <Text style={styles.secondary} key={`${entry.kind}:${entry.id}:${entry.spaceId}`}>
+              {entry.name}
+              {entry.modelId ? ` · ${entry.modelId}` : ""}
+            </Text>
+          ))}
+        </View>
+      ) : null}
       <Text style={styles.sectionTitle}>{t("Server URL")}</Text>
       <TextInput
         accessibilityLabel={t("OpenAI-compatible server URL")}
@@ -921,40 +1170,56 @@ export default function Models() {
       />
       {feedbackAnchor === "probe" ? feedback : null}
       <Text style={[styles.sectionTitle, { marginTop: 12 }]}>{t("Model")}</Text>
-      {probeModels.length && probeModels.includes(modelId) ? (
+      {/* The switches stay visible while the default is "Other model…" or a typed id. */}
+      {compatibleRows.length ? (
         <View style={styles.card}>
-          {probeModels.map((entry) => (
+          {compatibleRows.map((entry) => (
+            // The switch sits beside the radio, not inside it: an accessible
+            // Pressable would merge it into the row and hide it from VoiceOver.
+            <View key={entry} style={styles.modelRow}>
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityState={{ selected: entry === modelId }}
+                disabled={probing}
+                onPress={() => stageCompatibleModelId(entry)}
+                style={({ pressed }) => [
+                  styles.modelRowChoice,
+                  probing && styles.disabled,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.modelLabel}>{entry}</Text>
+                {entry === modelId ? <Checkmark /> : null}
+              </Pressable>
+              <NativeSwitch
+                accessibilityLabel={entry}
+                value={entry === modelId || enabledModelIds.includes(entry)}
+                onValueChange={(value) => {
+                  selectionRevisionRef.current += 1;
+                  setEnabledModelIds((current) => toggleEnabledModelId(current, entry, value));
+                }}
+                disabled={busy || entry === modelId}
+              />
+            </View>
+          ))}
+          {compatibleRows.includes(modelId) ? (
             <Pressable
-              key={entry}
               accessibilityRole="radio"
-              accessibilityState={{ selected: entry === modelId }}
+              accessibilityState={{ selected: false }}
               disabled={probing}
-              onPress={() => stageCompatibleModelId(entry)}
+              onPress={() => stageCompatibleModelId("")}
               style={({ pressed }) => [
                 styles.modelRow,
                 probing && styles.disabled,
                 pressed && styles.pressed,
               ]}
             >
-              <Text style={styles.modelLabel}>{entry}</Text>
-              {entry === modelId ? <Checkmark /> : null}
+              <Text style={styles.modelLabel}>{t("Other model…")}</Text>
             </Pressable>
-          ))}
-          <Pressable
-            accessibilityRole="radio"
-            accessibilityState={{ selected: false }}
-            disabled={probing}
-            onPress={() => stageCompatibleModelId("")}
-            style={({ pressed }) => [
-              styles.modelRow,
-              probing && styles.disabled,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={styles.modelLabel}>{t("Other model…")}</Text>
-          </Pressable>
+          ) : null}
         </View>
-      ) : (
+      ) : null}
+      {compatibleRows.includes(modelId) ? null : (
         <>
           <TextInput
             accessibilityLabel={t("Model id")}
@@ -1376,7 +1641,15 @@ export default function Models() {
       ) {
         return current;
       }
-      return [...current, { provider: choice.provider, modelId: choice.modelId }];
+      return [
+        ...current,
+        {
+          provider: choice.provider,
+          modelId: choice.modelId,
+          modelCredentialId: choice.modelCredentialId,
+          expectedRevision: choice.expectedRevision,
+        },
+      ];
     });
     setBackupError(null);
     setBackupNotice(null);
@@ -1394,7 +1667,13 @@ export default function Models() {
       title: t("Add connected model"),
       actions: addableBackupOptions.map((option) => ({
         text: `${option.providerName} · ${option.label}`,
-        onPress: () => addBackupChoice({ provider: option.provider, modelId: option.modelId }),
+        onPress: () =>
+          addBackupChoice({
+            provider: option.provider,
+            modelId: option.modelId,
+            modelCredentialId: option.modelCredentialId,
+            expectedRevision: option.expectedRevision,
+          }),
       })),
       colorScheme,
       cancel: t("Cancel"),
@@ -1473,10 +1752,27 @@ export default function Models() {
     }
   }
 
+  const unresolvedModels = unresolvedReferences.length ? (
+    <View style={{ gap: 4 }}>
+      <Text style={styles.sectionTitle}>{t("Choose a connection for saved models")}</Text>
+      {unresolvedReferences.map((entry) => (
+        <Text style={styles.secondary} key={`${entry.kind}:${entry.id}:${entry.spaceId}`}>
+          {entry.name}
+          {entry.modelId ? ` · ${entry.modelId}` : ""}
+        </Text>
+      ))}
+    </View>
+  ) : null;
+
   const saveRow =
     credential && (!isActive || thinkingDirty || usingServerCredentials) ? (
       <NativeActionButton
-        disabled={busy || (isOpenAiCompatible && !modelId.trim())}
+        disabled={
+          busy ||
+          (isOpenAiCompatible &&
+            (!modelId.trim() ||
+              !canUseCompatibleModelAsDefault(credential.enabledModelIds, modelId.trim())))
+        }
         label={
           pending === "default"
             ? t("Switching…")
@@ -1504,14 +1800,26 @@ export default function Models() {
           const name = selected?.providerName ?? selected?.provider ?? "";
           Alert.alert(
             t("Disconnect {name}?", { name }),
-            t("This removes the connection from every space."),
+            [
+              t("This removes the connection from every space."),
+              ...connectionReferences.map(
+                (entry) => `${entry.name}${entry.modelId ? ` · ${entry.modelId}` : ""}`,
+              ),
+              ...(blockingConnectionReferences.length
+                ? [t("Choose another model for these items before disconnecting.")]
+                : []),
+            ].join("\n"),
             [
               { text: t("Cancel"), style: "cancel" },
-              {
-                text: t("Disconnect"),
-                style: "destructive",
-                onPress: () => void disconnectCredential(),
-              },
+              ...(blockingConnectionReferences.length
+                ? []
+                : [
+                    {
+                      text: t("Disconnect"),
+                      style: "destructive" as const,
+                      onPress: () => void disconnectCredential(),
+                    },
+                  ]),
             ],
           );
         }}
@@ -1569,12 +1877,9 @@ export default function Models() {
                   >
                     <View style={styles.providerCopy}>
                       <Text style={styles.providerName}>{group.name}</Text>
-                      <Text style={styles.secondary}>
-                        {savedModelLabel ??
-                          t(group.entries.length === 1 ? "{count} model" : "{count} models", {
-                            count: group.entries.length,
-                          })}
-                      </Text>
+                      {savedModelLabel ? (
+                        <Text style={styles.secondary}>{savedModelLabel}</Text>
+                      ) : null}
                     </View>
                     {group.id === provider ? <Checkmark /> : null}
                   </Pressable>
@@ -1595,11 +1900,6 @@ export default function Models() {
             >
               <View style={styles.providerCopy}>
                 <Text style={styles.providerName}>{group.name}</Text>
-                <Text style={styles.secondary}>
-                  {t(group.entries.length === 1 ? "{count} model" : "{count} models", {
-                    count: group.entries.length,
-                  })}
-                </Text>
               </View>
               {group.id === provider ? <Checkmark /> : null}
             </Pressable>
@@ -1622,6 +1922,7 @@ export default function Models() {
           isOpenAiCompatible ? (
             <>
               {compatConfig}
+              {unresolvedModels}
               {compatKeySection}
               {saveRow}
               {feedbackAnchor === "probe" ? null : feedback}
@@ -1954,6 +2255,13 @@ function createModelsStyles() {
       gap: 12,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: native.fillPressed,
+    },
+    modelRowChoice: {
+      flex: 1,
+      alignSelf: "stretch",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
     },
     modelLabel: {
       flex: 1,

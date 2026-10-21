@@ -5981,3 +5981,35 @@ msgstr ""
 msgctxt "sidebar grouping"
 msgid "Group"
 msgstr ""
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Connection"
+msgstr "कनेक्शन"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "New connection"
+msgstr "नया कनेक्शन"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Unavailable connection"
+msgstr "कनेक्शन उपलब्ध नहीं है"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Used by"
+msgstr "इस्तेमाल करने वाले"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a connection for saved models"
+msgstr "सहेजे गए मॉडल के लिए कनेक्शन चुनें"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose another model for these items before disconnecting."
+msgstr "कनेक्शन हटाने से पहले इन आइटम के लिए कोई दूसरा मॉडल चुनें।"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Routine model"
+msgstr "रूटीन मॉडल"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Bot model"
+msgstr "बॉट मॉडल"

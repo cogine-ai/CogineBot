@@ -50,6 +50,7 @@ import {
   latestAnswerableAskMessageId,
   mentionChipKey,
   nestRosterByParent,
+  parseModelOptionKey,
   plainTextFromMarkdown,
   projectMessageReactions,
   reorderBotTo,
@@ -5267,6 +5268,20 @@ export function ShellPage() {
                       await ensureWebhookSecret(targetBotId);
                     }
                     const crons = routineDraft.schedules.map(cronFromPreset);
+                    const chosenModel = routineDraft.modelKey
+                      ? parseModelOptionKey(routineDraft.modelKey)
+                      : null;
+                    const modelPatch =
+                      !targetRoutine || routineDraft.modelDirty
+                        ? {
+                            modelProvider: chosenModel?.provider ?? null,
+                            modelId: chosenModel?.modelId ?? null,
+                            modelCredentialId: chosenModel?.modelCredentialId ?? null,
+                            thinkingLevel: (routineDraft.thinkingLevel ||
+                              null) as Routine["thinkingLevel"],
+                            expectedRevision: chosenModel ? routineDraft.modelRevision : undefined,
+                          }
+                        : {};
                     let saved: Routine;
                     if (targetRoutine) {
                       const armOneShot = routineNeedsOneShotArm(targetRoutine, crons);
@@ -5285,6 +5300,7 @@ export function ShellPage() {
                       }
                       saved = await rpc.routines.update({
                         routineId: targetRoutine.id,
+                        ...modelPatch,
                         ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
@@ -5298,6 +5314,7 @@ export function ShellPage() {
                     } else {
                       saved = await rpc.routines.create({
                         botId: targetBotId,
+                        ...modelPatch,
                         ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,

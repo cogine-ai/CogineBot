@@ -48,6 +48,14 @@ describe("Pi model catalog", () => {
     expect(scriptedCatalogEntry.provider).toBe("scripted");
   });
 
+  it("identifies personal Bedrock API-key billing with the application name", () => {
+    const bedrock = listPiCatalog().find((entry) => entry.provider === "amazon-bedrock");
+    expect(bedrock).toBeDefined();
+    expect(bedrock?.billing).toBe(
+      "Uses your Amazon Bedrock API key. CogineBot does not pay for model usage.",
+    );
+  });
+
   it("lists DeepSeek API model ids instead of display labels", () => {
     const deepseek = listPiCatalog().filter((entry) => entry.provider === "deepseek");
     const ids = deepseek.map((entry) => entry.id);

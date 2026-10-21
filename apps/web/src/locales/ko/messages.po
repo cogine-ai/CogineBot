@@ -5981,3 +5981,35 @@ msgstr ""
 msgctxt "sidebar grouping"
 msgid "Group"
 msgstr ""
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Connection"
+msgstr "연결"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "New connection"
+msgstr "새 연결"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Unavailable connection"
+msgstr "사용할 수 없는 연결"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Used by"
+msgstr "사용 중인 항목"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a connection for saved models"
+msgstr "저장된 모델의 연결을 선택하세요"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose another model for these items before disconnecting."
+msgstr "연결을 끊기 전에 이 항목에 다른 모델을 선택하세요."
+
+#: src/pages/RoutineEditor.tsx
+msgid "Routine model"
+msgstr "루틴 모델"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Bot model"
+msgstr "봇 모델"

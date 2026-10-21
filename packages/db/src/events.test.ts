@@ -194,74 +194,101 @@ describe("finalizeRun", () => {
     });
   });
 
-  it("pins the continuation when every waited message chose the same model", async () => {
-    const tx = {
-      $queryRaw: vi.fn(async () => []),
-      run: {
-        findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
-        findUniqueOrThrow: vi.fn(async () => ({ sourceMessage: null })),
-        findFirst: vi.fn(async () => null),
-        updateMany: vi.fn(async () => ({ count: 1 })),
-        create: vi.fn(async () => ({ id: "run-reply" })),
-      },
-      attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
-      task: {
-        updateMany: vi.fn(async () => ({ count: 1 })),
-        create: vi.fn(async () => ({ id: "task-reply" })),
-      },
-      thread: { update: vi.fn(async () => ({ nextEventSeq: 1 })) },
-      event: {
-        create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
-        deleteMany: vi.fn(async () => ({ count: 0 })),
-      },
-      steeringMessage: {
-        findMany: vi.fn(async () => [
-          {
-            id: "steer-1",
-            userId: "user-1",
-            originTrigger: null,
-            modelProvider: "openai-compatible",
-            modelId: "private-model",
-            thinkingLevel: "low",
-            message: {
-              id: "message-hook",
-              seq: 4,
-              blocks: [{ kind: "text", text: "Run the routine" }],
+  it.each([
+    ["same connection", "credential-a", true],
+    ["different connections", "credential-b", false],
+  ])(
+    "compares connection identity before pinning a continuation: %s",
+    async (_, secondId, pinned) => {
+      const tx = {
+        $queryRaw: vi.fn(async () => []),
+        run: {
+          findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
+          findUniqueOrThrow: vi.fn(async () => ({ sourceMessage: null })),
+          findFirst: vi.fn(async () => null),
+          updateMany: vi.fn(async () => ({ count: 1 })),
+          create: vi.fn(async () => ({ id: "run-reply" })),
+        },
+        attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
+        task: {
+          updateMany: vi.fn(async () => ({ count: 1 })),
+          create: vi.fn(async () => ({ id: "task-reply" })),
+        },
+        thread: { update: vi.fn(async () => ({ nextEventSeq: 1 })) },
+        event: {
+          create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
+          deleteMany: vi.fn(async () => ({ count: 0 })),
+        },
+        steeringMessage: {
+          findMany: vi.fn(async () => [
+            {
+              id: "steer-1",
+              userId: "user-1",
+              originTrigger: null,
+              modelProvider: "openai-compatible",
+              modelId: "private-model",
+              modelCredentialId: "credential-a",
+              thinkingLevel: "low",
+              message: {
+                id: "message-hook",
+                seq: 4,
+                blocks: [{ kind: "text", text: "Run the routine" }],
+              },
             },
-          },
-        ]),
-        updateMany: vi.fn(async () => ({ count: 1 })),
-      },
-      bot: { update: vi.fn(async () => ({})) },
-    };
-    const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
-    } as unknown as PrismaClient;
+            {
+              id: "steer-2",
+              userId: "user-1",
+              originTrigger: null,
+              modelProvider: "openai-compatible",
+              modelId: "private-model",
+              modelCredentialId: secondId,
+              thinkingLevel: "low",
+              message: {
+                id: "message-hook-2",
+                seq: 5,
+                blocks: [{ kind: "text", text: "Check the result too" }],
+              },
+            },
+          ]),
+          updateMany: vi.fn(async () => ({ count: 1 })),
+        },
+        bot: { update: vi.fn(async () => ({})) },
+      };
+      const prisma = {
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
 
-    await finalizeRun(prisma, {
-      spaceId: "space-1",
-      threadId: "thread-1",
-      botId: "bot-1",
-      runId: "routine-run",
-      taskId: "routine-task",
-      attemptId: "attempt-1",
-      leaseOwner: "worker-1",
-      leaseFence: 1,
-      outcome: "failed",
-      error: "stopped",
-    });
+      await finalizeRun(prisma, {
+        spaceId: "space-1",
+        threadId: "thread-1",
+        botId: "bot-1",
+        runId: "routine-run",
+        taskId: "routine-task",
+        attemptId: "attempt-1",
+        leaseOwner: "worker-1",
+        leaseFence: 1,
+        outcome: "failed",
+        error: "stopped",
+      });
 
-    expect(tx.run.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        trigger: "follow_up",
-        sourceMessageId: "message-hook",
-        modelProvider: "openai-compatible",
-        modelId: "private-model",
-        thinkingLevel: "low",
-        modelPinned: true,
-      }),
-    });
-  });
+      const [{ data }] = tx.run.create.mock.calls[0] as unknown as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ trigger: "follow_up", sourceMessageId: "message-hook-2" });
+      if (pinned) {
+        expect(data).toMatchObject({
+          modelProvider: "openai-compatible",
+          modelId: "private-model",
+          modelCredentialId: "credential-a",
+          thinkingLevel: "low",
+          modelPinned: true,
+        });
+      } else {
+        expect(data).not.toHaveProperty("modelPinned");
+        expect(data).not.toHaveProperty("modelCredentialId");
+      }
+    },
+  );
 
   it("resumes a held group-channel message without taking a later direct message", async () => {
     const channel = {
@@ -2231,6 +2258,7 @@ describe("sendUserMessage", () => {
       modelPin: {
         modelProvider: "openai-compatible",
         modelId: "private-model",
+        modelCredentialId: "credential-webhook",
         thinkingLevel: "low",
       },
     });
@@ -2241,6 +2269,7 @@ describe("sendUserMessage", () => {
           trigger: "webhook",
           modelProvider: "openai-compatible",
           modelId: "private-model",
+          modelCredentialId: "credential-webhook",
           thinkingLevel: "low",
           modelPinned: true,
         }),
@@ -2344,6 +2373,7 @@ describe("sendUserMessage", () => {
       modelPin: {
         modelProvider: "openai-compatible",
         modelId: "private-model",
+        modelCredentialId: "credential-webhook",
         thinkingLevel: "low",
       },
     });
@@ -2357,6 +2387,7 @@ describe("sendUserMessage", () => {
         runId: null,
         modelProvider: "openai-compatible",
         modelId: "private-model",
+        modelCredentialId: "credential-webhook",
         thinkingLevel: "low",
       },
     });

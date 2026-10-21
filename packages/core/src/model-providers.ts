@@ -1,4 +1,5 @@
 import type { ModelCatalogEntry } from "@rakazo/contracts";
+import { modelConnectionLabel, normalizeOpenAiCompatibleBaseUrl } from "@rakazo/contracts";
 import { matchesSearchQuery } from "./search.js";
 
 /** Effort choices an OpenAI-compatible endpoint stores when reasoning is enabled. */
@@ -123,6 +124,8 @@ const DEEPSEEK_DISPLAY_MODEL_IDS: Record<string, string> = {
 };
 
 export type ConnectedModelChoice = {
+  modelCredentialId?: string;
+  connectionRevision?: number;
   key: string;
   provider: string;
   modelId: string;
@@ -138,7 +141,11 @@ type CatalogModelRef = {
 };
 
 type CredentialModelRef = {
+  id?: string;
+  connectionRevision?: number;
+  enabledModelIds?: readonly string[] | null;
   provider: string;
+  baseUrl?: string;
   label: string;
   modelId?: string | null;
 };
@@ -158,14 +165,54 @@ function canonicalApiModelId(provider: string, modelId: string): string | undefi
   return canonical;
 }
 
-export function modelOptionKey(provider: string, modelId: string): string {
-  return `${provider}::${modelId}`;
+export function modelOptionKey(
+  provider: string,
+  modelId: string,
+  modelCredentialId?: string | null,
+): string {
+  return modelCredentialId
+    ? JSON.stringify([provider, modelId, modelCredentialId])
+    : `${provider}::${modelId}`;
 }
 
-export function parseModelOptionKey(key: string): { provider: string; modelId: string } | null {
+export function parseModelOptionKey(
+  key: string,
+): { provider: string; modelId: string; modelCredentialId?: string } | null {
+  if (key.startsWith("[")) {
+    try {
+      const parts: unknown = JSON.parse(key);
+      if (
+        Array.isArray(parts) &&
+        parts.length === 3 &&
+        parts.every((part) => typeof part === "string" && part.length > 0)
+      ) {
+        return { provider: parts[0], modelId: parts[1], modelCredentialId: parts[2] };
+      }
+    } catch {
+      /* A malformed selection is not a connection. */
+    }
+    return null;
+  }
   const separator = key.indexOf("::");
   if (separator <= 0) return null;
   return { provider: key.slice(0, separator), modelId: key.slice(separator + 2) };
+}
+
+/** Resolve only an explicitly selected account connection. */
+export function credentialForModel<C extends CredentialModelRef>(
+  credentials: readonly C[],
+  provider: string | null | undefined,
+  modelId: string | null | undefined,
+  modelCredentialId?: string | null,
+): C | undefined {
+  if (!provider || !modelId || !modelCredentialId) return undefined;
+  return credentials.find(
+    (credential) =>
+      credential.id === modelCredentialId &&
+      credential.provider === provider &&
+      (provider !== "openai-compatible" ||
+        (credential.enabledModelIds ?? [credential.modelId]).includes(modelId)),
+  );
 }
 
 /**
@@ -214,25 +261,36 @@ export function connectedModelChoices(
     const resolvedInCatalog = providerModels.some(
       (entry) => resolveSelectableModelId(providerModels, entry.provider, entry.id) === resolved,
     );
-    const next: ConnectedModelChoice[] =
-      raw && !resolvedInCatalog
-        ? [
-            {
-              key: modelOptionKey(credential.provider, resolved || raw),
-              provider: credential.provider,
-              modelId: resolved || raw,
-              label: `${credential.label} · ${resolved || raw}`,
-            },
-          ]
-        : providerModels.map((entry) => {
-            const modelId = resolveSelectableModelId(providerModels, entry.provider, entry.id);
-            return {
-              key: modelOptionKey(entry.provider, modelId),
-              provider: entry.provider,
-              modelId,
-              label: `${entry.providerName ?? entry.provider} · ${entry.label}`,
-            };
-          });
+    const binding = {
+      modelCredentialId: credential.id,
+      connectionRevision: credential.connectionRevision,
+    };
+    const freeForm = (modelId: string): ConnectedModelChoice => ({
+      ...binding,
+      key: modelOptionKey(credential.provider, modelId, credential.id),
+      provider: credential.provider,
+      modelId,
+      label: `${modelConnectionLabel(credential)} · ${modelId}`,
+    });
+    const enabled = credential.enabledModelIds?.map((id) => id.trim()).filter(Boolean);
+    const next: ConnectedModelChoice[] = enabled?.length
+      ? enabled.map(freeForm)
+      : credential.provider === "openai-compatible"
+        ? raw
+          ? [freeForm(raw)]
+          : []
+        : raw && !resolvedInCatalog
+          ? [freeForm(resolved || raw)]
+          : providerModels.map((entry) => {
+              const modelId = resolveSelectableModelId(providerModels, entry.provider, entry.id);
+              return {
+                ...binding,
+                key: modelOptionKey(entry.provider, modelId, credential.id),
+                provider: entry.provider,
+                modelId,
+                label: `${credential.id ? credential.label : (entry.providerName ?? entry.provider)} · ${entry.label}`,
+              };
+            });
     for (const choice of next) {
       if (seen.has(choice.key)) continue;
       seen.add(choice.key);
@@ -251,4 +309,57 @@ export function filterModelCatalog(
   return entries.filter((entry) =>
     matchesSearchQuery(query, entry.label, entry.id, entry.providerName ?? entry.provider),
   );
+}
+
+type SavedCompatibleModels = { baseUrl?: string; enabledModelIds?: readonly string[] };
+
+/** The server's endpoint form; half-typed text that is not a URL yet compares as trimmed text. */
+function comparableBaseUrl(baseUrl: string): string {
+  try {
+    return normalizeOpenAiCompatibleBaseUrl(baseUrl);
+  } catch {
+    return baseUrl.trim();
+  }
+}
+
+/** The saved enabled ids, but only while the form still points at the saved endpoint. */
+export function savedCompatibleModelIds(
+  credential: SavedCompatibleModels | undefined,
+  baseUrl: string,
+): string[] {
+  if (
+    !credential?.enabledModelIds ||
+    comparableBaseUrl(credential.baseUrl ?? "") !== comparableBaseUrl(baseUrl)
+  ) {
+    return [];
+  }
+  return [...credential.enabledModelIds];
+}
+
+/** One row per model the endpoint may run: saved ids, then local ticks, then probed ids. */
+export function compatibleModelRows(
+  savedIds: readonly string[],
+  enabledIds: readonly string[],
+  probedIds: readonly string[],
+): string[] {
+  return [...new Set([...savedIds, ...enabledIds, ...probedIds])];
+}
+
+export function toggleEnabledModelId(
+  enabledIds: readonly string[],
+  id: string,
+  enabled: boolean,
+): string[] {
+  return enabled ? [...new Set([...enabledIds, id])] : enabledIds.filter((entry) => entry !== id);
+}
+
+/**
+ * Whether "Use this model" may switch the default to `modelId`. The server
+ * refuses ids outside a saved list; an unread list (undefined) is not checked.
+ */
+export function canUseCompatibleModelAsDefault(
+  savedIds: readonly string[] | undefined,
+  modelId: string,
+): boolean {
+  return savedIds === undefined || savedIds.includes(modelId);
 }

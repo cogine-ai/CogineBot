@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator } from "@rakazo/adapters";
+import type { ModelCredential } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -88,7 +89,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       });
       expect(signup.status).toBeLessThan(400);
       const cookie = sessionCookieHeader(signup);
-      await rpc(handles.app, cookie, "models/connect", {
+      const credential = await rpc<ModelCredential>(handles.app, cookie, "models/connect", {
         provider: model.model.provider,
         modelId: model.model.id,
         baseUrl: model.baseUrl,
@@ -108,6 +109,8 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         botId: bot.id,
         modelProvider: model.model.provider,
         modelId: model.model.id,
+        modelCredentialId: credential.id,
+        expectedRevision: credential.connectionRevision,
       });
       const sent = await rpc<{ runId: string }>(handles.app, cookie, "threads/send", {
         botId: bot.id,

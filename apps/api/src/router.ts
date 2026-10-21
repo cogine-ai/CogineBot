@@ -52,6 +52,7 @@ import {
   codexLiveCatalogsForSpace,
   codexLiveListsModel,
   commentTicket,
+  compatibleThinkingLevels,
   computerSupportsTerminal,
   computerSupportsUpdate,
   computerUpdateView,
@@ -80,6 +81,7 @@ import {
   listNativeRoutineTriggersBatch,
   listPiCatalog,
   listScratchpadItems,
+  loadStoredModelSecret,
   McpOAuthBroker,
   mapScratchpadItem,
   modelCredentialAuthKindsForSpace,
@@ -114,17 +116,13 @@ import {
   scheduleComputerSleep,
   screenLeaseIdForRun,
   scriptedCatalogEntry,
-  selectDefaultCredentialId,
   serializeModelSecret,
   storeBotSecret,
   takeoverLeaseMs,
   toComputerRef,
   touchRunningComputer,
-  UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
   updateTicket,
-  validateConnectedModelChoice,
   validateModelAuthAvailability,
-  validateStoredModelAuth,
   verifyMcpInstall,
 } from "@rakazo/adapters";
 import type { Auth } from "@rakazo/auth";
@@ -150,6 +148,7 @@ import {
   ComputerCommandSchema,
   foldComputerCommands,
   IntegrationProviderIdSchema,
+  normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   parseTicketRef,
   usableModelId,
@@ -181,10 +180,10 @@ import {
   createRepos,
   createSpaceForMember,
   createThreadMessageInTransaction,
-  defaultModelCredentialCandidates,
   deleteEmptySpaceForMember,
   deleteUnreferencedCredentialSecret,
   ensureBoard,
+  findBoundModelCredential,
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   findModelCredential,
@@ -258,6 +257,14 @@ import {
   serializeSpaceMemoryConfig,
   updateMemoryProviderDefaultScope,
 } from "./memory-provider-config.js";
+import type { PreparedModelBindingSecret } from "./model-bindings.js";
+import {
+  assertConnectionRevision,
+  listModelConnectionReferences,
+  loadConnectionSecret,
+  refuseAccountModelReferences,
+  validateModelBinding,
+} from "./model-bindings.js";
 import { rethrowNativeRoutineError } from "./native-routine-errors.js";
 import {
   chooseFocus,
@@ -1219,90 +1226,102 @@ export function createRouter(deps: RouterDeps) {
       backups: authed.models.backups.handler(async ({ context }) =>
         listSpaceBackupModels(deps.prisma, context.actor),
       ),
-      setBackups: authed.models.setBackups.handler(async ({ context, input }) => {
-        if (input.length > 0) {
-          const auth = await modelCredentialAuthKindsForSpace(
-            deps.prisma,
-            deps.secrets,
-            context.actor,
-          );
-          const available = listAvailablePiCatalog(auth.byProvider, auth.byModel);
-          const live = await codexLiveCatalogsForSpace(
-            deps.prisma,
-            deps.secrets,
-            context.actor,
-            auth,
-            codexCatalog,
-            {
-              onExpiredToken: (secretId) =>
-                refreshExpiredCredential(context.actor, secretId, CHATGPT_OAUTH_PROVIDER),
-            },
-          );
-          const catalog = live.size > 0 ? applyCodexLiveCatalog(available, auth, live) : available;
-          for (const choice of input) {
-            const credential = await findModelCredential(
-              deps.prisma,
-              context.actor,
-              choice.provider,
-              choice.modelId,
-            );
-            if (!credential) {
-              throw new ORPCError("BAD_REQUEST", {
-                message: "Connect that model provider first",
-              });
-            }
-            if (
-              catalog.some(
-                (entry) => entry.provider === choice.provider && entry.id === choice.modelId,
-              )
-            )
-              continue;
-            const error = await validateConnectedModelChoice(
-              deps.prisma,
-              context.actor,
-              choice.provider,
-              choice.modelId,
-            );
-            if (error || choice.provider !== OPENAI_COMPATIBLE_PROVIDER_ID) {
-              throw new ORPCError("BAD_REQUEST", {
-                message: error ?? "That model is not available for this connection",
-              });
-            }
-          }
+      references: authed.models.references.handler(async ({ context, input }) => {
+        if (input.credentialId) {
+          const credential = await deps.prisma.userModelCredential.findFirst({
+            where: { id: input.credentialId, userId: context.actor.userId },
+            select: { id: true },
+          });
+          if (!credential) throw new ORPCError("NOT_FOUND");
         }
-        await replaceSpaceBackupModels(deps.prisma, context.actor, input);
+        const [references, memberships] = await Promise.all([
+          listModelConnectionReferences(deps.prisma, context.actor.userId, input.credentialId),
+          deps.prisma.spaceMember.findMany({
+            where: { userId: context.actor.userId },
+            select: { spaceId: true },
+          }),
+        ]);
+        const visible = new Set(memberships.map((membership) => membership.spaceId));
+        return { references: references.filter((reference) => visible.has(reference.spaceId)) };
+      }),
+      setBackups: authed.models.setBackups.handler(async ({ context, input }) => {
+        const prepared = await Promise.all(
+          input.map((choice) =>
+            prepareBoundModelAuth(
+              deps,
+              context.actor,
+              {
+                modelProvider: choice.provider,
+                modelId: choice.modelId,
+                modelCredentialId: choice.modelCredentialId,
+                expectedRevision: choice.expectedRevision,
+              },
+              codexCatalog,
+              (secretId, provider) => refreshExpiredCredential(context.actor, secretId, provider),
+            ),
+          ),
+        );
+        await replaceSpaceBackupModels(deps.prisma, context.actor, input, async (tx) => {
+          for (const [index, choice] of input.entries())
+            await validateModelBinding(
+              tx,
+              deps.secrets,
+              context.actor,
+              {
+                modelProvider: choice.provider,
+                modelId: choice.modelId,
+                modelCredentialId: choice.modelCredentialId,
+                expectedRevision: choice.expectedRevision,
+              },
+              prepared[index],
+            );
+        });
         return { ok: true as const };
       }),
       connect: authed.models.connect.handler(async ({ context, input }) => {
+        const compatible = input.provider === OPENAI_COMPATIBLE_PROVIDER_ID;
+        const existing = input.credentialId
+          ? await deps.prisma.userModelCredential.findFirst({
+              where: {
+                id: input.credentialId,
+                userId: context.actor.userId,
+                provider: input.provider,
+              },
+            })
+          : compatible
+            ? null
+            : await findModelCredential(deps.prisma, context.actor, input.provider);
+        if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
+        if (existing && input.credentialId)
+          assertConnectionRevision(existing, input.expectedRevision);
+        let previousPlaintext: string | undefined;
+        let expectedCiphertext: string | null | undefined;
+        let omitVisionModelIds = false;
+        if (existing) {
+          let loaded: Awaited<ReturnType<typeof loadStoredModelSecret>>;
+          try {
+            loaded = await loadStoredModelSecret(
+              deps.prisma,
+              deps.secrets,
+              context.actor.userId,
+              existing.secretId,
+            );
+          } catch (error) {
+            if (error instanceof SecretStoreUnavailableError)
+              throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
+            throw error;
+          }
+          expectedCiphertext = loaded.status === "missing" ? null : loaded.ciphertext;
+          if (loaded.status === "loaded") previousPlaintext = loaded.plaintext;
+          else if (input.apiKey === undefined)
+            throw new ORPCError("BAD_REQUEST", {
+              message: "Model connection is unavailable. Enter a replacement key.",
+            });
+          else omitVisionModelIds = compatible;
+        }
         let plaintext: string;
         try {
-          let previousPlaintext: string | undefined;
-          let omitVisionModelIds = false;
-          const credential = await findModelCredential(deps.prisma, context.actor, input.provider);
-          if (credential) {
-            const secret = await deps.prisma.secret.findFirst({
-              where: { id: credential.secretId, userId: context.actor.userId, spaceId: null },
-              select: { ciphertext: true },
-            });
-            if (secret) {
-              try {
-                previousPlaintext = await deps.secrets.load(secret.ciphertext, credential.secretId);
-              } catch (error) {
-                // Explicit key replacement must still succeed when the prior
-                // ciphertext is unreadable. For OpenAI-compatible connections,
-                // omit visionModelIds so a partial one-model list does not wipe
-                // other enabled models; DB supportsImages + defaultModel remain
-                // the legacy fallback.
-                if (input.apiKey === undefined) throw error;
-                if (input.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
-                  omitVisionModelIds = true;
-                }
-              }
-            }
-          }
-          plaintext = buildModelConnectPlaintext(input, previousPlaintext, {
-            omitVisionModelIds,
-          });
+          plaintext = buildModelConnectPlaintext(input, previousPlaintext, { omitVisionModelIds });
         } catch (error) {
           throw new ORPCError("BAD_REQUEST", {
             message: error instanceof Error ? error.message : "Invalid model connection",
@@ -1316,10 +1335,10 @@ export function createRouter(deps: RouterDeps) {
             plaintext,
             label: input.label,
             modelId: input.modelId,
-            // openai-compatible keeps its effort inside the stored endpoint
-            // secret; catalog providers store it on the space preference.
-            thinkingLevel:
-              input.provider === OPENAI_COMPATIBLE_PROVIDER_ID ? undefined : input.thinkingLevel,
+            credentialId: input.credentialId,
+            expectedRevision: input.expectedRevision,
+            ...(input.credentialId ? { expectedCiphertext } : {}),
+            thinkingLevel: compatible ? undefined : input.thinkingLevel,
             supportsImages: input.supportsImages,
             signal: context.signal,
           },
@@ -1328,8 +1347,54 @@ export function createRouter(deps: RouterDeps) {
       }),
       probeOpenAiCompatible: authed.models.probeOpenAiCompatible.handler(
         async ({ context, input }) => {
+          let apiKey = input.apiKey;
+          if (input.credentialId) {
+            const credential = await deps.prisma.userModelCredential.findFirst({
+              where: {
+                id: input.credentialId,
+                userId: context.actor.userId,
+                provider: OPENAI_COMPATIBLE_PROVIDER_ID,
+              },
+            });
+            if (!credential) throw new ORPCError("NOT_FOUND");
+            if (apiKey === undefined) {
+              const loaded = await loadConnectionSecret(
+                deps.prisma,
+                deps.secrets,
+                context.actor.userId,
+                credential.secretId,
+              );
+              let secret: ReturnType<typeof parseModelSecret>;
+              try {
+                secret = parseModelSecret(loaded.plaintext);
+              } catch {
+                throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+              }
+              if (secret.kind !== "openai_compatible")
+                throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+              let requested: string;
+              let expected: string;
+              try {
+                requested = normalizeOpenAiCompatibleBaseUrl(input.baseUrl);
+                expected = normalizeOpenAiCompatibleBaseUrl(input.expectedBaseUrl ?? "");
+              } catch {
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "Reload the saved connection before discovering models.",
+                });
+              }
+              if (requested !== secret.baseUrl || expected !== secret.baseUrl)
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "Connection address changed. Enter a key for the new address.",
+                });
+              apiKey = secret.apiKey;
+            }
+          }
           try {
-            const models = await probeOpenAiCompatibleModels(input, undefined, context.signal);
+            const models = await probeOpenAiCompatibleModels(
+              { ...input, apiKey },
+              undefined,
+              context.signal,
+            );
             return { models };
           } catch (error) {
             throw new ORPCError("BAD_REQUEST", {
@@ -1409,166 +1474,83 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       setDefault: authed.models.setDefault.handler(async ({ context, input }) => {
-        const loadSpaceModelState = async (
-          client: Pick<PrismaClient, "spaceModelPreference" | "userModelCredential">,
-        ) => {
-          const [preferences, credentials] = await Promise.all([
-            client.spaceModelPreference.findMany({
-              where: {
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-                credential: { provider: input.provider },
+        const prepared = await prepareBoundModelAuth(
+          deps,
+          context.actor,
+          {
+            modelProvider: input.provider,
+            modelId: input.modelId,
+            modelCredentialId: input.modelCredentialId,
+            expectedRevision: input.expectedRevision,
+          },
+          codexCatalog,
+          (secretId, provider) => refreshExpiredCredential(context.actor, secretId, provider),
+        );
+        try {
+          await withSerializableRetry(() =>
+            deps.prisma.$transaction(
+              async (tx) => {
+                const checked = await validateModelBinding(
+                  tx,
+                  deps.secrets,
+                  context.actor,
+                  {
+                    modelProvider: input.provider,
+                    modelId: input.modelId,
+                    modelCredentialId: input.modelCredentialId,
+                    expectedRevision: input.expectedRevision,
+                  },
+                  prepared,
+                );
+                if (
+                  !checked ||
+                  checked.credential.secretId !== prepared?.secretId ||
+                  checked.ciphertext !== prepared?.ciphertext
+                )
+                  throw new ORPCError("CONFLICT", {
+                    message: "Model connection changed. Reload and try again.",
+                  });
+                let thinkingLevel =
+                  input.thinkingLevel === undefined
+                    ? checked.credential.defaultModel === input.modelId
+                      ? checked.credential.thinkingLevel
+                      : null
+                    : input.thinkingLevel;
+                if (thinkingLevel) {
+                  const allowed =
+                    input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+                      ? compatibleThinkingLevels(
+                          checked.credential,
+                          checked.plaintext,
+                          input.modelId,
+                        ).allowed
+                      : listPiCatalog().find(
+                          (entry) =>
+                            entry.provider === input.provider && entry.id === input.modelId,
+                        )?.thinkingLevels;
+                  thinkingLevel = clampCatalogThinkingLevel(thinkingLevel, allowed);
+                }
+                await selectSpaceModelPreference(
+                  tx,
+                  context.actor,
+                  checked.credential.id,
+                  input.modelId,
+                  thinkingLevel,
+                );
               },
-              include: { credential: true },
-            }),
-            client.userModelCredential.findMany({
-              where: { userId: context.actor.userId, provider: input.provider },
-            }),
-          ]);
-          return {
-            preferences,
-            candidates: defaultModelCredentialCandidates({
-              provider: input.provider,
-              modelId: input.modelId,
-              preferences,
-              credentials,
-            }),
-          };
-        };
-        await withSerializableRetry(async () => {
-          const preparedState = await loadSpaceModelState(deps.prisma);
-          const preparedAuth = new Map(
-            await Promise.all(
-              preparedState.candidates.map(
-                async (candidate) =>
-                  [
-                    candidate.secretId,
-                    await prepareStoredModelAuth(
-                      deps.prisma,
-                      deps.secrets,
-                      context.actor.userId,
-                      candidate.secretId,
-                      input.provider,
-                      input.modelId,
-                      codexCatalog,
-                      {
-                        onExpiredToken: () =>
-                          refreshExpiredCredential(
-                            context.actor,
-                            candidate.secretId,
-                            input.provider,
-                          ),
-                      },
-                    ),
-                  ] as const,
-              ),
+              { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
             ),
           );
-          const needsThinking =
-            input.thinkingLevel === undefined
-              ? preparedState.preferences.some(
-                  (preference) =>
-                    preference.modelId === usableModelId(input.modelId) &&
-                    Boolean(preference.thinkingLevel),
-                )
-              : Boolean(input.thinkingLevel);
-          const thinking = needsThinking
-            ? await prepareAllowedThinkingLevels(deps, context.actor, input.provider, input.modelId)
-            : { allowed: undefined, secret: undefined };
-          return deps.prisma.$transaction(
-            async (tx) => {
-              const { preferences, candidates } = await loadSpaceModelState(tx);
-              if (candidates.length === 0) {
-                throw new ORPCError("NOT_FOUND", {
-                  message: `No model credential is connected for ${input.provider}.`,
-                });
-              }
-              if (thinking.secret) {
-                const current = await tx.secret.findFirst({
-                  where: { id: thinking.secret.id, userId: context.actor.userId, spaceId: null },
-                  select: { ciphertext: true },
-                });
-                if (current?.ciphertext !== thinking.secret.ciphertext) {
-                  throw new ORPCError("CONFLICT", { message: "Model credentials changed; retry." });
-                }
-              }
-              const savedModelId = new Map(
-                preferences.map((preference) => [preference.credential.id, preference.modelId]),
-              );
-              const readyIds: string[] = [];
-              let authFailure: string | undefined;
-              let sawReadable = false;
-              for (const candidate of candidates) {
-                const prepared = preparedAuth.get(candidate.secretId);
-                const current = await tx.secret.findFirst({
-                  where: { id: candidate.secretId, userId: context.actor.userId, spaceId: null },
-                  select: { id: true, ciphertext: true },
-                });
-                if (!prepared || (current?.ciphertext ?? null) !== prepared.ref) {
-                  throw new ORPCError("CONFLICT", { message: "Model credentials changed; retry." });
-                }
-                const auth = prepared.auth;
-                if (auth.status === "unreadable") continue;
-                sawReadable = true;
-                if (auth.status === "rejected") {
-                  authFailure ??= auth.message;
-                  continue;
-                }
-                readyIds.push(candidate.id);
-              }
-              const chosenId = selectDefaultCredentialId({
-                provider: input.provider,
-                modelId: input.modelId,
-                orderedIds: candidates.map((candidate) => candidate.id),
-                readyIds,
-                savedModelId: (credentialId) => savedModelId.get(credentialId),
-              });
-              const fallbackId = !sawReadable ? candidates[0]?.id : undefined;
-              const credentialId = chosenId ?? fallbackId;
-              if (!credentialId) {
-                throw new ORPCError("BAD_REQUEST", {
-                  message: authFailure ?? UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
-                });
-              }
-              let thinkingLevel: string | null | undefined = input.thinkingLevel;
-              if (thinkingLevel === undefined) {
-                // The level belongs to the preference's modelId — keep it only when the
-                // stored choice already names this model.
-                const existing = preferences.find(
-                  (preference) => preference.credential.id === credentialId,
-                );
-                thinkingLevel =
-                  existing?.modelId === usableModelId(input.modelId)
-                    ? existing.thinkingLevel
-                    : null;
-              }
-              if (thinkingLevel) {
-                if (!needsThinking) {
-                  throw new ORPCError("CONFLICT", { message: "Model preferences changed; retry." });
-                }
-                thinkingLevel = clampCatalogThinkingLevel(thinkingLevel, thinking.allowed);
-              }
-              await selectSpaceModelPreference(
-                tx,
-                context.actor,
-                credentialId,
-                input.modelId,
-                thinkingLevel,
-              );
-            },
-            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-          );
-        }).catch((error: unknown) => {
+        } catch (error) {
           if (error instanceof SecretStoreUnavailableError)
             throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
           throw error;
-        });
+        }
         return { ok: true as const };
       }),
       disconnect: authed.models.disconnect.handler(async ({ context, input }) => {
-        // Retire pending sign-ins in every space first — the credentials are
-        // account-wide, so a finishing OAuth session anywhere could otherwise
-        // re-persist a credential the delete below just removed.
+        if (input.provider === OPENAI_COMPATIBLE_PROVIDER_ID && !input.credentialId)
+          throw new ORPCError("BAD_REQUEST", { message: "Choose a model connection." });
         await deps.oauthLogins.cancelProvider({
           userId: context.actor.userId,
           provider: input.provider,
@@ -1576,30 +1558,42 @@ export function createRouter(deps: RouterDeps) {
         await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
-              await tx.spaceBackupModel.deleteMany({
-                where: { userId: context.actor.userId, provider: input.provider },
-              });
               const existing = await tx.userModelCredential.findMany({
-                where: { userId: context.actor.userId, provider: input.provider },
+                where: {
+                  userId: context.actor.userId,
+                  provider: input.provider,
+                  ...(input.credentialId ? { id: input.credentialId } : {}),
+                },
               });
+              if (input.credentialId && existing.length === 0) throw new ORPCError("NOT_FOUND");
               if (existing.length === 0) return;
+              if (input.credentialId)
+                assertConnectionRevision(existing[0]!, input.expectedRevision);
+              for (const credential of existing) {
+                const references = await listModelConnectionReferences(
+                  tx,
+                  context.actor.userId,
+                  credential.id,
+                );
+                await refuseAccountModelReferences(
+                  tx,
+                  context.actor.userId,
+                  references.filter((reference) => reference.kind !== "space-default"),
+                );
+              }
               const ids = existing.map((row) => row.id);
-              // Credentials belong to the account, not the space — disconnecting
-              // removes them everywhere, matching voice.disconnect. Linked
-              // preferences in other spaces go with their credential.
               await tx.spaceModelPreference.deleteMany({
                 where: { userId: context.actor.userId, credentialId: { in: ids } },
               });
               await tx.userModelCredential.deleteMany({
                 where: { userId: context.actor.userId, id: { in: ids } },
               });
-              for (const row of existing) {
+              for (const row of existing)
                 await deleteUnreferencedCredentialSecret(tx, {
                   credentialKind: "model",
                   credentialId: row.id,
                   secretId: row.secretId,
                 });
-              }
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
           ),
@@ -1631,6 +1625,12 @@ export function createRouter(deps: RouterDeps) {
       }),
       duplicate: authed.bots.duplicate.handler(async ({ context, input }) => {
         const source = await repos.getBot(context.actor, input.botId);
+        const preparedSource = await prepareExistingModelAuth(
+          deps,
+          context.actor,
+          source,
+          codexCatalog,
+        );
         const duplicate = await repos
           .createBot(context.actor, {
             name: duplicateBotName(source.name),
@@ -1642,7 +1642,28 @@ export function createRouter(deps: RouterDeps) {
             computerMode: source.computer?.scope === "dedicated" ? "dedicated" : "team",
             modelProvider: source.modelProvider,
             modelId: source.modelId,
+            modelCredentialId: source.modelCredentialId,
             thinkingLevel: source.thinkingLevel,
+            validateModel: async (tx, binding) => {
+              const credential = await tx.userModelCredential.findFirst({
+                where: {
+                  id: binding.modelCredentialId,
+                  userId: context.actor.userId,
+                  provider: binding.modelProvider,
+                },
+                select: { connectionRevision: true },
+              });
+              await validateModelBinding(
+                tx,
+                deps.secrets,
+                context.actor,
+                {
+                  ...binding,
+                  expectedRevision: credential?.connectionRevision,
+                },
+                preparedSource,
+              );
+            },
             disabledBuiltinTools: source.disabledBuiltinTools,
           })
           .catch((error: unknown) => {
@@ -1667,96 +1688,114 @@ export function createRouter(deps: RouterDeps) {
           });
           if (!section) throw new IsolationError();
         }
-        // Web settings resend the saved model on every save. Reject an
-        // incompatible override only when this request is changing it; a run
-        // still rejects a Spark model the subscription sign-in cannot call.
         const settingModel =
-          input.modelProvider !== undefined &&
-          input.modelId !== undefined &&
-          (input.modelProvider !== existing.modelProvider || input.modelId !== existing.modelId);
-        if (settingModel && input.modelProvider && input.modelId) {
-          const credential = await findModelCredential(
-            deps.prisma,
-            context.actor,
-            input.modelProvider,
-            input.modelId,
-          );
-          if (!credential) {
-            throw new ORPCError("BAD_REQUEST", { message: "Connect that model provider first" });
-          }
-          const knownModels = [...listPiCatalog(), scriptedCatalogEntry];
-          const inCatalog = knownModels.some(
-            (item) => item.provider === input.modelProvider && item.id === input.modelId,
-          );
-          if (!inCatalog && credential.defaultModel !== input.modelId) {
-            throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider" });
-          }
-          if (inCatalog) {
-            const authError = await validateStoredModelAuth(
-              deps.prisma,
-              deps.secrets,
-              context.actor.userId,
-              credential.secretId,
-              input.modelProvider,
-              input.modelId,
+          input.modelProvider !== undefined ||
+          input.modelId !== undefined ||
+          input.modelCredentialId !== undefined;
+        const preparedAuth = settingModel
+          ? await prepareBoundModelAuth(
+              deps,
+              context.actor,
+              input,
               codexCatalog,
-              {
-                onExpiredToken: () =>
-                  refreshExpiredCredential(
-                    context.actor,
-                    credential.secretId,
-                    input.modelProvider!,
-                  ),
-              },
-            );
-            if (authError) throw new ORPCError("BAD_REQUEST", { message: authError });
-          }
-        }
+              (secretId, provider) => refreshExpiredCredential(context.actor, secretId, provider),
+            )
+          : input.thinkingLevel
+            ? await prepareExistingModelAuth(deps, context.actor, existing, codexCatalog)
+            : undefined;
         const thinkingLevel = input.thinkingLevel;
-        if (input.thinkingLevel) {
-          const provider =
-            input.modelProvider !== undefined ? input.modelProvider : existing.modelProvider;
-          const modelId = input.modelId !== undefined ? input.modelId : existing.modelId;
-          const me = await meDto(deps, context.actor);
-          const effectiveProvider = provider ?? me.defaultProvider;
-          const effectiveModelId = modelId ?? me.defaultModel;
-          if (effectiveProvider && effectiveModelId) {
-            const entry = listPiCatalog().find(
-              (item) => item.provider === effectiveProvider && item.id === effectiveModelId,
-            );
-            let allowed = entry?.thinkingLevels;
-            if (effectiveProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
-              allowed = ["off"];
-              const credential = await findModelCredential(
-                deps.prisma,
-                context.actor,
-                effectiveProvider,
-              );
-              if (credential && credential.defaultModel === effectiveModelId) {
-                const secret = await deps.prisma.secret.findFirst({
-                  where: { id: credential.secretId, userId: context.actor.userId, spaceId: null },
-                  select: { ciphertext: true },
+        const defaultCredential =
+          thinkingLevel && (!existing.modelProvider || (settingModel && !input.modelProvider))
+            ? await findDefaultModelCredential(deps.prisma, context.actor)
+            : null;
+        const preparedDefault = defaultCredential?.defaultModel
+          ? await prepareExistingModelAuth(
+              deps,
+              context.actor,
+              {
+                modelProvider: defaultCredential.provider,
+                modelId: defaultCredential.defaultModel,
+                modelCredentialId: defaultCredential.id,
+              },
+              codexCatalog,
+            )
+          : undefined;
+        const defaultChoice = thinkingLevel ? await meDto(deps, context.actor) : undefined;
+        const validate =
+          settingModel || thinkingLevel
+            ? async (tx: Prisma.TransactionClient) => {
+                const current = await tx.bot.findFirst({
+                  where: {
+                    id: existing.id,
+                    userId: context.actor.userId,
+                    spaceId: context.actor.spaceId,
+                  },
                 });
-                if (secret) {
-                  try {
-                    allowed =
-                      modelCredentialDto(
-                        credential,
-                        await deps.secrets.load(secret.ciphertext, credential.secretId),
-                      ).thinkingLevels ?? allowed;
-                  } catch {
-                    // Unreadable connections must not advertise reasoning support.
+                if (!current) throw new IsolationError();
+                const binding = settingModel
+                  ? input
+                  : {
+                      modelProvider: current.modelProvider,
+                      modelId: current.modelId,
+                      modelCredentialId: current.modelCredentialId,
+                      expectedRevision: input.expectedRevision,
+                    };
+                if (!settingModel && binding.modelCredentialId) {
+                  const credential = await tx.userModelCredential.findFirst({
+                    where: { id: binding.modelCredentialId, userId: context.actor.userId },
+                    select: { connectionRevision: true },
+                  });
+                  binding.expectedRevision ??= credential?.connectionRevision;
+                }
+                const checked = await validateModelBinding(
+                  tx,
+                  deps.secrets,
+                  context.actor,
+                  binding,
+                  preparedAuth,
+                );
+                assertPreparedModelAuth(checked, preparedAuth);
+                if (thinkingLevel) {
+                  const selected =
+                    checked?.credential ?? (await findDefaultModelCredential(tx, context.actor));
+                  let provider = binding.modelProvider ?? selected?.provider;
+                  let modelId = binding.modelId ?? selected?.defaultModel;
+                  if (!provider || !modelId) {
+                    provider = defaultChoice?.defaultProvider ?? undefined;
+                    modelId = defaultChoice?.defaultModel ?? undefined;
                   }
+                  let allowed: string[] | undefined = listPiCatalog().find(
+                    (entry) => entry.provider === provider && entry.id === modelId,
+                  )?.thinkingLevels;
+                  if (selected && provider === OPENAI_COMPATIBLE_PROVIDER_ID && modelId) {
+                    const loaded =
+                      checked ??
+                      (await validateModelBinding(
+                        tx,
+                        deps.secrets,
+                        context.actor,
+                        {
+                          modelProvider: selected.provider,
+                          modelId,
+                          modelCredentialId: selected.id,
+                          expectedRevision: selected.connectionRevision,
+                        },
+                        preparedDefault,
+                      ));
+                    if (loaded)
+                      allowed = compatibleThinkingLevels(
+                        selected,
+                        loaded.plaintext,
+                        modelId,
+                      ).allowed;
+                  }
+                  if (allowed && !allowed.includes(thinkingLevel))
+                    throw new ORPCError("BAD_REQUEST", {
+                      message: `Thinking level must be one of: ${allowed.join(", ")}`,
+                    });
                 }
               }
-            }
-            if (allowed && !allowed.includes(input.thinkingLevel)) {
-              throw new ORPCError("BAD_REQUEST", {
-                message: `Thinking level must be one of: ${allowed.join(", ")}`,
-              });
-            }
-          }
-        }
+            : undefined;
         if (!existing.thread) throw new IsolationError();
         await commitBotUpdate({
           prisma: deps.prisma,
@@ -1765,6 +1804,7 @@ export function createRouter(deps: RouterDeps) {
           threadId: existing.thread.id,
           botId: input.botId,
           emitBotUpdated: botProfileLabelsChanged(input),
+          validate,
           data: {
             name: input.name,
             title: input.title,
@@ -1778,7 +1818,11 @@ export function createRouter(deps: RouterDeps) {
             voiceId: input.voiceId,
             autoSpeak: input.autoSpeak,
             ...(input.modelProvider !== undefined
-              ? { modelProvider: input.modelProvider, modelId: input.modelId ?? null }
+              ? {
+                  modelProvider: input.modelProvider,
+                  modelId: input.modelId ?? null,
+                  modelCredentialId: input.modelCredentialId ?? null,
+                }
               : {}),
             ...(input.thinkingLevel !== undefined ? { thinkingLevel } : {}),
             ...(input.teamChatAmbientEnabled !== undefined
@@ -3379,34 +3423,57 @@ export function createRouter(deps: RouterDeps) {
           input.nativeTriggers,
           context.signal ?? new AbortController().signal,
         );
-        const { row, nativeTriggers } = await deps.prisma
-          .$transaction(async (tx) => {
-            const row = await tx.routine.create({
-              data: {
-                spaceId: context.actor.spaceId,
-                botId: input.botId,
-                userId: context.actor.userId,
-                name: input.name,
-                prompt: input.prompt,
-                crons: input.crons,
-                timezone: input.timezone,
-                notify: input.notify,
-                active: input.active,
-                webhookEnabled: input.webhookEnabled,
-                githubEnabled: input.githubEnabled,
-                messageProvider: input.messageProvider,
-                nextRunAt,
-              },
-            });
-            const nativeTriggers = await replaceNativeRoutineTriggersTx(
-              tx,
-              context.actor,
-              row.id,
-              preparedNative ?? [],
-            );
-            return { row, nativeTriggers };
-          })
-          .catch(rethrowNativeRoutineError);
+        const preparedAuth = await prepareBoundModelAuth(
+          deps,
+          context.actor,
+          input,
+          codexCatalog,
+          (secretId, provider) => refreshExpiredCredential(context.actor, secretId, provider),
+        );
+        const { row, nativeTriggers } = await withSerializableRetry(() =>
+          deps.prisma.$transaction(
+            async (tx) => {
+              const checked = await validateModelBinding(
+                tx,
+                deps.secrets,
+                context.actor,
+                input,
+                preparedAuth,
+              );
+              assertPreparedModelAuth(checked, preparedAuth);
+              assertBoundThinkingLevel(checked, input.thinkingLevel);
+              const row = await tx.routine.create({
+                data: {
+                  spaceId: context.actor.spaceId,
+                  botId: input.botId,
+                  userId: context.actor.userId,
+                  name: input.name,
+                  prompt: input.prompt,
+                  crons: input.crons,
+                  timezone: input.timezone,
+                  notify: input.notify,
+                  active: input.active,
+                  webhookEnabled: input.webhookEnabled,
+                  githubEnabled: input.githubEnabled,
+                  messageProvider: input.messageProvider,
+                  modelProvider: input.modelProvider ?? null,
+                  modelId: input.modelId ?? null,
+                  modelCredentialId: input.modelCredentialId ?? null,
+                  thinkingLevel: input.thinkingLevel ?? null,
+                  nextRunAt,
+                },
+              });
+              const nativeTriggers = await replaceNativeRoutineTriggersTx(
+                tx,
+                context.actor,
+                row.id,
+                preparedNative ?? [],
+              );
+              return { row, nativeTriggers };
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          ),
+        ).catch(rethrowNativeRoutineError);
         if (bot.thread) {
           await deps.events.append({
             spaceId: context.actor.spaceId,
@@ -3523,38 +3590,100 @@ export function createRouter(deps: RouterDeps) {
             : isOneShotRoutineCrons(crons)
               ? (armedOneShotAt ?? existing.nextRunAt)
               : (recalculatedNextRunAt ?? existing.nextRunAt);
+        const settingModel =
+          input.modelProvider !== undefined ||
+          input.modelId !== undefined ||
+          input.modelCredentialId !== undefined;
+        const preparedAuth = settingModel
+          ? await prepareBoundModelAuth(
+              deps,
+              context.actor,
+              input,
+              codexCatalog,
+              (secretId, provider) => refreshExpiredCredential(context.actor, secretId, provider),
+            )
+          : input.thinkingLevel
+            ? await prepareExistingModelAuth(deps, context.actor, existing, codexCatalog)
+            : undefined;
         // Re-check the parent in the write itself so an archive that lands after the read wins.
-        const { row, nativeTriggers } = await deps.prisma
-          .$transaction(async (tx) => {
-            const row = await tx.routine
-              .update({
-                where: { id: existing.id, bot: { archivedAt: null } },
-                data: {
-                  name: input.name,
-                  prompt: input.prompt,
-                  crons: input.crons,
-                  timezone: input.timezone,
-                  active: input.active,
-                  notify: input.notify,
-                  webhookEnabled: input.webhookEnabled,
-                  githubEnabled: input.githubEnabled,
-                  messageProvider: input.messageProvider,
-                  nextRunAt,
-                },
-              })
-              .catch((error: unknown) => {
-                if (isRecordNotFound(error)) throw new ORPCError("NOT_FOUND");
-                throw error;
-              });
-            if (preparedNative !== undefined)
-              await replaceNativeRoutineTriggersTx(tx, context.actor, row.id, preparedNative);
-            else await requireRoutineTrigger(tx, context.actor, row.id);
-            return {
-              row,
-              nativeTriggers: preparedNative === undefined ? existingNative : preparedNative,
-            };
-          })
-          .catch(rethrowNativeRoutineError);
+        const { row } = await withSerializableRetry(() =>
+          deps.prisma.$transaction(
+            async (tx) => {
+              if (settingModel || input.thinkingLevel) {
+                const current = await tx.routine.findFirst({
+                  where: {
+                    id: existing.id,
+                    userId: context.actor.userId,
+                    spaceId: context.actor.spaceId,
+                  },
+                });
+                if (!current) throw new ORPCError("NOT_FOUND");
+                const binding = settingModel
+                  ? input
+                  : {
+                      modelProvider: current.modelProvider,
+                      modelId: current.modelId,
+                      modelCredentialId: current.modelCredentialId,
+                      expectedRevision: input.expectedRevision,
+                    };
+                if (!settingModel && binding.modelCredentialId) {
+                  const credential = await tx.userModelCredential.findFirst({
+                    where: { id: binding.modelCredentialId, userId: context.actor.userId },
+                    select: { connectionRevision: true },
+                  });
+                  binding.expectedRevision ??= credential?.connectionRevision;
+                }
+                const checked = await validateModelBinding(
+                  tx,
+                  deps.secrets,
+                  context.actor,
+                  binding,
+                  preparedAuth,
+                );
+                assertPreparedModelAuth(checked, preparedAuth);
+                assertBoundThinkingLevel(checked, input.thinkingLevel);
+              }
+              const row = await tx.routine
+                .update({
+                  where: { id: existing.id, bot: { archivedAt: null } },
+                  data: {
+                    name: input.name,
+                    prompt: input.prompt,
+                    crons: input.crons,
+                    timezone: input.timezone,
+                    active: input.active,
+                    notify: input.notify,
+                    webhookEnabled: input.webhookEnabled,
+                    githubEnabled: input.githubEnabled,
+                    messageProvider: input.messageProvider,
+                    ...(settingModel
+                      ? {
+                          modelProvider: input.modelProvider,
+                          modelId: input.modelId ?? null,
+                          modelCredentialId: input.modelCredentialId ?? null,
+                        }
+                      : {}),
+                    ...(input.thinkingLevel !== undefined
+                      ? { thinkingLevel: input.thinkingLevel }
+                      : {}),
+                    nextRunAt,
+                  },
+                })
+                .catch((error: unknown) => {
+                  if (isRecordNotFound(error)) throw new ORPCError("NOT_FOUND");
+                  throw error;
+                });
+              if (preparedNative !== undefined)
+                await replaceNativeRoutineTriggersTx(tx, context.actor, row.id, preparedNative);
+              else await requireRoutineTrigger(tx, context.actor, row.id);
+              return {
+                row,
+                nativeTriggers: preparedNative === undefined ? existingNative : preparedNative,
+              };
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          ),
+        ).catch(rethrowNativeRoutineError);
         const savedNative = await listNativeRoutineTriggers(
           deps.prisma,
           context.actor,
@@ -6997,6 +7126,122 @@ function computerHostFor(
   return null;
 }
 
+function assertBoundThinkingLevel(
+  checked: Awaited<ReturnType<typeof validateModelBinding>>,
+  thinkingLevel: string | null | undefined,
+) {
+  if (!checked || !thinkingLevel) return;
+  const allowed =
+    checked.credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+      ? compatibleThinkingLevels(checked.credential, checked.plaintext, checked.modelId).allowed
+      : listPiCatalog().find(
+          (entry) => entry.provider === checked.credential.provider && entry.id === checked.modelId,
+        )?.thinkingLevels;
+  if (allowed && !allowed.includes(thinkingLevel))
+    throw new ORPCError("BAD_REQUEST", {
+      message: `Thinking level must be one of: ${allowed.join(", ")}`,
+    });
+}
+
+async function prepareExistingModelAuth(
+  deps: RouterDeps,
+  actor: Actor,
+  binding: {
+    modelProvider?: string | null;
+    modelId?: string | null;
+    modelCredentialId?: string | null;
+  },
+  catalog: CodexLiveCatalog,
+) {
+  if (!binding.modelProvider && !binding.modelId && !binding.modelCredentialId) return undefined;
+  const row = binding.modelCredentialId
+    ? await deps.prisma.userModelCredential.findFirst({
+        where: { id: binding.modelCredentialId, userId: actor.userId },
+        select: { connectionRevision: true },
+      })
+    : null;
+  return prepareBoundModelAuth(
+    deps,
+    actor,
+    { ...binding, expectedRevision: row?.connectionRevision },
+    catalog,
+  );
+}
+
+async function prepareBoundModelAuth(
+  deps: RouterDeps,
+  actor: Actor,
+  binding: {
+    modelProvider?: string | null;
+    modelId?: string | null;
+    modelCredentialId?: string | null;
+    expectedRevision?: number;
+  },
+  codexCatalog: CodexLiveCatalog,
+  onExpiredToken?: (secretId: string, provider: string) => void,
+) {
+  if (!binding.modelProvider && !binding.modelId && !binding.modelCredentialId) return undefined;
+  if (!binding.modelProvider || !binding.modelId || !binding.modelCredentialId)
+    throw new ORPCError("BAD_REQUEST", { message: "Choose a model connection." });
+  const credential = await findBoundModelCredential(deps.prisma, actor, {
+    provider: binding.modelProvider,
+    modelId: binding.modelId,
+    modelCredentialId: binding.modelCredentialId,
+  });
+  if (!credential) throw new ORPCError("NOT_FOUND", { message: "Model connection not found." });
+  assertConnectionRevision(credential, binding.expectedRevision);
+  try {
+    let plaintext: string | undefined;
+    const prepared = await prepareStoredModelAuth(
+      deps.prisma,
+      {
+        load: async (ciphertext, context) => {
+          plaintext = await deps.secrets.load(ciphertext, context);
+          return plaintext;
+        },
+      },
+      actor.userId,
+      credential.secretId,
+      binding.modelProvider,
+      binding.modelId,
+      codexCatalog,
+      {
+        onExpiredToken: () =>
+          onExpiredToken?.(credential.secretId, binding.modelProvider!) ?? Promise.resolve(),
+      },
+    );
+    if (prepared.auth.status === "unreadable")
+      throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+    if (prepared.auth.status === "rejected")
+      throw new ORPCError("BAD_REQUEST", { message: prepared.auth.message });
+    if (plaintext === undefined || prepared.ref === null)
+      throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+    return {
+      modelCredentialId: credential.id,
+      secretId: credential.secretId,
+      ciphertext: prepared.ref,
+      plaintext,
+    };
+  } catch (error) {
+    if (error instanceof SecretStoreUnavailableError)
+      throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
+    throw error;
+  }
+}
+
+function assertPreparedModelAuth(
+  checked: Awaited<ReturnType<typeof validateModelBinding>>,
+  prepared: PreparedModelBindingSecret | undefined,
+) {
+  if (
+    prepared &&
+    (!checked ||
+      checked.credential.secretId !== prepared.secretId ||
+      checked.ciphertext !== prepared.ciphertext)
+  )
+    throw new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
+}
+
 async function persistModelCredential(
   deps: RouterDeps,
   actor: Actor,
@@ -7005,6 +7250,9 @@ async function persistModelCredential(
     plaintext: string;
     label?: string;
     modelId?: string;
+    credentialId?: string;
+    expectedRevision?: number;
+    expectedCiphertext?: string | null;
     thinkingLevel?: string | null;
     supportsImages?: boolean;
     signal?: AbortSignal;
@@ -7034,9 +7282,21 @@ async function persistModelCredential(
     requestedModelId ??
     defaultCatalogModelId(input.provider, input.plaintext) ??
     usableModelId(deps.env.defaultModel);
-  const allowedThinking = defaultModel
-    ? await allowedThinkingLevels(deps, actor, input.provider, defaultModel)
-    : undefined;
+  const allowedThinking = !defaultModel
+    ? undefined
+    : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+      ? compatibleThinkingLevels(
+          {
+            id: input.credentialId ?? "",
+            provider: input.provider,
+            label: input.label ?? "",
+            isDefault: true,
+            defaultModel,
+          },
+          input.plaintext,
+          defaultModel,
+        ).allowed
+      : await allowedThinkingLevels(deps, actor, input.provider, defaultModel);
   const stored = await deps.secrets.put(input.plaintext, {
     operationId: "cred",
     traceId: "cred",
@@ -7049,10 +7309,58 @@ async function persistModelCredential(
     deps.prisma.$transaction(
       async (tx) => {
         throwIfAborted(input.signal);
-        const existing = await tx.userModelCredential.findFirst({
-          where: { userId: actor.userId, provider: input.provider },
-          orderBy: newestModelCredentialOrder,
-        });
+        const existing = input.credentialId
+          ? await tx.userModelCredential.findFirst({
+              where: { id: input.credentialId, userId: actor.userId, provider: input.provider },
+            })
+          : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+            ? null
+            : await tx.userModelCredential.findFirst({
+                where: { userId: actor.userId, provider: input.provider },
+                orderBy: newestModelCredentialOrder,
+              });
+        if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
+        if (existing && input.credentialId) {
+          assertConnectionRevision(existing, input.expectedRevision);
+          if (input.expectedCiphertext !== undefined) {
+            const secret = await tx.secret.findFirst({
+              where: { id: existing.secretId, userId: actor.userId, spaceId: null },
+              select: { ciphertext: true },
+            });
+            if ((secret?.ciphertext ?? null) !== input.expectedCiphertext)
+              throw new ORPCError("CONFLICT", {
+                message: "Model connection changed. Reload and try again.",
+              });
+          }
+        }
+        if (existing && input.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
+          const thinking = compatibleThinkingLevels(
+            { ...existing, isDefault: true, defaultModel },
+            input.plaintext,
+            defaultModel ?? "",
+          );
+          const allowed = new Set(thinking.enabledModelIds);
+          const references = await listModelConnectionReferences(tx, actor.userId, existing.id);
+          await refuseAccountModelReferences(
+            tx,
+            actor.userId,
+            references.filter(
+              (reference) =>
+                !(reference.kind === "space-default" && reference.spaceId === actor.spaceId) &&
+                reference.modelId !== null &&
+                !allowed.has(reference.modelId),
+            ),
+          );
+          await tx.spaceModelPreference.updateMany({
+            where: {
+              userId: actor.userId,
+              credentialId: existing.id,
+              isDefault: false,
+              modelId: { notIn: [...allowed] },
+            },
+            data: { modelId: null, thinkingLevel: null },
+          });
+        }
         throwIfAborted(input.signal);
         const secret = await tx.secret.create({
           data: {
@@ -7074,16 +7382,25 @@ async function persistModelCredential(
                 supportsImages: input.supportsImages ?? false,
               },
             })
-          : await tx.userModelCredential.update({
-              where: { id: existing.id },
-              data: {
-                label: input.label ?? input.provider,
-                secretId: secret.id,
-                ...(input.supportsImages !== undefined
-                  ? { supportsImages: input.supportsImages }
-                  : {}),
-              },
-            });
+          : await tx.userModelCredential
+              .update({
+                where: { id: existing.id, connectionRevision: existing.connectionRevision },
+                data: {
+                  label: input.label ?? input.provider,
+                  secretId: secret.id,
+                  connectionRevision: { increment: 1 },
+                  ...(input.supportsImages !== undefined
+                    ? { supportsImages: input.supportsImages }
+                    : {}),
+                },
+              })
+              .catch((error: unknown) => {
+                if (isRecordNotFound(error))
+                  throw new ORPCError("CONFLICT", {
+                    message: "Model connection changed. Reload and try again.",
+                  });
+                throw error;
+              });
         throwIfAborted(input.signal);
         let thinkingLevel = input.thinkingLevel;
         if (thinkingLevel === undefined) {
@@ -7152,6 +7469,7 @@ function mapRoutine(
     messageProvider: string | null;
     modelProvider: string | null;
     modelId: string | null;
+    modelCredentialId?: string | null;
     thinkingLevel: string | null;
     lastRunAt: Date | null;
     nextRunAt: Date | null;
@@ -7174,6 +7492,7 @@ function mapRoutine(
     messageProvider: row.messageProvider,
     modelProvider: row.modelProvider ?? null,
     modelId: row.modelId ?? null,
+    modelCredentialId: row.modelCredentialId ?? null,
     thinkingLevel: (row.thinkingLevel as Routine["thinkingLevel"]) ?? null,
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,

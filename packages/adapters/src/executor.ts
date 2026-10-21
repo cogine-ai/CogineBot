@@ -270,7 +270,8 @@ import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
 import {
-  isCatalogModelChoice,
+  enabledOpenAiCompatibleModelIds,
+  findConnectedModelCredential,
   pinnedModelCredentialError,
   routineRunModelPin,
   runModelChoice,
@@ -290,6 +291,7 @@ import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
+import type { StoredModelSecret } from "./pi-oauth.js";
 import {
   isRetiredModelCredentialError,
   matchesFailedOAuthSecret,
@@ -2974,22 +2976,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
     modelId: string,
     registerSecrets?: (values: string[]) => void,
     requireStoredSecret = false,
+    modelCredentialId?: string | null,
   ): Promise<AgentRunRequest["model"]> => {
     const validationError = await validateConnectedModelChoice(
+      deps.prisma,
+      deps.secretStore,
+      scope,
+      provider,
+      modelId,
+      modelCredentialId,
+    );
+    if (validationError) throw new Error(validationError);
+    const credential = await findConnectedModelCredential(
       deps.prisma,
       scope,
       provider,
       modelId,
+      modelCredentialId,
     );
-    if (validationError) throw new Error(validationError);
-    const credential = await findModelCredential(deps.prisma, scope, provider, modelId);
     if (!credential) throw new Error("Connect that model provider first");
-    // Free-form selections must keep the preference that owns this modelId. A
-    // intervening delete/change can make findModelCredential fall back to another
-    // same-provider credential; reject that mismatch instead of mixing baseUrl.
-    if (!isCatalogModelChoice(provider, modelId) && credential.defaultModel !== modelId) {
-      throw new Error("Unknown model for that provider");
-    }
     const resolved = await resolveModelKey(
       deps,
       scope.userId,
@@ -3003,6 +3008,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
     return {
       provider,
       id: modelId,
+      modelCredentialId: credential.id,
       apiKey: resolved.oauth ? undefined : resolved.apiKey,
       ...cloudflareRunFields(resolved),
       baseUrl: resolved.baseUrl,
@@ -3043,19 +3049,34 @@ export function createRunExecutor(deps: ExecutorDeps) {
               userId: scope.userId,
               spaceId: scope.spaceId,
             },
-            select: { modelProvider: true, modelId: true, thinkingLevel: true },
+            select: {
+              modelProvider: true,
+              modelId: true,
+              modelCredentialId: true,
+              thinkingLevel: true,
+            },
           })
         : null;
       const hasOverride = Boolean(override?.modelProvider && override.modelId);
       const [overrideCredential, defaultCredential, settings] = await Promise.all([
         hasOverride
-          ? findModelCredential(deps.prisma, scope, override!.modelProvider!, override!.modelId)
+          ? findConnectedModelCredential(
+              deps.prisma,
+              scope,
+              override!.modelProvider!,
+              override!.modelId,
+              override!.modelCredentialId ?? null,
+            )
           : Promise.resolve(null),
         findDefaultModelCredential(deps.prisma, scope),
         deps.prisma.deploymentSettings.findUnique({
           where: { id: "default" },
         }),
       ]);
+      if (hasOverride && override) {
+        const error = pinnedModelCredentialError(override, overrideCredential);
+        if (error) throw new UnavailableModelForAuthError(error);
+      }
       const selected = selectConfiguredModel({
         override,
         overrideCredential,
@@ -3079,10 +3100,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
         credential,
         provider,
         id,
+        undefined,
+        hasOverride,
       );
       return {
         provider,
         id,
+        modelCredentialId: credential?.id ?? null,
         apiKey: resolved.oauth ? undefined : resolved.apiKey,
         ...cloudflareRunFields(resolved),
         baseUrl: resolved.baseUrl,
@@ -3179,7 +3203,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // The claim locks the row, so this is the model that was committed when it fired.
         const currentModel = await tx.routine.findUnique({
           where: { id: routine.id },
-          select: { modelProvider: true, modelId: true, thinkingLevel: true },
+          select: {
+            modelProvider: true,
+            modelId: true,
+            modelCredentialId: true,
+            thinkingLevel: true,
+          },
         });
         if (!currentModel) return null;
         const task = await tx.task.create({
@@ -3461,11 +3490,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const hasModelOverride = Boolean(modelChoice.modelProvider && modelChoice.modelId);
         const overrideCredential =
           hasModelOverride && modelChoice.modelProvider
-            ? await findModelCredential(
+            ? await findConnectedModelCredential(
                 deps.prisma,
                 run,
                 modelChoice.modelProvider,
                 modelChoice.modelId,
+                modelChoice.modelCredentialId ?? null,
               )
             : null;
         runAbortController = new AbortController();
@@ -3652,7 +3682,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         const runDeployment = deps.deploymentModelConfigured ? resolveDeploymentModel() : null;
         const runtimeFallback = runtimeFallbackModel(deps.runtime);
-        const pinError = run.modelPinned
+        const pinError = hasModelOverride
           ? pinnedModelCredentialError(modelChoice, overrideCredential)
           : undefined;
         const selected = selectConfiguredModel({
@@ -3730,6 +3760,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             runModelProvider,
             runModelId,
             (values) => runSecrets.push(...values),
+            hasModelOverride,
           );
         } catch (error) {
           // A dead or account-switched credential is already deleted. Retrying
@@ -3746,7 +3777,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
         if (!run.modelPinned) {
           await deps.prisma.run.updateMany({
             where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
-            data: { modelProvider: runModelProvider, modelId: runModelId },
+            data: {
+              modelProvider: runModelProvider,
+              modelId: runModelId,
+              modelCredentialId: credential?.id ?? null,
+            },
           });
         }
 
@@ -6586,13 +6621,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return;
         }
 
-        let fallbackModels: { provider: string; modelId: string }[] = [];
+        let fallbackModels: {
+          provider: string;
+          modelId: string;
+          modelCredentialId: string | null;
+        }[] = [];
         if (!scripted) {
           try {
             fallbackModels = await deps.prisma.spaceBackupModel.findMany({
               where: { userId: run.userId, spaceId: run.spaceId },
               orderBy: { position: "asc" },
-              select: { provider: true, modelId: true },
+              select: { provider: true, modelId: true, modelCredentialId: true },
             });
           } catch (error) {
             getLogger().warn("Backup models could not be loaded", { runId, error });
@@ -6602,9 +6641,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           fallbackModels
             .filter(
               (candidate) =>
-                candidate.provider !== runModelProvider || candidate.modelId !== runModelId,
+                candidate.provider !== runModelProvider ||
+                candidate.modelId !== runModelId ||
+                candidate.modelCredentialId !== (credential?.id ?? null),
             )
-            .map((candidate) => JSON.stringify([candidate.provider, candidate.modelId])),
+            .map((candidate) =>
+              JSON.stringify([
+                candidate.provider,
+                candidate.modelId,
+                candidate.modelCredentialId ?? null,
+              ]),
+            ),
         );
 
         try {
@@ -6661,6 +6708,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               model: {
                 provider: runModelProvider,
                 id: runModelId,
+                modelCredentialId: credential?.id ?? null,
                 apiKey: resolved.oauth ? undefined : resolved.apiKey,
                 ...cloudflareRunFields(resolved),
                 baseUrl: resolved.baseUrl,
@@ -6680,13 +6728,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     }
                   : undefined,
               },
-              fallbackModels: fallbackModels.map(({ provider, modelId }) => ({
+              fallbackModels: fallbackModels.map(({ provider, modelId, modelCredentialId }) => ({
                 provider,
                 id: modelId,
+                modelCredentialId,
               })),
               resolveFallbackModel: fallbackModelKeys.size
-                ? async (provider, modelId) => {
-                    const key = JSON.stringify([provider, modelId]);
+                ? async (provider, modelId, modelCredentialId) => {
+                    const key = JSON.stringify([provider, modelId, modelCredentialId ?? null]);
                     if (!fallbackModelKeys.has(key))
                       throw new Error("Backup model is not selected");
                     return resolveConnectedModel(
@@ -6695,11 +6744,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       modelId,
                       (values) => runSecrets.push(...values),
                       true,
+                      modelCredentialId ?? null,
                     );
                   }
                 : undefined,
-              onModelChange: async (provider, modelId) => {
-                if (!fallbackModelKeys.has(JSON.stringify([provider, modelId]))) {
+              onModelChange: async (provider, modelId, modelCredentialId) => {
+                if (
+                  !fallbackModelKeys.has(
+                    JSON.stringify([provider, modelId, modelCredentialId ?? null]),
+                  )
+                ) {
                   throw new Error("Backup model is not selected");
                 }
                 const updated = await deps.prisma.run.updateMany({
@@ -6709,7 +6763,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     leaseOwner: workerId,
                     leaseFence: fence,
                   },
-                  data: { modelProvider: provider, modelId },
+                  // A backup is an attempt choice, not a replacement for a captured pin.
+                  data: run.modelPinned
+                    ? { modelPinned: true }
+                    : {
+                        modelProvider: provider,
+                        modelId,
+                        modelCredentialId: modelCredentialId ?? null,
+                      },
                 });
                 if (updated.count !== 1) {
                   throw new Error("Run lease was lost before the backup model could be used");
@@ -6722,9 +6783,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               executeTool: scripted ? undefined : applyTool,
               resolveModel: scripted
                 ? undefined
-                : (provider, modelId) =>
-                    resolveConnectedModel(run, provider, modelId, (values) =>
-                      runSecrets.push(...values),
+                : (provider, modelId, modelCredentialId) =>
+                    resolveConnectedModel(
+                      run,
+                      provider,
+                      modelId,
+                      (values) => runSecrets.push(...values),
+                      true,
+                      modelCredentialId ?? null,
                     ),
               onToolCompleted: (completion) =>
                 appendToolCompletionAudit(
@@ -8501,6 +8567,20 @@ function deploymentKeyFor(deps: ExecutorDeps, provider: string): string | undefi
  */
 const CODEX_LIVE_RUN_WAIT_MS = 8_000;
 
+function assertCompatibleModelEnabled(
+  credential: { provider: string; defaultModel?: string | null },
+  secret: StoredModelSecret,
+  modelId: string,
+) {
+  if (credential.provider !== OPENAI_COMPATIBLE_PROVIDER_ID) return;
+  if (
+    secret.kind !== "openai_compatible" ||
+    !enabledOpenAiCompatibleModelIds(secret, credential.defaultModel).includes(modelId.trim())
+  ) {
+    throw new UnavailableModelForAuthError("Unknown model for that provider");
+  }
+}
+
 async function resolveModelKey(
   deps: ExecutorDeps,
   userId: string,
@@ -8543,7 +8623,9 @@ async function resolveModelKey(
         where: { id: credential.secretId, userId, spaceId: null },
       });
       if (!row) {
-        if (requireStoredSecret) throw new Error("Backup model credential is no longer available");
+        if (requireStoredSecret || credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
+          throw new UnavailableModelForAuthError("Model connection is unavailable");
+        }
         cloudflareGatewayProviderEnv({ provider });
         return { apiKey: deploymentKeyFor(deps, provider), redact: [] };
       }
@@ -8598,6 +8680,7 @@ async function resolveModelKey(
         if (!liveListed) throw new UnavailableModelForAuthError(authError);
       }
       resolved ??= await resolveAuth();
+      assertCompatibleModelEnabled(credential, resolved.secret, modelId);
       const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
       const baseUrl =
         resolved.secret.kind === "openai_compatible" ? resolved.secret.baseUrl : undefined;

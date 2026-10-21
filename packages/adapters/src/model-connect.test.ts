@@ -315,6 +315,8 @@ describe("modelCredentialDto", () => {
       authKind: "openai_compatible",
       baseUrl: "https://example.invalid/v1",
       modelId: "qwen3-4b",
+      connectionRevision: 1,
+      enabledModelIds: ["qwen3-4b"],
       reasoning: false,
       thinkingLevels: ["off"],
     });
@@ -466,6 +468,7 @@ describe("modelCredentialDto", () => {
       label: "xAI",
       hasKey: false,
       isDefault: false,
+      connectionRevision: 1,
       modelId: "grok-4.6",
     });
   });
@@ -484,6 +487,7 @@ it.each([true, false])(
       kind: "openai_compatible",
       baseUrl: "http://localhost:8000/v1",
       reasoning,
+      enabledModelIds: ["arbitrary-model"],
     });
     expect(
       modelCredentialDto(
@@ -670,5 +674,70 @@ describe("compatible connection updates", () => {
     const baseUrl = "http://example.invalid/v1";
     const legacy = serializeModelSecret({ kind: "openai_compatible", baseUrl, apiKey: "fake-key" });
     expect(() => buildModelConnectPlaintext({ ...input, baseUrl }, legacy)).toThrow(/HTTPS/);
+  });
+});
+
+describe("enabled compatible models", () => {
+  const input = {
+    provider: "openai-compatible",
+    baseUrl: "http://127.0.0.1:8222/v1",
+    modelId: "default-model",
+  };
+  it("stores a normalized exact-deduplicated list and always includes the default", () => {
+    const saved = parseModelSecret(
+      buildModelConnectPlaintext({ ...input, enabledModelIds: [" other ", "other", "OTHER"] }),
+    );
+    expect(saved).toMatchObject({ enabledModelIds: ["default-model", "other", "OTHER"] });
+  });
+  it("preserves saved models at the same canonical endpoint and resets them at another endpoint", () => {
+    const previous = buildModelConnectPlaintext({
+      ...input,
+      apiKey: "fake-saved-key",
+      enabledModelIds: ["extra"],
+    });
+    const same = parseModelSecret(
+      buildModelConnectPlaintext({ ...input, baseUrl: "http://127.0.0.1:8222/" }, previous),
+    );
+    expect(same).toMatchObject({
+      apiKey: "fake-saved-key",
+      enabledModelIds: ["default-model", "extra"],
+    });
+    const changed = parseModelSecret(
+      buildModelConnectPlaintext({ ...input, baseUrl: "http://127.0.0.1:8333/v1" }, previous),
+    );
+    expect(changed).toMatchObject({ enabledModelIds: ["default-model"] });
+    expect(changed).not.toHaveProperty("apiKey");
+  });
+  it("bounds the effective list to 500 including the default", () => {
+    const extras = Array.from({ length: 499 }, (_, i) => `model-${i}`);
+    expect(
+      parseModelSecret(buildModelConnectPlaintext({ ...input, enabledModelIds: extras })),
+    ).toHaveProperty("enabledModelIds", ["default-model", ...extras]);
+    expect(() =>
+      buildModelConnectPlaintext({ ...input, enabledModelIds: [...extras, "one-too-many"] }),
+    ).toThrow("Enable at most 500 models");
+  });
+  it("projects the connection revision and effective list without disclosing its key", () => {
+    const plaintext = buildModelConnectPlaintext({
+      ...input,
+      apiKey: "fake-saved-key",
+      enabledModelIds: ["extra"],
+    });
+    const dto = modelCredentialDto(
+      {
+        id: "connection",
+        provider: input.provider,
+        label: "Local",
+        isDefault: true,
+        defaultModel: input.modelId,
+        connectionRevision: 7,
+      },
+      plaintext,
+    );
+    expect(dto).toMatchObject({
+      connectionRevision: 7,
+      enabledModelIds: ["default-model", "extra"],
+    });
+    expect(JSON.stringify(dto)).not.toContain("fake-saved-key");
   });
 });

@@ -15,6 +15,7 @@ describe("usage ledger", () => {
         type: "usage",
         provider: "fixture",
         model: "test",
+        modelCredentialId: "retired-connection",
         callId: "late-call",
         inputTokens: 10,
         outputTokens: 2,
@@ -23,7 +24,14 @@ describe("usage ledger", () => {
     );
     expect(createMany).toHaveBeenCalledTimes(2);
     expect(createMany.mock.calls[1]?.[0]).toMatchObject({
-      data: [expect.objectContaining({ runId: null, parentRunId: "deleted-run", inputTokens: 10 })],
+      data: [
+        expect.objectContaining({
+          runId: null,
+          parentRunId: "deleted-run",
+          inputTokens: 10,
+          modelCredentialId: "retired-connection",
+        }),
+      ],
     });
   });
   it("persists every reported bucket and durable operation attribution idempotently", async () => {
@@ -37,6 +45,7 @@ describe("usage ledger", () => {
       type: "usage" as const,
       provider: "fixture",
       model: "test",
+      modelCredentialId: "actual-backup-connection",
       callId: "call-fixture",
       inputTokens: 60,
       outputTokens: 30,
@@ -61,6 +70,7 @@ describe("usage ledger", () => {
       data: [
         expect.objectContaining({
           callId: event.callId,
+          modelCredentialId: "actual-backup-connection",
           inputTokens: 60,
           outputTokens: 30,
           cacheReadTokens: 40,
@@ -95,6 +105,7 @@ describe("usage ledger", () => {
       outputTokens: null,
       cacheReadTokens: null,
       costUsd: null,
+      modelCredentialId: null,
     });
     expect(data).not.toHaveProperty("runId");
   });

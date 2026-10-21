@@ -1,13 +1,17 @@
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { Routine } from "@rakazo/contracts";
+import type { ModelCatalogEntry, ModelCredential, Routine } from "@rakazo/contracts";
 import {
   type CronFreq,
   type CronPreset,
+  connectedModelChoices,
+  credentialForModel,
   cronFromPreset,
   defaultCronPreset,
   formatCron,
   isOneShotRoutineCrons,
+  modelOptionKey,
+  parseModelOptionKey,
   presetFromCron,
 } from "@rakazo/core";
 import {
@@ -20,6 +24,8 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
   Input,
+  NativeSelect,
+  NativeSelectOption,
   Textarea,
 } from "@rakazo/ui-web";
 import {
@@ -33,7 +39,8 @@ import {
   Puzzle,
   X,
 } from "lucide-react";
-import { useId } from "react";
+import { useEffect, useId, useState } from "react";
+import { rpc } from "../lib/rpc";
 import { RoutineNativeEvents } from "./RoutineNativeEvents";
 import { RoutineRunHistory } from "./RoutineRunHistory";
 import { RoutineSchedule } from "./RoutineSchedule";
@@ -87,6 +94,10 @@ export type RoutineDraftState = {
   messageProvider: string | null;
   active: boolean;
   runAtLocal: string;
+  modelKey: string;
+  modelRevision?: number;
+  thinkingLevel: string;
+  modelDirty: boolean;
 };
 
 export function emptyRoutineDraft(): RoutineDraftState {
@@ -101,6 +112,9 @@ export function emptyRoutineDraft(): RoutineDraftState {
     messageProvider: null,
     active: true,
     runAtLocal: "",
+    modelKey: "",
+    thinkingLevel: "",
+    modelDirty: false,
   };
 }
 
@@ -116,6 +130,12 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
     messageProvider: routine.messageProvider,
     active: routine.active,
     runAtLocal: routineNeedsOneShotArm(routine, routine.crons) ? defaultArmRunAtLocal() : "",
+    modelKey:
+      routine.modelProvider && routine.modelId
+        ? modelOptionKey(routine.modelProvider, routine.modelId, routine.modelCredentialId)
+        : "",
+    thinkingLevel: routine.thinkingLevel ?? "",
+    modelDirty: false,
   };
 }
 
@@ -259,6 +279,37 @@ export function RoutineEditor({
 }) {
   const { t } = useLingui();
   const fieldId = useId();
+  const [credentials, setCredentials] = useState<ModelCredential[]>([]);
+  const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
+  useEffect(() => {
+    let current = true;
+    void Promise.all([rpc.models.credentials(), rpc.models.list()])
+      .then(([nextCredentials, nextCatalog]) => {
+        if (!current) return;
+        setCredentials(nextCredentials);
+        setCatalog(nextCatalog);
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [scopeKey]);
+  const modelOptions = connectedModelChoices(credentials, catalog);
+  const selectedModel = draft.modelKey ? parseModelOptionKey(draft.modelKey) : null;
+  const selectedCredential = credentialForModel(
+    credentials,
+    selectedModel?.provider,
+    selectedModel?.modelId,
+    selectedModel?.modelCredentialId,
+  );
+  const selectedEntry = catalog.find(
+    (entry) => entry.provider === selectedModel?.provider && entry.id === selectedModel?.modelId,
+  );
+  const thinkingOptions = (
+    selectedCredential?.thinkingLevels ??
+    selectedEntry?.thinkingLevels ??
+    []
+  ).filter((level) => level !== "off");
   const slackAvailable = messageProviders.includes("slack");
   const slackDisabledReasonId = `${fieldId}-slack-disabled-reason`;
   const hasTriggers =
@@ -557,6 +608,67 @@ export function RoutineEditor({
           </p>
         ) : null}
       </div>
+
+      <details className="mt-5 text-sm text-muted-foreground">
+        <summary className="w-fit cursor-pointer">
+          <Trans>Model</Trans>
+        </summary>
+        <NativeSelect
+          className="mt-2 w-full"
+          aria-label={t`Routine model`}
+          value={draft.modelKey}
+          disabled={saving || running}
+          onChange={(event) => {
+            const option = modelOptions.find((entry) => entry.key === event.target.value);
+            onChange({
+              ...draft,
+              modelKey: event.target.value,
+              modelRevision: option?.connectionRevision,
+              thinkingLevel: "",
+              modelDirty: true,
+            });
+          }}
+        >
+          <NativeSelectOption value="">
+            <Trans>Bot model</Trans>
+          </NativeSelectOption>
+          {draft.modelKey && !modelOptions.some((entry) => entry.key === draft.modelKey) ? (
+            <NativeSelectOption value={draft.modelKey}>
+              {selectedModel?.modelId ?? draft.modelKey}
+            </NativeSelectOption>
+          ) : null}
+          {modelOptions.map((entry) => (
+            <NativeSelectOption key={entry.key} value={entry.key}>
+              {entry.label}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+        {thinkingOptions.length ? (
+          <NativeSelect
+            className="mt-2 w-full"
+            aria-label={t`Thinking`}
+            value={draft.thinkingLevel}
+            disabled={saving || running}
+            onChange={(event) =>
+              onChange({
+                ...draft,
+                thinkingLevel: event.target.value,
+                modelRevision: draft.modelRevision ?? selectedCredential?.connectionRevision,
+                modelDirty: true,
+              })
+            }
+          >
+            <NativeSelectOption value="">
+              <Trans>Default</Trans>
+            </NativeSelectOption>
+            {thinkingOptions.map((level) => (
+              <NativeSelectOption key={level} value={level}>
+                {level}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        ) : null}
+      </details>
 
       <div className="mt-5">
         <Button disabled={saving || running || !hasTriggers} onClick={onSave}>

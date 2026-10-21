@@ -1,6 +1,6 @@
 import { i18n } from "@lingui/core";
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
-import type { Me, ThinkingLevel } from "@rakazo/contracts";
+import type { Me, ModelCredentialReference, ThinkingLevel } from "@rakazo/contracts";
 import {
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
   cloudflareGatewayRouting,
@@ -8,20 +8,26 @@ import {
   DEFAULT_MODEL_MAX_TOKENS,
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
+  modelConnectionLabel,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   openAiCompatibleConnectReady,
   openAiCompatibleProbeSuccessMessage,
   parseModelContextWindow,
   parseModelMaxImagesPerPrompt,
   parseModelMaxTokens,
+  sameOpenAiCompatibleBaseUrl,
 } from "@rakazo/contracts";
 import {
   COMPATIBLE_THINKING_LEVELS,
+  canUseCompatibleModelAsDefault,
   clampCatalogThinkingLevel,
+  compatibleModelRows,
   createModelProbe,
   filterModelCatalog,
   initialModelProbeState,
   pickCatalogModelId,
+  savedCompatibleModelIds,
+  toggleEnabledModelId,
 } from "@rakazo/core";
 import {
   AlertDialog,
@@ -33,6 +39,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  Checkbox,
   Dialog,
   DialogClose,
   DialogContent,
@@ -40,6 +47,7 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  Label,
   ModelThinkingOptions,
   NativeSelect,
   NativeSelectOption,
@@ -63,7 +71,7 @@ import {
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
-import { rpc } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, rpc, selectedSpaceId } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
@@ -90,12 +98,17 @@ export function ModelSettingsOverlay({
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [provider, setProvider] = useState("");
+  const [connectionId, setConnectionId] = useState<string | null>(null);
+  const [connectionRevision, setConnectionRevision] = useState<number | undefined>();
+  const [savedBaseUrl, setSavedBaseUrl] = useState<string | undefined>();
+  const [references, setReferences] = useState<ModelCredentialReference[]>([]);
   // The provider whose optional personal-key form is open.
   const [ownKeyProvider, setOwnKeyProvider] = useState<string | null>(null);
   const [providerQuery, setProviderQuery] = useState("");
   const [modelId, setModelId] = useState("");
   const modelIdRef = useRef(modelId);
   modelIdRef.current = modelId;
+  const [enabledModelIds, setEnabledModelIds] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
@@ -107,7 +120,16 @@ export function ModelSettingsOverlay({
   const [supportsImages, setSupportsImages] = useState(false);
   const [maxImagesPerPrompt, setMaxImagesPerPrompt] = useState("");
   const [{ models: probeModels, probing }, setProbe] = useState(initialModelProbeState);
-  const [modelProbe] = useState(() => createModelProbe(setProbe));
+  const probeSpaceGenerationRef = useRef(currentSpaceSelectionGeneration());
+  const [modelProbe] = useState(() =>
+    createModelProbe((next) =>
+      setProbe(
+        probeSpaceGenerationRef.current === currentSpaceSelectionGeneration()
+          ? next
+          : initialModelProbeState,
+      ),
+    ),
+  );
   const resetOpenAiCompatibleProbe = modelProbe.reset;
   const [codeCopied, copyOAuthCode] = useCopyText();
   const [loading, setLoading] = useState(true);
@@ -126,6 +148,9 @@ export function ModelSettingsOverlay({
   const refreshRevisionRef = useRef(0);
   const selectionRevisionRef = useRef(0);
   const selectedLabelRef = useRef<string | undefined>(undefined);
+  const mountedRef = useRef(true);
+  const meRef = useRef(me);
+  meRef.current = me;
 
   const {
     oauth,
@@ -139,27 +164,39 @@ export function ModelSettingsOverlay({
   } = useModelOAuthSignIn({
     onClearError: () => setError(null),
     onError: setError,
-    onFinished: async (controller) => {
-      await refresh();
+    onFinished: async (controller, credential) => {
+      await refresh(credential.id);
       if (controller.signal.aborted) return;
       setNotice(t`Connected and using ${selectedLabelRef.current ?? "this model"}.`);
     },
   });
 
-  async function refresh() {
+  async function refresh(preferredConnectionId?: string) {
     const refreshRevision = ++refreshRevisionRef.current;
     const selectionRevision = selectionRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     const [nextCatalog, nextCredentials, nextMe] = await Promise.all([
       rpc.models.list(),
       rpc.models.credentials(),
       rpc.me(),
     ]);
-    if (refreshRevision !== refreshRevisionRef.current) return;
+    if (
+      !mountedRef.current ||
+      refreshRevision !== refreshRevisionRef.current ||
+      spaceGeneration !== currentSpaceSelectionGeneration()
+    )
+      return;
     const nextProvider =
       provider && nextCatalog.some((entry) => entry.provider === provider)
         ? provider
         : (nextMe.defaultProvider ?? nextCatalog[0]?.provider ?? "");
-    const nextCredential = nextCredentials.find((entry) => entry.provider === nextProvider);
+    const nextCredential =
+      nextCredentials.find(
+        (entry) =>
+          entry.provider === nextProvider && entry.id === (preferredConnectionId ?? connectionId),
+      ) ??
+      nextCredentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
+      nextCredentials.find((entry) => entry.provider === nextProvider);
     const nextModel =
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
         ? (nextCredential?.modelId ??
@@ -179,7 +216,11 @@ export function ModelSettingsOverlay({
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
       setProvider(nextProvider);
+      setConnectionId(nextCredential?.id ?? null);
+      setConnectionRevision(nextCredential?.connectionRevision);
+      setSavedBaseUrl(nextCredential?.baseUrl);
       setModelId(nextModel);
+      setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
       if (nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
         setBaseUrl(nextCredential?.baseUrl ?? "");
         setReasoning(nextCredential?.reasoning ?? false);
@@ -211,10 +252,12 @@ export function ModelSettingsOverlay({
   }
 
   useEffect(() => {
+    mountedRef.current = true;
     void refresh()
       .catch((err: unknown) => setError(errorText(err, t`Could not load model settings`)))
       .finally(() => setLoading(false));
     return () => {
+      mountedRef.current = false;
       refreshRevisionRef.current += 1;
       modelProbe.invalidate();
     };
@@ -298,13 +341,21 @@ export function ModelSettingsOverlay({
   const isCloudflareGateway = provider === CLOUDFLARE_AI_GATEWAY_PROVIDER_ID;
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
-  const credential = credentials.find((entry) => entry.provider === provider);
+  const credential = credentials.find(
+    (entry) => entry.provider === provider && entry.id === connectionId,
+  );
+  const providerConnections = credentials.filter((entry) => entry.provider === provider);
+  const connectionReferences = references.filter(
+    (entry) => entry.modelCredentialId === credential?.id,
+  );
+  const blockingConnectionReferences = connectionReferences.filter(
+    (entry) => entry.kind !== "space-default",
+  );
+  const unresolvedReferences = references.filter((entry) => entry.unresolved);
   const currentEntry = catalog.find(
     (entry) => entry.provider === me?.defaultProvider && entry.id === me?.defaultModel,
   );
-  const activeCredential = credentials.find(
-    (entry) => entry.provider === me?.defaultProvider && entry.modelId === me?.defaultModel,
-  );
+  const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
   const activeThinkingLabel =
@@ -314,7 +365,8 @@ export function ModelSettingsOverlay({
       : null;
   const isActive =
     me?.defaultProvider === selected?.provider &&
-    me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id);
+    me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id) &&
+    (!isOpenAiCompatible || credential?.isDefault === true);
   // Space still bills the host while this provider matches; model id alone is not credentials.
   const usingServerCredentials = provider === me?.hostCredentialProvider;
   const acceptsKey = selected?.auth !== "oauth";
@@ -336,6 +388,12 @@ export function ModelSettingsOverlay({
     baseUrl: effectiveBaseUrl,
     modelId,
   });
+  const compatibleRows = compatibleModelRows(
+    savedCompatibleModelIds(credential, baseUrl),
+    enabledModelIds,
+    probeModels,
+  );
+  const defaultModelOptions = [...new Set([...enabledModelIds, modelId])].filter(Boolean);
   const builtinLimitSave = !isOpenAiCompatible && Boolean(credential) && apiKey.trim().length === 0;
 
   function invalidatePreflight() {
@@ -347,11 +405,15 @@ export function ModelSettingsOverlay({
   }
 
   function preflightStillCurrent(revision: number): boolean {
-    return revision === preflightRevisionRef.current;
+    return mountedRef.current && revision === preflightRevisionRef.current;
   }
 
   function updateBaseUrl(nextBaseUrl: string) {
+    selectionRevisionRef.current += 1;
+    if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) setApiKey("");
     setBaseUrl(nextBaseUrl);
+    // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
+    setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
     setError(null);
@@ -359,6 +421,7 @@ export function ModelSettingsOverlay({
   }
 
   function updateApiKey(nextApiKey: string) {
+    selectionRevisionRef.current += 1;
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
@@ -374,10 +437,20 @@ export function ModelSettingsOverlay({
     );
   }
 
-  function chooseProvider(nextProvider: string) {
+  function chooseProvider(nextProvider: string, nextConnectionId?: string | null) {
     cancelOAuthAttempt();
     selectionRevisionRef.current += 1;
-    const nextCredential = credentials.find((entry) => entry.provider === nextProvider);
+    const nextCredential =
+      nextConnectionId === null
+        ? undefined
+        : (credentials.find(
+            (entry) => entry.provider === nextProvider && entry.id === nextConnectionId,
+          ) ??
+          credentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
+          credentials.find((entry) => entry.provider === nextProvider));
+    setConnectionId(nextCredential?.id ?? null);
+    setConnectionRevision(nextCredential?.connectionRevision);
+    setSavedBaseUrl(nextCredential?.baseUrl);
     const nextModelId =
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
         ? (nextCredential?.modelId ?? "")
@@ -402,6 +475,7 @@ export function ModelSettingsOverlay({
     setSupportsImages(nextCredential?.supportsImages ?? false);
     setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     setModelId(nextModelId);
+    setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
     setBaseUrl(
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? (nextCredential?.baseUrl ?? "") : "",
     );
@@ -418,6 +492,8 @@ export function ModelSettingsOverlay({
   async function probeServerModels() {
     if (!baseUrl.trim()) return;
     const revision = preflightRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    probeSpaceGenerationRef.current = spaceGeneration;
     setError(null);
     setNotice(null);
     setPreflightSuccess(null);
@@ -426,9 +502,22 @@ export function ModelSettingsOverlay({
     await modelProbe.probe({
       baseUrl,
       apiKey,
-      request: rpc.models.probeOpenAiCompatible,
+      request: (input) =>
+        rpc.models.probeOpenAiCompatible(
+          {
+            ...input,
+            ...(credential && sameOpenAiCompatibleBaseUrl(baseUrl, savedBaseUrl)
+              ? { credentialId: credential.id, expectedBaseUrl: savedBaseUrl }
+              : {}),
+          },
+          { context: { spaceId: me?.spaceId } },
+        ),
       onSuccess: (models) => {
-        if (!preflightStillCurrent(revision)) return;
+        if (
+          !preflightStillCurrent(revision) ||
+          spaceGeneration !== currentSpaceSelectionGeneration()
+        )
+          return;
         const current = modelIdRef.current;
         const next = current.trim() || models[0] || "";
         if (next !== current) stageCompatibleModelId(next);
@@ -444,7 +533,11 @@ export function ModelSettingsOverlay({
         setNotice(openAiCompatibleProbeSuccessMessage(models.length));
       },
       onError: (err) => {
-        if (!preflightStillCurrent(revision)) return;
+        if (
+          !preflightStillCurrent(revision) ||
+          spaceGeneration !== currentSpaceSelectionGeneration()
+        )
+          return;
         setPreflightFailure(classifyModelConnectionFailure(err, { modelId }));
         setNotice(null);
       },
@@ -454,6 +547,7 @@ export function ModelSettingsOverlay({
   async function testApiKeyConnection() {
     if (!selected?.catalogProbe) return;
     const revision = preflightRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     setPreflightTarget("api-key");
     setPreflightTesting(true);
     setPreflightSuccess(null);
@@ -468,7 +562,8 @@ export function ModelSettingsOverlay({
       catalogProbe: true,
       probeCatalog: rpc.models.probeCatalog,
     });
-    if (!preflightStillCurrent(revision)) return;
+    if (!preflightStillCurrent(revision) || spaceGeneration !== currentSpaceSelectionGeneration())
+      return;
     setPreflightTesting(false);
     if (result.ok) {
       setPreflightSuccess(modelPreflightSuccessMessage(result.discoveredModels.length));
@@ -480,6 +575,7 @@ export function ModelSettingsOverlay({
   async function testOAuthConnection() {
     if (!selected) return;
     const revision = preflightRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     setPreflightTarget("sign-in");
     setPreflightTesting(true);
     setPreflightSuccess(null);
@@ -491,13 +587,15 @@ export function ModelSettingsOverlay({
       () => rpc.models.credentials(),
       selected.id,
     );
-    if (!preflightStillCurrent(revision)) return;
+    if (!preflightStillCurrent(revision) || spaceGeneration !== currentSpaceSelectionGeneration())
+      return;
     const result = await runModelConnectionPreflight({
       authKind: "oauth",
       provider: selected.provider,
       ...stored,
     });
-    if (!preflightStillCurrent(revision)) return;
+    if (!preflightStillCurrent(revision) || spaceGeneration !== currentSpaceSelectionGeneration())
+      return;
     setPreflightTesting(false);
     if (result.ok) {
       setPreflightSuccess(t`A subscription credential is stored securely.`);
@@ -506,38 +604,85 @@ export function ModelSettingsOverlay({
     setPreflightFailure(result.failure);
   }
 
+  function operationCurrent(revision: number, scope: Me | null, spaceGeneration: number): boolean {
+    const current = meRef.current;
+    const selectedSpace = selectedSpaceId();
+    return (
+      mountedRef.current &&
+      spaceGeneration === currentSpaceSelectionGeneration() &&
+      revision === selectionRevisionRef.current &&
+      current?.userId === scope?.userId &&
+      current?.spaceId === scope?.spaceId &&
+      (!selectedSpace || selectedSpace === scope?.spaceId)
+    );
+  }
+
+  useEffect(() => {
+    if (!me) return;
+    let current = true;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const isCurrent = () =>
+      current && mountedRef.current && spaceGeneration === currentSpaceSelectionGeneration();
+    void rpc.models
+      .references({}, { context: { spaceId: me.spaceId } })
+      .then((result) => {
+        if (isCurrent()) setReferences(result.references);
+      })
+      .catch(() => {
+        if (isCurrent()) setReferences([]);
+      });
+    return () => {
+      current = false;
+    };
+  }, [credentials, me?.userId, me?.spaceId]);
+
   async function setModelDefault() {
-    if (!selected || !credential) return;
+    const revision = selectionRevisionRef.current;
+    const scope = me;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    if (!selected || !credential || connectionRevision === undefined) return;
     const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
     if (isOpenAiCompatible && !activeModelId) return;
     setError(null);
     setNotice(null);
     setPending("default");
     try {
-      await rpc.models.setDefault({
-        provider: selected.provider,
-        modelId: activeModelId,
-        // Catalog connections keep the space default effort on the preference;
-        // openai-compatible still owns its level inside the stored endpoint config.
-        ...(!isOpenAiCompatible
-          ? {
-              thinkingLevel: clampCatalogThinkingLevel(
-                thinkingLevel,
-                selected.thinkingLevels,
-              ) as ThinkingLevel | null,
-            }
-          : {}),
-      });
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
+      await rpc.models.setDefault(
+        {
+          provider: selected.provider,
+          modelId: activeModelId,
+          modelCredentialId: credential.id,
+          expectedRevision: connectionRevision,
+          // Catalog connections keep the space default effort on the preference;
+          // openai-compatible still owns its level inside the stored endpoint config.
+          ...(!isOpenAiCompatible
+            ? {
+                thinkingLevel: clampCatalogThinkingLevel(
+                  thinkingLevel,
+                  selected.thinkingLevels,
+                ) as ThinkingLevel | null,
+              }
+            : {}),
+        },
+        { context: { spaceId: scope?.spaceId } },
+      );
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
       await refresh();
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
       setNotice(isOpenAiCompatible ? t`Model updated.` : t`Now using ${selected.label}.`);
     } catch (err) {
-      setError(errorText(err, t`Could not change the default model`));
+      if (operationCurrent(revision, scope, spaceGeneration))
+        setError(errorText(err, t`Could not change the default model`));
     } finally {
       setPending(null);
     }
   }
 
   async function connectKey() {
+    const revision = selectionRevisionRef.current;
+    const scope = me;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     if (!selected) return;
     const savingLimitOnly = !isOpenAiCompatible && !apiKey.trim();
     const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
@@ -595,12 +740,18 @@ export function ModelSettingsOverlay({
     setNotice(null);
     setPending("connect");
     try {
-      await rpc.models.connect(
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
+      const savedConnection = await rpc.models.connect(
         isOpenAiCompatible
           ? {
               provider: selected.provider,
+              ...(connectionId
+                ? { credentialId: connectionId, expectedRevision: connectionRevision }
+                : {}),
               baseUrl: effectiveBaseUrl,
               modelId: modelId.trim(),
+              // The server adds the default itself.
+              enabledModelIds: enabledModelIds.filter((id) => id !== modelId.trim()),
               reasoning,
               thinkingLevel: stagedThinking,
               maxTokens: parsedMaxTokens,
@@ -624,9 +775,12 @@ export function ModelSettingsOverlay({
               maxTokens: parsedMaxTokens ?? null,
               label: selected.providerName ?? selected.provider,
             },
+        { context: { spaceId: scope?.spaceId } },
       );
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
       setApiKey("");
-      await refresh();
+      await refresh(savedConnection.id);
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
       detailScrollRef.current?.scrollTo({ top: 0 });
       setNotice(
         isOpenAiCompatible || savingLimitOnly
@@ -634,27 +788,42 @@ export function ModelSettingsOverlay({
           : t`Connected and using ${selected.label}.`,
       );
     } catch (err) {
-      setError(errorText(err, t`Could not connect this provider`));
+      if (operationCurrent(revision, scope, spaceGeneration))
+        setError(errorText(err, t`Could not connect this provider`));
     } finally {
       setPending(null);
     }
   }
 
   async function disconnectCredential() {
+    const revision = selectionRevisionRef.current;
+    const scope = me;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     if (!selected || !credential) return;
     cancelOAuthAttempt();
     setError(null);
     setNotice(null);
     setPending("disconnect");
     try {
-      await rpc.models.disconnect({ provider: selected.provider });
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
+      await rpc.models.disconnect(
+        {
+          provider: selected.provider,
+          credentialId: credential.id,
+          expectedRevision: connectionRevision,
+        },
+        { context: { spaceId: scope?.spaceId } },
+      );
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
       setApiKey("");
       setThinkingLevel(null);
       await refresh();
+      if (!operationCurrent(revision, scope, spaceGeneration)) return;
       detailScrollRef.current?.scrollTo({ top: 0 });
       setNotice(t`Disconnected ${selected.providerName ?? selected.provider}.`);
     } catch (err) {
-      setError(errorText(err, t`Could not disconnect this provider`));
+      if (operationCurrent(revision, scope, spaceGeneration))
+        setError(errorText(err, t`Could not disconnect this provider`));
     } finally {
       setPending(null);
     }
@@ -1116,7 +1285,12 @@ export function ModelSettingsOverlay({
           variant="secondary"
           className="rounded-full"
           size="sm"
-          disabled={busy || (isOpenAiCompatible && !modelId.trim())}
+          disabled={
+            busy ||
+            (isOpenAiCompatible &&
+              (!modelId.trim() ||
+                !canUseCompatibleModelAsDefault(credential.enabledModelIds, modelId.trim())))
+          }
           onClick={() => void setModelDefault()}
         >
           {pending === "default" ? (
@@ -1237,6 +1411,32 @@ export function ModelSettingsOverlay({
             <>
               {isOpenAiCompatible ? (
                 <div className="block text-[13.5px] text-muted-foreground">
+                  <label className="mb-4 block" htmlFor="model-connection">
+                    <Trans>Connection</Trans>
+                    <NativeSelect
+                      id="model-connection"
+                      aria-label={t`Connection`}
+                      className="mt-2 w-full text-foreground"
+                      value={connectionId ?? ""}
+                      disabled={busy}
+                      onChange={(event) => chooseProvider(provider, event.target.value || null)}
+                    >
+                      {connectionId &&
+                      !providerConnections.some((entry) => entry.id === connectionId) ? (
+                        <NativeSelectOption value={connectionId}>
+                          <Trans>Unavailable connection</Trans>
+                        </NativeSelectOption>
+                      ) : null}
+                      {providerConnections.map((entry) => (
+                        <NativeSelectOption key={entry.id} value={entry.id}>
+                          {modelConnectionLabel(entry)}
+                        </NativeSelectOption>
+                      ))}
+                      <NativeSelectOption value="">
+                        <Trans>New connection</Trans>
+                      </NativeSelectOption>
+                    </NativeSelect>
+                  </label>
                   <label className="block" htmlFor="model-base-url">
                     <Trans>Server URL</Trans>
                     <Input
@@ -1271,11 +1471,38 @@ export function ModelSettingsOverlay({
                   {preflightTarget === "compatible" ? (
                     <ModelPreflightFeedback success={null} failure={preflightFailure} />
                   ) : null}
+                  {connectionReferences.length ? (
+                    <details className="mt-3 text-sm">
+                      <summary>
+                        <Trans>Used by</Trans> ({connectionReferences.length})
+                      </summary>
+                      <ul className="mt-2 space-y-1">
+                        {connectionReferences.map((entry) => (
+                          <li key={`${entry.kind}:${entry.id}:${entry.spaceId}`}>
+                            {entry.name}
+                            {entry.modelId ? ` · ${entry.modelId}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                  {credential ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2"
+                      disabled={busy}
+                      onClick={() => setConfirmDisconnect(true)}
+                    >
+                      <Trans>Disconnect</Trans>
+                    </Button>
+                  ) : null}
                   <div className="mt-4 block">
                     <span>
                       <Trans>Model</Trans>
                     </span>
-                    {probeModels.length && probeModels.includes(modelId) ? (
+                    {compatibleRows.includes(modelId) ? (
                       <NativeSelect
                         className="mt-2 w-full text-foreground"
                         value={modelId}
@@ -1289,7 +1516,7 @@ export function ModelSettingsOverlay({
                         }}
                         aria-label={t`Models from server`}
                       >
-                        {probeModels.map((id) => (
+                        {defaultModelOptions.map((id) => (
                           <NativeSelectOption key={id} value={id}>
                             {id}
                           </NativeSelectOption>
@@ -1314,7 +1541,27 @@ export function ModelSettingsOverlay({
                         className="mt-2 h-10 text-foreground"
                       />
                     )}
-                    {probeModels.length && !probeModels.includes(modelId) ? (
+                    {compatibleRows.length ? (
+                      <div className="mt-3 grid gap-2">
+                        {compatibleRows.map((id) => (
+                          <Label key={id} className="font-normal text-foreground">
+                            <Checkbox
+                              checked={id === modelId || enabledModelIds.includes(id)}
+                              disabled={busy || id === modelId}
+                              onCheckedChange={(checked) => {
+                                selectionRevisionRef.current += 1;
+                                setEnabledModelIds((current) =>
+                                  toggleEnabledModelId(current, id, checked),
+                                );
+                                setNotice(null);
+                              }}
+                            />
+                            <span className="min-w-0 break-all">{id}</span>
+                          </Label>
+                        ))}
+                      </div>
+                    ) : null}
+                    {probeModels.length && !compatibleRows.includes(modelId) ? (
                       <Button
                         type="button"
                         variant="link"
@@ -1462,6 +1709,21 @@ export function ModelSettingsOverlay({
               <Trans>No model catalog is available.</Trans>
             </p>
           )}
+          {unresolvedReferences.length ? (
+            <details className="mt-6 text-sm text-muted-foreground">
+              <summary>
+                <Trans>Choose a connection for saved models</Trans>
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {unresolvedReferences.map((entry) => (
+                  <li key={`${entry.kind}:${entry.id}:${entry.spaceId}`}>
+                    {entry.name}
+                    {entry.modelId ? ` · ${entry.modelId}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
           {me ? (
             <ModelBackupsSettings
               userId={me.userId}
@@ -1482,13 +1744,28 @@ export function ModelSettingsOverlay({
               <Trans>This removes the connection from every space.</Trans>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {connectionReferences.length ? (
+            <ul className="space-y-1 text-sm text-muted-foreground">
+              {connectionReferences.map((entry) => (
+                <li key={`${entry.kind}:${entry.id}:${entry.spaceId}`}>
+                  {entry.name}
+                  {entry.modelId ? ` · ${entry.modelId}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {blockingConnectionReferences.length ? (
+            <p className="text-sm text-muted-foreground">
+              <Trans>Choose another model for these items before disconnecting.</Trans>
+            </p>
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>
               <Trans>Cancel</Trans>
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              disabled={pending === "disconnect"}
+              disabled={pending === "disconnect" || blockingConnectionReferences.length > 0}
               onClick={() => {
                 setConfirmDisconnect(false);
                 void disconnectCredential();

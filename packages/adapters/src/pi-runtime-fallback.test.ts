@@ -1022,6 +1022,73 @@ describe("Pi runtime ordered model fallback", () => {
     expect(JSON.stringify(events)).not.toContain("backup-access-after-refresh");
   });
 
+  it("falls back between explicitly selected connections serving the same model id", async () => {
+    const input = request([
+      { provider: primary.provider, id: primary.id, modelCredentialId: "connection-b" },
+    ]);
+    input.model.modelCredentialId = "connection-a";
+    input.resolveFallbackModel = vi.fn(async (provider, id, modelCredentialId) => ({
+      provider,
+      id,
+      modelCredentialId,
+      apiKey: "fake-backup-key",
+    }));
+    input.onModelChange = vi.fn(async () => undefined);
+    const keys: Array<string | undefined> = [];
+    providerState.stream.mockImplementation(
+      (target: Model<"openai-completions">, _context: unknown, options?: { apiKey?: string }) => {
+        keys.push(options?.apiKey);
+        return options?.apiKey === "fake-primary-key"
+          ? stream(target, message(target, [], "error", "429 rate_limit_error"))
+          : stream(target, message(target, [{ type: "text", text: "backup response" }], "stop"));
+      },
+    );
+    const events = await run(input);
+    expect(input.resolveFallbackModel).toHaveBeenCalledExactlyOnceWith(
+      primary.provider,
+      primary.id,
+      "connection-b",
+    );
+    expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(
+      primary.provider,
+      primary.id,
+      "connection-b",
+    );
+    expect(keys).toContain("fake-primary-key");
+    expect(keys.at(-1)).toBe("fake-backup-key");
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "text", text: "backup response" }),
+    );
+  });
+
+  it("does not accept a resolver returning a different credential for an explicit backup", async () => {
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, modelCredentialId: "selected-connection" },
+    ]);
+    input.resolveFallbackModel = vi.fn(async () => ({
+      provider: backupA.provider,
+      id: backupA.id,
+      modelCredentialId: "wrong-connection",
+      apiKey: "wrong-key",
+    }));
+    input.onModelChange = vi.fn(async () => undefined);
+    const keys: Array<string | undefined> = [];
+    providerState.stream.mockImplementation(
+      (target: Model<"openai-completions">, _context: unknown, options?: { apiKey?: string }) => {
+        keys.push(options?.apiKey);
+        return stream(target, message(target, [], "error", "429 rate_limit_error"));
+      },
+    );
+    await expect(run(input)).rejects.toThrow("429 rate_limit_error");
+    expect(input.resolveFallbackModel).toHaveBeenCalledExactlyOnceWith(
+      backupA.provider,
+      backupA.id,
+      "selected-connection",
+    );
+    expect(input.onModelChange).not.toHaveBeenCalled();
+    expect(keys).not.toContain("wrong-key");
+  });
+
   it("persists the selected model before streaming from the backup", async () => {
     const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
     let modelChangePersisted = false;

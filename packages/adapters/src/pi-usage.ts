@@ -207,7 +207,11 @@ export function observedPiStream(
   options: SimpleStreamOptions | undefined,
   push: (event: AgentRuntimeEvent) => void,
   observer?: ModelCallObserver,
-  attribution: { operationKind: UsageOperationKind; agentId?: string } = {
+  attribution: {
+    operationKind: UsageOperationKind;
+    agentId?: string;
+    modelCredentialId?: string | null;
+  } = {
     operationKind: "answer",
   },
   hooks?: {

@@ -20,6 +20,7 @@ type BackupsState = {
   saved: ModelBackupChoice[];
   draft: ModelBackupChoice[];
   selectedKey: string;
+  selectedChoice: ModelBackupChoice | null;
   error: string | null;
   notice: string | null;
 };
@@ -53,6 +54,7 @@ export function ModelBackupsSettings({
     saved: [],
     draft: [],
     selectedKey: "",
+    selectedChoice: null,
     error: null,
     notice: null,
   });
@@ -90,6 +92,7 @@ export function ModelBackupsSettings({
       saved: [],
       draft: [],
       selectedKey: "",
+      selectedChoice: null,
       error: null,
       notice: null,
     });
@@ -104,14 +107,21 @@ export function ModelBackupsSettings({
         }
         const saved = await rpc.models.backups({}, { context: { spaceId } });
         if (!isCurrent()) return;
+        const snapshot = saved.map((choice) => {
+          const revision = choice.modelCredentialId
+            ? optionByKey.get(backupChoiceKey(choice))?.expectedRevision
+            : undefined;
+          return revision === undefined ? { ...choice } : { ...choice, expectedRevision: revision };
+        });
         setState({
           scopeKey: activeScopeKey,
           loading: false,
           ready: true,
           saving: false,
-          saved: [...saved],
-          draft: [...saved],
+          saved: snapshot,
+          draft: snapshot,
           selectedKey: "",
+          selectedChoice: null,
           error: null,
           notice: null,
         });
@@ -146,7 +156,7 @@ export function ModelBackupsSettings({
 
   function addSelected() {
     if (!currentState || !editable || currentState.draft.length >= MAX_MODEL_BACKUPS) return;
-    const option = optionByKey.get(currentState.selectedKey);
+    const option = currentState.selectedChoice;
     if (
       !option ||
       currentState.draft.some((choice) => backupChoiceKey(choice) === backupChoiceKey(option))
@@ -157,8 +167,17 @@ export function ModelBackupsSettings({
       previous.scopeKey === activeScopeKey
         ? {
             ...previous,
-            draft: [...previous.draft, { provider: option.provider, modelId: option.modelId }],
+            draft: [
+              ...previous.draft,
+              {
+                provider: option.provider,
+                modelId: option.modelId,
+                modelCredentialId: option.modelCredentialId,
+                expectedRevision: option.expectedRevision,
+              },
+            ],
             selectedKey: "",
+            selectedChoice: null,
             error: null,
             notice: null,
           }
@@ -348,7 +367,13 @@ export function ModelBackupsSettings({
                   if (!editable) return;
                   setState((previous) =>
                     previous.scopeKey === activeScopeKey
-                      ? { ...previous, selectedKey: event.target.value, error: null, notice: null }
+                      ? {
+                          ...previous,
+                          selectedKey: event.target.value,
+                          selectedChoice: optionByKey.get(event.target.value) ?? null,
+                          error: null,
+                          notice: null,
+                        }
                       : previous,
                   );
                 }}

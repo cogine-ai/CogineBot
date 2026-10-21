@@ -114,9 +114,11 @@ async function runWithModel(
   resolveModel?: (
     provider: string,
     modelId: string,
+    modelCredentialId?: string | null,
   ) => Promise<{
     provider: string;
     id: string;
+    modelCredentialId?: string | null;
     apiKey?: string;
     maxImagesPerPrompt?: number;
     thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
@@ -137,6 +139,7 @@ async function runWithModel(
       model: {
         provider,
         id: modelId,
+        modelCredentialId: "parent-connection",
         thinkingLevel,
         maxImagesPerPrompt,
         ...limits,
@@ -210,13 +213,17 @@ describe("Pi agent thinking level", () => {
       task: "help",
       model_provider: "xai",
       model_id: "grok-4.6",
+      model_credential_id: "xai-connection",
     };
-    const resolveModel = vi.fn(async (provider: string, modelId: string) => ({
-      provider,
-      id: modelId,
-      apiKey: "subagent-key",
-      thinkingLevel: "high" as const,
-    }));
+    const resolveModel = vi.fn(
+      async (provider: string, modelId: string, modelCredentialId?: string | null) => ({
+        provider,
+        id: modelId,
+        modelCredentialId,
+        apiKey: "subagent-key",
+        thinkingLevel: "high" as const,
+      }),
+    );
 
     const levels = await runWithModel(
       "plain-model",
@@ -226,7 +233,7 @@ describe("Pi agent thinking level", () => {
       resolveModel,
     );
 
-    expect(resolveModel).toHaveBeenCalledWith("xai", "grok-4.6");
+    expect(resolveModel).toHaveBeenCalledWith("xai", "grok-4.6", "xai-connection");
     expect(fakeAgentState.models.map((model) => `${model.provider}/${model.id}`)).toEqual([
       "test/plain-model",
       "xai/grok-4.6",
@@ -256,6 +263,7 @@ describe("Pi agent thinking level", () => {
         async () => ({
           provider: "test",
           id: "plain-model",
+          modelCredentialId: "parent-connection",
           maxImagesPerPrompt: childLimit,
         }),
         parentLimit,
@@ -285,6 +293,64 @@ describe("Pi agent thinking level", () => {
     },
   );
 
+  it("inherits the active connection for another enabled model on the same provider", async () => {
+    fakeAgentState.subagentArgs = {
+      name: "helper",
+      task: "help",
+      model_provider: "test",
+      model_id: "reasoning-model",
+    };
+    const resolveModel = vi.fn(
+      async (provider: string, modelId: string, modelCredentialId?: string | null) => ({
+        provider,
+        id: modelId,
+        modelCredentialId,
+      }),
+    );
+    await runWithModel("plain-model", "test", new AbortController().signal, null, resolveModel);
+    expect(resolveModel).toHaveBeenCalledExactlyOnceWith(
+      "test",
+      "reasoning-model",
+      "parent-connection",
+    );
+    expect(fakeAgentState.models).toHaveLength(2);
+  });
+
+  it("rejects another provider without an explicit connection before resolving or running a helper", async () => {
+    fakeAgentState.subagentArgs = {
+      name: "helper",
+      task: "help",
+      model_provider: "xai",
+      model_id: "grok-4.6",
+    };
+    const resolveModel = vi.fn();
+    await runWithModel("plain-model", "test", new AbortController().signal, null, resolveModel);
+    expect(resolveModel).not.toHaveBeenCalled();
+    expect(fakeAgentState.models).toHaveLength(1);
+    expect(fakeAgentState.lastSubagentResult).toMatchObject({
+      details: { result: "Subagent failed: Choose a model_credential_id for this helper model" },
+    });
+  });
+
+  it("rejects a resolver that returns a different helper connection", async () => {
+    fakeAgentState.subagentArgs = {
+      name: "helper",
+      task: "help",
+      model_provider: "test",
+      model_id: "plain-model",
+    };
+    const resolveModel = vi.fn(async () => ({
+      provider: "test",
+      id: "plain-model",
+      modelCredentialId: "other-connection",
+    }));
+    await runWithModel("plain-model", "test", new AbortController().signal, null, resolveModel);
+    expect(fakeAgentState.models).toHaveLength(1);
+    expect(fakeAgentState.lastSubagentResult).toMatchObject({
+      details: { result: "Subagent failed: The helper model connection changed" },
+    });
+  });
+
   it("rejects an incomplete per-call subagent model pair", async () => {
     fakeAgentState.subagentArgs = {
       name: "helper",
@@ -309,6 +375,7 @@ describe("Pi agent thinking level", () => {
       task: "help",
       model_provider: "anthropic",
       model_id: "claude-opus-4-6",
+      model_credential_id: "anthropic-connection",
     };
     const resolveModel = vi.fn(async () => {
       throw new Error("Connect that model provider first");
@@ -316,7 +383,11 @@ describe("Pi agent thinking level", () => {
 
     await runWithModel("plain-model", "test", new AbortController().signal, null, resolveModel);
 
-    expect(resolveModel).toHaveBeenCalledWith("anthropic", "claude-opus-4-6");
+    expect(resolveModel).toHaveBeenCalledWith(
+      "anthropic",
+      "claude-opus-4-6",
+      "anthropic-connection",
+    );
     expect(fakeAgentState.models).toHaveLength(1);
     expect(fakeAgentState.lastSubagentResult).toMatchObject({
       details: { result: "Subagent failed: Connect that model provider first" },

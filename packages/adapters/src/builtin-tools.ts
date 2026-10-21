@@ -1005,6 +1005,11 @@ export const builtinAgentTools: ConnectorTool[] = [
           type: "string",
           description: "Optional connected model ID. Set together with model_provider.",
         },
+        model_credential_id: {
+          type: "string",
+          description:
+            "Connection identity for the selected model. Required to change connections or providers; omit to stay on the current provider's connection.",
+        },
       },
       required: ["name", "task"],
     },

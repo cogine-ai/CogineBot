@@ -42,6 +42,7 @@ const catalog: ModelCatalogEntry[] = [
 const credentials: ModelCredential[] = [
   {
     id: "cred-anthropic",
+    connectionRevision: 1,
     provider: "anthropic",
     label: "Anthropic",
     hasKey: true,
@@ -49,6 +50,7 @@ const credentials: ModelCredential[] = [
   },
   {
     id: "cred-openai-compatible",
+    connectionRevision: 1,
     provider: "openai-compatible",
     label: "Local server",
     hasKey: true,
@@ -62,25 +64,35 @@ const choices: ModelBackupChoice[] = [
 ];
 
 describe("connected backup model choices", () => {
+  it("keeps the native catalog provider name when a credential label is a provider id", () => {
+    const options = connectedBackupOptions(catalog, [{ ...credentials[0]!, label: "anthropic" }]);
+    expect(options[0]?.providerName).toBe("Anthropic");
+  });
   it("offers only non-placeholder catalog models for connected providers", () => {
     expect(connectedBackupOptions(catalog, credentials)).toEqual([
       {
         provider: "anthropic",
+        modelCredentialId: "cred-anthropic",
+        expectedRevision: 1,
         modelId: "claude-sonnet",
         label: "Claude Sonnet",
         providerName: "Anthropic",
       },
       {
         provider: "anthropic",
+        modelCredentialId: "cred-anthropic",
+        expectedRevision: 1,
         modelId: "claude-haiku",
         label: "Claude Haiku",
         providerName: "Anthropic",
       },
       {
         provider: "openai-compatible",
+        modelCredentialId: "cred-openai-compatible",
+        expectedRevision: 1,
         modelId: "custom-model",
         label: "custom-model",
-        providerName: "openai-compatible",
+        providerName: "Local server",
       },
     ]);
   });
@@ -114,6 +126,7 @@ describe("connected backup model choices", () => {
     const mobileCredentials: ModelCredential[] = [
       {
         id: "anthropic-credential",
+        connectionRevision: 1,
         provider: "anthropic",
         label: "Anthropic",
         hasKey: true,
@@ -121,6 +134,7 @@ describe("connected backup model choices", () => {
       },
       {
         id: "compatible-credential",
+        connectionRevision: 1,
         provider: "openai-compatible",
         label: "Private endpoint",
         hasKey: true,
@@ -130,13 +144,29 @@ describe("connected backup model choices", () => {
     ];
 
     expect(connectedBackupOptions(mobileCatalog, mobileCredentials)).toEqual([
-      { provider: "anthropic", modelId: "sonnet", label: "Sonnet", providerName: "Anthropic" },
-      { provider: "anthropic", modelId: "haiku", label: "Haiku", providerName: "Anthropic" },
+      {
+        provider: "anthropic",
+        modelCredentialId: "anthropic-credential",
+        expectedRevision: 1,
+        modelId: "sonnet",
+        label: "Sonnet",
+        providerName: "Anthropic",
+      },
+      {
+        provider: "anthropic",
+        modelCredentialId: "anthropic-credential",
+        expectedRevision: 1,
+        modelId: "haiku",
+        label: "Haiku",
+        providerName: "Anthropic",
+      },
       {
         provider: "openai-compatible",
+        modelCredentialId: "compatible-credential",
+        expectedRevision: 1,
         modelId: "custom-model",
         label: "custom-model",
-        providerName: "openai-compatible",
+        providerName: "Private endpoint",
       },
     ]);
   });

@@ -65,8 +65,16 @@ const credentials = [
     label: "Anthropic",
     hasKey: true,
     isDefault: true,
+    connectionRevision: 1,
   },
-  { id: "openai-credential", provider: "openai", label: "OpenAI", hasKey: true, isDefault: false },
+  {
+    id: "openai-credential",
+    provider: "openai",
+    label: "OpenAI",
+    hasKey: true,
+    isDefault: false,
+    connectionRevision: 2,
+  },
 ];
 
 let container: HTMLDivElement;
@@ -199,7 +207,14 @@ describe("ModelBackupsSettings", () => {
     await clickButton("Save backups");
     await flush();
     expect(backupApi.setBackups).toHaveBeenCalledWith(
-      [{ provider: "openai", modelId: "gpt-test" }],
+      [
+        {
+          provider: "openai",
+          modelId: "gpt-test",
+          modelCredentialId: "openai-credential",
+          expectedRevision: 2,
+        },
+      ],
       { context: { spaceId: scope.spaceId } },
     );
     expect(container.textContent).toContain("Backup models saved.");
@@ -326,4 +341,69 @@ describe("ModelBackupsSettings", () => {
     expect(backupRows()).toEqual([]);
     expect(backupApi.setBackups).not.toHaveBeenCalled();
   });
+});
+
+it("keeps the revision captured by a selected backup when credentials refresh", async () => {
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  await flush();
+  await pickConnectedModel("OpenAI · GPT test");
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 9 }))}
+      />,
+    );
+  });
+  await clickButton("Add");
+  await clickButton("Save backups");
+  await flush();
+  expect(backupApi.setBackups).toHaveBeenCalledWith(
+    [
+      {
+        provider: "openai",
+        modelId: "gpt-test",
+        modelCredentialId: "openai-credential",
+        expectedRevision: 2,
+      },
+    ],
+    { context: { spaceId: scope.spaceId } },
+  );
+});
+
+it("snapshots exact-ID revisions for loaded backups before a reorder or removal", async () => {
+  backupApi.backups.mockResolvedValue([
+    { provider: "anthropic", modelId: "claude-sonnet", modelCredentialId: "anthropic-credential" },
+    { provider: "openai", modelId: "gpt-test", modelCredentialId: "openai-credential" },
+  ]);
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  await flush();
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 9 }))}
+      />,
+    );
+  });
+  await clickButton("Remove Anthropic · Claude Sonnet");
+  await clickButton("Save backups");
+  await flush();
+  expect(backupApi.setBackups).toHaveBeenCalledWith(
+    [
+      {
+        provider: "openai",
+        modelId: "gpt-test",
+        modelCredentialId: "openai-credential",
+        expectedRevision: 2,
+      },
+    ],
+    { context: { spaceId: scope.spaceId } },
+  );
 });

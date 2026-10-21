@@ -315,6 +315,7 @@ model UserModelCredential {
   label       String
   secretId    String
   supportsImages Boolean              @default(false)
+  connectionRevision Int              @default(1)
   createdAt   DateTime               @default(now())
   updatedAt   DateTime               @updatedAt
   preferences SpaceModelPreference[]
@@ -365,10 +366,11 @@ model SpaceBackupModel {
   spaceMember SpaceMember @relation(fields: [spaceId, userId], references: [spaceId, userId], onDelete: Cascade)
   provider    String
   modelId     String
+  modelCredentialId String?
   position    Int
 
   @@id([spaceId, userId, position])
-  @@unique([spaceId, userId, provider, modelId])
+  @@unique([spaceId, userId, modelCredentialId, provider, modelId], map: "space_backup_models_connection_model_key")
   @@map("space_backup_models")
 }
 
@@ -425,6 +427,7 @@ model Bot {
   autoSpeak         Boolean           @default(false)
   modelProvider     String?
   modelId           String?
+  modelCredentialId String?
   thinkingLevel     String?
   disabledBuiltinTools String[] @default([])
   webhookSecretId   String?
@@ -634,6 +637,7 @@ model Run {
   trigger              String
   modelProvider        String?
   modelId              String?
+  modelCredentialId    String?
   thinkingLevel        String?
   // True when these columns are the model the run must keep. A later attempt
   // may record the model it used in the same columns without setting this.
@@ -689,6 +693,7 @@ model SteeringMessage {
   /// Model agreed for an inbound delivery that had to wait. Empty follows the bot.
   modelProvider String?
   modelId       String?
+  modelCredentialId String?
   thinkingLevel String?
   claimedAt DateTime?
   createdAt DateTime @default(now())
@@ -793,6 +798,7 @@ model Routine {
   messageProvider String?
   modelProvider  String?
   modelId        String?
+  modelCredentialId String?
   thinkingLevel  String?
   lastRunAt      DateTime?
   nextRunAt      DateTime?
@@ -1097,6 +1103,8 @@ model UsageRecord {
   run              Run?     @relation(fields: [runId], references: [id], onDelete: SetNull)
   provider         String
   model            String
+  /// Actual connection used by this call; retained after credential deletion.
+  modelCredentialId String?
   /// Uncached input; cache buckets are additional, reasoning is a subset of output.
   inputTokens       Int?
   outputTokens      Int?

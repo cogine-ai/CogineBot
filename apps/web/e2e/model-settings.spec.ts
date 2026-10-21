@@ -32,6 +32,8 @@ test("custom connections persist reasoning support and bot thinking", async ({
   await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
   const credentials = await rpc<
     Array<{
+      id: string;
+      connectionRevision: number;
       modelId?: string;
       reasoning?: boolean;
       thinkingLevel?: string | null;
@@ -92,7 +94,11 @@ test("custom connections persist reasoning support and bot thinking", async ({
   await expect(model).toBeVisible();
   await expect(model).toContainText("arbitrary-model");
   // Value key — not a /arbitrary-model/ label match, which also hits "Space default (arbitrary-model)".
-  await model.selectOption("openai-compatible::arbitrary-model");
+  const savedConnection = credentials.find((entry) => entry.modelId === "arbitrary-model");
+  expect(savedConnection).toBeDefined();
+  await model.selectOption(
+    JSON.stringify(["openai-compatible", "arbitrary-model", savedConnection?.id]),
+  );
   const thinking = settings.getByRole("combobox", { name: "Thinking", exact: true });
   await expect(thinking).toBeVisible();
   await thinking.selectOption("low");
@@ -310,6 +316,7 @@ test("model settings connect, replace, and cancel provider authentication", asyn
     isDefault: false,
     modelId: "gpt-6-luna",
     authKind: "oauth",
+    connectionRevision: 1,
   };
   let oauthReady = false;
   let oauthFinished = false;
@@ -606,12 +613,15 @@ test("saves and reloads an ordered backup model list for connected models", asyn
     return model!;
   });
   // Fake credentials exercise the connected-model picker without calling a provider.
+  const connections: Array<{ id: string; connectionRevision: number }> = [];
   for (const model of targets) {
-    await rpc(page, "models/connect", {
-      provider: model.provider,
-      apiKey: `fake-backup-${model.provider}-key`,
-      modelId: model.id,
-    });
+    connections.push(
+      await rpc<{ id: string; connectionRevision: number }>(page, "models/connect", {
+        provider: model.provider,
+        apiKey: `fake-backup-${model.provider}-key`,
+        modelId: model.id,
+      }),
+    );
   }
 
   const settings = await openUserSettings(page, "models");
@@ -620,8 +630,8 @@ test("saves and reloads an ordered backup model list for connected models", asyn
   await expect(panel).toBeVisible();
   await expect(panel.getByText("Add connected models to use them as backups.")).toBeVisible();
   const picker = panel.getByRole("combobox", { name: "Add connected model" });
-  const firstValue = JSON.stringify([targets[0]!.provider, targets[0]!.id]);
-  const secondValue = JSON.stringify([targets[1]!.provider, targets[1]!.id]);
+  const firstValue = JSON.stringify([targets[0]!.provider, targets[0]!.id, connections[0]!.id]);
+  const secondValue = JSON.stringify([targets[1]!.provider, targets[1]!.id, connections[1]!.id]);
   await picker.selectOption(firstValue);
   await panel.getByRole("button", { name: "Add", exact: true }).click();
   await picker.selectOption(secondValue);
@@ -640,11 +650,33 @@ test("saves and reloads an ordered backup model list for connected models", asyn
     (response) => response.url().includes("/rpc/models/setBackups") && response.ok(),
   );
   await panel.getByRole("button", { name: "Save backups", exact: true }).click();
-  await savedResponse;
+  const savedBackupResponse = await savedResponse;
+  expect(savedBackupResponse.request().postDataJSON().json).toEqual([
+    {
+      provider: targets[1]!.provider,
+      modelId: targets[1]!.id,
+      modelCredentialId: connections[1]!.id,
+      expectedRevision: connections[1]!.connectionRevision,
+    },
+    {
+      provider: targets[0]!.provider,
+      modelId: targets[0]!.id,
+      modelCredentialId: connections[0]!.id,
+      expectedRevision: connections[0]!.connectionRevision,
+    },
+  ]);
   await expect(panel.getByText("Backup models saved.")).toBeVisible();
   expect(await rpc(page, "models/backups", {})).toEqual([
-    { provider: targets[1]!.provider, modelId: targets[1]!.id },
-    { provider: targets[0]!.provider, modelId: targets[0]!.id },
+    {
+      provider: targets[1]!.provider,
+      modelId: targets[1]!.id,
+      modelCredentialId: connections[1]!.id,
+    },
+    {
+      provider: targets[0]!.provider,
+      modelId: targets[0]!.id,
+      modelCredentialId: connections[0]!.id,
+    },
   ]);
 
   await page.reload();
@@ -668,6 +700,186 @@ test("saves and reloads an ordered backup model list for connected models", asyn
   await reloadedPanel.getByRole("button", { name: "Save backups", exact: true }).click();
   await removalResponse;
   expect(await rpc(page, "models/backups", {})).toEqual([
-    { provider: targets[1]!.provider, modelId: targets[1]!.id },
+    {
+      provider: targets[1]!.provider,
+      modelId: targets[1]!.id,
+      modelCredentialId: connections[1]!.id,
+    },
   ]);
+});
+
+test("keeps enabled models and exact connection bindings across two model servers", async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console.error: ${message.text()}`);
+  });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    if (
+      request.method === "GET" &&
+      (request.url === "/alpha/v1/models" || request.url === "/beta/v1/models")
+    ) {
+      requests.push(request.url);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          object: "list",
+          data: [{ id: "shared-model" }, { id: "second-model" }, { id: "unselected-model" }],
+        }),
+      );
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const { port } = server.address() as AddressInfo;
+    const alpha = `http://127.0.0.1:${port}/alpha/v1`;
+    const beta = `http://127.0.0.1:${port}/beta/v1`;
+    const stamp = Date.now();
+    await signup(
+      page,
+      `multi-model-${stamp}@rakazo.test`,
+      "password12",
+      `Model connections ${stamp}`,
+    );
+    await completeOnboarding(page);
+    await openUserSettings(page, "models");
+    await page.getByPlaceholder("Search providers").fill("openai-compatible");
+    await page.getByRole("button", { name: /OpenAI-compatible/ }).click();
+    await page.getByLabel("OpenAI-compatible server URL").fill(alpha);
+    await page.getByText("API key", { exact: true }).click();
+    await expect(page.getByLabel("API key", { exact: true })).toBeVisible();
+    await page.getByLabel("API key", { exact: true }).fill("offline-test-credential");
+    await page.getByLabel("Model id").fill("shared-model");
+    await page.getByRole("button", { name: "Find models", exact: true }).click();
+    await expect(page.getByRole("checkbox", { name: "shared-model", exact: true })).toBeChecked();
+    await expect(
+      page.getByRole("checkbox", { name: "second-model", exact: true }),
+    ).not.toBeChecked();
+    await page.getByRole("checkbox", { name: "second-model", exact: true }).check();
+    await expect(
+      page.getByRole("checkbox", { name: "unselected-model", exact: true }),
+    ).not.toBeChecked();
+    await captureScreenshot(page, testInfo, "a1-enabled-models");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+    type Credential = {
+      id: string;
+      connectionRevision: number;
+      provider: string;
+      baseUrl?: string;
+      modelId?: string;
+      enabledModelIds?: string[];
+    };
+    const first = (await rpc<Credential[]>(page, "models/credentials", {})).find(
+      (entry) => entry.baseUrl === alpha,
+    );
+    expect(first?.enabledModelIds).toEqual(["shared-model", "second-model"]);
+    expect(first?.connectionRevision).toBeGreaterThanOrEqual(1);
+    await page.getByLabel("Connection", { exact: true }).selectOption("");
+    await page.getByLabel("OpenAI-compatible server URL").fill(beta);
+    await page.getByLabel("Model id").fill("shared-model");
+    await page.getByRole("button", { name: "Find models", exact: true }).click();
+    await page.getByRole("checkbox", { name: "second-model", exact: true }).check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+    const credentials = await rpc<Credential[]>(page, "models/credentials", {});
+    const second = credentials.find((entry) => entry.baseUrl === beta);
+    expect(second?.id).toBeTruthy();
+    expect(second?.id).not.toBe(first?.id);
+    await page.getByLabel("Connection", { exact: true }).selectOption(first?.id ?? "missing");
+    await expect(page.getByLabel("API key", { exact: true })).toHaveValue("");
+    await page.getByRole("button", { name: "Find models", exact: true }).click();
+    await expect(page.getByRole("checkbox", { name: "second-model", exact: true })).toBeChecked();
+    await expect(
+      page.getByRole("checkbox", { name: "unselected-model", exact: true }),
+    ).not.toBeChecked();
+    await expect(page).toHaveTitle(/CogineBot/);
+    await expect(page).toHaveURL(/\/app\/[^/]+/);
+    await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+    expect((await page.locator("#root").innerText()).trim().length).toBeGreaterThan(40);
+    await captureScreenshot(page, testInfo, "a1-saved-connection-discovery");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByLabel("Connection", { exact: true })).toBeVisible();
+    await page.getByLabel("Connection", { exact: true }).scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      390,
+    );
+    await captureScreenshot(page, testInfo, "a1-model-settings-mobile");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    expect(requests).toContain("/alpha/v1/models");
+    expect(requests).toContain("/beta/v1/models");
+    await page.getByRole("button", { name: "Close model settings" }).click();
+    await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
+    const settings = page.getByTestId("bot-settings");
+    await expect(settings).toBeVisible();
+    await settings.getByTestId("bot-settings-advanced").evaluate((element) => {
+      (element as HTMLDetailsElement).open = true;
+    });
+    const model = settings.getByRole("combobox", { name: "Model", exact: true });
+    const binding = JSON.stringify(["openai-compatible", "second-model", second?.id]);
+    await expect(model).toContainText("second-model");
+    const choices = await model
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value));
+    expect(choices).toContain(JSON.stringify(["openai-compatible", "second-model", first?.id]));
+    expect(choices).toContain(binding);
+    expect(choices.some((key) => key.includes("unselected-model"))).toBe(false);
+    await model.selectOption(binding);
+    // Show the native option list in the screenshot, then restore the native picker.
+    const expandedModel = settings.locator(`[id="${await model.getAttribute("id")}"]`);
+    await expandedModel.evaluate((element: HTMLSelectElement) => {
+      element.size = element.options.length;
+      element.style.height = "auto";
+    });
+    await expandedModel.scrollIntoViewIfNeeded();
+    await captureScreenshot(page, testInfo, "a1-exact-bot-connection");
+    await expandedModel.evaluate((element: HTMLSelectElement) => {
+      element.size = 0;
+      element.style.removeProperty("height");
+    });
+    const saved = page.waitForResponse(
+      (response) => response.url().includes("/rpc/bots/update") && response.ok(),
+    );
+    await settings.getByRole("button", { name: "Save", exact: true }).click();
+    await saved;
+    const botId = new URL(page.url()).pathname.split("/").filter(Boolean).at(-1);
+    const bot = await rpc<{ modelId: string; modelCredentialId: string }>(page, "bots/get", {
+      botId,
+    });
+    expect(bot.modelId).toBe("second-model");
+    expect(bot.modelCredentialId).toBe(second?.id);
+    await page.reload();
+    await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
+    await settings.getByTestId("bot-settings-advanced").evaluate((element) => {
+      (element as HTMLDetailsElement).open = true;
+    });
+    await expect(model).toHaveValue(binding);
+    await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+    expect(errors, "no browser errors during model configuration and reload").toEqual([]);
+  } finally {
+    try {
+      const title = await page.title().catch(() => "Page unavailable during cleanup");
+      await testInfo
+        .attach("a1-browser-health", {
+          contentType: "application/json",
+          body: Buffer.from(JSON.stringify({ url: page.url(), title, errors }, null, 2)),
+        })
+        .catch(() => undefined);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      });
+    }
+  }
 });

@@ -1,5 +1,7 @@
+import { UpdateBotInput } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { cleanupActors, type EvalActor, type EvalApp } from "./runner.js";
+import type { EvalActor, EvalApp } from "./runner.js";
+import { cleanupActors, runTrial } from "./runner.js";
 
 const actors: EvalActor[] = [
   {
@@ -110,4 +112,81 @@ describe("eval trial isolation", () => {
       expect(f.abort).toHaveBeenCalledWith("root-run");
     },
   );
+});
+
+describe("eval actor model setup", () => {
+  it("pins the actor with the saved connection identity and revision", async () => {
+    const actor = { id: "bot", userId: "user", spaceId: "space" };
+    const pins: unknown[] = [];
+    const request = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/auth/sign-up/email")
+        return Response.json({}, { headers: { "set-cookie": "session=synthetic" } });
+      if (url === "/rpc/models/connect")
+        return Response.json({ json: { id: "saved-connection", connectionRevision: 7 } });
+      if (url === "/rpc/bots/create") return Response.json({ json: { id: actor.id } });
+      if (url === "/rpc/bots/update") {
+        const body = JSON.parse(String(init?.body)) as { json: unknown };
+        const parsed = UpdateBotInput.safeParse(body.json);
+        if (!parsed.success) return Response.json({ error: "invalid binding" }, { status: 400 });
+        pins.push(parsed.data);
+        return Response.json({ json: { id: actor.id } });
+      }
+      if (url === "/rpc/threads/stop") return Response.json({ json: { ok: true } });
+      if (url === "/rpc/memory/list") return Response.json({ json: [] });
+      throw new Error(`Unexpected fixture call ${url}`);
+    });
+    const handles = {
+      app: { request },
+      jobs: { cancel: vi.fn() },
+      runtime: { abort: vi.fn() },
+      stop: vi.fn(),
+      prisma: {
+        bot: {
+          findUniqueOrThrow: vi.fn(async () => actor),
+          findUnique: vi.fn(async () => actor),
+          findMany: vi.fn(async () => [actor]),
+        },
+        run: { findMany: vi.fn(async () => []) },
+        attempt: { count: vi.fn(async () => 0) },
+        routine: {
+          findMany: vi.fn(async () => []),
+          updateMany: vi.fn(async () => ({ count: 0 })),
+          count: vi.fn(async () => 0),
+        },
+        event: { findMany: vi.fn(async () => []) },
+        usageRecord: { findMany: vi.fn(async () => []) },
+      },
+    } as unknown as EvalApp;
+    const result = await runTrial(
+      {
+        id: "binding-fixture",
+        purpose: "Validate fixture setup",
+        steps: [],
+        connections: [],
+        grade: () => [{ id: "setup", pass: true }],
+      },
+      1,
+      {
+        connection: {
+          provider: "openai-compatible",
+          modelId: "same-model",
+          baseUrl: "http://localhost:11434/v1",
+        },
+        timeoutMs: 1000,
+        maxToolCalls: 1,
+        createApp: async () => handles,
+      },
+    );
+    expect(result).toMatchObject({ status: "passed", cleanupFailed: false });
+    expect(pins).toEqual([
+      {
+        botId: actor.id,
+        modelProvider: "openai-compatible",
+        modelId: "same-model",
+        modelCredentialId: "saved-connection",
+        expectedRevision: 7,
+      },
+    ]);
+    expect(handles.stop).toHaveBeenCalledOnce();
+  });
 });

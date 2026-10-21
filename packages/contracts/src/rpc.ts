@@ -70,6 +70,7 @@ import {
   ModelBackupListSchema,
   ModelCatalogEntrySchema,
   ModelConnectInputSchema,
+  ModelCredentialReferenceSchema,
   ModelCredentialSchema,
   ModelOAuthBeginSchema,
   REPLY_QUOTE_MAX_LENGTH,
@@ -103,6 +104,7 @@ import {
   VoiceCredentialSchema,
   VoiceInfoSchema,
   VoiceStatusSchema,
+  validateModelPinInput,
 } from "./domain.js";
 import { ComputerCommandSchema, ProductEventSchema } from "./events.js";
 import { Id, IsoDate } from "./ids.js";
@@ -260,6 +262,9 @@ export const appContract = {
   models: {
     list: oc.output(z.array(ModelCatalogEntrySchema)),
     credentials: oc.output(z.array(ModelCredentialSchema)),
+    references: oc
+      .input(z.object({ credentialId: Id.optional() }))
+      .output(z.object({ references: z.array(ModelCredentialReferenceSchema) })),
     backups: oc.output(z.array(ModelBackupChoiceSchema)),
     setBackups: oc.input(ModelBackupListSchema).output(z.object({ ok: z.literal(true) })),
     connect: oc.input(ModelConnectInputSchema).output(ModelCredentialSchema),
@@ -268,6 +273,8 @@ export const appContract = {
         z.object({
           baseUrl: z.string(),
           apiKey: z.string().optional(),
+          credentialId: Id.optional(),
+          expectedBaseUrl: z.string().optional(),
         }),
       )
       .output(z.object({ models: z.array(z.string()) })),
@@ -310,12 +317,20 @@ export const appContract = {
         z.object({
           provider: z.string(),
           modelId: z.string(),
+          modelCredentialId: Id,
+          expectedRevision: z.number().int().positive(),
           thinkingLevel: ThinkingLevelSchema.nullable().optional(),
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
     disconnect: oc
-      .input(z.object({ provider: z.string().trim().min(1) }))
+      .input(
+        z.object({
+          provider: z.string().trim().min(1),
+          credentialId: Id.optional(),
+          expectedRevision: z.number().int().positive().optional(),
+        }),
+      )
       .output(z.object({ ok: z.literal(true) })),
   },
   bots: {
@@ -537,6 +552,11 @@ export const appContract = {
         z
           .object({
             routineId: Id,
+            modelProvider: z.string().trim().min(1).max(80).nullable().optional(),
+            modelId: z.string().trim().min(1).max(512).nullable().optional(),
+            modelCredentialId: Id.nullable().optional(),
+            thinkingLevel: ThinkingLevelSchema.nullable().optional(),
+            expectedRevision: z.number().int().positive().optional(),
             nativeTriggers: NativeRoutineTriggersInputSchema.optional(),
             name: z.string().optional(),
             prompt: z.string().optional(),
@@ -557,6 +577,7 @@ export const appContract = {
             runAt: IsoDate.optional(),
           })
           .superRefine((value, ctx) => {
+            validateModelPinInput(value, ctx);
             if (
               value.crons &&
               value.crons.length === 0 &&

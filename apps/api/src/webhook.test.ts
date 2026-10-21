@@ -47,6 +47,7 @@ function createDeps(
       prompt: string;
       modelProvider?: string | null;
       modelId?: string | null;
+      modelCredentialId?: string | null;
       thinkingLevel?: string | null;
     }>;
   } = {},
@@ -318,6 +319,7 @@ describe("inbound webhook HTTP route", () => {
           prompt: "Inspect",
           modelProvider: "openai-compatible",
           modelId: "private-model",
+          modelCredentialId: "credential-hook",
           thinkingLevel: "low",
         },
       ],
@@ -337,45 +339,54 @@ describe("inbound webhook HTTP route", () => {
         modelPin: {
           modelProvider: "openai-compatible",
           modelId: "private-model",
+          modelCredentialId: "credential-hook",
           thinkingLevel: "low",
         },
       }),
     );
   });
 
-  it("keeps the bot model when matching routines chose different models", async () => {
-    const deps = createDeps({
-      routines: [
-        {
-          id: "routine-1",
-          name: "Review",
-          prompt: "Inspect",
-          modelProvider: "openai",
-          modelId: "gpt",
-          thinkingLevel: null,
+  it.each([
+    ["different models", "anthropic", "claude", "credential-two"],
+    ["different connections for the same model", "openai", "gpt", "credential-two"],
+  ])(
+    "keeps the bot model when matching routines chose %s",
+    async (_, provider, modelId, connectionId) => {
+      const deps = createDeps({
+        routines: [
+          {
+            id: "routine-1",
+            name: "Review",
+            prompt: "Inspect",
+            modelProvider: "openai",
+            modelId: "gpt",
+            modelCredentialId: "credential-one",
+            thinkingLevel: null,
+          },
+          {
+            id: "routine-2",
+            name: "Triage",
+            prompt: "Sort",
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connectionId,
+            thinkingLevel: null,
+          },
+        ],
+      });
+      const app = mount(deps);
+      const res = await app.request("/api/v1/bots/bot-1/webhook", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${SECRET}`,
+          "content-type": "application/json",
         },
-        {
-          id: "routine-2",
-          name: "Triage",
-          prompt: "Sort",
-          modelProvider: "anthropic",
-          modelId: "claude",
-          thinkingLevel: null,
-        },
-      ],
-    });
-    const app = mount(deps);
-    const res = await app.request("/api/v1/bots/bot-1/webhook", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${SECRET}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ event: "ping" }),
-    });
-    expect(res.status).toBe(200);
-    expect(deps.sendUserMessage.mock.calls[0]?.[0]).not.toHaveProperty("modelPin");
-  });
+        body: JSON.stringify({ event: "ping" }),
+      });
+      expect(res.status).toBe(200);
+      expect(deps.sendUserMessage.mock.calls[0]?.[0]).not.toHaveProperty("modelPin");
+    },
+  );
 
   it("accepts a plain text payload as untrusted delivery data", async () => {
     const deps = createDeps();

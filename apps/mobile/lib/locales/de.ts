@@ -311,6 +311,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Color {number}": "Farbe {number}",
   "Could not load bot": "Bot konnte nicht geladen werden",
   "Could not load model settings": "Modelleinstellungen konnten nicht geladen werden",
+  "Could not save": "Konnte nicht gespeichert werden",
   "Could not save bot": "Bot konnte nicht gespeichert werden",
   "Default (medium)": "Standard (mittel)",
   "Describe what this bot does": "Beschreibe, was dieser Bot macht",
@@ -954,4 +955,13 @@ export const DE_MESSAGES: Record<string, string> = {
   "WeCom event": "WeCom-Ereignis",
   "Telegram bot event": "Telegram-Bot-Ereignis",
   "Discord bot event": "Discord-Bot-Ereignis",
+  Connection: "Verbindung",
+  "New connection": "Neue Verbindung",
+  "Unavailable connection": "Verbindung nicht verfügbar",
+  "Used by": "Verwendet von",
+  "Choose a connection for saved models": "Verbindung für gespeicherte Modelle auswählen",
+  "Choose another model for these items before disconnecting.":
+    "Wähle für diese Einträge ein anderes Modell, bevor du die Verbindung trennst.",
+  "Bot model": "Bot-Modell",
+  "Save model": "Modell speichern",
 };

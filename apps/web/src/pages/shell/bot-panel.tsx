@@ -17,6 +17,7 @@ import {
 } from "@rakazo/contracts";
 import {
   connectedModelChoices,
+  credentialForModel,
   modelOptionKey,
   parseModelOptionKey,
   resolveSelectableModelId,
@@ -221,6 +222,8 @@ export function BotSettings({
     voiceId?: string | null;
     modelProvider?: string | null;
     modelId?: string | null;
+    modelCredentialId?: string | null;
+    expectedRevision?: number;
     thinkingLevel?: ThinkingLevel | null;
     disabledBuiltinTools?: string[];
   }) => Promise<void>;
@@ -246,8 +249,11 @@ export function BotSettings({
   const [voiceId, setVoiceId] = useState(bot.voiceId ?? "");
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [modelKey, setModelKey] = useState(
-    bot.modelProvider && bot.modelId ? modelOptionKey(bot.modelProvider, bot.modelId) : "",
+    bot.modelProvider && bot.modelId
+      ? modelOptionKey(bot.modelProvider, bot.modelId, bot.modelCredentialId ?? undefined)
+      : "",
   );
+  const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState(bot.thinkingLevel ?? "");
   const [disabledBuiltinTools, setDisabledBuiltinTools] = useState<string[]>(
     bot.disabledBuiltinTools ?? [],
@@ -305,11 +311,12 @@ export function BotSettings({
   const selectedModel = storedModel
     ? {
         provider: storedModel.provider,
+        modelCredentialId: storedModel.modelCredentialId,
         modelId: resolveSelectableModelId(catalog, storedModel.provider, storedModel.modelId),
       }
     : null;
   const selectedModelKey = selectedModel
-    ? modelOptionKey(selectedModel.provider, selectedModel.modelId)
+    ? modelOptionKey(selectedModel.provider, selectedModel.modelId, selectedModel.modelCredentialId)
     : "";
 
   const effectiveProvider = selectedModel?.provider ?? me?.defaultProvider ?? null;
@@ -322,9 +329,14 @@ export function BotSettings({
             resolveSelectableModelId(catalog, entry.provider, entry.id) === effectiveModelId,
         )
       : undefined;
-  const effectiveCredential = credentials.find(
-    (entry) => entry.provider === effectiveProvider && entry.modelId === effectiveModelId,
-  );
+  const effectiveCredential = selectedModel
+    ? credentialForModel(
+        credentials,
+        effectiveProvider,
+        effectiveModelId,
+        selectedModel.modelCredentialId,
+      )
+    : credentials.find((entry) => entry.isDefault);
   const thinkingOptions = (
     effectiveCredential?.thinkingLevels ??
     effectiveEntry?.thinkingLevels ??
@@ -342,6 +354,11 @@ export function BotSettings({
     baseDisabledBuiltinTools?: string[];
   }) {
     const selected = selectedModel;
+    const modelChanged =
+      (selected?.provider ?? null) !== bot.modelProvider ||
+      (selected?.modelId ?? null) !== bot.modelId ||
+      (selected?.modelCredentialId ?? null) !== (bot.modelCredentialId ?? null) ||
+      (thinkingLevel || null) !== bot.thinkingLevel;
     const nextName = (patchOverrides?.name !== undefined ? patchOverrides.name : name).trim();
     const nextTitle = (patchOverrides?.title !== undefined ? patchOverrides.title : title).trim();
     const nextDescription = (
@@ -372,13 +389,19 @@ export function BotSettings({
         memoryScope,
         autoSpeak,
         voiceId: voiceId || null,
-        modelProvider: selected?.provider ?? null,
-        modelId: selected?.modelId ?? null,
-        ...(modelMetaReady
+        ...(modelChanged
           ? {
-              thinkingLevel: thinkingOptions.length
-                ? ((thinkingLevel || null) as ThinkingLevel | null)
-                : null,
+              modelProvider: selected?.provider ?? null,
+              modelId: selected?.modelId ?? null,
+              modelCredentialId: selected?.modelCredentialId ?? null,
+              expectedRevision: selected ? modelRevision : undefined,
+              ...(modelMetaReady
+                ? {
+                    thinkingLevel: thinkingOptions.length
+                      ? ((thinkingLevel || null) as ThinkingLevel | null)
+                      : null,
+                  }
+                : {}),
             }
           : {}),
       };
@@ -573,7 +596,12 @@ export function BotSettings({
             id={`${ids}-model`}
             className="mt-2 w-full"
             value={selectedModelKey}
+            disabled={!modelMetaReady}
             onChange={(event) => {
+              setModelRevision(
+                connectedOptions.find((option) => option.key === event.target.value)
+                  ?.connectionRevision,
+              );
               setModelKey(event.target.value);
               setThinkingLevel("");
             }}
@@ -604,7 +632,11 @@ export function BotSettings({
               id={`${ids}-thinking`}
               className="mt-2 w-full"
               value={thinkingLevel}
-              onChange={(event) => setThinkingLevel(event.target.value)}
+              onChange={(event) => {
+                if (modelRevision === undefined)
+                  setModelRevision(effectiveCredential?.connectionRevision);
+                setThinkingLevel(event.target.value);
+              }}
             >
               <NativeSelectOption value="">
                 {t`Default (${thinkingLevelLabel(defaultThinkingLevel)})`}

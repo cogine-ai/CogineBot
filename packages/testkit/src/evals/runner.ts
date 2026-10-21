@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentRuntime, JobPublisher } from "@rakazo/adapter-kit";
 import { runJobKey } from "@rakazo/adapter-kit";
 import { MessagingTeamChatEmulator } from "@rakazo/adapters";
-import type { ModelConnectInput, RunStatus } from "@rakazo/contracts";
+import type { ModelConnectInput, ModelCredential, RunStatus } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES, isTerminal } from "@rakazo/core";
 import type { createDb } from "@rakazo/db";
 import { discardBotIntroRun } from "../discard-bot-intro.js";
@@ -144,7 +144,12 @@ export async function runTrial(
       });
       if (!signup.ok) throw new EvalFailure("harness", `Fixture signup failed (${signup.status})`);
       cookie = sessionCookieHeader(signup);
-      await rpc(app, cookie, "models/connect", options.connection);
+      const credential = await rpc<ModelCredential>(
+        app,
+        cookie,
+        "models/connect",
+        options.connection,
+      );
       for (const provider of scenario.connections ?? ["GMAIL", "CRM", "GITHUB"])
         await rpc(app, cookie, "connections/begin", {
           connectorId: "composio",
@@ -170,6 +175,8 @@ export async function runTrial(
         botId,
         modelProvider: options.connection.provider,
         modelId: options.connection.modelId,
+        modelCredentialId: credential.id,
+        expectedRevision: credential.connectionRevision,
       });
       messagingLinked = false;
       messagingAddress = `U-eval-${randomUUID()}`;

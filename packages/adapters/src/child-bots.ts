@@ -6,9 +6,16 @@ import type {
   ArtifactStore,
   JobPublisher,
   SandboxProvider,
+  SecretStore,
 } from "@rakazo/adapter-kit";
 import { routineJobKey, runContinueJob, runJobKey } from "@rakazo/adapter-kit";
-import { type Actor, type Bot, type ComputerMode, GROUP_MEMBER_MIN } from "@rakazo/contracts";
+import {
+  type Actor,
+  type Bot,
+  type ComputerMode,
+  GROUP_MEMBER_MIN,
+  OPENAI_COMPATIBLE_PROVIDER_ID,
+} from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import {
   cancelRunsInTransaction,
@@ -31,6 +38,13 @@ import {
   withCleanupDeadline,
 } from "./computer-workspace.js";
 import { resolveAgentHomePath } from "./home.js";
+import {
+  enabledOpenAiCompatibleModelIds,
+  findConnectedModelCredential,
+  isCatalogModelChoice,
+  loadStoredModelSecret,
+} from "./model-selection.js";
+import { parseModelSecret } from "./pi-oauth.js";
 import { removePiBotSessions } from "./pi-session.js";
 
 export function confirmSpawnedBotName(confirmName: string, botName: string) {
@@ -47,6 +61,7 @@ export async function spawnBot(
   deps: {
     prisma: PrismaClient;
     jobs: JobPublisher;
+    secretStore?: Pick<SecretStore, "load">;
   },
   input: {
     spawnedBy: {
@@ -76,6 +91,34 @@ export async function spawnBot(
   let duplicate = false;
   let created: Pick<Bot, "id" | "name" | "title" | "threadId">;
   try {
+    const parent = await deps.prisma.bot.findFirst({
+      where: { id: input.spawnedBy.id, userId: actor.userId, spaceId: actor.spaceId },
+      select: { modelProvider: true, modelId: true, modelCredentialId: true },
+    });
+    if (!parent) throw new Error("Parent bot is unavailable");
+    const inherited =
+      parent.modelProvider && parent.modelId
+        ? await findConnectedModelCredential(
+            deps.prisma,
+            actor,
+            parent.modelProvider,
+            parent.modelId,
+            parent.modelCredentialId ?? null,
+          )
+        : null;
+    if (parent.modelProvider && parent.modelId && !inherited)
+      throw new Error("Model connection is unavailable");
+    const prepared =
+      inherited && deps.secretStore
+        ? await loadStoredModelSecret(
+            deps.prisma,
+            deps.secretStore,
+            actor.userId,
+            inherited.secretId,
+          )
+        : null;
+    if (inherited && prepared?.status !== "loaded")
+      throw new Error("Model connection is unavailable");
     created = await createRepos(deps.prisma).createBot(actor, {
       name,
       title: (input.title ?? "").trim(),
@@ -85,6 +128,52 @@ export async function spawnBot(
       parentBotId: input.spawnedBy.id,
       spawnKey: input.spawnKey,
       computerMode: input.computerMode,
+      validateModel: async (tx, binding) => {
+        if (
+          !inherited ||
+          prepared?.status !== "loaded" ||
+          binding.modelProvider !== parent.modelProvider ||
+          binding.modelId !== parent.modelId ||
+          binding.modelCredentialId !== inherited.id
+        ) {
+          throw new Error("The parent model connection changed. Try creating the bot again.");
+        }
+        const current = await findConnectedModelCredential(
+          tx,
+          actor,
+          binding.modelProvider,
+          binding.modelId,
+          binding.modelCredentialId,
+        );
+        const secret = current
+          ? await tx.secret.findFirst({
+              where: { id: current.secretId, userId: actor.userId, spaceId: null },
+              select: { ciphertext: true },
+            })
+          : null;
+        if (
+          !current ||
+          current.secretId !== inherited.secretId ||
+          current.connectionRevision !== inherited.connectionRevision ||
+          secret?.ciphertext !== prepared.ciphertext
+        ) {
+          throw new Error("The parent model connection changed. Try creating the bot again.");
+        }
+        const parsed = parseModelSecret(prepared.plaintext);
+        if (binding.modelProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
+          if (
+            parsed.kind !== "openai_compatible" ||
+            !enabledOpenAiCompatibleModelIds(parsed, current.defaultModel).includes(binding.modelId)
+          ) {
+            throw new Error("That model is not enabled for the parent connection.");
+          }
+        } else if (
+          !isCatalogModelChoice(binding.modelProvider, binding.modelId) &&
+          current.defaultModel !== binding.modelId
+        ) {
+          throw new Error("Unknown model for the parent connection.");
+        }
+      },
       initialMessage: {
         role: "system",
         blocks: [{ kind: "meta", text: `Created by ${input.spawnedBy.name}` }],

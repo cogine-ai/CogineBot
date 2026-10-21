@@ -148,6 +148,22 @@ describe("model secrets", () => {
     });
   });
 
+  it("preserves enabled model identities alongside compatible credentials", () => {
+    const secret = {
+      kind: "openai_compatible" as const,
+      baseUrl: "http://127.0.0.1:8000/v1",
+      apiKey: "fake-key",
+      enabledModelIds: ["vendor/model", "vendor/MODEL"],
+    };
+    expect(parseModelSecret(serializeModelSecret(secret))).toEqual(secret);
+    expect(secretValuesToRedact(secret)).toEqual(["fake-key"]);
+    expect(
+      parseModelSecret(
+        JSON.stringify({ ...secret, enabledModelIds: ["vendor/model", "", "   ", 42, null] }),
+      ),
+    ).toMatchObject({ enabledModelIds: ["vendor/model"] });
+  });
+
   it("rejects credential JSON that declares a kind but misses its fields", () => {
     expect(() => parseModelSecret(JSON.stringify({ kind: "oauth" }))).toThrow(/corrupt/);
     expect(() =>

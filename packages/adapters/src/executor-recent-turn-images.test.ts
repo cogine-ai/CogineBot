@@ -59,12 +59,13 @@ function historyMessages(
 
 async function runWithModel(
   modelId: string,
-  switchModel?: { provider: string; modelId: string },
+  switchModel?: { provider: string; modelId: string; modelCredentialId?: string },
   backupReadFails = false,
   scripted = false,
   attachmentOptions: {
     block?: Extract<MessageBlock, { kind: "file" | "image" }>;
     computerMode?: ComputerMode;
+    pinned?: boolean;
   } = {},
 ) {
   const run = {
@@ -77,6 +78,10 @@ async function runWithModel(
     status: "queued",
     trigger: "user",
     leaseFence: 0,
+    modelPinned: attachmentOptions.pinned ?? false,
+    modelProvider: attachmentOptions.pinned ? "openrouter" : null,
+    modelId: attachmentOptions.pinned ? modelId : null,
+    modelCredentialId: attachmentOptions.pinned ? "primary-credential" : null,
   };
   const get = vi.fn(async () => new Uint8Array([1, 2, 3, 4]));
   const writeFile = vi.fn(async (..._args: unknown[]) => undefined);
@@ -87,12 +92,21 @@ async function runWithModel(
   const runtimeRun = vi.fn(async function* (next: AgentRunRequest) {
     request = next;
     if (switchModel) {
-      const onModelChange = (
-        next as AgentRunRequest & {
-          onModelChange?: (provider: string, modelId: string) => Promise<void>;
-        }
-      ).onModelChange;
-      await onModelChange?.(switchModel.provider, switchModel.modelId);
+      await next.onModelChange?.(
+        switchModel.provider,
+        switchModel.modelId,
+        switchModel.modelCredentialId ?? "backup-credential",
+      );
+      await next.onUsage?.({
+        type: "usage",
+        provider: switchModel.provider,
+        model: switchModel.modelId,
+        modelCredentialId: switchModel.modelCredentialId ?? "backup-credential",
+        inputTokens: 8,
+        outputTokens: 3,
+        costUsd: 0.00123,
+        callId: "backup-call",
+      });
     }
     yield { type: "done" as const, text: "Done" };
   });
@@ -149,13 +163,39 @@ async function runWithModel(
         async () => null,
       ),
     },
-    secret: { findFirst: vi.fn(async () => null) },
-    userModelCredential: { findFirst: vi.fn(async () => null) },
+    secret: {
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === "primary-secret" ? { id: where.id, ciphertext: "fake-primary-key" } : null,
+      ),
+    },
+    userModelCredential: {
+      findFirst: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown> | null>>(async () =>
+        attachmentOptions.pinned
+          ? {
+              id: "primary-credential",
+              userId: "user-1",
+              provider: "openrouter",
+              label: "Primary",
+              secretId: "primary-secret",
+              connectionRevision: 1,
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+              preferences: [{ modelId, isDefault: false, thinkingLevel: null }],
+            }
+          : null,
+      ),
+    },
     spaceBackupModel: {
       findMany: vi.fn(async () => {
         if (backupReadFails) throw new Error("Backup list unavailable");
         return switchModel
-          ? [{ provider: switchModel.provider, modelId: switchModel.modelId }]
+          ? [
+              {
+                provider: switchModel.provider,
+                modelId: switchModel.modelId,
+                modelCredentialId: switchModel.modelCredentialId ?? "backup-credential",
+              },
+            ]
           : [];
       }),
     },
@@ -172,6 +212,7 @@ async function runWithModel(
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
     externalEffect: { findMany: vi.fn(async () => []) },
+    usageRecord: { createMany: vi.fn(async () => ({ count: 1 })) },
     artifact: {
       findMany: vi.fn(async () => [
         {
@@ -188,6 +229,7 @@ async function runWithModel(
   const executor = createRunExecutor({
     prisma,
     deploymentModelKey: "fake-deployment-key",
+    secretStore: { load: async (ciphertext: string) => ciphertext },
     runtime: { describe: () => ({ capabilities: { scripted } }), run: runtimeRun },
     sandbox: {
       describe: () => ({ capabilities: { graphical: false } }),
@@ -279,7 +321,7 @@ describe("recent turn images follow model vision", () => {
     expect(prisma.spaceBackupModel.findMany).toHaveBeenCalledExactlyOnceWith({
       where: { userId: "user-1", spaceId: "space-1" },
       orderBy: { position: "asc" },
-      select: { provider: true, modelId: true },
+      select: { provider: true, modelId: true, modelCredentialId: true },
     });
   });
 
@@ -296,33 +338,25 @@ describe("recent turn images follow model vision", () => {
     expect(request.model.apiKey).toBe("fake-deployment-key");
     const resolve = request.resolveFallbackModel;
     if (!resolve) throw new Error("Backup resolver is missing");
-    prisma.spaceModelPreference.findFirst.mockResolvedValue({
-      modelId: backup.modelId,
-      isDefault: false,
-      thinkingLevel: null,
-      credential: {
-        id: "backup-credential",
-        userId: "user-1",
-        provider: backup.provider,
-        label: "Backup",
-        secretId: "missing-secret",
-        createdAt: new Date(0),
-        updatedAt: new Date(0),
-      },
+    prisma.userModelCredential.findFirst.mockResolvedValue({
+      id: "backup-credential",
+      userId: "user-1",
+      provider: backup.provider,
+      label: "Backup",
+      secretId: "missing-secret",
+      connectionRevision: 1,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      preferences: [{ modelId: backup.modelId, isDefault: false, thinkingLevel: null }],
     });
     vi.stubEnv("OPENROUTER_API_KEY", "fake-deployment-key");
     try {
-      await expect(resolve(backup.provider, backup.modelId)).rejects.toThrow(
-        "Backup model credential is no longer available",
+      await expect(resolve(backup.provider, backup.modelId, "backup-credential")).rejects.toThrow(
+        "Model connection is unavailable",
       );
-      expect(prisma.spaceModelPreference.findFirst).toHaveBeenCalledWith(
+      expect(prisma.userModelCredential.findFirst).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: {
-            spaceId: "space-1",
-            userId: "user-1",
-            modelId: backup.modelId,
-            credential: { provider: backup.provider },
-          },
+          where: { id: "backup-credential", userId: "user-1", provider: backup.provider },
         }),
       );
       expect(prisma.secret.findFirst).toHaveBeenCalledExactlyOnceWith({
@@ -335,12 +369,39 @@ describe("recent turn images follow model vision", () => {
     }
   });
 
-  it("persists the switched model against the current run lease", async () => {
-    const backup = { provider: "openrouter", modelId: "openai/gpt-4o" };
-    const { prisma, request, run } = await runWithModel(TEXT_ONLY_MODEL, backup);
+  it("keeps the captured pin when an attempt switches to another connection for the same model", async () => {
+    const backup = {
+      provider: "openrouter",
+      modelId: TEXT_ONLY_MODEL,
+      modelCredentialId: "backup-credential",
+    };
+    const { prisma, request, run } = await runWithModel(TEXT_ONLY_MODEL, backup, false, false, {
+      pinned: true,
+    });
 
-    expect(request?.model.id).toBe(TEXT_ONLY_MODEL);
-    expect(run).toMatchObject({ modelProvider: backup.provider, modelId: backup.modelId });
+    expect(request.model.modelCredentialId).toBe("primary-credential");
+    expect(prisma.usageRecord.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          provider: backup.provider,
+          model: TEXT_ONLY_MODEL,
+          modelCredentialId: "backup-credential",
+          costUsd: 0.00123,
+          userId: "user-1",
+          spaceId: "space-1",
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(request.fallbackModels).toEqual([
+      { provider: backup.provider, id: TEXT_ONLY_MODEL, modelCredentialId: "backup-credential" },
+    ]);
+    expect(run).toMatchObject({
+      modelProvider: "openrouter",
+      modelId: TEXT_ONLY_MODEL,
+      modelCredentialId: "primary-credential",
+      modelPinned: true,
+    });
     expect(prisma.run.updateMany).toHaveBeenCalledWith({
       where: {
         id: "run-1",
@@ -348,7 +409,33 @@ describe("recent turn images follow model vision", () => {
         leaseOwner: "worker-1",
         leaseFence: expect.any(Number),
       },
-      data: { modelProvider: backup.provider, modelId: backup.modelId },
+      data: { modelPinned: true },
+    });
+  });
+
+  it("persists the switched model against the current run lease", async () => {
+    const backup = { provider: "openrouter", modelId: "openai/gpt-4o" };
+    const { prisma, request, run } = await runWithModel(TEXT_ONLY_MODEL, backup);
+
+    expect(request?.model.id).toBe(TEXT_ONLY_MODEL);
+    expect(run).toMatchObject({
+      modelProvider: backup.provider,
+      modelId: backup.modelId,
+      modelCredentialId: "backup-credential",
+      modelPinned: false,
+    });
+    expect(prisma.run.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "run-1",
+        status: "running",
+        leaseOwner: "worker-1",
+        leaseFence: expect.any(Number),
+      },
+      data: {
+        modelProvider: backup.provider,
+        modelId: backup.modelId,
+        modelCredentialId: "backup-credential",
+      },
     });
   });
 });

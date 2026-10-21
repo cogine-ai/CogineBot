@@ -90,6 +90,10 @@ let cachedSpaceId = "";
 /** Bumped on every in-memory Space selection change so a delayed response
  * cannot treat a later reselection of the same Space id as its own. */
 let spaceSelectionGeneration = 0;
+
+export function currentSpaceSelectionGeneration(): number {
+  return spaceSelectionGeneration;
+}
 /** Counts selectSpace attempts so one still cleaning up a rollback record
  * cannot claim the selection after a newer attempt has started. */
 let spaceSelectionRequestGeneration = 0;
@@ -945,6 +949,7 @@ export type MobileBot = Pick<
   | "computerMode"
   | "modelProvider"
   | "modelId"
+  | "modelCredentialId"
   | "thinkingLevel"
   | "autoSpeak"
 > &

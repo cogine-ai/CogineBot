@@ -326,6 +326,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not remove source": "无法移除此来源",
   "Could not restore bot": "无法恢复 Bot",
   "Could not revoke connection": "无法撤销连接",
+  "Could not save": "无法保存",
   "Could not save bot": "无法保存 Bot",
   "Could not save group": "无法保存群组",
   "Could not save that speech model": "无法保存该语音模型",
@@ -925,4 +926,13 @@ export const ZH_MESSAGES: Record<string, string> = {
   "WeCom event": "企业微信事件",
   "Telegram bot event": "Telegram 机器人事件",
   "Discord bot event": "Discord 机器人事件",
+  Connection: "连接",
+  "New connection": "新建连接",
+  "Unavailable connection": "连接不可用",
+  "Used by": "使用此连接的项目",
+  "Choose a connection for saved models": "为已保存的模型选择连接",
+  "Choose another model for these items before disconnecting.":
+    "请先为这些项目选择其他模型，再断开连接。",
+  "Bot model": "机器人模型",
+  "Save model": "保存模型",
 };

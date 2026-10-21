@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { Bot } from "@rakazo/contracts";
+import { modelOptionKey } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -212,8 +213,8 @@ describe("BotSettings model choices", () => {
     const model = container.querySelector("select");
     if (!(model instanceof HTMLSelectElement)) throw new Error("Missing model select");
     const values = [...model.options].map((option) => option.value);
-    expect(values).toContain("deepseek::deepseek-flash");
-    expect(values).toContain("deepseek::deepseek-v4-pro");
+    expect(values).toContain(modelOptionKey("deepseek", "deepseek-flash", "cred-deepseek"));
+    expect(values).toContain(modelOptionKey("deepseek", "deepseek-v4-pro", "cred-deepseek"));
     expect(values).not.toContain("deepseek::DeepSeek-V4.1-Flash");
     expect(values.some((value) => value.includes("DeepSeek"))).toBe(false);
   });
@@ -266,6 +267,60 @@ describe("BotSettings description saves", () => {
     expect(onSave.mock.calls[1]?.[0]).toMatchObject({
       description: "Invoices",
       instructions: "Invoices",
+    });
+  });
+});
+
+describe("BotSettings connection identity", () => {
+  it("pins the selected endpoint and captured revision when model IDs overlap", async () => {
+    vi.mocked(rpc.models.credentials).mockResolvedValueOnce([
+      {
+        id: "connection-a",
+        provider: "openai-compatible",
+        label: "Server",
+        hasKey: true,
+        isDefault: true,
+        modelId: "shared-model",
+        enabledModelIds: ["shared-model", "second-model"],
+        baseUrl: "https://one.example.test/v1",
+        connectionRevision: 3,
+      },
+      {
+        id: "connection-b",
+        provider: "openai-compatible",
+        label: "Server",
+        hasKey: true,
+        isDefault: false,
+        modelId: "shared-model",
+        enabledModelIds: ["shared-model", "second-model"],
+        baseUrl: "https://two.example.test/v1",
+        connectionRevision: 8,
+      },
+    ]);
+    vi.mocked(rpc.models.list).mockResolvedValueOnce([]);
+    await render();
+    const model = container.querySelector("select");
+    if (!model) throw new Error("Missing model picker");
+    const key = modelOptionKey("openai-compatible", "second-model", "connection-b");
+    expect([...model.options].map((option) => option.value)).toContain(key);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(model, key);
+      model.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await clickSave();
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+      modelProvider: "openai-compatible",
+      modelId: "second-model",
+      modelCredentialId: "connection-b",
+      expectedRevision: 8,
+    });
+    onSave.mockRejectedValueOnce(new Error("Connection changed. Select it again."));
+    await clickSave();
+    expect(model.value).toBe(key);
+    expect(container.textContent).toContain("Connection changed. Select it again.");
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      modelCredentialId: "connection-b",
+      expectedRevision: 8,
     });
   });
 });

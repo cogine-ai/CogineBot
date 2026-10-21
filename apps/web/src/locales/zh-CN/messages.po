@@ -5981,3 +5981,35 @@ msgstr "分组名称"
 msgctxt "sidebar grouping"
 msgid "Group"
 msgstr "分组"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Connection"
+msgstr "连接"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "New connection"
+msgstr "新建连接"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Unavailable connection"
+msgstr "连接不可用"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Used by"
+msgstr "使用此连接的项目"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a connection for saved models"
+msgstr "为已保存的模型选择连接"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose another model for these items before disconnecting."
+msgstr "请先为这些项目选择其他模型，再断开连接。"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Routine model"
+msgstr "例行任务模型"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Bot model"
+msgstr "机器人模型"
