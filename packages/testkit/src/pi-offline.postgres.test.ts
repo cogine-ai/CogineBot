@@ -114,6 +114,12 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       helperCredentialId = helper.id;
       // This account connection remains explicitly available to helpers without a local preference.
       await handles.prisma.spaceModelPreference.deleteMany({ where: { credentialId: helper.id } });
+      await rpc(handles.app, cookie, "models/setDefault", {
+        provider: model.model.provider,
+        modelId: model.model.id,
+        modelCredentialId: credential.id,
+        expectedRevision: credential.connectionRevision,
+      });
       const bot = await rpc<{ id: string }>(handles.app, cookie, "bots/create", {
         name: "File fixture",
         title: "",
