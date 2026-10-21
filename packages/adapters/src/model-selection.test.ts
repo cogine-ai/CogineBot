@@ -1251,7 +1251,10 @@ describe("helper model discovery metadata", () => {
     const choices = Array.from({ length: 50 }, (_, connection) => ({
       modelCredentialId: `connection-${connection}`,
       provider: "openai-compatible",
-      modelIds: Array.from({ length: 500 }, (_, model) => `${String(model).padStart(3, "0")}-` + "界".repeat(508)),
+      modelIds: Array.from(
+        { length: 500 },
+        (_, model) => `${String(model).padStart(3, "0")}-${"界".repeat(508)}`,
+      ),
     }));
     const description = helperModelChoicesDescription(choices);
     expect(new TextEncoder().encode(description).byteLength).toBeLessThanOrEqual(12_000);
