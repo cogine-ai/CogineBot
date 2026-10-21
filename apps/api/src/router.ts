@@ -187,6 +187,7 @@ import {
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   findModelCredential,
+  findNewestUserModelCredential,
   findSpaceMemoryConfig,
   findTicket,
   formatMessagingLinkCode,
@@ -1290,7 +1291,11 @@ export function createRouter(deps: RouterDeps) {
             })
           : compatible
             ? null
-            : await findModelCredential(deps.prisma, context.actor, input.provider);
+            : await findNewestUserModelCredential(
+                deps.prisma,
+                context.actor.userId,
+                input.provider,
+              );
         if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
         if (existing && input.credentialId)
           assertConnectionRevision(existing, input.expectedRevision);
@@ -1335,9 +1340,9 @@ export function createRouter(deps: RouterDeps) {
             plaintext,
             label: input.label,
             modelId: input.modelId,
-            credentialId: input.credentialId,
-            expectedRevision: input.expectedRevision,
-            ...(input.credentialId ? { expectedCiphertext } : {}),
+            credentialId: existing?.id ?? input.credentialId,
+            expectedRevision: existing?.connectionRevision ?? input.expectedRevision,
+            ...(existing ? { expectedCiphertext } : {}),
             thinkingLevel: compatible ? undefined : input.thinkingLevel,
             supportsImages: input.supportsImages,
             signal: context.signal,
@@ -3764,6 +3769,33 @@ export function createRouter(deps: RouterDeps) {
               });
               if (existing) return existing;
             }
+            const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM routines
+              WHERE id=${routine.id} AND "userId"=${context.actor.userId}
+                AND "spaceId"=${context.actor.spaceId} AND "botId"=${bot.id} FOR UPDATE`;
+            if (locked.length !== 1) throw new IsolationError();
+            const currentModel = await tx.routine.findUnique({
+              where: { id: routine.id },
+              select: {
+                modelProvider: true,
+                modelId: true,
+                modelCredentialId: true,
+                thinkingLevel: true,
+              },
+            });
+            if (!currentModel) throw new IsolationError();
+            if (
+              currentModel.modelProvider &&
+              currentModel.modelId &&
+              currentModel.modelCredentialId
+            ) {
+              const credential = await tx.$queryRaw<
+                Array<{ id: string }>
+              >`SELECT id FROM user_model_credentials
+                WHERE id=${currentModel.modelCredentialId} AND "userId"=${context.actor.userId}
+                  AND provider=${currentModel.modelProvider} FOR KEY SHARE`;
+              if (credential.length !== 1)
+                throw new IsolationError("Model connection is unavailable.");
+            }
             const task = await tx.task.create({
               data: {
                 spaceId: context.actor.spaceId,
@@ -3775,16 +3807,6 @@ export function createRouter(deps: RouterDeps) {
                 connectionIds,
               },
             });
-            const currentModel = await tx.routine.findUnique({
-              where: { id: routine.id },
-              select: {
-                modelProvider: true,
-                modelId: true,
-                modelCredentialId: true,
-                thinkingLevel: true,
-              },
-            });
-            if (!currentModel) throw new IsolationError();
             return tx.run.create({
               data: {
                 spaceId: context.actor.spaceId,

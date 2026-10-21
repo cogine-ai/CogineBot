@@ -447,6 +447,7 @@ describe("createMessagingInboundHandler DM routing", () => {
       expect(deps.sendUserMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           modelPin: {
+            routineIds: ["routine-model"],
             modelProvider: "openai-compatible",
             modelId: "same-model",
             modelCredentialId,

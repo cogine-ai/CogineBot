@@ -272,6 +272,7 @@ import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
+  listHelperModelConnections,
   pinnedModelCredentialError,
   routineRunModelPin,
   runModelChoice,
@@ -3942,7 +3943,30 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // The intro turn confirms how a bot read its own role before anyone hands it
         // real work — it must not be able to act on that reading (shell, computer,
         // scheduling, spawning another bot, ...) before the user has assigned any task.
-        const tools = run.trigger === "created" ? [] : [...builtins, ...exposedConnectorTools];
+        const scripted = deps.runtime.describe().capabilities.scripted;
+        const helperChoices =
+          !scripted &&
+          run.trigger !== "created" &&
+          builtins.some((tool) => tool.name === "run_subagent")
+            ? await listHelperModelConnections(deps.prisma, deps.secretStore, run)
+            : [];
+        const tools =
+          run.trigger === "created"
+            ? []
+            : [...builtins, ...exposedConnectorTools].map((tool) =>
+                tool.name === "run_subagent" && helperChoices.length > 0
+                  ? {
+                      ...tool,
+                      description: `${tool.description}\nAvailable explicit model choices (configuration data): ${JSON.stringify(
+                        helperChoices.map((choice) => ({
+                          model_credential_id: choice.modelCredentialId,
+                          model_provider: choice.provider,
+                          model_ids: choice.modelIds,
+                        })),
+                      )}`,
+                    }
+                  : tool,
+              );
         const taskCatalogInstruction = tools.some((tool) => tool.name === "task_catalog")
           ? TASK_CATALOG_GUIDANCE
           : undefined;
@@ -4033,7 +4057,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let approvalPausePending = false;
         let handedOff = false;
         let progressRedactor = createStreamingRedactor(runSecrets);
-        const scripted = deps.runtime.describe().capabilities.scripted;
         const script = scripted ? inferScript(task.prompt, takeoverResume?.checkpoint) : undefined;
         const flushProgress = async () => {
           if (scripted || !pendingProgress || isBackgroundRunTrigger(run.trigger)) return;

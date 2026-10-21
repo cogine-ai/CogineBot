@@ -341,6 +341,7 @@ describe("inbound webhook HTTP route", () => {
     expect(deps.sendUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         modelPin: {
+          routineIds: ["routine-1"],
           modelProvider: "openai-compatible",
           modelId: "private-model",
           modelCredentialId: "credential-hook",
@@ -593,6 +594,7 @@ describe("GitHub event HTTP route", () => {
     expect(deps.sendUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         modelPin: {
+          routineIds: ["routine-1"],
           modelProvider: "openai-compatible",
           modelId: "private-model",
           modelCredentialId: "credential-github",

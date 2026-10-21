@@ -97,11 +97,126 @@ describe("consent grants", () => {
         },
       });
       const status = await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] });
-      expect(status.recipients).toHaveLength(1);
-      expect(status.recipients[0]?.name).toContain("https://selected.example");
-      expect(status.recipients[0]?.name).not.toContain("newer.example");
+      expect(status.recipients).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "OpenAI-compatible (https://selected.example)",
+            detail: "same-model",
+          }),
+        ]),
+      );
     },
   );
+  it("discloses enabled helper models from an owned connection without a Space preference", async () => {
+    const { deps, actor } = setup();
+    deps.env.agentRuntime = "pi";
+    const rows = [
+      {
+        id: "other-space",
+        userId: actor.userId,
+        provider: "openai-compatible",
+        secretId: "helper-secret",
+        preferences: [],
+      },
+      {
+        id: "retired",
+        userId: actor.userId,
+        provider: "openai-compatible",
+        secretId: "missing-secret",
+        preferences: [],
+      },
+      {
+        id: "foreign",
+        userId: "another-user",
+        provider: "openai-compatible",
+        secretId: "foreign-secret",
+        preferences: [],
+      },
+    ];
+    Object.assign(deps.prisma.userModelCredential, {
+      findMany: vi.fn(async ({ where }: { where: { userId: string } }) =>
+        rows.filter((row) => row.userId === where.userId),
+      ),
+    });
+    Object.assign(deps.prisma.secret, {
+      findMany: vi.fn(
+        async ({ where }: { where: { userId: string; spaceId: null; id: { in: string[] } } }) =>
+          where.userId === actor.userId &&
+          where.spaceId === null &&
+          where.id.in.includes("helper-secret")
+            ? [{ id: "helper-secret", ciphertext: "helper-ciphertext" }]
+            : [],
+      ),
+    });
+    Object.assign(deps, {
+      secrets: {
+        load: vi.fn(async () =>
+          JSON.stringify({
+            kind: "openai_compatible",
+            baseUrl: "https://helper.example/v1",
+            apiKey: "synthetic-key",
+            enabledModelIds: ["same-model", "extra-model"],
+            discoveredModelIds: ["disabled-model"],
+          }),
+        ),
+      },
+    });
+
+    const status = await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] });
+
+    expect(
+      status.recipients.map(({ name, detail, allowed }) => ({ name, detail, allowed })),
+    ).toEqual([
+      { name: "OpenAI-compatible (https://helper.example)", detail: "same-model", allowed: false },
+      { name: "OpenAI-compatible (https://helper.example)", detail: "extra-model", allowed: false },
+    ]);
+    expect(deps.prisma.userModelCredential.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: actor.userId },
+      }),
+    );
+    expect(deps.secrets.load).toHaveBeenCalledTimes(1);
+  });
+  it("discloses helper catalog models allowed by the saved authentication", async () => {
+    const { deps, actor } = setup();
+    deps.env.agentRuntime = "pi";
+    vi.mocked(deps.prisma.userModelCredential.findMany).mockResolvedValue([
+      {
+        id: "subscription",
+        userId: actor.userId,
+        provider: "openai-codex",
+        secretId: "oauth-secret",
+        preferences: [],
+      },
+    ] as never);
+    vi.mocked(deps.prisma.secret.findMany).mockResolvedValue([
+      {
+        id: "oauth-secret",
+        ciphertext: "synthetic-oauth-ciphertext",
+      },
+    ] as never);
+    Object.assign(deps, {
+      secrets: {
+        load: vi.fn(async () =>
+          JSON.stringify({
+            kind: "oauth",
+            provider: "openai-codex",
+            credential: {
+              type: "oauth",
+              access: "synthetic-access",
+              refresh: "synthetic-refresh",
+              expires: 9999999999999,
+            },
+          }),
+        ),
+      },
+    });
+
+    const status = await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] });
+
+    expect(status.recipients.some(({ detail }) => detail === "gpt-6.1-sol")).toBe(true);
+    expect(status.recipients.some(({ detail }) => detail === "gpt-5.3-codex-spark")).toBe(false);
+  });
   it("includes reachable helper models and cloud services for a targeted send", async () => {
     const { deps, actor } = setup();
     deps.env.agentRuntime = "pi";

@@ -14,6 +14,7 @@ import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
 import {
   catalogModelAvailableForAuth,
   listAvailablePiCatalog,
+  modelCredentialAuthKind,
   modelCredentialAuthKindFromPlaintext,
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
 } from "./pi-catalog-availability.js";
@@ -375,6 +376,65 @@ export async function findConnectedModelCredential(
     });
   }
   return findModelCredential(prisma, actor, provider, modelId);
+}
+
+/** Owned helper choices; secret material is never returned. */
+export async function listHelperModelConnections(
+  prisma: ModelSelectionClient,
+  secretStore: Pick<SecretStore, "load">,
+  actor: Pick<Actor, "userId" | "spaceId">,
+) {
+  const rows = await prisma.userModelCredential.findMany({
+    where: { userId: actor.userId },
+    include: {
+      preferences: {
+        where: { userId: actor.userId, spaceId: actor.spaceId },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      },
+    },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+  });
+  const secrets = rows.length
+    ? await prisma.secret.findMany({
+        where: { userId: actor.userId, spaceId: null, id: { in: rows.map((row) => row.secretId) } },
+        select: { id: true, ciphertext: true },
+      })
+    : [];
+  const parsedById = new Map(
+    await Promise.all(
+      secrets.map(async (secret) => {
+        try {
+          return [
+            secret.id,
+            parseModelSecret(await secretStore.load(secret.ciphertext, secret.id)),
+          ] as const;
+        } catch {
+          return [secret.id, undefined] as const;
+        }
+      }),
+    ),
+  );
+  return rows.flatMap((row) => {
+    const parsed = parsedById.get(row.secretId);
+    if (!parsed) return [];
+    const modelIds =
+      row.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+        ? parsed.kind === "openai_compatible"
+          ? enabledOpenAiCompatibleModelIds(parsed, row.preferences[0]?.modelId)
+          : []
+        : listAvailablePiCatalog({ [row.provider]: modelCredentialAuthKind(parsed) })
+            .filter((entry) => entry.provider === row.provider)
+            .map((entry) => entry.id);
+    if (modelIds.length === 0) return [];
+    return [
+      {
+        modelCredentialId: row.id,
+        provider: row.provider,
+        modelIds,
+        baseUrl: parsed.kind === "openai_compatible" ? parsed.baseUrl : undefined,
+      },
+    ];
+  });
 }
 
 export function compatibleThinkingLevels(

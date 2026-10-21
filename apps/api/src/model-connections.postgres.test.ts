@@ -4,12 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EncryptedSecretStore, parseModelSecret } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
-import type { PrismaClient } from "@rakazo/db";
-import { claimSteering, createDb, finalizeRun, sendUserMessage } from "@rakazo/db";
+import type { Prisma, PrismaClient } from "@rakazo/db";
+import {
+  claimSteering,
+  createDb,
+  finalizeRun,
+  IsolationError,
+  retireModelCredential,
+  sendUserMessage,
+} from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { discardBotIntroFromCreate } from "../../../packages/testkit/src/discard-bot-intro.js";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import { createApp } from "./app.js";
+import { deliverWebhookEvent } from "./webhook-inbound.js";
 
 const describePostgres =
   process.env.VERIFY_DATABASE === "1" && process.env.DATABASE_URL
@@ -136,6 +144,72 @@ describePostgres("model connection HTTP acceptance", () => {
       notifyOnFinish: false,
     });
   }
+
+  it("rotates the newest catalog connection with its own saved key and limits", async () => {
+    const { cookie, actor } = await account();
+    const first = await rpc<ModelCredential>(cookie, "models/connect", {
+      provider: "xai",
+      modelId: "grok-4.6",
+      apiKey: "fake-first-connection-key",
+      maxTokens: 1024,
+      contextWindow: 32000,
+      cacheCapabilities: { scope: "connection", retentionMode: "short", retentionMs: 60000 },
+    });
+    const original = await handles.prisma.userModelCredential.findUniqueOrThrow({
+      where: { id: first.id },
+    });
+    const sibling = await handles.prisma.userModelCredential.create({
+      data: {
+        userId: actor.userId,
+        provider: "xai",
+        label: "Second catalog connection",
+        secretId: original.secretId,
+      },
+    });
+    const second = await rpc<ModelCredential>(cookie, "models/connect", {
+      provider: "xai",
+      modelId: "grok-4.6",
+      credentialId: sibling.id,
+      expectedRevision: sibling.connectionRevision,
+      apiKey: "fake-newest-connection-key",
+      maxTokens: 2048,
+      contextWindow: 64000,
+      cacheCapabilities: { scope: "connection", retentionMode: "long", retentionMs: 120000 },
+    });
+    await rpc(cookie, "models/setDefault", {
+      provider: "xai",
+      modelId: "grok-4.6",
+      modelCredentialId: first.id,
+      expectedRevision: first.connectionRevision,
+    });
+    const rotated = await rpc<ModelCredential>(cookie, "models/connect", {
+      provider: "xai",
+      modelId: "grok-4.6",
+      maxTokens: 8192,
+    });
+    expect(rotated).toMatchObject({
+      id: sibling.id,
+      connectionRevision: second.connectionRevision! + 1,
+    });
+    const saved = await handles.prisma.userModelCredential.findUniqueOrThrow({
+      where: { id: sibling.id },
+    });
+    const secret = await handles.prisma.secret.findUniqueOrThrow({ where: { id: saved.secretId } });
+    const plaintext = await new EncryptedSecretStore(encryptionKey).load(
+      secret.ciphertext,
+      secret.id,
+    );
+    expect(parseModelSecret(plaintext)).toEqual({
+      kind: "api_key",
+      key: "fake-newest-connection-key",
+      maxTokens: 8192,
+      contextWindow: 64000,
+      cacheCapabilities: { scope: "connection", retentionMode: "long", retentionMs: 120000 },
+    });
+    expect(
+      await handles.prisma.userModelCredential.findUniqueOrThrow({ where: { id: first.id } }),
+    ).toMatchObject({ secretId: original.secretId, connectionRevision: first.connectionRevision });
+  });
 
   it("creates distinct connections and keeps same-name model bindings separate", async () => {
     const { cookie } = await account();
@@ -461,6 +535,7 @@ describePostgres("model connection HTTP acceptance", () => {
         prompt: "Synthetic deferred delivery",
         trigger: "webhook",
         modelPin: {
+          routineIds: [routine.id],
           modelProvider: provider,
           modelId: "second-model",
           modelCredentialId: oldConnection.id,
@@ -626,6 +701,295 @@ describePostgres("model connection HTTP acceptance", () => {
       }),
     ).toBe(0);
   });
+
+  async function inboundCaptureFixture(held = false) {
+    const { cookie, actor } = await account();
+    const original = await rpc<ModelCredential>(
+      cookie,
+      "models/connect",
+      input({ reasoning: true }),
+    );
+    const replacement = await rpc<ModelCredential>(
+      cookie,
+      "models/connect",
+      input({ reasoning: true, label: "Replacement" }),
+    );
+    const target = await bot(cookie);
+    const thread = await handles.prisma.thread.findUniqueOrThrow({ where: { botId: target.id } });
+    const routines = await Promise.all(
+      ["First", "Second"].map((name) =>
+        rpc<{ id: string }>(cookie, "routines/create", {
+          botId: target.id,
+          name: `Inbound ${name}`,
+          prompt: "Synthetic inbound work",
+          crons: ["0 9 * * 1"],
+          timezone: "UTC",
+          notify: false,
+          active: false,
+          ...binding(original, "second-model"),
+          thinkingLevel: "low",
+        }),
+      ),
+    );
+    const captured = await handles.prisma.routine.findMany({
+      where: { id: { in: routines.map((routine) => routine.id) } },
+      select: {
+        id: true,
+        name: true,
+        prompt: true,
+        modelProvider: true,
+        modelId: true,
+        modelCredentialId: true,
+        thinkingLevel: true,
+      },
+      orderBy: { id: "desc" },
+    });
+    if (held) {
+      const task = await handles.prisma.task.create({
+        data: {
+          ...actor,
+          botId: target.id,
+          threadId: thread.id,
+          prompt: "Synthetic busy turn",
+          status: "running",
+        },
+      });
+      await handles.prisma.run.create({
+        data: {
+          ...actor,
+          botId: target.id,
+          threadId: thread.id,
+          taskId: task.id,
+          status: "running",
+          trigger: "created",
+          modelProvider: provider,
+          modelId: "same-model",
+          modelCredentialId: replacement.id,
+          modelPinned: true,
+        },
+      });
+    }
+    const modelPin = {
+      routineIds: captured.map((routine) => routine.id),
+      modelProvider: provider,
+      modelId: "second-model",
+      modelCredentialId: original.id,
+      thinkingLevel: "low",
+    };
+    const sendInput = {
+      ...actor,
+      threadId: thread.id,
+      botId: target.id,
+      blocks: [{ kind: "text" as const, text: "Synthetic inbound work" }],
+      prompt: "Synthetic inbound work",
+      trigger: "webhook" as const,
+      modelPin,
+    };
+    return { cookie, actor, original, replacement, target, thread, routines, captured, sendInput };
+  }
+
+  it.each([
+    { held: false, operation: "shrink" },
+    { held: true, operation: "shrink" },
+    { held: false, operation: "disconnect" },
+    { held: true, operation: "disconnect" },
+  ])(
+    "rejects captured A after Routine rebind and $operation before enqueue (held=$held)",
+    async ({ held, operation }) => {
+      const fixture = await inboundCaptureFixture(held);
+      for (const routine of fixture.routines)
+        await rpc(fixture.cookie, "routines/update", {
+          routineId: routine.id,
+          ...binding(fixture.replacement, "second-model"),
+          thinkingLevel: "low",
+        });
+      const removed =
+        operation === "shrink"
+          ? await raw(
+              fixture.cookie,
+              "models/connect",
+              edit(fixture.original, { enabledModelIds: ["same-model"] }),
+            )
+          : await raw(fixture.cookie, "models/disconnect", {
+              provider,
+              credentialId: fixture.original.id,
+              expectedRevision: 1,
+            });
+      expect(removed.status).toBe(200);
+      const beforeMessages = await handles.prisma.message.count({
+        where: { threadId: fixture.thread.id },
+      });
+      await expect(
+        deliverWebhookEvent(
+          {
+            events: { sendUserMessage: (input) => sendUserMessage(handles.prisma, input) },
+            jobs: { enqueue: vi.fn(async () => undefined) },
+          },
+          { bot: { id: fixture.target.id, ...fixture.actor }, threadId: fixture.thread.id },
+          { source: "webhook", prompt: "Synthetic old delivery", routines: fixture.captured },
+        ),
+      ).rejects.toBeInstanceOf(IsolationError);
+      expect(await handles.prisma.message.count({ where: { threadId: fixture.thread.id } })).toBe(
+        beforeMessages,
+      );
+      expect(
+        await handles.prisma.run.count({ where: { botId: fixture.target.id, trigger: "webhook" } }),
+      ).toBe(0);
+      expect(
+        await handles.prisma.steeringMessage.count({ where: { botId: fixture.target.id } }),
+      ).toBe(0);
+    },
+  );
+
+  it("rejects an automatically retired captured connection while its Routine binding is unchanged", async () => {
+    const fixture = await inboundCaptureFixture();
+    await expect(
+      retireModelCredential(handles.prisma, {
+        userId: fixture.actor.userId,
+        credentialId: fixture.original.id,
+      }),
+    ).resolves.toBe(true);
+    await expect(sendUserMessage(handles.prisma, fixture.sendInput)).rejects.toBeInstanceOf(
+      IsolationError,
+    );
+    expect(
+      await handles.prisma.run.count({ where: { botId: fixture.target.id, trigger: "webhook" } }),
+    ).toBe(0);
+    expect(
+      await handles.prisma.steeringMessage.count({ where: { botId: fixture.target.id } }),
+    ).toBe(0);
+  });
+
+  it("validates every captured Routine instead of accepting a still-matching first row", async () => {
+    const fixture = await inboundCaptureFixture();
+    await rpc(fixture.cookie, "routines/update", {
+      routineId: fixture.captured[0]!.id,
+      ...binding(fixture.replacement, "second-model"),
+      thinkingLevel: "low",
+    });
+    await expect(sendUserMessage(handles.prisma, fixture.sendInput)).rejects.toBeInstanceOf(
+      IsolationError,
+    );
+    expect(
+      await handles.prisma.run.count({ where: { botId: fixture.target.id, trigger: "webhook" } }),
+    ).toBe(0);
+  });
+
+  it.each([false, true])(
+    "holds every Routine binding until its durable inbound reference commits (held=%s)",
+    async (held) => {
+      const fixture = await inboundCaptureFixture(held);
+      let reached!: () => void;
+      let release!: () => void;
+      const inside = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const resume = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let enqueuePid = 0;
+      const gated = {
+        $transaction: (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          handles.prisma.$transaction(
+            async (tx) => {
+              enqueuePid = (
+                await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`
+              )[0]!.pid;
+              const table = held ? "steeringMessage" : "run";
+              const gatedTx = new Proxy(tx, {
+                get(target, property, receiver) {
+                  if (property !== table) return Reflect.get(target, property, receiver);
+                  const delegate = target[table];
+                  return new Proxy(delegate, {
+                    get(model, method, modelReceiver) {
+                      if (method !== "create") return Reflect.get(model, method, modelReceiver);
+                      return async (args: unknown) => {
+                        reached();
+                        await resume;
+                        return (model.create as (input: never) => Promise<unknown>)(args as never);
+                      };
+                    },
+                  });
+                },
+              });
+              return callback(gatedTx);
+            },
+            { timeout: 15_000 },
+          ),
+      } as unknown as PrismaClient;
+      const inbound = sendUserMessage(gated, fixture.sendInput);
+      let rebind: Promise<Response> | undefined;
+      try {
+        await inside;
+        rebind = raw(fixture.cookie, "routines/update", {
+          routineId: fixture.captured[0]!.id,
+          ...binding(fixture.replacement, "second-model"),
+          thinkingLevel: "low",
+        });
+        await vi.waitFor(
+          async () => {
+            const waiting = await handles.prisma.$queryRaw<
+              Array<{ pid: number }>
+            >`SELECT pid FROM pg_stat_activity WHERE ${enqueuePid} = ANY(pg_blocking_pids(pid))`;
+            expect(waiting.length).toBeGreaterThan(0);
+          },
+          { timeout: 5_000, interval: 10 },
+        );
+      } finally {
+        release();
+      }
+      const sent = await inbound;
+      expect((await rebind!).status).toBe(200);
+      for (const routine of fixture.routines.filter(
+        (routine) => routine.id !== fixture.captured[0]!.id,
+      ))
+        await rpc(fixture.cookie, "routines/update", {
+          routineId: routine.id,
+          ...binding(fixture.replacement, "second-model"),
+          thinkingLevel: "low",
+        });
+      if (held)
+        expect(
+          await handles.prisma.steeringMessage.findFirstOrThrow({
+            where: { messageId: sent.messageId },
+          }),
+        ).toMatchObject({ modelCredentialId: fixture.original.id, runId: null });
+      else
+        expect(
+          await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId! } }),
+        ).toMatchObject({ modelCredentialId: fixture.original.id, modelPinned: true });
+      const refs = await rpc<{ references: Array<{ kind: string; modelCredentialId: string }> }>(
+        fixture.cookie,
+        "models/references",
+        { credentialId: fixture.original.id },
+      );
+      expect(refs.references).toContainEqual(
+        expect.objectContaining({
+          kind: held ? "steering" : "run",
+          modelCredentialId: fixture.original.id,
+        }),
+      );
+      expect(
+        (
+          await raw(
+            fixture.cookie,
+            "models/connect",
+            edit(fixture.original, { enabledModelIds: ["same-model"] }),
+          )
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await raw(fixture.cookie, "models/disconnect", {
+            provider,
+            credentialId: fixture.original.id,
+            expectedRevision: 1,
+          })
+        ).status,
+      ).toBe(400);
+    },
+    30_000,
+  );
 
   it("allows exactly one edit with the same expected revision", async () => {
     const { cookie } = await account();

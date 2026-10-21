@@ -32,6 +32,10 @@ describe("routine test run model capture", () => {
       );
       const createRun = vi.fn(async () => ({ id: "test-run" }));
       const tx = {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValueOnce([{ id: routine.id }])
+          .mockResolvedValueOnce([{ id: modelCredentialId }]),
         task: { create: vi.fn(async () => ({ id: "test-task" })) },
         routine: { findUnique: findCurrent },
         run: { create: createRun },

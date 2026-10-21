@@ -3,6 +3,7 @@ import { ORPCError } from "@orpc/server";
 import {
   aiRecipient,
   cloudAgentsEnabled,
+  listHelperModelConnections,
   parseModelSecret,
   selectConfiguredModel,
   toStringRecord,
@@ -36,6 +37,7 @@ export async function aiConsentStatus(
     preferences,
     backups,
     defaultCredential,
+    helperChoices,
     bots,
     routines,
     voices,
@@ -56,6 +58,7 @@ export async function aiConsentStatus(
         })
       : [],
     modelsEnabled ? findDefaultModelCredential(deps.prisma, actor) : null,
+    modelsEnabled ? listHelperModelConnections(deps.prisma, deps.secrets, actor) : [],
     modelsEnabled
       ? deps.prisma.bot.findMany({
           where: {
@@ -214,6 +217,19 @@ export async function aiConsentStatus(
         }),
       ),
     );
+    // Helpers can explicitly select any owned connection, including one with no preference here.
+    for (const choice of helperChoices) {
+      for (const modelId of choice.modelIds) {
+        add(
+          aiRecipient({
+            provider: choice.provider,
+            modelId,
+            baseUrl: choice.baseUrl,
+            use: "model",
+          }),
+        );
+      }
+    }
     for (const model of models) {
       add(
         aiRecipient({

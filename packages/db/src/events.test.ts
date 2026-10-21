@@ -18,6 +18,7 @@ import {
   sendUserMessage,
 } from "./events.js";
 import { RunHistoryWriteError } from "./messages.js";
+import { IsolationError } from "./scope.js";
 
 class TestFanout implements RealtimeFanout {
   subscriber: ((payload: string) => void) | undefined;
@@ -2216,8 +2217,116 @@ describe("sendUserMessage", () => {
     expect(publish).toHaveBeenCalledWith("thread:thread-1", JSON.stringify({ cursor: 8 }));
   });
 
-  it("pins an agreed inbound model onto the run it creates", async () => {
+  it.each(["credential-webhook", null])(
+    "pins the captured inbound model without replacing its connection: %s",
+    async (modelCredentialId) => {
+      const tx = {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValueOnce([
+            {
+              id: "routine-1",
+              modelProvider: "openai-compatible",
+              modelId: "private-model",
+              modelCredentialId,
+              thinkingLevel: "low",
+            },
+          ])
+          .mockResolvedValueOnce([{ id: "credential-webhook" }]),
+        thread: {
+          update: vi
+            .fn()
+            .mockResolvedValueOnce({ nextMessageSeq: 5 })
+            .mockResolvedValueOnce({ nextEventSeq: 9 }),
+        },
+        message: {
+          create: vi.fn().mockResolvedValue({ id: "message-1", seq: 4 }),
+          update: vi.fn(),
+        },
+        task: { create: vi.fn().mockResolvedValue({ id: "task-1" }) },
+        run: {
+          create: vi.fn().mockResolvedValue({ id: "run-1" }),
+          findMany: vi.fn().mockResolvedValue([]),
+          findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+        },
+        event: {
+          create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+            ...event(data.seq),
+            type: data.type,
+            runId: "run-1",
+          })),
+        },
+      };
+      const prisma = {
+        message: { findUnique: vi.fn().mockResolvedValue(null) },
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+
+      await sendUserMessage(prisma, {
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        botId: "bot-1",
+        userId: "user-1",
+        blocks: [{ kind: "text", text: "ping" }],
+        prompt: "ping",
+        trigger: "webhook",
+        modelPin: {
+          routineIds: ["routine-1"],
+          modelProvider: "openai-compatible",
+          modelId: "private-model",
+          modelCredentialId,
+          thinkingLevel: "low",
+        },
+      });
+
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(modelCredentialId ? 2 : 1);
+      expect(tx.run.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            trigger: "webhook",
+            modelProvider: "openai-compatible",
+            modelId: "private-model",
+            modelCredentialId,
+            thinkingLevel: "low",
+            modelPinned: true,
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([
+    "second connection",
+    "second model",
+    "second provider",
+    "second thinking",
+    "missing routine",
+    "retired credential",
+  ])("rejects stale inbound capture before any message/Run writes: %s", async (change) => {
+    const original = {
+      modelProvider: "openai-compatible",
+      modelId: "private-model",
+      modelCredentialId: "credential-webhook",
+      thinkingLevel: "low",
+    };
+    const rows = [
+      { id: "routine-1", ...original },
+      {
+        id: "routine-2",
+        ...original,
+        ...(change === "second connection" ? { modelCredentialId: "replacement" } : {}),
+        ...(change === "second model" ? { modelId: "other-model" } : {}),
+        ...(change === "second provider" ? { modelProvider: "other-provider" } : {}),
+        ...(change === "second thinking" ? { thinkingLevel: "high" } : {}),
+      },
+    ].slice(0, change === "missing routine" ? 1 : 2);
     const tx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce(rows)
+        .mockResolvedValueOnce(
+          change === "retired credential" ? [] : [{ id: "credential-webhook" }],
+        ),
       thread: {
         update: vi
           .fn()
@@ -2243,38 +2352,22 @@ describe("sendUserMessage", () => {
       },
     };
     const prisma = {
-      message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
-
-    await sendUserMessage(prisma, {
-      spaceId: "workspace-1",
-      threadId: "thread-1",
-      botId: "bot-1",
-      userId: "user-1",
-      blocks: [{ kind: "text", text: "ping" }],
-      prompt: "ping",
-      trigger: "webhook",
-      modelPin: {
-        modelProvider: "openai-compatible",
-        modelId: "private-model",
-        modelCredentialId: "credential-webhook",
-        thinkingLevel: "low",
-      },
-    });
-
-    expect(tx.run.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          trigger: "webhook",
-          modelProvider: "openai-compatible",
-          modelId: "private-model",
-          modelCredentialId: "credential-webhook",
-          thinkingLevel: "low",
-          modelPinned: true,
-        }),
+    await expect(
+      sendUserMessage(prisma, {
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        botId: "bot-1",
+        userId: "user-1",
+        blocks: [{ kind: "text", text: "ping" }],
+        prompt: "ping",
+        trigger: "webhook",
+        modelPin: { ...original, routineIds: ["routine-2", "routine-1"] },
       }),
-    );
+    ).rejects.toBeInstanceOf(IsolationError);
+    expect(tx.message.create).not.toHaveBeenCalled();
+    expect(tx.run.create).not.toHaveBeenCalled();
   });
 
   it("persists steering instead of starting a parallel run when the bot is busy", async () => {
@@ -2332,6 +2425,18 @@ describe("sendUserMessage", () => {
 
   it("keeps an agreed inbound model on steering while a routine run is busy", async () => {
     const tx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            id: "routine-1",
+            modelProvider: "openai-compatible",
+            modelId: "private-model",
+            modelCredentialId: "credential-webhook",
+            thinkingLevel: "low",
+          },
+        ])
+        .mockResolvedValueOnce([{ id: "credential-webhook" }]),
       thread: {
         update: vi
           .fn()
@@ -2371,6 +2476,7 @@ describe("sendUserMessage", () => {
       prompt: "ping",
       trigger: "webhook",
       modelPin: {
+        routineIds: ["routine-1"],
         modelProvider: "openai-compatible",
         modelId: "private-model",
         modelCredentialId: "credential-webhook",

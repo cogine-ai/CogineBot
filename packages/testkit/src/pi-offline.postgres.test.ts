@@ -16,12 +16,19 @@ const fixtureOrigin = "http://127.0.0.1:5173";
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
   it("uses a saved model connection and the real executor to persist a file and completed run", async () => {
     const fixtureKey = "offline-product-fixture-key";
+    let helperCredentialId = "";
     const model = await startModelEmulator({
       apiKey: fixtureKey,
       steps: [
         {
           expect(request) {
             expect(JSON.stringify(request.messages)).toContain("Save hello to notes/result.txt.");
+            const helper = request.tools?.find((tool) => tool.function.name === "run_subagent");
+            expect(helper?.function.description).toContain(helperCredentialId);
+            expect(helper?.function.description).toContain('"model_provider":"openai-compatible"');
+            expect(helper?.function.description).toContain('"model_ids":["helper-only-model"]');
+            expect(helper?.function.description).not.toContain("helper-fixture-key");
+            expect(helper?.function.description).not.toContain("http://127.0.0.1:11435");
             expect(request.tools).toContainEqual(
               expect.objectContaining({
                 function: expect.objectContaining({ name: "write_file" }),
@@ -97,6 +104,16 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         contextWindow: 160_000,
         maxTokens: 4096,
       });
+      const helper = await rpc<ModelCredential>(handles.app, cookie, "models/connect", {
+        provider: model.model.provider,
+        modelId: "helper-only-model",
+        enabledModelIds: ["helper-only-model"],
+        baseUrl: "http://127.0.0.1:11435/v1",
+        apiKey: "helper-fixture-key",
+      });
+      helperCredentialId = helper.id;
+      // This account connection remains explicitly available to helpers without a local preference.
+      await handles.prisma.spaceModelPreference.deleteMany({ where: { credentialId: helper.id } });
       const bot = await rpc<{ id: string }>(handles.app, cookie, "bots/create", {
         name: "File fixture",
         title: "",
