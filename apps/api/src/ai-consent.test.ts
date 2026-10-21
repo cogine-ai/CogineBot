@@ -1,3 +1,4 @@
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import { AI_DISCLOSURE_VERSION } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -216,6 +217,33 @@ describe("consent grants", () => {
 
     expect(status.recipients.some(({ detail }) => detail === "gpt-6.1-sol")).toBe(true);
     expect(status.recipients.some(({ detail }) => detail === "gpt-5.3-codex-spark")).toBe(false);
+  });
+  it("rejects an incomplete helper disclosure while the secret store is unavailable", async () => {
+    const { deps, actor } = setup();
+    deps.env.agentRuntime = "pi";
+    vi.mocked(deps.prisma.userModelCredential.findMany).mockResolvedValue([
+      {
+        id: "other-space",
+        userId: actor.userId,
+        provider: "openai-compatible",
+        secretId: "helper-secret",
+        preferences: [],
+      },
+    ] as never);
+    vi.mocked(deps.prisma.secret.findMany).mockResolvedValue([
+      { id: "helper-secret", ciphertext: "fixture" },
+    ] as never);
+    Object.assign(deps, {
+      secrets: {
+        load: vi.fn(async () => {
+          throw new SecretStoreUnavailableError(503, "temporary fixture outage");
+        }),
+      },
+    });
+
+    await expect(
+      aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] }),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
   });
   it("includes reachable helper models and cloud services for a targeted send", async () => {
     const { deps, actor } = setup();

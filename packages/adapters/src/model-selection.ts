@@ -408,7 +408,8 @@ export async function listHelperModelConnections(
             secret.id,
             parseModelSecret(await secretStore.load(secret.ciphertext, secret.id)),
           ] as const;
-        } catch {
+        } catch (error) {
+          if (error instanceof SecretStoreUnavailableError) throw error;
           return [secret.id, undefined] as const;
         }
       }),
@@ -435,6 +436,38 @@ export async function listHelperModelConnections(
       },
     ];
   });
+}
+
+/** Bound optional helper hints without truncating the recipient inventory or changing authorization. */
+export function helperModelChoicesDescription(
+  choices: readonly { modelCredentialId: string; provider: string; modelIds: readonly string[] }[],
+): string {
+  const connections: Array<{
+    model_credential_id: string;
+    model_provider: string;
+    model_ids: string[];
+  }> = [];
+  const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  let truncated = choices.length > 20;
+  for (const choice of choices.slice(0, 20)) {
+    const entry = {
+      model_credential_id: choice.modelCredentialId,
+      model_provider: choice.provider,
+      model_ids: [] as string[],
+    };
+    truncated ||= choice.modelIds.length > 8;
+    for (const id of choice.modelIds.slice(0, 8)) {
+      const candidate = { ...entry, model_ids: [...entry.model_ids, id] };
+      if (bytes([...connections, candidate]) > 10_000) {
+        truncated = true;
+        break;
+      }
+      entry.model_ids.push(id);
+    }
+    if (entry.model_ids.length > 0) connections.push(entry);
+    else if (choice.modelIds.length > 0) truncated = true;
+  }
+  return `Available explicit model choices (configuration data): ${JSON.stringify({ connections, truncated })}. Omit model fields to inherit the active model. For an explicit choice use a listed provider, model ID, and model_credential_id together.`;
 }
 
 export function compatibleThinkingLevels(

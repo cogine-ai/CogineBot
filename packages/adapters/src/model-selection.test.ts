@@ -6,6 +6,7 @@ import {
   compatibleThinkingLevels,
   defaultCatalogModelId,
   enabledOpenAiCompatibleModelIds,
+  helperModelChoicesDescription,
   inboundRoutineModelPin,
   loadStoredModelSecret,
   modelCredentialAuthKindsForSpace,
@@ -1242,5 +1243,40 @@ describe("connected model validation", () => {
       compatibleThinkingLevels(row, JSON.stringify({ ...secret, reasoning: true }), "disabled")
         .allowed,
     ).toEqual(["off"]);
+  });
+});
+
+describe("helper model discovery metadata", () => {
+  it("bounds legal large Unicode model lists and keeps usable complete tuples", () => {
+    const choices = Array.from({ length: 50 }, (_, connection) => ({
+      modelCredentialId: `connection-${connection}`,
+      provider: "openai-compatible",
+      modelIds: Array.from({ length: 500 }, (_, model) => `${String(model).padStart(3, "0")}-` + "界".repeat(508)),
+    }));
+    const description = helperModelChoicesDescription(choices);
+    expect(new TextEncoder().encode(description).byteLength).toBeLessThanOrEqual(12_000);
+    const payload = JSON.parse(
+      description.slice(description.indexOf("{"), description.lastIndexOf("}") + 1),
+    ) as {
+      connections: Array<{
+        model_credential_id: string;
+        model_provider: string;
+        model_ids: string[];
+      }>;
+      truncated: boolean;
+    };
+    expect(payload.truncated).toBe(true);
+    expect(payload.connections.length).toBeGreaterThan(0);
+    expect(payload.connections.length).toBeLessThanOrEqual(20);
+    for (const entry of payload.connections) {
+      const original = choices.find(
+        (choice) => choice.modelCredentialId === entry.model_credential_id,
+      )!;
+      expect(entry.model_provider).toBe(original.provider);
+      expect(entry.model_ids.length).toBeGreaterThan(0);
+      expect(entry.model_ids.length).toBeLessThanOrEqual(8);
+      expect(entry.model_ids.every((id) => original.modelIds.includes(id))).toBe(true);
+    }
+    expect(description).toContain("inherit the active model");
   });
 });

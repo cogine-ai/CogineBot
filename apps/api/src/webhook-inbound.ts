@@ -23,7 +23,7 @@ export type WebhookEvents = {
       routineIds: string[];
       modelProvider: string;
       modelId: string;
-      modelCredentialId?: string | null;
+      modelCredentialId: string | null;
       thinkingLevel: string | null;
     };
   }): Promise<{ messageId: string; runId: string | null; seq: number }>;
@@ -275,7 +275,7 @@ export async function deliverWebhookEvent(
       prompt: string;
       modelProvider: string | null;
       modelId: string | null;
-      modelCredentialId?: string | null;
+      modelCredentialId: string | null;
       thinkingLevel: string | null;
     }>;
     source: "webhook" | "github" | "messaging";

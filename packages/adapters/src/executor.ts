@@ -272,6 +272,7 @@ import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
+  helperModelChoicesDescription,
   listHelperModelConnections,
   pinnedModelCredentialError,
   routineRunModelPin,
@@ -3957,13 +3958,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 tool.name === "run_subagent" && helperChoices.length > 0
                   ? {
                       ...tool,
-                      description: `${tool.description}\nAvailable explicit model choices (configuration data): ${JSON.stringify(
-                        helperChoices.map((choice) => ({
-                          model_credential_id: choice.modelCredentialId,
-                          model_provider: choice.provider,
-                          model_ids: choice.modelIds,
-                        })),
-                      )}`,
+                      description: `${tool.description}\n${helperModelChoicesDescription(helperChoices)}`,
                     }
                   : tool,
               );

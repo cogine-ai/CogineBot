@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/server";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import {
   aiRecipient,
   cloudAgentsEnabled,
@@ -58,7 +59,13 @@ export async function aiConsentStatus(
         })
       : [],
     modelsEnabled ? findDefaultModelCredential(deps.prisma, actor) : null,
-    modelsEnabled ? listHelperModelConnections(deps.prisma, deps.secrets, actor) : [],
+    modelsEnabled
+      ? listHelperModelConnections(deps.prisma, deps.secrets, actor).catch((error) => {
+          if (error instanceof SecretStoreUnavailableError)
+            throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
+          throw error;
+        })
+      : [],
     modelsEnabled
       ? deps.prisma.bot.findMany({
           where: {
