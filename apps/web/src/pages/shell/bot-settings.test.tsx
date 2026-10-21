@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/rpc", () => ({
+  currentSpaceSelectionGeneration: () => 0,
   rpc: {
     voice: { voices: vi.fn(async () => []) },
     models: {

@@ -164,11 +164,13 @@ async function runWithModel(
       ),
     },
     secret: {
+      findMany: vi.fn(async () => []),
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
         where.id === "primary-secret" ? { id: where.id, ciphertext: "fake-primary-key" } : null,
       ),
     },
     userModelCredential: {
+      findMany: vi.fn(async () => []),
       findFirst: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown> | null>>(async () =>
         attachmentOptions.pinned
           ? {
