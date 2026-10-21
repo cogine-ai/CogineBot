@@ -81,6 +81,7 @@ import {
   createBoardEvents,
   createDb,
   createPool,
+  createReadinessProbe,
   createThreadEvents,
   IsolationError,
   parsePositiveInteger,
@@ -173,6 +174,7 @@ export async function createApp(
     logger?: Logger;
     runtime?: AgentRuntime;
     contextStrategy?: AgentContextStrategy;
+    readinessCheck?: () => Promise<unknown>;
   } = {},
 ): Promise<AppHandles> {
   const {
@@ -188,6 +190,7 @@ export async function createApp(
     logger: loggerOverride,
     runtime: runtimeOverride,
     contextStrategy,
+    readinessCheck: readinessCheckOverride,
     ...envOverrides
   } = overrides;
   const env = { ...loadEnv(process.env), ...envOverrides };
@@ -199,6 +202,9 @@ export async function createApp(
         poolMax: parsePositiveInteger(process.env.DB_POOL_MAX, 4),
         applicationName: "rakazo-api",
       });
+  // Injected database callers can supply their own check without opening another pool.
+  const readiness =
+    prismaOverride || readinessCheckOverride ? undefined : createReadinessProbe(env.databaseUrl);
   let { prisma } = created;
   const realtime =
     realtimeOverride ??
@@ -1033,20 +1039,23 @@ export async function createApp(
   mountDiagramScript(app);
   app.route(
     "/",
-    healthRoutes(() => ({
-      runtime: env.agentRuntime,
-      sandbox: env.sandboxProvider,
-      composio: Boolean(stack.composio),
-      pipedream: Boolean(pipedream),
-      messaging: Boolean(messaging),
-      email: email?.describe().id ?? null,
-      billing: billingProvider?.describe().id ?? null,
-      jobs: jobKind,
-      realtime: realtime.describe().id,
-      secrets: secrets.describe(),
-      degraded: secrets.describe().capabilities.degraded ?? false,
-      revision: env.gitSha ?? null,
-    })),
+    healthRoutes(
+      () => ({
+        runtime: env.agentRuntime,
+        sandbox: env.sandboxProvider,
+        composio: Boolean(stack.composio),
+        pipedream: Boolean(pipedream),
+        messaging: Boolean(messaging),
+        email: email?.describe().id ?? null,
+        billing: billingProvider?.describe().id ?? null,
+        jobs: jobKind,
+        realtime: realtime.describe().id,
+        secrets: secrets.describe(),
+        degraded: secrets.describe().capabilities.degraded ?? false,
+        revision: env.gitSha ?? null,
+      }),
+      readinessCheckOverride ?? readiness?.check,
+    ),
   );
 
   return {
@@ -1068,6 +1077,7 @@ export async function createApp(
       // on waitForComputerReady for the full boot-wait window during shared Postgres journeys.
       auth.disposeOidcDiscovery();
       shutdown.abort();
+      await readiness?.close().catch(() => undefined);
       oauthLogins.abortAll();
       messagingStopped = true;
       clearMessagingRetryDelay?.();
