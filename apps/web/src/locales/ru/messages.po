@@ -6008,8 +6008,12 @@ msgstr "Выберите другую модель для этих элемен�
 
 #: src/pages/RoutineEditor.tsx
 msgid "Routine model"
-msgstr "Модель процедуры"
+msgstr "Модель задачи"
 
 #: src/pages/RoutineEditor.tsx
 msgid "Bot model"
 msgstr "Модель бота"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Use updated connection"
+msgstr "Использовать обновлённое подключение"

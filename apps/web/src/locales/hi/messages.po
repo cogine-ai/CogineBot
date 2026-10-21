@@ -6013,3 +6013,7 @@ msgstr "रूटीन मॉडल"
 #: src/pages/RoutineEditor.tsx
 msgid "Bot model"
 msgstr "बॉट मॉडल"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Use updated connection"
+msgstr "अपडेट किया गया कनेक्शन इस्तेमाल करें"

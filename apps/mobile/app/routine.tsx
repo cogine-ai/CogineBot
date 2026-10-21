@@ -18,6 +18,7 @@ import {
   rpc,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
+import { thinkingLevelLabel } from "../lib/model-catalog";
 import { native, useMobileTokens } from "../lib/native";
 import { routineStatusLine } from "../lib/routine";
 import { currentSessionGeneration } from "../lib/session";
@@ -224,7 +225,10 @@ export default function RoutineDetail() {
                 value={thinkingLevel}
                 choices={[
                   { key: "", label: t("Default") },
-                  ...thinkingOptions.map((level) => ({ key: level, label: t(level) })),
+                  ...thinkingOptions.map((level) => ({
+                    key: level,
+                    label: thinkingLevelLabel(level, t),
+                  })),
                 ]}
                 onChange={(level) => {
                   if (savingModel) return;

@@ -8,7 +8,9 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const modelScope = vi.hoisted(() => ({ generation: 0 }));
 vi.mock("../../lib/rpc", () => ({
+  currentSpaceSelectionGeneration: () => modelScope.generation,
   rpc: {
     voice: { voices: vi.fn().mockResolvedValue([]) },
     models: {
@@ -167,6 +169,9 @@ async function clickSave() {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   onSave.mockReset().mockResolvedValue(undefined);
+  modelScope.generation = 0;
+  vi.mocked(rpc.models.credentials).mockReset().mockResolvedValue([]);
+  vi.mocked(rpc.models.list).mockReset().mockResolvedValue([]);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -323,4 +328,163 @@ describe("BotSettings connection identity", () => {
       expectedRevision: 8,
     });
   });
+});
+
+function pinnedCredential(id: string, revision: number) {
+  return {
+    id,
+    provider: "openai-compatible",
+    label: "Server",
+    hasKey: true,
+    isDefault: true,
+    modelId: "shared-model",
+    enabledModelIds: ["shared-model"],
+    baseUrl: "https://models.example.test/v1",
+    connectionRevision: revision,
+  };
+}
+async function chooseModel(key: string) {
+  const model = container.querySelector("select");
+  if (!model) throw new Error("Missing model picker");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(model, key);
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((next, fail) => {
+    resolve = next;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+it("refreshes a conflicted connection and requires explicit acceptance before retrying the preserved draft", async () => {
+  vi.mocked(rpc.models.credentials)
+    .mockResolvedValueOnce([pinnedCredential("connection-a", 7)])
+    .mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
+  onSave.mockRejectedValueOnce(
+    Object.assign(new Error("Model connection changed. Reload and try again."), {
+      code: "CONFLICT",
+    }),
+  );
+  await render();
+  const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+  await chooseModel(key);
+  await setDescription("Preserve these instructions");
+  await clickSave();
+  expect(rpc.models.credentials).toHaveBeenCalledTimes(2);
+  expect(container.querySelector("select")?.value).toBe(key);
+  expect(descriptionField().value).toBe("Preserve these instructions");
+  expect(onSave).toHaveBeenCalledTimes(1);
+  expect(saveButton().disabled).toBe(true);
+  const accept = [...container.querySelectorAll("button")].find(
+    (entry) => entry.textContent === "Use updated connection",
+  );
+  expect(accept).toBeDefined();
+  await act(async () => accept?.click());
+  await clickSave();
+  expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+    description: "Preserve these instructions",
+    modelCredentialId: "connection-a",
+    expectedRevision: 9,
+  });
+});
+
+it("does not replace a newer model draft or its revision when an older save conflicts and refreshes late", async () => {
+  const initial = [pinnedCredential("connection-a", 7), pinnedCredential("connection-b", 4)];
+  const refresh = deferred<typeof initial>();
+  const saving = deferred<undefined>();
+  vi.mocked(rpc.models.credentials)
+    .mockResolvedValueOnce(initial)
+    .mockImplementationOnce(() => refresh.promise);
+  onSave.mockImplementationOnce(() => saving.promise);
+  await render();
+  await chooseModel(modelOptionKey("openai-compatible", "shared-model", "connection-a"));
+  await clickSave();
+  const newerKey = modelOptionKey("openai-compatible", "shared-model", "connection-b");
+  await chooseModel(newerKey);
+  await setDescription("Newer draft");
+  await act(async () => {
+    saving.reject(Object.assign(new Error("Connection changed"), { code: "CONFLICT" }));
+    await Promise.resolve();
+  });
+  expect(rpc.models.credentials).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    refresh.resolve(initial.map((entry) => ({ ...entry, connectionRevision: 9 })));
+    await refresh.promise;
+  });
+  expect(container.querySelector("select")?.value).toBe(newerKey);
+  expect(descriptionField().value).toBe("Newer draft");
+  expect(container.textContent).not.toContain("Use updated connection");
+  await clickSave();
+  expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+    modelCredentialId: "connection-b",
+    expectedRevision: 4,
+    description: "Newer draft",
+  });
+});
+
+it("retries only the connection refresh after a failed conflict reload before accepting its revision", async () => {
+  vi.mocked(rpc.models.credentials)
+    .mockResolvedValueOnce([pinnedCredential("connection-a", 7)])
+    .mockRejectedValueOnce(new Error("Offline"))
+    .mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
+  onSave.mockRejectedValueOnce(
+    Object.assign(new Error("Connection changed"), { code: "CONFLICT" }),
+  );
+  await render();
+  const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+  await chooseModel(key);
+  await setDescription("Keep while offline");
+  await clickSave();
+  expect(saveButton().disabled).toBe(true);
+  const retry = [...container.querySelectorAll("button")].find(
+    (entry) => entry.textContent === "Retry",
+  );
+  expect(retry).toBeDefined();
+  await act(async () => retry?.click());
+  expect(rpc.models.credentials).toHaveBeenCalledTimes(3);
+  expect(onSave).toHaveBeenCalledTimes(1);
+  expect(descriptionField().value).toBe("Keep while offline");
+  expect(container.querySelector("select")?.value).toBe(key);
+  const accept = [...container.querySelectorAll("button")].find(
+    (entry) => entry.textContent === "Use updated connection",
+  );
+  expect(accept).toBeDefined();
+  await act(async () => accept?.click());
+  await clickSave();
+  expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+    modelCredentialId: "connection-a",
+    expectedRevision: 9,
+  });
+});
+
+it("ignores a conflict refresh after the Space epoch changes and returns", async () => {
+  const refresh = deferred<Array<ReturnType<typeof pinnedCredential>>>();
+  vi.mocked(rpc.models.credentials)
+    .mockResolvedValueOnce([pinnedCredential("connection-a", 7)])
+    .mockImplementationOnce(() => refresh.promise);
+  onSave.mockRejectedValueOnce(
+    Object.assign(new Error("Connection changed"), { code: "CONFLICT" }),
+  );
+  await render();
+  const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+  await chooseModel(key);
+  await clickSave();
+  modelScope.generation += 2;
+  await setDescription("Newer instructions");
+  await act(async () => {
+    refresh.resolve([pinnedCredential("connection-b", 9)]);
+    await refresh.promise;
+  });
+  expect(descriptionField().value).toBe("Newer instructions");
+  expect(container.querySelector("select")?.value).toBe(key);
+  expect(
+    [...container.querySelectorAll("option")].some((entry) => entry.value.includes("connection-b")),
+  ).toBe(false);
+  expect(container.textContent).not.toContain("Use updated connection");
+  expect(onSave).toHaveBeenCalledTimes(1);
 });

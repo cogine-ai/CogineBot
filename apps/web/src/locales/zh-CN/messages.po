@@ -6013,3 +6013,7 @@ msgstr "例行任务模型"
 #: src/pages/RoutineEditor.tsx
 msgid "Bot model"
 msgstr "机器人模型"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Use updated connection"
+msgstr "使用更新后的连接"

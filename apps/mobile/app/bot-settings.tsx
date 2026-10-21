@@ -33,6 +33,7 @@ import { deviceVoices, setVoiceForBot, voiceForBot, voiceLabel } from "../lib/bo
 import { COMPUTER_LIFECYCLE_TIMEOUT_MS } from "../lib/computer";
 import { loadDeviceVoiceEnabled } from "../lib/device-voice";
 import { useI18n } from "../lib/i18n";
+import { thinkingLevelLabel } from "../lib/model-catalog";
 import { native, useMobileTokens } from "../lib/native";
 import { errorText } from "../lib/user-error";
 import { stopVoicePlayback } from "../lib/voice";
@@ -594,16 +595,6 @@ function catalogLabel(
 ) {
   if (!provider) return undefined;
   return catalog.find((entry) => entry.provider === provider && entry.id === modelId)?.label;
-}
-
-function thinkingLevelLabel(level: ThinkingLevel, t: (message: string) => string) {
-  if (level === "xhigh") return t("Extra high");
-  if (level === "low") return t("Low");
-  if (level === "medium") return t("Medium");
-  if (level === "high") return t("High");
-  if (level === "minimal") return t("Minimal");
-  if (level === "max") return t("Max");
-  return `${level.slice(0, 1).toUpperCase()}${level.slice(1)}`;
 }
 
 const styles = StyleSheet.create({

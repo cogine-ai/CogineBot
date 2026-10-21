@@ -6013,3 +6013,7 @@ msgstr "Modelo da rotina"
 #: src/pages/RoutineEditor.tsx
 msgid "Bot model"
 msgstr "Modelo do bot"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Use updated connection"
+msgstr "Usar conexão atualizada"

@@ -36,7 +36,7 @@ import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
 import { ErrorBoundary, SectionLoadFailed } from "../../components/ErrorBoundary";
 import { botProfilePatch } from "../../lib/bot-profile-patch";
 import { thinkingLevelLabel } from "../../lib/model-catalog";
-import { rpc } from "../../lib/rpc";
+import { currentSpaceSelectionGeneration, rpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
 import { AvatarStudioPopover } from "./avatar-studio-popover";
 import { BotCredentialsSection } from "./bot-credentials";
@@ -275,6 +275,12 @@ export function BotSettings({
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [modelMetaReady, setModelMetaReady] = useState(false);
+  const [modelConflict, setModelConflict] = useState<"refreshing" | "ready" | "failed" | null>(
+    null,
+  );
+  const modelSelectionRevisionRef = useRef(0);
+  const modelMetadataRevisionRef = useRef(0);
+  const mountedRef = useRef(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const saveQueueRef = useRef(Promise.resolve());
@@ -290,12 +296,21 @@ export function BotSettings({
     }) => Promise<void>
   >(async () => undefined);
   useEffect(() => {
+    mountedRef.current = true;
+    const revision = ++modelMetadataRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     void rpc.voice
       .voices({})
       .then(setVoices)
       .catch(() => setVoices([]));
     void Promise.all([rpc.models.credentials(), rpc.models.list(), rpc.me()])
       .then(([nextCredentials, nextCatalog, nextMe]) => {
+        if (
+          !mountedRef.current ||
+          revision !== modelMetadataRevisionRef.current ||
+          spaceGeneration !== currentSpaceSelectionGeneration()
+        )
+          return;
         setCredentials(nextCredentials);
         setCatalog(nextCatalog);
         setMe(nextMe);
@@ -304,6 +319,10 @@ export function BotSettings({
         setModelMetaReady(true);
       })
       .catch(() => undefined);
+    return () => {
+      mountedRef.current = false;
+      modelMetadataRevisionRef.current += 1;
+    };
   }, []);
 
   const connectedOptions = connectedModelChoices(credentials, catalog);
@@ -344,6 +363,28 @@ export function BotSettings({
   ).filter((level) => level !== "off");
   const defaultThinkingLevel = effectiveCredential?.thinkingLevel ?? "medium";
 
+  async function refreshConflictedConnection(selectionRevision: number, spaceGeneration: number) {
+    if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
+    const revision = ++modelMetadataRevisionRef.current;
+    const current = () =>
+      mountedRef.current &&
+      revision === modelMetadataRevisionRef.current &&
+      spaceGeneration === currentSpaceSelectionGeneration();
+    const sameDraft = () => selectionRevision === modelSelectionRevisionRef.current;
+    if (sameDraft()) setModelConflict("refreshing");
+    try {
+      const nextCredentials = await rpc.models.credentials(
+        {},
+        { context: { spaceId: bot.spaceId } },
+      );
+      if (!current()) return;
+      setCredentials(nextCredentials);
+      if (sameDraft()) setModelConflict("ready");
+    } catch {
+      if (current() && sameDraft()) setModelConflict("failed");
+    }
+  }
+
   async function executeSave(patchOverrides?: {
     name?: string;
     title?: string;
@@ -354,6 +395,8 @@ export function BotSettings({
     baseDisabledBuiltinTools?: string[];
   }) {
     const selected = selectedModel;
+    const selectionRevision = modelSelectionRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     const modelChanged =
       (selected?.provider ?? null) !== bot.modelProvider ||
       (selected?.modelId ?? null) !== bot.modelId ||
@@ -373,6 +416,7 @@ export function BotSettings({
     setDescription(nextDescription);
 
     try {
+      if (modelChanged && modelConflict !== null) return;
       setSaving(true);
       setError(null);
       const patch = {
@@ -439,7 +483,16 @@ export function BotSettings({
       }
       savedDescriptionRef.current = nextDescription;
     } catch (err) {
+      if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
       setError(errorText(err, t`Could not save`));
+      if (
+        modelChanged &&
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        err.code === "CONFLICT"
+      )
+        await refreshConflictedConnection(selectionRevision, spaceGeneration);
     } finally {
       pendingSavesRef.current -= 1;
       if (pendingSavesRef.current === 0) {
@@ -596,8 +649,13 @@ export function BotSettings({
             id={`${ids}-model`}
             className="mt-2 w-full"
             value={selectedModelKey}
-            disabled={!modelMetaReady}
+            disabled={
+              !modelMetaReady || modelConflict === "refreshing" || modelConflict === "failed"
+            }
             onChange={(event) => {
+              modelSelectionRevisionRef.current += 1;
+              setModelConflict(null);
+              setError(null);
               setModelRevision(
                 connectedOptions.find((option) => option.key === event.target.value)
                   ?.connectionRevision,
@@ -632,7 +690,9 @@ export function BotSettings({
               id={`${ids}-thinking`}
               className="mt-2 w-full"
               value={thinkingLevel}
+              disabled={modelConflict === "refreshing" || modelConflict === "failed"}
               onChange={(event) => {
+                modelSelectionRevisionRef.current += 1;
                 if (modelRevision === undefined)
                   setModelRevision(effectiveCredential?.connectionRevision);
                 setThinkingLevel(event.target.value);
@@ -752,9 +812,42 @@ export function BotSettings({
         {advancedOpened ? <BotCredentialsSection botId={bot.id} /> : null}
       </details>
       {error ? <p className="mt-2 text-[13px] text-destructive">{error}</p> : null}
+      {modelConflict === "ready" &&
+      connectedOptions.some(
+        (option) => option.key === selectedModelKey && option.connectionRevision !== undefined,
+      ) ? (
+        <Button
+          variant="outline"
+          className="mt-2"
+          onClick={() => {
+            const option = connectedOptions.find((entry) => entry.key === selectedModelKey);
+            if (option?.connectionRevision === undefined) return;
+            modelSelectionRevisionRef.current += 1;
+            setModelRevision(option.connectionRevision);
+            setModelConflict(null);
+            setError(null);
+          }}
+        >
+          <Trans>Use updated connection</Trans>
+        </Button>
+      ) : null}
+      {modelConflict === "failed" ? (
+        <Button
+          variant="outline"
+          className="mt-2"
+          onClick={() =>
+            void refreshConflictedConnection(
+              modelSelectionRevisionRef.current,
+              currentSpaceSelectionGeneration(),
+            )
+          }
+        >
+          <Trans>Retry</Trans>
+        </Button>
+      ) : null}
       <div className="mt-5 flex flex-col items-start gap-3">
         <Button
-          disabled={saving}
+          disabled={saving || modelConflict !== null}
           onClick={() => {
             void enqueueSave({
               name,

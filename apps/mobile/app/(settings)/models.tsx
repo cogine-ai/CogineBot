@@ -81,6 +81,7 @@ import {
   waitForModelOAuth,
 } from "../../lib/model-auth";
 import { mobileBackupScopeIsCurrent } from "../../lib/model-backups";
+import { thinkingLevelLabel } from "../../lib/model-catalog";
 import { native, useResolvedAppearance, useThemedStyles } from "../../lib/native";
 import { currentSessionGeneration } from "../../lib/session";
 import { errorText } from "../../lib/user-error";
@@ -100,16 +101,6 @@ const THINKING_LEVEL_OPTIONS: ThinkingLevel[] = [
   "xhigh",
   "max",
 ];
-
-function thinkingLevelLabel(level: ThinkingLevel, t: (message: string) => string): string {
-  if (level === "xhigh") return t("Extra high");
-  if (level === "low") return t("Low");
-  if (level === "medium") return t("Medium");
-  if (level === "high") return t("High");
-  if (level === "minimal") return t("Minimal");
-  if (level === "max") return t("Max");
-  return level;
-}
 
 /** Providers with more models than this get a search field. */
 const MODEL_SEARCH_THRESHOLD = 10;
@@ -257,7 +248,6 @@ export default function Models() {
     ]);
     if (
       generation !== modelRequestGenerationRef.current ||
-      selectionRevision !== selectionRevisionRef.current ||
       spaceGeneration !== currentSpaceSelectionGeneration() ||
       requestContext.apiBase !== currentApiBase() ||
       requestContext.sessionGeneration !== currentSessionGeneration()
@@ -270,6 +260,11 @@ export default function Models() {
         option,
       ]),
     );
+    meRef.current = nextMe;
+    setMe(nextMe);
+    setCatalog(nextCatalog);
+    setCredentials(nextCredentials);
+    if (selectionRevision !== selectionRevisionRef.current) return nextMe;
     const nextProvider =
       (preferred.provider && nextCatalog.some((entry) => entry.provider === preferred.provider)
         ? preferred.provider
@@ -293,10 +288,6 @@ export default function Models() {
             nextProvider,
             preferred.modelId || nextCredential?.modelId || nextMe.defaultModel,
           );
-    meRef.current = nextMe;
-    setMe(nextMe);
-    setCatalog(nextCatalog);
-    setCredentials(nextCredentials);
     resetOpenAiCompatibleProbe();
     setProvider(nextProvider);
     setConnectionId(nextCredential?.id ?? null);
