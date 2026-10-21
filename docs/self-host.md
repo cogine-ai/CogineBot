@@ -507,8 +507,24 @@ curl --fail https://app.example.com/health
 registry serves, so the commands above build `api`, `worker`, and `web` from the checkout you just
 cloned. The opt-in command under [Updater sidecar](#updater-sidecar) builds `updater` when needed.
 
-The public `/health` only reports liveness. Runtime, sandbox, and revision details stay on the API
-port at `/internal/health`, which the edge does not route:
+The public `/health` only reports liveness. Container-local `/ready` also requires a reachable
+database and a non-degraded secret store. Check it from the API container:
+
+```bash
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml exec -T api \
+  node -e "fetch('http://127.0.0.1:3100/ready',{signal:AbortSignal.timeout(2000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+```
+
+Readiness probes use a dedicated pool that can hold one additional PostgreSQL connection per API
+process, including while idle; account for it in the database connection budget. This checks database
+reachability, not whether the business pool has spare capacity. The readiness HTTP deadline is
+1.5 seconds; connection checkout and query execution have separate 1.5-second limits, so underlying
+work may settle later. Polls share an unfinished probe rather than opening more connections.
+The probe sets a transaction-local statement timeout without adding connection startup parameters.
+Container healthchecks continue to use `/health` for liveness.
+
+Runtime, sandbox, and revision details stay on the API port at `/internal/health`, which the edge does
+not route:
 
 ```bash
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml exec api \
@@ -549,9 +565,12 @@ then run `systemctl daemon-reload`.
 To deploy from CI, install `infra/compose/deploy-main.sh` as `/usr/local/sbin/rakazo-deploy-main`
 and give CI a key restricted to it in the deploy user's `authorized_keys`
 (`restrict,command="/usr/local/sbin/rakazo-deploy-main" ssh-ed25519 …`). It builds `origin/main`,
-restarts the stack, waits for `https://$RAKAZO_HOST/health`, and rolls back on failure. Build and
-start are time-limited so a stuck build fails the deploy instead of holding its lock; a deploy that
-finds the lock held exits non-zero. For a checkout outside `/srv/rakazo`, put
+restarts the stack, requires both `https://$RAKAZO_HOST/health` and container-local API `/ready`, and
+rolls back on failure. `RAKAZO_HEALTH_URL` still overrides only the public connectivity check. The
+readiness fetch has a two-second abort and its Compose command has a five-second timeout; the public
+check retains its 15-second timeout, so a whole deployment poll can take longer than the readiness
+HTTP deadline. Build and start are time-limited so a stuck build fails the deploy instead of holding
+its lock; a deploy that finds the lock held exits non-zero. For a checkout outside `/srv/rakazo`, put
 `RAKAZO_DEPLOY_DIR=/absolute/path` in a root-owned `/etc/rakazo/deploy.env` readable by the
 deploy user.
 

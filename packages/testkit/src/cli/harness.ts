@@ -108,6 +108,8 @@ async function main() {
         "packages/testkit/src/thread-message-sequence.postgres.test.ts",
         "apps/api/src/artifacts.postgres.test.ts",
         "apps/api/src/board-app.postgres.test.ts",
+        "apps/api/src/health-app.postgres.test.ts",
+        "packages/db/src/readiness.postgres.test.ts",
         "packages/db/src/board.postgres.test.ts",
         "packages/db/src/bot-sections.postgres.test.ts",
         "packages/testkit/src/voice.test.ts",
