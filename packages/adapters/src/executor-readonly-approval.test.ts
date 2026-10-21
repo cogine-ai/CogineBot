@@ -4,7 +4,7 @@ import type {
   ConnectorCall,
   ConnectorTool,
 } from "@rakazo/adapter-kit";
-import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
+import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -321,6 +321,7 @@ function fixture({
   return {
     tool,
     prisma,
+    runtimeRun,
     effects,
     results,
     execute,
@@ -350,6 +351,27 @@ function fixture({
     },
   };
 }
+
+describe("optional helper model discovery", () => {
+  it.each([
+    ["database", new Error("model connection database unavailable")],
+    ["secret store", new SecretStoreUnavailableError(503)],
+  ])("continues the active run when the %s hint lookup fails", async (_kind, error) => {
+    const f = fixture();
+    f.prisma.userModelCredential.findMany.mockRejectedValue(error);
+
+    await f.run();
+
+    expect(f.prisma.userModelCredential.findMany).toHaveBeenCalledOnce();
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.results).toHaveLength(1);
+    const helper = f.runtimeRun.mock.calls[0]?.[0].tools.find(
+      (tool) => tool.name === "run_subagent",
+    );
+    expect(helper).toBeDefined();
+    expect(helper?.description).not.toContain("Available explicit model choices");
+  });
+});
 
 describe("disabled builtins", () => {
   it("refuses a direct call before any effect or memory write", async () => {

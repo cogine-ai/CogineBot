@@ -415,8 +415,9 @@ export function BotSettings({
     setTitle(nextTitle);
     setDescription(nextDescription);
 
+    // A conflicted model draft must not block unrelated profile/tool auto-saves.
+    const saveModel = modelChanged && modelConflict === null;
     try {
-      if (modelChanged && modelConflict !== null) return;
       setSaving(true);
       setError(null);
       const patch = {
@@ -433,7 +434,7 @@ export function BotSettings({
         memoryScope,
         autoSpeak,
         voiceId: voiceId || null,
-        ...(modelChanged
+        ...(saveModel
           ? {
               modelProvider: selected?.provider ?? null,
               modelId: selected?.modelId ?? null,
@@ -485,13 +486,7 @@ export function BotSettings({
     } catch (err) {
       if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
       setError(errorText(err, t`Could not save`));
-      if (
-        modelChanged &&
-        err &&
-        typeof err === "object" &&
-        "code" in err &&
-        err.code === "CONFLICT"
-      )
+      if (saveModel && err && typeof err === "object" && "code" in err && err.code === "CONFLICT")
         await refreshConflictedConnection(selectionRevision, spaceGeneration);
     } finally {
       pendingSavesRef.current -= 1;

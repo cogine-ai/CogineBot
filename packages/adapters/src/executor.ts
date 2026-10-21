@@ -3945,11 +3945,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // real work — it must not be able to act on that reading (shell, computer,
         // scheduling, spawning another bot, ...) before the user has assigned any task.
         const scripted = deps.runtime.describe().capabilities.scripted;
+        // Optional discovery must not block an independently configured active model.
         const helperChoices =
           !scripted &&
           run.trigger !== "created" &&
           builtins.some((tool) => tool.name === "run_subagent")
-            ? await listHelperModelConnections(deps.prisma, deps.secretStore, run)
+            ? await listHelperModelConnections(deps.prisma, deps.secretStore, run).catch(() => {
+                getLogger().warn("optional helper model discovery failed", { runId });
+                return [];
+              })
             : [];
         const tools =
           run.trigger === "created"

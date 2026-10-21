@@ -393,6 +393,84 @@ it("refreshes a conflicted connection and requires explicit acceptance before re
   });
 });
 
+it.each([false, true])(
+  "saves unrelated fields without rebinding a conflicted model (refresh fails: %s)",
+  async (refreshFails) => {
+    const credentials = vi
+      .mocked(rpc.models.credentials)
+      .mockResolvedValueOnce([pinnedCredential("connection-a", 7)]);
+    if (refreshFails) credentials.mockRejectedValueOnce(new Error("Offline"));
+    else credentials.mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
+    onSave.mockRejectedValueOnce(
+      Object.assign(new Error("Connection changed"), { code: "CONFLICT" }),
+    );
+    await render();
+    const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+    await chooseModel(key);
+    await clickSave();
+
+    const name = container.querySelector<HTMLInputElement>('input[id$="-name"]');
+    if (!name) throw new Error("Missing name field");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        name,
+        "Renamed during conflict",
+      );
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => name.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({ name: "Renamed during conflict" });
+
+    const tool = container.querySelector<HTMLInputElement>('input[id$="-disabled-tools"]');
+    if (!tool) throw new Error("Missing disabled tools field");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        tool,
+        "web_search",
+      );
+      tool.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () =>
+      tool.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+    );
+    expect(onSave).toHaveBeenCalledTimes(3);
+    expect(onSave.mock.calls[2]?.[0]).toMatchObject({ disabledBuiltinTools: ["web_search"] });
+    for (const [patch] of onSave.mock.calls.slice(1)) {
+      for (const field of [
+        "modelProvider",
+        "modelId",
+        "modelCredentialId",
+        "expectedRevision",
+        "thinkingLevel",
+      ])
+        expect(patch).not.toHaveProperty(field);
+    }
+    expect(container.querySelector("select")?.value).toBe(key);
+    expect(saveButton().disabled).toBe(true);
+
+    if (refreshFails) {
+      credentials.mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
+      const retry = [...container.querySelectorAll("button")].find(
+        (entry) => entry.textContent === "Retry",
+      );
+      expect(retry).toBeDefined();
+      await act(async () => retry?.click());
+    }
+    const accept = [...container.querySelectorAll("button")].find(
+      (entry) => entry.textContent === "Use updated connection",
+    );
+    expect(accept).toBeDefined();
+    await act(async () => accept?.click());
+    await clickSave();
+    expect(onSave.mock.calls[3]?.[0]).toMatchObject({
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+      name: "Renamed during conflict",
+    });
+  },
+);
+
 it("does not replace a newer model draft or its revision when an older save conflicts and refreshes late", async () => {
   const initial = [pinnedCredential("connection-a", 7), pinnedCredential("connection-b", 4)];
   const refresh = deferred<typeof initial>();
