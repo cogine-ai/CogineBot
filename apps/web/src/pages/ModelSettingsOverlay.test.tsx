@@ -736,3 +736,75 @@ it("resets discovery on a connection change and ignores the previous connection'
     await view.unmount();
   }
 });
+
+it("keeps a found-model draft chosen after Save starts when the old receipt arrives", async () => {
+  useCompatibleConnections();
+  models.probeOpenAiCompatible.mockResolvedValue({ models: ["model-c"] });
+  const pending = deferred<ReturnType<typeof compatibleConnection>>();
+  models.connect.mockReturnValue(pending.promise);
+  const view = await renderSettings();
+  try {
+    await typeInto(compatibleKeyField(view.container), "draft-secret");
+    await act(async () => {
+      buttons(view.container, "Find models")[0]?.click();
+    });
+    await choose(select(view.container, "Models from server"), "");
+    await typeInto(field(view.container, "Model id"), "manual-model");
+    await act(async () => {
+      buttons(view.container, "Save")[0]?.click();
+    });
+    expect(models.connect.mock.calls[0]?.[0]).toMatchObject({ modelId: "manual-model" });
+    const found = buttons(view.container, "Use a found model")[0];
+    expect(found?.disabled).toBe(false);
+    await act(async () => {
+      found?.click();
+    });
+    expect(select(view.container, "Models from server").value).toBe("model-c");
+    await act(async () => {
+      pending.resolve(compatibleConnection());
+      await pending.promise;
+    });
+    expect(select(view.container, "Models from server").value).toBe("model-c");
+    expect(compatibleKeyField(view.container).value).toBe("draft-secret");
+    expect(models.credentials).toHaveBeenCalledTimes(1);
+    expect(view.container.textContent).not.toContain("Saved.");
+  } finally {
+    await view.unmount();
+  }
+});
+
+it.each(["https://models.example.test/", "https://models.example.test/v1/"])(
+  "keeps unsaved enabled and disabled models when the endpoint changes to alias %s",
+  async (alias) => {
+    useCompatibleConnections();
+    models.probeOpenAiCompatible.mockResolvedValue({ models: ["model-a", "model-b", "model-c"] });
+    const view = await renderSettings();
+    try {
+      await typeInto(compatibleKeyField(view.container), "draft-secret");
+      await act(async () => {
+        buttons(view.container, "Find models")[0]?.click();
+      });
+      const checks = [
+        ...view.container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+      ];
+      await act(async () => {
+        checks[1]?.click();
+        checks[2]?.click();
+      });
+      expect(checks.map((entry) => entry.checked)).toEqual([true, false, true]);
+      await typeInto(field(view.container, "OpenAI-compatible server URL"), alias);
+      expect(compatibleKeyField(view.container).value).toBe("draft-secret");
+      await act(async () => {
+        buttons(view.container, "Save")[0]?.click();
+      });
+      expect(models.connect.mock.calls[0]?.[0]).toMatchObject({
+        baseUrl: alias,
+        modelId: "model-a",
+        enabledModelIds: ["model-c"],
+        apiKey: "draft-secret",
+      });
+    } finally {
+      await view.unmount();
+    }
+  },
+);

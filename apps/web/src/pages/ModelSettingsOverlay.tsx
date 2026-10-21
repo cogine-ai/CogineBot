@@ -410,10 +410,12 @@ export function ModelSettingsOverlay({
 
   function updateBaseUrl(nextBaseUrl: string) {
     selectionRevisionRef.current += 1;
-    if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) setApiKey("");
+    if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) {
+      setApiKey("");
+      // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
+      setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
+    }
     setBaseUrl(nextBaseUrl);
-    // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
-    setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
     setError(null);
@@ -1567,6 +1569,7 @@ export function ModelSettingsOverlay({
                         variant="link"
                         className="mt-2 h-auto px-0 text-[13px] text-muted-foreground underline"
                         onClick={() => {
+                          selectionRevisionRef.current += 1;
                           invalidatePreflight();
                           stageCompatibleModelId(probeModels[0] ?? "");
                         }}

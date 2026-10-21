@@ -57,3 +57,13 @@ describe("Models settings form", () => {
     expect(thinking).toContain("{catalogThinkingValue}");
   });
 });
+
+it("guards the native enabled-model reset with the same canonical-endpoint change as key reset", () => {
+  const update = sliceBetween(screen, "function updateBaseUrl(", "function updateApiKey(");
+  // This is a static native-screen contract; the shared canonical comparison
+  // and draft payload behavior are exercised independently in helper/web tests.
+  expect(update).toMatch(
+    /if \(!sameOpenAiCompatibleBaseUrl\(baseUrl, nextBaseUrl\)\) \{\s*setApiKey\(""\);[\s\S]*setEnabledModelIds\(savedCompatibleModelIds\(credential, nextBaseUrl\)\);\s*\}\s*setBaseUrl\(nextBaseUrl\);/,
+  );
+  expect(update.match(/setEnabledModelIds\(/g)).toHaveLength(1);
+});

@@ -769,6 +769,12 @@ test("keeps enabled models and exact connection bindings across two model server
     await expect(
       page.getByRole("checkbox", { name: "unselected-model", exact: true }),
     ).not.toBeChecked();
+    await page.getByLabel("OpenAI-compatible server URL").fill(`${alpha}/`);
+    await expect(page.getByRole("checkbox", { name: "second-model", exact: true })).toBeChecked();
+    await page.getByRole("button", { name: "Find models", exact: true }).click();
+    await expect(
+      page.getByRole("checkbox", { name: "unselected-model", exact: true }),
+    ).not.toBeChecked();
     await captureScreenshot(page, testInfo, "a1-enabled-models");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved.", { exact: true })).toBeVisible();

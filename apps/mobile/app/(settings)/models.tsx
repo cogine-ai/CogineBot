@@ -584,10 +584,12 @@ export default function Models() {
 
   function updateBaseUrl(nextBaseUrl: string) {
     selectionRevisionRef.current += 1;
-    if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) setApiKey("");
+    if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) {
+      setApiKey("");
+      // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
+      setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
+    }
     setBaseUrl(nextBaseUrl);
-    // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
-    setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
     resetOpenAiCompatibleProbe();
     clearFeedback();
   }
