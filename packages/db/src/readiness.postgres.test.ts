@@ -43,6 +43,11 @@ describePostgres("database readiness (isolated PostgreSQL)", () => {
       await probe.check();
       await probe.check();
       expect(await connections(name)).toBe(1);
+      const backend = await admin.query<{ state: string; xact_start: Date | null }>(
+        "SELECT state, xact_start FROM pg_stat_activity WHERE application_name = $1",
+        [name],
+      );
+      expect(backend.rows).toEqual([{ state: "idle", xact_start: null }]);
       const closing = probe.close();
       expect(probe.close()).toBe(closing);
       await closing;
@@ -96,22 +101,49 @@ describePostgres("database readiness (isolated PostgreSQL)", () => {
   });
 
   it.each(["50", "60000"])(
-    "applies the startup statement timeout after conflicting options=%s",
+    "limits the transaction locally and restores session timeout=%s on the next checkout",
     async (timeout) => {
       const url = taggedUrl(`options-${timeout}`);
       url.searchParams.set("options", `-c search_path=public -c statement_timeout=${timeout}`);
-      // The wire tests assert the factory preserves `options` and sends exactly
-      // this final startup field. Query settings here to verify server precedence.
-      url.searchParams.set("statement_timeout", "1500");
-      const client = new Client({ connectionString: url.toString() });
+      const pool = new Pool({ connectionString: url.toString(), max: 1 });
+      const settings =
+        "SELECT setting::int AS timeout_ms, current_setting('search_path') AS search_path, pg_backend_pid() AS pid FROM pg_settings WHERE name = 'statement_timeout'";
       try {
-        await client.connect();
-        const result = await client.query<{ timeout: string; search_path: string }>(
-          "SELECT current_setting('statement_timeout') AS timeout, current_setting('search_path') AS search_path",
-        );
-        expect(result.rows[0]).toEqual({ timeout: "1500ms", search_path: "public" });
+        const client = await pool.connect();
+        let before: { timeout_ms: number; search_path: string; pid: number };
+        try {
+          const baseline = await client.query<typeof before>(settings);
+          before = baseline.rows[0]!;
+          expect(before.timeout_ms).toBe(Number(timeout));
+          expect(before.search_path).toBe("public");
+          // The wire tests prove the production factory uses one simple-query
+          // packet. Inspect the same SET LOCAL transaction here without adding
+          // an arbitrary-query seam to that factory.
+          const query = {
+            text: `BEGIN; SET LOCAL statement_timeout = 1500; ${settings}; COMMIT`,
+            query_timeout: 1500,
+          };
+          const result: unknown = await client.query(query);
+          expect(result).toMatchObject([
+            { command: "BEGIN" },
+            { command: "SET" },
+            { command: "SELECT", rows: [{ ...before, timeout_ms: 1500 }] },
+            { command: "COMMIT" },
+          ]);
+          expect(client.getTransactionStatus()).toBe("I");
+        } finally {
+          client.release();
+        }
+        const next = await pool.connect();
+        try {
+          const restored = await next.query<typeof before>(settings);
+          expect(restored.rows).toEqual([before]);
+          expect(next.getTransactionStatus()).toBe("I");
+        } finally {
+          next.release();
+        }
       } finally {
-        await client.end();
+        await pool.end();
       }
     },
   );

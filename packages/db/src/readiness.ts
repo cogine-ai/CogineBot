@@ -8,20 +8,11 @@ export interface ReadinessProbe {
 }
 
 export function createReadinessProbe(connectionString: string): ReadinessProbe {
-  // pg lets URL parameters override Pool defaults. Append only this probe's
-  // timeout, retaining SSL, socket, and other connection options verbatim.
-  const fragmentIndex = connectionString.indexOf("#");
-  const address = fragmentIndex < 0 ? connectionString : connectionString.slice(0, fragmentIndex);
-  const fragment = fragmentIndex < 0 ? "" : connectionString.slice(fragmentIndex);
-  const probeConnectionString = connectionString.startsWith("/")
-    ? connectionString
-    : `${address}${address.includes("?") ? "&" : "?"}statement_timeout=${CHECK_TIMEOUT_MS}${fragment}`;
   const pool = new Pool({
-    connectionString: probeConnectionString,
+    connectionString,
     max: 1,
     connectionTimeoutMillis: CHECK_TIMEOUT_MS,
     idleTimeoutMillis: 10_000,
-    statement_timeout: CHECK_TIMEOUT_MS,
     query_timeout: CHECK_TIMEOUT_MS,
     pipeline: false,
   });
@@ -36,7 +27,12 @@ export function createReadinessProbe(connectionString: string): ReadinessProbe {
       const client = await pool.connect();
       let failed = true;
       try {
-        const query = { text: "SELECT 1", query_timeout: CHECK_TIMEOUT_MS };
+        // Transaction-local settings also work through proxies that reject
+        // extra startup parameters. One query deadline covers the whole batch.
+        const query = {
+          text: "BEGIN; SET LOCAL statement_timeout = 1500; SELECT 1; COMMIT",
+          query_timeout: CHECK_TIMEOUT_MS,
+        };
         await client.query(query);
         failed = false;
       } finally {

@@ -11,6 +11,7 @@ import { createReadinessProbe } from "./readiness.js";
 const probes: ReadinessProbe[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
 const directories: string[] = [];
+const READY_QUERY = "BEGIN; SET LOCAL statement_timeout = 1500; SELECT 1; COMMIT";
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -34,7 +35,12 @@ function message(type: string, body: Buffer) {
 
 function success(socket: Socket) {
   socket.write(
-    Buffer.concat([message("C", Buffer.from("SELECT 1\0")), message("Z", Buffer.from("I"))]),
+    Buffer.concat([
+      ...["BEGIN", "SET", "SELECT 1", "COMMIT"].map((command) =>
+        message("C", Buffer.from(`${command}\0`)),
+      ),
+      message("Z", Buffer.from("I")),
+    ]),
   );
 }
 
@@ -45,19 +51,28 @@ async function wireServer(socketPath?: string) {
     socket: Socket;
     startup: Record<string, string>;
     queries: string[];
+    completed: string[];
     closed: boolean;
   }> = [];
-  let startupMode: "ready" | "stall" | "capacity" = "ready";
-  let queryMode: "complete" | "stall" | "disconnect" | "error" = "complete";
+  let startupMode: "ready" | "stall" | "capacity" | "strict" = "ready";
+  let queryMode: "complete" | "stall" | "disconnect" | "error" | "progress" = "complete";
   let maximumOpen = 0;
   let sslRequests = 0;
   const server = createServer((socket) => {
-    const connection = { socket, startup: {}, queries: [] as string[], closed: false };
+    const connection = {
+      socket,
+      startup: {},
+      queries: [] as string[],
+      completed: [] as string[],
+      closed: false,
+    };
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
     connections.push(connection);
     maximumOpen = Math.max(maximumOpen, connections.filter((item) => !item.closed).length);
     socket.on("error", () => undefined);
     socket.on("close", () => {
       connection.closed = true;
+      for (const timer of timers) clearTimeout(timer);
     });
     let bytes = Buffer.alloc(0);
     let started = false;
@@ -82,11 +97,21 @@ async function wireServer(socketPath?: string) {
               .flatMap((value, index) => (index % 2 === 0 ? [[value, fields[index + 1]]] : [])),
           );
           started = true;
-          if (startupMode === "capacity") {
+          const unsupported = Object.keys(connection.startup).find(
+            (key) => !["user", "database", "client_encoding", "application_name"].includes(key),
+          );
+          if (startupMode === "strict" && unsupported) {
+            socket.end(
+              message(
+                "E",
+                Buffer.from(`SFATAL\0C08P01\0Munsupported startup parameter: ${unsupported}\0\0`),
+              ),
+            );
+          } else if (startupMode === "capacity") {
             socket.end(
               message("E", Buffer.from("SFATAL\0C53300\0Msynthetic capacity rejection\0\0")),
             );
-          } else if (startupMode === "ready") {
+          } else if (startupMode === "ready" || startupMode === "strict") {
             socket.write(
               Buffer.concat([message("R", Buffer.alloc(4)), message("Z", Buffer.from("I"))]),
             );
@@ -95,11 +120,21 @@ async function wireServer(socketPath?: string) {
           connection.queries.push(packet.subarray(5, -1).toString());
           if (queryMode === "complete") success(socket);
           else if (queryMode === "disconnect") socket.destroy();
-          else if (queryMode === "error") {
+          else if (queryMode === "progress") {
+            for (const [index, command] of ["BEGIN", "SET", "SELECT 1", "COMMIT"].entries()) {
+              timers.push(
+                setTimeout(() => {
+                  connection.completed.push(command);
+                  socket.write(message("C", Buffer.from(`${command}\0`)));
+                  if (command === "COMMIT") socket.write(message("Z", Buffer.from("I")));
+                }, index * 650),
+              );
+            }
+          } else if (queryMode === "error") {
             socket.write(
               Buffer.concat([
                 message("E", Buffer.from("SERROR\0C57014\0Msynthetic query timeout\0\0")),
-                message("Z", Buffer.from("I")),
+                message("Z", Buffer.from("E")),
               ]),
             );
           }
@@ -141,7 +176,19 @@ async function wireServer(socketPath?: string) {
 }
 
 describe("database readiness resource bounds", () => {
-  it("reuses one connection and preserves startup options while fixing the statement timeout", async () => {
+  it("accepts a strict proxy startup without adding session parameters", async () => {
+    const server = await wireServer();
+    server.setStartupMode("strict");
+    await expect(probe(server.url).check()).resolves.toBeUndefined();
+    expect(server.connections[0]!.startup).toEqual({
+      user: "probe",
+      database: "probe",
+      client_encoding: "UTF8",
+    });
+    expect(server.connections[0]!.queries).toEqual([READY_QUERY]);
+  });
+
+  it("reuses one connection without changing explicit DSN startup options", async () => {
     const server = await wireServer();
     const options = "-c search_path=public -c statement_timeout=60000";
     const check = probe(
@@ -155,10 +202,10 @@ describe("database readiness resource bounds", () => {
       database: "probe",
       application_name: "readiness-test",
       options,
-      statement_timeout: "1500",
+      statement_timeout: "60000",
       client_encoding: "UTF8",
     });
-    expect(server.connections[0]!.queries).toEqual(["SELECT 1", "SELECT 1"]);
+    expect(server.connections[0]!.queries).toEqual([READY_QUERY, READY_QUERY]);
     expect(server.maximumOpen).toBe(1);
     const closing = check.close();
     expect(check.close()).toBe(closing);
@@ -176,49 +223,57 @@ describe("database readiness resource bounds", () => {
     await vi.waitFor(() => expect(server.connections[0]!.closed).toBe(true));
   });
 
-  it("preserves Unix socket host and encoded database options", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "readiness-"));
-    directories.push(directory);
-    const server = await wireServer(join(directory, ".s.PGSQL.5432"));
-    const check = probe(
-      `postgres://probe:synthetic@ignored/socket%20database?host=${encodeURIComponent(directory)}&port=5432&sslmode=disable&statement_timeout=0`,
-    );
-    await check.check();
-    expect(server.connections[0]!.startup).toMatchObject({
-      user: "probe",
-      database: "socket database",
-      statement_timeout: "1500",
-    });
-  });
+  it.skipIf(process.platform === "win32")(
+    "preserves Unix socket host and encoded database options",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "readiness-"));
+      directories.push(directory);
+      const server = await wireServer(join(directory, ".s.PGSQL.5432"));
+      const check = probe(
+        `postgres://probe:synthetic@ignored/socket%20database?host=${encodeURIComponent(directory)}&port=5432&sslmode=disable&statement_timeout=0`,
+      );
+      await check.check();
+      expect(server.connections[0]!.startup).toMatchObject({
+        user: "probe",
+        database: "socket database",
+        statement_timeout: "0",
+      });
+    },
+  );
 
-  it.each(["path", "socket"] as const)("preserves the %s Unix socket DSN form", async (form) => {
-    vi.stubEnv("PGSSLMODE", "disable");
-    vi.stubEnv("PGPORT", "5432");
-    const directory = await mkdtemp(join(tmpdir(), "readiness-"));
-    directories.push(directory);
-    const server = await wireServer(join(directory, ".s.PGSQL.5432"));
-    const url =
-      form === "path"
-        ? `${directory} probe`
-        : `socket:${directory}?db=probe&encoding=UTF8&statement_timeout=0`;
-    await probe(url).check();
-    expect(server.connections[0]!.startup).toMatchObject({
-      database: "probe",
-      statement_timeout: "1500",
-    });
-  });
+  it.skipIf(process.platform === "win32").each(["path", "socket"] as const)(
+    "preserves the %s Unix socket DSN form",
+    async (form) => {
+      vi.stubEnv("PGSSLMODE", "disable");
+      vi.stubEnv("PGPORT", "5432");
+      const directory = await mkdtemp(join(tmpdir(), "readiness-"));
+      directories.push(directory);
+      const server = await wireServer(join(directory, ".s.PGSQL.5432"));
+      const url =
+        form === "path"
+          ? `${directory} probe`
+          : `socket:${directory}?db=probe&encoding=UTF8&statement_timeout=0`;
+      await probe(url).check();
+      expect(server.connections[0]!.startup).toMatchObject({
+        database: "probe",
+      });
+      expect(server.connections[0]!.startup.statement_timeout).toBe(
+        form === "path" ? undefined : "0",
+      );
+    },
+  );
 
-  it("places the timeout before the URL fragment", async () => {
+  it("preserves parameters before a URL fragment", async () => {
     const server = await wireServer();
     await probe(`${server.url}&statement_timeout=0#ignored-fragment`).check();
-    expect(server.connections[0]!.startup.statement_timeout).toBe("1500");
+    expect(server.connections[0]!.startup.statement_timeout).toBe("0");
   });
 
-  it("sets the timeout on a URL without query parameters", async () => {
+  it("adds no startup timeout to a URL without query parameters", async () => {
     vi.stubEnv("PGSSLMODE", "disable");
     const server = await wireServer();
     await probe(server.url.split("?")[0]!).check();
-    expect(server.connections[0]!.startup.statement_timeout).toBe("1500");
+    expect(server.connections[0]!.startup.statement_timeout).toBeUndefined();
   });
 
   it("rejects a refused loopback connection without business connection retries", async () => {
@@ -262,6 +317,19 @@ describe("database readiness resource bounds", () => {
     expect(server.connections).toHaveLength(2);
   });
 
+  it("keeps one deadline for the entire batch despite intermediate command completions", async () => {
+    const server = await wireServer();
+    server.setQueryMode("progress");
+    const started = performance.now();
+    await expect(probe(`${server.url}&query_timeout=60000`).check()).rejects.toThrow(
+      "Query read timeout",
+    );
+    expect(performance.now() - started).toBeLessThan(2500);
+    await vi.waitFor(() => expect(server.connections[0]!.closed).toBe(true));
+    expect(server.connections[0]!.queries).toEqual([READY_QUERY]);
+    expect(server.connections[0]!.completed).toEqual(["BEGIN", "SET", "SELECT 1"]);
+  });
+
   it("removes a timed out pending checkout without opening a second connection", async () => {
     const server = await wireServer();
     server.setStartupMode("stall");
@@ -276,7 +344,7 @@ describe("database readiness resource bounds", () => {
     server.setStartupMode("ready");
     await check.check();
     expect(server.connections).toHaveLength(2);
-    expect(server.connections[1]!.queries).toEqual(["SELECT 1"]);
+    expect(server.connections[1]!.queries).toEqual([READY_QUERY]);
   });
 
   it("does not retry a PostgreSQL capacity rejection", async () => {
@@ -297,7 +365,7 @@ describe("database readiness resource bounds", () => {
     await expect(check.check()).rejects.toMatchObject({ code: "57014" });
     await vi.waitFor(() => expect(server.connections[0]!.closed).toBe(true));
     expect(server.connections).toHaveLength(1);
-    expect(server.connections[0]!.queries).toEqual(["SELECT 1"]);
+    expect(server.connections[0]!.queries).toEqual([READY_QUERY]);
     server.setQueryMode("complete");
     await check.check();
     expect(server.connections).toHaveLength(2);

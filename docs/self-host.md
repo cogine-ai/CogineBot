@@ -520,6 +520,7 @@ process, including while idle; account for it in the database connection budget.
 reachability, not whether the business pool has spare capacity. The readiness HTTP deadline is
 1.5 seconds; connection checkout and query execution have separate 1.5-second limits, so underlying
 work may settle later. Polls share an unfinished probe rather than opening more connections.
+The probe sets a transaction-local statement timeout without adding connection startup parameters.
 Container healthchecks continue to use `/health` for liveness.
 
 Runtime, sandbox, and revision details stay on the API port at `/internal/health`, which the edge does
