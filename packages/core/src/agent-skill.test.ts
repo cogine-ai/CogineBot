@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 import {
   buildSkillMd,
   expandSkillReferencesInPrompt,
@@ -9,6 +10,12 @@ import {
   mergeBuiltinSkills,
   parseSkillMd,
 } from "./agent-skill.js";
+
+function standardFrontmatter(content: string): Record<string, unknown> {
+  const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(content);
+  if (!match) throw new Error("Expected frontmatter fences");
+  return parseYaml(`${match[1]}\n`) as Record<string, unknown>;
+}
 
 describe("built-in skill merging", () => {
   it("uses the same normalized names for catalog precedence and prompt expansion", () => {
@@ -59,6 +66,32 @@ literal: |+
 `;
 
 describe("parseSkillMd", () => {
+  it.each(["|", "|-", "|+", ">", ">-", ">+"])(
+    "uses standard empty block chomping for %s before another field or the closing fence",
+    (indicator) => {
+      for (const trailingNewlines of [0, 1, 2, 3]) {
+        for (const last of [false, true]) {
+          const content = [
+            "---",
+            "name: Empty blocks",
+            "description: Preserve empty block values",
+            `blank: ${indicator}`,
+            ...Array.from({ length: trailingNewlines }, () => "  "),
+            ...(last ? [] : ["other: sentinel"]),
+            "---",
+            "",
+            "# Body",
+          ].join("\n");
+          const expected = indicator.endsWith("+") ? "\n".repeat(trailingNewlines) : "";
+          expect(standardFrontmatter(content).blank).toBe(expected);
+          const parsed = parseSkillMd(content);
+          if ("error" in parsed) throw new Error(parsed.error);
+          expect(parsed.frontmatter.blank).toBe(expected);
+        }
+      }
+    },
+  );
+
   it("parses name, description, body, and extra frontmatter keys", () => {
     const parsed = parseSkillMd(SAMPLE);
     expect("error" in parsed).toBe(false);
@@ -171,6 +204,70 @@ detail: ${detail}---
 });
 
 describe("buildSkillMd", () => {
+  it.each([0, 1, 2, 3])(
+    "exports standards-compatible block values with %i trailing newlines across repeated builds",
+    (trailingNewlines) => {
+      const values = [
+        "\n".repeat(trailingNewlines),
+        `First: preserve this\n\n  indented step\nLast line${"\n".repeat(trailingNewlines)}`,
+        `  first\n\n    second${"\n".repeat(trailingNewlines)}`,
+        `\n\n  first\n    second${"\n".repeat(trailingNewlines)}`,
+      ];
+      for (const last of [false, true]) {
+        const key = last ? "z-value" : "a-value";
+        for (const value of values) {
+          let content = buildSkillMd({
+            name: "Portable recipe",
+            description: "Preserve metadata values",
+            body: "# Body\n",
+            frontmatter: { [key]: value, middle: "sentinel" },
+          });
+          for (let edit = 0; edit < 3; edit += 1) {
+            const standard = standardFrontmatter(content);
+            expect(standard[key]).toBe(value);
+            expect(standard.middle).toBe("sentinel");
+            const parsed = parseSkillMd(content);
+            if ("error" in parsed) throw new Error(parsed.error);
+            expect(parsed.frontmatter).toEqual(standard);
+            expect(parsed.body).toBe("# Body\n");
+            content = buildSkillMd(parsed);
+          }
+        }
+      }
+    },
+  );
+
+  it.each([0, 1, 2, 3])(
+    "preserves multiline metadata with %i trailing newlines across repeated edits",
+    (trailingNewlines) => {
+      const detail = `First: preserve this\n\n  indented step\nLast line${"\n".repeat(trailingNewlines)}`;
+      const input = {
+        name: "Review recipe",
+        description: "Review a change",
+        body: "# Review\n\nKeep the original steps.\n",
+        frontmatter: {
+          detail,
+          indented: `  first\n\n    second${"\n".repeat(trailingNewlines)}`,
+          blank: "\n".repeat(trailingNewlines),
+          other: `Another block\nwith two lines${"\n".repeat(Math.min(trailingNewlines, 2))}`,
+          metadata: { owner: "reviewers", enabled: true, version: 2 },
+        },
+      };
+      let content = buildSkillMd(input);
+      for (let edit = 0; edit < 3; edit += 1) {
+        const parsed = parseSkillMd(content);
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed).toMatchObject({
+          name: input.name,
+          description: input.description,
+          body: input.body,
+          frontmatter: input.frontmatter,
+        });
+        content = buildSkillMd(parsed);
+      }
+    },
+  );
+
   it("round-trips and preserves extra keys", () => {
     const parsed = parseSkillMd(SAMPLE);
     if ("error" in parsed) throw new Error(parsed.error);
