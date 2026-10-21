@@ -8,9 +8,10 @@ import type {
 import Markdown, {
   createMarkdownIt,
   FitImage,
+  renderRules as libraryRenderRules,
   MarkdownStream,
 } from "@ronradtke/react-native-markdown-display";
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { createContext, memo, useCallback, useContext, useMemo, useState } from "react";
 import type {
   NativeScrollEvent,
@@ -50,6 +51,7 @@ import {
 } from "./markdown";
 
 import { useMarkdownLinkAppOrigin, useMarkdownLinkCopy } from "./markdown-link-prompt";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE, isMermaidFence } from "./mermaid";
 
 function keepMarkdownLinkToken(_url: string) {
   return true;
@@ -64,6 +66,8 @@ const WORD_JOINER = "\u2060";
 // around the link.
 const ISOLATE = "\u2068";
 const POP_ISOLATE = "\u2069";
+
+const libraryRules = libraryRenderRules(Text);
 
 // One shared parser: the Markdown components memoize on its identity.
 const markdownParser = createMarkdownIt();
@@ -696,10 +700,46 @@ function listItemRule(
   );
 }
 
+export type MermaidDiagramProps = {
+  source: string;
+  palette: ColorTokens;
+  colorScheme: ResolvedAppearance;
+  fallback: ReactNode;
+};
+
+// A browser engine belongs to the app; hosts without one retain the ordinary code fence.
+export const MermaidDiagramContext = createContext<ComponentType<MermaidDiagramProps> | null>(null);
+
+const DiagramSurfaceContext = createContext<{
+  streaming: boolean;
+  palette: ColorTokens;
+  colorScheme: ResolvedAppearance;
+}>({ streaming: false, palette: darkTokens, colorScheme: "dark" });
+
+function MermaidFence({ source, fallback }: { source: string; fallback: ReactNode }) {
+  const Diagram = useContext(MermaidDiagramContext);
+  const { streaming, palette, colorScheme } = useContext(DiagramSurfaceContext);
+  if (!Diagram || streaming || !source.trim() || source.length > CHAT_DIAGRAM_MAX_TEXT_SIZE) {
+    return fallback;
+  }
+  return (
+    <Diagram source={source} palette={palette} colorScheme={colorScheme} fallback={fallback} />
+  );
+}
+
 // Keep links as Text so they stay inside textgroup; Pressable (a View) is laid out
 // outside the text flow and collapses the bubble height, overlapping later messages.
 const renderRules: RenderRules = {
   list_item: listItemRule,
+  fence: (node, children, parents, styleMap, ...extra) => {
+    const fallback = libraryRules.fence?.(node, children, parents, styleMap, ...extra);
+    if (!isMermaidFence(typeof node.sourceInfo === "string" ? node.sourceInfo : "")) {
+      return fallback;
+    }
+    return (
+      <MermaidFence key={node.key} source={node.content.replace(/\n$/, "")} fallback={fallback} />
+    );
+  },
   textgroup: (node, children, _parent, styleMap) => (
     <Text
       key={node.key}
@@ -1022,6 +1062,10 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 }: ChatMarkdownProps & { palette?: ColorTokens; colorScheme?: ResolvedAppearance }) {
   const openLink = useNativeLinkConfirm();
   const styles = useMemo(() => markdownStyles(palette), [palette]);
+  const diagramSurface = useMemo(
+    () => ({ streaming, palette, colorScheme }),
+    [streaming, palette, colorScheme],
+  );
   const sharedProps = {
     colorScheme,
     markdownit: markdownParser,
@@ -1037,13 +1081,15 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     <OpenLinkContext.Provider value={openLink}>
       <View style={layout.wrap}>
         <LinkFaviconsPausedContext.Provider value={streaming}>
-          {streaming ? (
-            <MarkdownStream {...sharedProps} cursorColor={palette.mutedForeground} streaming>
-              {children}
-            </MarkdownStream>
-          ) : (
-            <Markdown {...sharedProps}>{children}</Markdown>
-          )}
+          <DiagramSurfaceContext.Provider value={diagramSurface}>
+            {streaming ? (
+              <MarkdownStream {...sharedProps} cursorColor={palette.mutedForeground} streaming>
+                {children}
+              </MarkdownStream>
+            ) : (
+              <Markdown {...sharedProps}>{children}</Markdown>
+            )}
+          </DiagramSurfaceContext.Provider>
         </LinkFaviconsPausedContext.Provider>
       </View>
     </OpenLinkContext.Provider>

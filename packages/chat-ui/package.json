@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     "./native": "./src/markdown.native.tsx",
-    "./web": "./src/markdown.web.tsx"
+    "./web": "./src/markdown.web.tsx",
+    "./mermaid": "./src/mermaid.ts"
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
@@ -17,6 +18,7 @@
     "@rakazo/ui-web": "workspace:*",
     "@ronradtke/react-native-markdown-display": "9.0.3",
     "linkify-it": "5.0.2",
+    "mermaid": "11.17.2",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1"
   },

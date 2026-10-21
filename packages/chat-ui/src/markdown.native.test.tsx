@@ -158,20 +158,103 @@ import { darkTokens, lightTokens } from "@rakazo/ui-tokens";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { Pressable } from "react-native";
-import type { LinkFavicons } from "./markdown.native";
+import type { LinkFavicons, MermaidDiagramProps } from "./markdown.native";
 import {
   ChatMarkdown,
   LinkFaviconsContext,
   LinkifiedText,
   MarkdownLinkPromptProvider,
+  MermaidDiagramContext,
   RemoteImagesContext,
   RemoteMarkdownImage,
 } from "./markdown.native";
+import { CHAT_DIAGRAM_MAX_TEXT_SIZE } from "./mermaid";
 
 const THREE_COLUMN_TABLE = `| Name | Status | Detail |
 | --- | --- | --- |
 | Alice | done | [docs](https://docs.example.test) |
 | Bob | queued | A longer note that wraps inside the cell |`;
+
+describe("native markdown diagrams", () => {
+  const source = "graph TD; A-->B";
+  const fence = `\`\`\`Mermaid title="Example"\n${source}\n\`\`\``;
+
+  it("keeps the original code fence when no renderer is provided", () => {
+    const html = renderToStaticMarkup(<ChatMarkdown>{fence}</ChatMarkdown>);
+    expect(html).toContain(source.replaceAll(">", "&gt;"));
+    expect(html).not.toContain("diagram-renderer");
+  });
+
+  it("passes exact source and appearance to the app renderer while preserving fallback", () => {
+    const received: MermaidDiagramProps[] = [];
+    function Diagram(props: MermaidDiagramProps) {
+      received.push(props);
+      return <div data-testid="diagram-renderer">{props.fallback}</div>;
+    }
+    const html = renderToStaticMarkup(
+      <MermaidDiagramContext.Provider value={Diagram}>
+        <ChatMarkdown palette={lightTokens} colorScheme="light">
+          {fence}
+        </ChatMarkdown>
+      </MermaidDiagramContext.Provider>,
+    );
+    expect(html).toContain('data-testid="diagram-renderer"');
+    expect(html).toContain(source.replaceAll(">", "&gt;"));
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ source, palette: lightTokens, colorScheme: "light" });
+  });
+
+  it("does not draw streaming, empty or ordinary code fences", () => {
+    const renderDiagram = vi.fn(({ fallback }: MermaidDiagramProps) => fallback);
+    for (const [markdown, streaming] of [
+      [fence, true],
+      ["```mermaid\n \n```", false],
+      ["```typescript\nconst answer = 42;\n```", false],
+    ] as const) {
+      renderToStaticMarkup(
+        <MermaidDiagramContext.Provider value={renderDiagram}>
+          <ChatMarkdown streaming={streaming}>{markdown}</ChatMarkdown>
+        </MermaidDiagramContext.Provider>,
+      );
+    }
+    expect(renderDiagram).not.toHaveBeenCalled();
+  });
+
+  it("keeps oversized diagrams as code before mounting a renderer and allows the exact limit", () => {
+    const renderDiagram = vi.fn((_props: MermaidDiagramProps) => (
+      <div data-testid="diagram-renderer" />
+    ));
+    const render = (content: string) =>
+      renderToStaticMarkup(
+        <MermaidDiagramContext.Provider value={renderDiagram}>
+          <ChatMarkdown>{`\`\`\`mermaid\n${content}\n\`\`\``}</ChatMarkdown>
+        </MermaidDiagramContext.Provider>,
+      );
+    const atLimit = source.padEnd(CHAT_DIAGRAM_MAX_TEXT_SIZE, " ");
+    const oversized = `${atLimit}x`;
+    const html = render(oversized);
+    expect(renderDiagram).not.toHaveBeenCalled();
+    expect(html).toContain(source.replaceAll(">", "&gt;"));
+    expect(html).not.toContain('data-testid="diagram-renderer"');
+    expect(render(atLimit)).toContain('data-testid="diagram-renderer"');
+    expect(renderDiagram).toHaveBeenCalledTimes(1);
+    expect(renderDiagram.mock.calls[0]?.[0]).toMatchObject({ source: atLimit });
+  });
+
+  it("renders list, quote and tilde Mermaid fences through the same context", () => {
+    const renderDiagram = vi.fn(() => <div data-testid="diagram-renderer" />);
+    const markdown = [
+      `> ~~~mermaid\n> ${source}\n> ~~~`,
+      `- Example\n\n  \`\`\`mermaid\n  ${source}\n  \`\`\``,
+    ].join("\n\n");
+    renderToStaticMarkup(
+      <MermaidDiagramContext.Provider value={renderDiagram}>
+        <ChatMarkdown>{markdown}</ChatMarkdown>
+      </MermaidDiagramContext.Provider>,
+    );
+    expect(renderDiagram).toHaveBeenCalledTimes(2);
+  });
+});
 
 const SIX_COLUMN_TABLE = `| A | B | C | D | E | F |
 | --- | --- | --- | --- | --- | --- |
