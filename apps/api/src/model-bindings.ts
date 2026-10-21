@@ -16,7 +16,13 @@ import { findBoundModelCredential } from "@rakazo/db";
 type BindingClient = Pick<PrismaClient, "userModelCredential" | "secret">;
 type ReferenceClient = Pick<
   PrismaClient,
-  "bot" | "routine" | "run" | "spaceBackupModel" | "spaceModelPreference" | "userModelCredential"
+  | "bot"
+  | "routine"
+  | "run"
+  | "steeringMessage"
+  | "spaceBackupModel"
+  | "spaceModelPreference"
+  | "userModelCredential"
 >;
 
 export type ModelBindingInput = {
@@ -130,7 +136,7 @@ export async function validateModelBinding(
 }
 
 export type ModelConnectionReference = {
-  kind: "bot" | "routine" | "backup" | "space-default" | "run";
+  kind: "bot" | "routine" | "backup" | "space-default" | "run" | "steering";
   id: string;
   name: string;
   spaceId: string;
@@ -153,7 +159,7 @@ export async function listModelConnectionReferences(
     modelId: { not: null },
     ...(credentialId ? { modelCredentialId: credentialId } : {}),
   };
-  const [bots, routines, backups, preferences, runs, credentials] = await Promise.all([
+  const [bots, routines, backups, preferences, runs, steering, credentials] = await Promise.all([
     prisma.bot.findMany({ where, select: { ...pin, id: true, name: true, modelProvider: true } }),
     prisma.routine.findMany({
       where,
@@ -171,6 +177,24 @@ export async function listModelConnectionReferences(
       where: { ...where, status: { in: [...ACTIVE_RUN_STATUSES] } },
       select: { ...pin, id: true, modelProvider: true, bot: { select: { name: true } } },
     }),
+    prisma.steeringMessage.findMany({
+      where: {
+        userId,
+        modelProvider: { not: null },
+        modelId: { not: null },
+        ...(credentialId ? { modelCredentialId: credentialId } : {}),
+        // Claimed context can be released after recovery until the run finishes.
+        OR: [{ runId: null }, { run: { status: { in: [...ACTIVE_RUN_STATUSES] } } }],
+      },
+      select: {
+        id: true,
+        modelProvider: true,
+        modelId: true,
+        modelCredentialId: true,
+        bot: { select: { name: true } },
+        message: { select: { thread: { select: { spaceId: true } } } },
+      },
+    }),
     prisma.userModelCredential.findMany({
       where: { userId },
       select: { id: true, provider: true },
@@ -180,7 +204,7 @@ export async function listModelConnectionReferences(
   const bound = (id: string | null, provider: string) =>
     Boolean(id && providers.get(id) === provider);
   const named = (
-    kind: "bot" | "routine" | "run",
+    kind: "bot" | "routine" | "run" | "steering",
     row: {
       id: string;
       spaceId: string;
@@ -223,6 +247,9 @@ export async function listModelConnectionReferences(
       unresolved: !providers.has(row.credentialId),
     })),
     ...runs.map((row) => named("run", row, row.bot.name)),
+    ...steering.map((row) =>
+      named("steering", { ...row, spaceId: row.message.thread.spaceId }, row.bot.name),
+    ),
   ];
 }
 

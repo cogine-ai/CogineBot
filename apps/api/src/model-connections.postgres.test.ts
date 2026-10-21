@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { EncryptedSecretStore, parseModelSecret } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { createDb } from "@rakazo/db";
+import { claimSteering, createDb, finalizeRun, sendUserMessage } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { discardBotIntroFromCreate } from "../../../packages/testkit/src/discard-bot-intro.js";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
@@ -308,6 +308,18 @@ describePostgres("model connection HTTP acceptance", () => {
       },
     );
     expect(routine).toMatchObject({ modelCredentialId: credential.id, modelId: "second-model" });
+    const testRun = await rpc<{ runId: string }>(cookie, "routines/testRun", {
+      routineId: routine.id,
+    });
+    expect(
+      await handles.prisma.run.findUniqueOrThrow({ where: { id: testRun.runId } }),
+    ).toMatchObject({
+      modelProvider: provider,
+      modelId: "second-model",
+      modelCredentialId: credential.id,
+      modelPinned: true,
+    });
+    await handles.awaitIdle?.();
     for (const botId of [target.id, clone.id])
       await rpc(cookie, "bots/update", {
         botId,
@@ -389,6 +401,187 @@ describePostgres("model connection HTTP acceptance", () => {
       expectedRevision: 1,
     });
   });
+
+  it.each(["consume", "cancel"] as const)(
+    "protects a deferred model after Routine rebinding until steering is %s",
+    async (outcome) => {
+      const { cookie, actor } = await account();
+      const oldConnection = await rpc<ModelCredential>(cookie, "models/connect", input());
+      const replacement = await rpc<ModelCredential>(
+        cookie,
+        "models/connect",
+        input({ label: "Replacement" }),
+      );
+      const target = await bot(cookie);
+      const routine = await rpc<{ id: string }>(cookie, "routines/create", {
+        botId: target.id,
+        name: "Deferred model",
+        prompt: "Synthetic deferred delivery",
+        crons: ["0 9 * * 1"],
+        timezone: "UTC",
+        notify: false,
+        active: false,
+        ...binding(oldConnection, "second-model"),
+      });
+      const thread = await handles.prisma.thread.findUniqueOrThrow({ where: { botId: target.id } });
+      const task = await handles.prisma.task.create({
+        data: {
+          ...actor,
+          botId: target.id,
+          threadId: thread.id,
+          prompt: "Synthetic busy turn",
+          status: "running",
+        },
+      });
+      const busy = await handles.prisma.run.create({
+        data: {
+          ...actor,
+          botId: target.id,
+          threadId: thread.id,
+          taskId: task.id,
+          status: "running",
+          trigger: "created",
+          modelProvider: provider,
+          modelId: "same-model",
+          modelCredentialId: replacement.id,
+          modelPinned: true,
+          leaseOwner: "steering-fixture",
+          leaseFence: 1,
+          startedAt: new Date(),
+        },
+      });
+      const attempt = await handles.prisma.attempt.create({
+        data: { runId: busy.id, fence: 1, status: "running" },
+      });
+      const sent = await sendUserMessage(handles.prisma, {
+        ...actor,
+        threadId: thread.id,
+        botId: target.id,
+        blocks: [{ kind: "text", text: "Synthetic deferred delivery" }],
+        prompt: "Synthetic deferred delivery",
+        trigger: "webhook",
+        modelPin: {
+          modelProvider: provider,
+          modelId: "second-model",
+          modelCredentialId: oldConnection.id,
+          thinkingLevel: null,
+        },
+      });
+      const steering = await handles.prisma.steeringMessage.findFirstOrThrow({
+        where: { messageId: sent.messageId },
+      });
+      expect(steering).toMatchObject({
+        modelCredentialId: oldConnection.id,
+        runId: null,
+        claimedAt: null,
+      });
+      await rpc(cookie, "routines/update", { routineId: routine.id, ...binding(replacement) });
+      const references = () =>
+        rpc<{ references: Array<{ kind: string; id: string; spaceId: string }> }>(
+          cookie,
+          "models/references",
+          { credentialId: oldConnection.id },
+        );
+      const assertProtected = async () => {
+        const refs = await references();
+        expect(refs.references).toEqual([
+          expect.objectContaining({ kind: "steering", id: steering.id, spaceId: actor.spaceId }),
+        ]);
+        const shrink = await raw(
+          cookie,
+          "models/connect",
+          edit(oldConnection, { enabledModelIds: ["same-model"] }),
+        );
+        expect(shrink.status).toBe(400);
+        expect(await shrink.text()).toContain("Bound bot");
+        expect(
+          (
+            await raw(cookie, "models/disconnect", {
+              provider,
+              credentialId: oldConnection.id,
+              expectedRevision: 1,
+            })
+          ).status,
+        ).toBe(400);
+      };
+      await assertProtected();
+      // Failed finalization can release a row without clearing its previous claim stamp.
+      await handles.prisma.steeringMessage.update({
+        where: { id: steering.id },
+        data: { claimedAt: new Date() },
+      });
+      await assertProtected();
+      await handles.prisma.steeringMessage.update({
+        where: { id: steering.id },
+        data: { claimedAt: null },
+      });
+      if (outcome === "consume") {
+        await handles.prisma.run.update({ where: { id: busy.id }, data: { trigger: "user" } });
+        expect(
+          await claimSteering(handles.prisma, {
+            threadId: thread.id,
+            botId: target.id,
+            runId: busy.id,
+            leaseOwner: "steering-fixture",
+            leaseFence: 1,
+            seenIds: [],
+          }),
+        ).toEqual([expect.objectContaining({ id: steering.id, messageId: sent.messageId })]);
+        expect(
+          await handles.prisma.steeringMessage.findUniqueOrThrow({ where: { id: steering.id } }),
+        ).toMatchObject({ runId: busy.id, claimedAt: expect.any(Date) });
+        await assertProtected();
+        expect(
+          await finalizeRun(handles.prisma, {
+            ...actor,
+            botId: target.id,
+            threadId: thread.id,
+            runId: busy.id,
+            taskId: task.id,
+            attemptId: attempt.id,
+            leaseOwner: "steering-fixture",
+            leaseFence: 1,
+            outcome: "completed",
+            blocks: [],
+          }),
+        ).toEqual({ continuationRunId: null });
+        expect(
+          await handles.prisma.steeringMessage.findUnique({ where: { id: steering.id } }),
+        ).toBeNull();
+        expect((await references()).references).toEqual([]);
+        // Retained terminal history is no longer an execution dependency.
+        await handles.prisma.steeringMessage.create({
+          data: {
+            messageId: sent.messageId,
+            botId: target.id,
+            userId: actor.userId,
+            runId: busy.id,
+            claimedAt: new Date(),
+            modelProvider: provider,
+            modelId: "second-model",
+            modelCredentialId: oldConnection.id,
+          },
+        });
+        expect((await references()).references).toEqual([]);
+      } else {
+        await rpc(cookie, "threads/stop", { botId: target.id });
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { messageId: sent.messageId } }),
+        ).toBe(0);
+        expect((await references()).references).toEqual([]);
+      }
+      const shrunk = await rpc<ModelCredential>(
+        cookie,
+        "models/connect",
+        edit(oldConnection, { enabledModelIds: ["same-model"] }),
+      );
+      await rpc(cookie, "models/disconnect", {
+        provider,
+        credentialId: oldConnection.id,
+        expectedRevision: shrunk.connectionRevision,
+      });
+    },
+  );
 
   it("protects another Space's active default and never copies a key to an edited address", async () => {
     const { cookie, actor } = await account();

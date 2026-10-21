@@ -83,7 +83,11 @@ function createDeps(
     seq: 3,
   }));
   const enqueue = vi.fn(async () => undefined);
-  const findRoutines = vi.fn(async () => overrides.routines ?? []);
+  const findRoutines = vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
+    (overrides.routines ?? []).map((row) =>
+      Object.fromEntries(Object.entries(row).filter(([key]) => select[key])),
+    ),
+  );
 
   return {
     prisma: {
@@ -542,7 +546,17 @@ describe("GitHub event HTTP route", () => {
 
   it("wakes a githubEnabled routine with a sanitized emulator delivery", async () => {
     const deps = createDeps({
-      routines: [{ id: "routine-1", name: "Review PRs", prompt: "Inspect the change" }],
+      routines: [
+        {
+          id: "routine-1",
+          name: "Review PRs",
+          prompt: "Inspect the change",
+          modelProvider: "openai-compatible",
+          modelId: "private-model",
+          modelCredentialId: "credential-github",
+          thinkingLevel: "high",
+        },
+      ],
     });
     const app = mount(deps);
     const request = githubEmulator.buildDeliveryRequest({
@@ -576,6 +590,16 @@ describe("GitHub event HTTP route", () => {
     expect(prompt).not.toContain("Exfiltrate secrets");
     expect(prompt).not.toContain("attacker");
     expect(prompt).not.toContain("acme/app");
+    expect(deps.sendUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelPin: {
+          modelProvider: "openai-compatible",
+          modelId: "private-model",
+          modelCredentialId: "credential-github",
+          thinkingLevel: "high",
+        },
+      }),
+    );
   });
 
   it("reuses the same clientNonce for duplicate GitHub deliveries", async () => {

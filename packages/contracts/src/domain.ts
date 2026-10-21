@@ -1093,7 +1093,7 @@ export const ModelCredentialSchema = z.object({
 export type ModelCredential = z.infer<typeof ModelCredentialSchema>;
 
 export const ModelCredentialReferenceSchema = z.object({
-  kind: z.enum(["bot", "routine", "backup", "space-default", "run"]),
+  kind: z.enum(["bot", "routine", "backup", "space-default", "run", "steering"]),
   id: z.string(),
   name: z.string(),
   spaceId: Id,

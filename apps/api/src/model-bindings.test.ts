@@ -192,6 +192,7 @@ describe("model reference ownership and visibility", () => {
         bot,
         routine,
         run,
+        steeringMessage: { findMany: vi.fn().mockResolvedValue([]) },
         spaceModelPreference,
         spaceBackupModel: { findMany: vi.fn().mockResolvedValue([]) },
         userModelCredential: { findMany: vi.fn().mockResolvedValue([]) },
@@ -214,26 +215,94 @@ describe("model reference ownership and visibility", () => {
       expect.objectContaining({ where: { userId: "owner", isDefault: true } }),
     );
   });
-  it("blocks former-Space references without disclosing their names", async () => {
-    const prisma = {
-      spaceMember: { findMany: vi.fn().mockResolvedValue([{ spaceId: "current" }]) },
-    } as unknown as PrismaClient;
-    await expect(
-      refuseAccountModelReferences(prisma, "owner", [
+  it("queries pending or active-run steering by owned connection and resolves its thread Space", async () => {
+    const steeringMessage = {
+      findMany: vi.fn().mockResolvedValue([
         {
-          kind: "bot",
-          id: "hidden",
-          name: "Private name",
-          spaceId: "former",
-          provider: "openai-compatible",
+          id: "pending",
+          modelProvider: "openai-compatible",
           modelId: "same",
           modelCredentialId: "connection",
-          unresolved: false,
+          bot: { name: "Deferred bot" },
+          message: { thread: { spaceId: "deferred-space" } },
+        },
+        {
+          id: "legacy-pending",
+          modelProvider: "openai-compatible",
+          modelId: "same",
+          modelCredentialId: null,
+          bot: { name: "Legacy bot" },
+          message: { thread: { spaceId: "deferred-space" } },
         },
       ]),
-    ).rejects.toMatchObject({
-      code: "BAD_REQUEST",
-      message: "In use by Models in another space. Pick another model for them first.",
-    });
+    };
+    const empty = () => ({ findMany: vi.fn().mockResolvedValue([]) });
+    const prisma = {
+      steeringMessage,
+      bot: empty(),
+      routine: empty(),
+      run: empty(),
+      spaceBackupModel: empty(),
+      spaceModelPreference: empty(),
+      userModelCredential: {
+        findMany: vi.fn().mockResolvedValue([{ id: "connection", provider: "openai-compatible" }]),
+      },
+    } as unknown as PrismaClient;
+    expect(await listModelConnectionReferences(prisma, "owner", "connection")).toEqual([
+      expect.objectContaining({
+        kind: "steering",
+        id: "pending",
+        name: "Deferred bot",
+        spaceId: "deferred-space",
+        modelCredentialId: "connection",
+        unresolved: false,
+      }),
+      expect.objectContaining({ kind: "steering", id: "legacy-pending", unresolved: true }),
+    ]);
+    expect(steeringMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: "owner",
+          modelProvider: { not: null },
+          modelId: { not: null },
+          modelCredentialId: "connection",
+          OR: [
+            { runId: null },
+            {
+              run: {
+                status: {
+                  in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"],
+                },
+              },
+            },
+          ],
+        },
+      }),
+    );
   });
+  it.each(["bot", "steering"] as const)(
+    "blocks former-Space %s references without disclosing their names",
+    async (kind) => {
+      const prisma = {
+        spaceMember: { findMany: vi.fn().mockResolvedValue([{ spaceId: "current" }]) },
+      } as unknown as PrismaClient;
+      await expect(
+        refuseAccountModelReferences(prisma, "owner", [
+          {
+            kind,
+            id: "hidden",
+            name: "Private name",
+            spaceId: "former",
+            provider: "openai-compatible",
+            modelId: "same",
+            modelCredentialId: "connection",
+            unresolved: false,
+          },
+        ]),
+      ).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: "In use by Models in another space. Pick another model for them first.",
+      });
+    },
+  );
 });

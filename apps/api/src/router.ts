@@ -3777,7 +3777,12 @@ export function createRouter(deps: RouterDeps) {
             });
             const currentModel = await tx.routine.findUnique({
               where: { id: routine.id },
-              select: { modelProvider: true, modelId: true, thinkingLevel: true },
+              select: {
+                modelProvider: true,
+                modelId: true,
+                modelCredentialId: true,
+                thinkingLevel: true,
+              },
             });
             if (!currentModel) throw new IsolationError();
             return tx.run.create({

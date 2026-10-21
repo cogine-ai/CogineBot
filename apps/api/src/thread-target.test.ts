@@ -229,8 +229,9 @@ describe("threadSnapshot", () => {
       taskId: "task-1",
       status: "running",
       trigger: "user",
-      modelProvider: null,
-      modelId: null,
+      modelProvider: "openai-compatible",
+      modelId: "same-model",
+      modelCredentialId: "selected-connection",
       error: null,
       startedAt: null,
       completedAt: null,
@@ -269,6 +270,11 @@ describe("threadSnapshot", () => {
 
     const snapshot = await threadSnapshot({ prisma }, target);
 
+    expect(snapshot.run).toMatchObject({
+      modelProvider: "openai-compatible",
+      modelId: "same-model",
+      modelCredentialId: "selected-connection",
+    });
     expect(tx.$queryRaw).toHaveBeenCalledOnce();
     expect(findManyEvents).toHaveBeenCalledWith(
       expect.objectContaining({

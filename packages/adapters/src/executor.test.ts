@@ -1604,7 +1604,9 @@ describe("createRunExecutor", () => {
           callback({
             routine: {
               updateMany: vi.fn(async () => ({ count: 1 })),
-              findUnique: vi.fn(async () => claimedModel),
+              findUnique: vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
+                Object.fromEntries(Object.entries(claimedModel).filter(([key]) => select[key])),
+              ),
             },
             task: { create: taskCreate },
             run: { create: runCreate },

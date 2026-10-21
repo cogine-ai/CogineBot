@@ -10,6 +10,7 @@ import {
 import type { Actor, AiConsentQuery, AiConsentStatus, AiRecipient } from "@rakazo/contracts";
 import { AI_DISCLOSURE_VERSION, AI_PRIVACY_URL } from "@rakazo/contracts";
 import {
+  findBoundModelCredential,
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   findModelCredential,
@@ -63,7 +64,12 @@ export async function aiConsentStatus(
             archivedAt: null,
             ...(botIds ? { id: { in: botIds } } : {}),
           },
-          select: { modelProvider: true, modelId: true, thinkingLevel: true },
+          select: {
+            modelProvider: true,
+            modelId: true,
+            modelCredentialId: true,
+            thinkingLevel: true,
+          },
         })
       : [],
     // An active routine with its own model is another recipient for this bot.
@@ -80,7 +86,12 @@ export async function aiConsentStatus(
             ...(botIds ? { botId: { in: botIds } } : {}),
             OR: query.routineId ? [{ active: true }, { id: query.routineId }] : [{ active: true }],
           },
-          select: { modelProvider: true, modelId: true, thinkingLevel: true },
+          select: {
+            modelProvider: true,
+            modelId: true,
+            modelCredentialId: true,
+            thinkingLevel: true,
+          },
         })
       : [],
     uses.includes("voice")
@@ -115,12 +126,11 @@ export async function aiConsentStatus(
       (target ? [...bots, ...routines] : [null, ...bots, ...routines]).map(async (override) => {
         const overrideCredential =
           override?.modelProvider && override.modelId
-            ? await findModelCredential(
-                deps.prisma,
-                actor,
-                override.modelProvider,
-                override.modelId,
-              )
+            ? await findBoundModelCredential(deps.prisma, actor, {
+                provider: override.modelProvider,
+                modelId: override.modelId,
+                modelCredentialId: override.modelCredentialId ?? null,
+              })
             : null;
         return selectConfiguredModel({
           override,
@@ -146,12 +156,11 @@ export async function aiConsentStatus(
       });
     const backupModels = await Promise.all(
       backups.map(async (backup) => {
-        const credential = await findModelCredential(
-          deps.prisma,
-          actor,
-          backup.provider,
-          backup.modelId,
-        );
+        const credential = await findBoundModelCredential(deps.prisma, actor, {
+          provider: backup.provider,
+          modelId: backup.modelId,
+          modelCredentialId: backup.modelCredentialId,
+        });
         return credential
           ? { provider: backup.provider, id: backup.modelId, credential, thinkingLevel: null }
           : null;
