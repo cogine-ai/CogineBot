@@ -14,7 +14,7 @@
     "@rakazo/core": "workspace:*",
     "@rakazo/logging": "workspace:*",
     "dockerode": "5.0.1",
-    "hono": "4.13.7",
+    "hono": "4.13.11",
     "tsx": "4.23.13",
     "zod": "4.6.2"
   },
