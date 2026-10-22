@@ -4462,6 +4462,10 @@ msgstr "S'exécute lorsque ce bot reçoit un message vérifié de ce fournisseur
 msgid "Save"
 msgstr "Enregistrer"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Save other settings"
+msgstr "Enregistrer les autres paramètres"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Save application"
 msgstr ""

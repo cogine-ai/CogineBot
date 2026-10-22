@@ -4462,6 +4462,10 @@ msgstr "Запускается, когда этот бот получает пр
 msgid "Save"
 msgstr "Сохранить"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Save other settings"
+msgstr "Сохранить другие настройки"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Save application"
 msgstr ""

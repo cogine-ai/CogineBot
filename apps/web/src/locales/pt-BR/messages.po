@@ -4462,6 +4462,10 @@ msgstr ""
 msgid "Save"
 msgstr "Salvar"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Save other settings"
+msgstr "Salvar outras configurações"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Save application"
 msgstr ""

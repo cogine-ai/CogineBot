@@ -4462,6 +4462,10 @@ msgstr "Runs when this bot receives a verified message from this provider."
 msgid "Save"
 msgstr "Save"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Save other settings"
+msgstr "Save other settings"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Save application"
 msgstr "Save application"

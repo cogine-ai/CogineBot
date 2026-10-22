@@ -870,8 +870,63 @@ test("keeps enabled models and exact connection bindings across two model server
       (element as HTMLDetailsElement).open = true;
     });
     await expect(model).toHaveValue(binding);
+    const conflictedBinding = JSON.stringify(["openai-compatible", "second-model", first?.id]);
+    await model.selectOption(conflictedBinding);
+    await rpc(page, "models/connect", {
+      provider: "openai-compatible",
+      credentialId: first!.id,
+      expectedRevision: first!.connectionRevision,
+      baseUrl: alpha,
+      modelId: "shared-model",
+      enabledModelIds: ["shared-model", "second-model"],
+    });
+    const conflict = page.waitForResponse(
+      (response) => response.url().includes("/rpc/bots/update") && response.status() === 409,
+    );
+    await settings.getByRole("button", { name: "Save", exact: true }).click();
+    await conflict;
+    const saveOther = settings.getByRole("button", { name: "Save other settings", exact: true });
+    await expect(saveOther).toBeEnabled();
+    await expect(
+      settings.getByRole("button", { name: "Use updated connection", exact: true }),
+    ).toBeEnabled();
+    const readAloud = settings.getByRole("switch", { name: "Read replies aloud", exact: true });
+    const originalReadAloud = await readAloud.isChecked();
+    await readAloud.click();
+    await saveOther.scrollIntoViewIfNeeded();
+    await captureScreenshot(page, testInfo, "a1-conflict-other-settings");
+    const otherSave = page.waitForResponse(
+      (response) => response.url().includes("/rpc/bots/update") && response.ok(),
+    );
+    await saveOther.click();
+    const otherResponse = await otherSave;
+    const otherPatch = otherResponse.request().postDataJSON().json;
+    for (const key of [
+      "modelProvider",
+      "modelId",
+      "modelCredentialId",
+      "expectedRevision",
+      "thinkingLevel",
+    ])
+      expect(otherPatch).not.toHaveProperty(key);
+    expect(otherPatch.autoSpeak).toBe(!originalReadAloud);
+    expect(await rpc(page, "bots/get", { botId })).toMatchObject({
+      modelId: "second-model",
+      modelCredentialId: second!.id,
+      autoSpeak: !originalReadAloud,
+    });
+    await expect(model).toHaveValue(conflictedBinding);
+    await expect(saveOther).toBeEnabled();
     await expect(page.locator("vite-error-overlay")).toHaveCount(0);
-    expect(errors, "no browser errors during model configuration and reload").toEqual([]);
+    const expectedConflictError =
+      "console.error: Failed to load resource: the server responded with a status of 409 (Conflict)";
+    expect(errors.filter((error) => error === expectedConflictError)).toHaveLength(
+      errors.includes(expectedConflictError) ? 1 : 0,
+    );
+    expect(
+      errors.filter((error) => error !== expectedConflictError),
+      "no unexpected browser errors during model configuration, conflict recovery and reload",
+    ).toEqual([]);
   } finally {
     try {
       const title = await page.title().catch(() => "Page unavailable during cleanup");
