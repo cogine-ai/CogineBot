@@ -31,6 +31,9 @@ function home() {
   const live = {
     api: "https://api.example.test",
     generation: 1,
+    apiGeneration: 1,
+    spaceGeneration: 1,
+    selectionSeq: 0,
     selection: "space-1" as string | null,
   };
   const me = { userId: "user-1", spaceId: "space-1", name: "Owner" };
@@ -53,8 +56,37 @@ function home() {
   );
   const setBots = vi.fn();
   const setError = vi.fn();
+  const captureMobileScope = () => ({
+    apiBase: live.api,
+    apiGeneration: live.apiGeneration,
+    sessionGeneration: live.generation,
+    spaceId: live.selection,
+    spaceGeneration: live.spaceGeneration,
+    selectionSeq: live.selectionSeq,
+  });
+  const isMobileSessionCurrent = (owner: ReturnType<typeof captureMobileScope>) =>
+    owner.apiBase === live.api &&
+    owner.apiGeneration === live.apiGeneration &&
+    owner.sessionGeneration === live.generation;
+  const isMobileScopeCurrent = (owner: ReturnType<typeof captureMobileScope>) =>
+    isMobileSessionCurrent(owner) &&
+    owner.spaceId === live.selection &&
+    owner.spaceGeneration === live.spaceGeneration &&
+    owner.selectionSeq === live.selectionSeq;
   const scope = {
     useCallback: (fn: unknown) => fn,
+    captureMobileScope,
+    isMobileScopeCurrent,
+    isMobileSessionCurrent,
+    mounted: { current: true },
+    bootstrap: { current: null },
+    verifiedInbox: {
+      current: { scope: captureMobileScope(), me, rawInbox: navigation, publicationRevision: 0 },
+    },
+    publicationRevision: { current: 0 },
+    setSearchInbox: vi.fn(),
+    notificationRevision: { current: 0 },
+    showNotificationPermission: vi.fn(),
     spaceActionRef: { current: { busy: false, recoveryId: null } },
     organizationBusyRef,
     inboxRequestId,
@@ -64,7 +96,11 @@ function home() {
     setError,
     rpc,
     selectInitialSpace: vi.fn(async (id: string) => {
-      live.selection ??= id;
+      if (!live.selection) {
+        live.selectionSeq++;
+        live.selection = id;
+        live.spaceGeneration++;
+      }
       return true;
     }),
     retainInboxValue: (_current: unknown, next: unknown) => next,
@@ -122,8 +158,12 @@ function home() {
     loadSessionToken: vi.fn<() => Promise<string | null>>(async () => {
       throw new Error("Notification refresh failed");
     }),
-    resumeLiveNotifications: vi.fn(async () => undefined),
-    dismissThreadNotifications: vi.fn(async () => undefined),
+    spaceRequestContext: vi.fn(async () => ({
+      apiBase: live.api,
+      sessionGeneration: live.generation,
+      headers: { authorization: "Bearer fake-notify-owner", "x-rakazo-space-id": live.selection },
+    })),
+    afterChatNotifyChange: vi.fn(async () => null),
   };
   const handleSectionAction = callback("handleSectionAction", "renderItem", actions);
   const handleChatAction = callback("handleChatAction", "handleSectionAction", actions);
@@ -131,6 +171,54 @@ function home() {
 }
 
 describe("confirmed mobile organization recovery", () => {
+  it.each(["apiGeneration", "spaceGeneration", "selectionSeq"] as const)(
+    "drops a roster response after the %s changes even when IDs match",
+    async (field) => {
+      const state = home();
+      const read = deferred<typeof state.navigation>();
+      state.rpc.mockImplementationOnce(() => read.promise);
+      const loading = state.loadBots();
+      state.live[field]++;
+      read.resolve(state.navigation);
+      await loading;
+      expect(state.setBots).not.toHaveBeenCalled();
+      expect(state.setSearchInbox).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an organization action retained from a prior same-ID selection", async () => {
+    const state = home();
+    state.live.spaceGeneration++;
+    const request = vi.fn(async () => ({}));
+    await expect(
+      state.saveOrganization(state.organizationScope, state.me.spaceId, request, vi.fn()),
+    ).rejects.toThrow("Could not update chat");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a default selection claimed by a later same-ID attempt", async () => {
+    const state = home();
+    state.live.selection = null;
+    state.selectInitialSpace.mockImplementationOnce(async (id) => {
+      state.live.selection = id;
+      state.live.spaceGeneration += 2;
+      state.live.selectionSeq += 2;
+      return true;
+    });
+    await state.loadBots();
+    expect(state.setBots).not.toHaveBeenCalled();
+    expect(state.setSearchInbox).not.toHaveBeenCalled();
+  });
+
+  it("publishes the verified unfiltered roster even when UI objects are retained", async () => {
+    const state = home();
+    await state.loadBots();
+    expect(state.setSearchInbox).toHaveBeenCalledExactlyOnceWith(
+      state.captureMobileScope(),
+      state.navigation.spaces,
+    );
+  });
+
   it("applies a confirmed deletion once even when the following list refresh fails", async () => {
     const state = home();
     state.rpc.mockRejectedValue(new Error("Offline"));
@@ -230,13 +318,21 @@ describe("confirmed mobile organization recovery", () => {
       updatedAt: "confirmed",
     });
     expect(state.reportOrganizationError).not.toHaveBeenCalled();
-    expect(state.loadSessionToken).toHaveBeenCalledOnce();
+    expect(state.spaceRequestContext).toHaveBeenCalledOnce();
+    expect(state.afterChatNotifyChange).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        botId: "a",
+        notifyOnFinish: false,
+        token: "fake-notify-owner",
+        spaceId: state.me.spaceId,
+      }),
+    );
   });
 
   it("keeps notification maintenance in the busy phase after applying the confirmed preference", async () => {
     const state = home();
-    const token = deferred<string | null>();
-    state.loadSessionToken.mockReturnValueOnce(token.promise);
+    const follow = deferred<null>();
+    state.afterChatNotifyChange.mockReturnValueOnce(follow.promise);
     const chat = {
       id: "a",
       sectionId: null,
@@ -252,14 +348,14 @@ describe("confirmed mobile organization recovery", () => {
       throw new Error("Offline");
     });
     state.handleChatAction("bot", chat, "notifications");
-    await vi.waitFor(() => expect(state.loadSessionToken).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(state.afterChatNotifyChange).toHaveBeenCalledOnce());
     expect(state.inboxState.current.bots[0]?.notifyOnFinish).toBe(false);
     expect(state.organizationBusyRef.current).toBe(true);
     await state.loadBots();
     expect(state.rpc).toHaveBeenCalledOnce();
-    token.resolve("fake-token");
+    follow.resolve(null);
     await state.trackedSave.mock.results[0]!.value;
-    expect(state.resumeLiveNotifications).toHaveBeenCalledOnce();
+    expect(state.afterChatNotifyChange).toHaveBeenCalledOnce();
     expect(state.organizationBusyRef.current).toBe(false);
   });
 

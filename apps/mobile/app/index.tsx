@@ -1,11 +1,5 @@
 import { MenuView } from "@expo/ui/community/menu";
-import type {
-  RemovedBotSection,
-  RunActivityRow,
-  SearchHit,
-  SpaceBot,
-  SpaceGroup,
-} from "@rakazo/contracts";
+import type { RemovedBotSection, RunActivityRow, SpaceBot, SpaceGroup } from "@rakazo/contracts";
 import { normalizeCreateBotProfile } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import { botColors } from "@rakazo/ui-tokens";
@@ -30,10 +24,8 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
-import { KeyboardController } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BotAvatar } from "../components/bot-avatar";
 import { GroupAvatar } from "../components/group-avatar";
@@ -49,6 +41,7 @@ import {
 } from "../lib/activity";
 import { loadActivityMode, saveActivityMode } from "../lib/activity-mode";
 import type {
+  ApiRequestContext,
   MobileBot,
   MobileBotSection,
   MobileGroup,
@@ -68,7 +61,7 @@ import { mobileTokens, resolveMobileAppearance } from "../lib/appearance";
 import { mobileBotAvatarPresentation } from "../lib/bot-avatar";
 import { allowFocusPrompt, scheduleFocusPrompt } from "../lib/focus-prompt";
 import { t, useI18n } from "../lib/i18n";
-import { botTag, filterBots, formatThreadTime, userInitials } from "../lib/inbox";
+import { botTag, formatThreadTime, userInitials } from "../lib/inbox";
 import type { InboxOrganizationChange, InboxOrganizationState } from "../lib/inbox-organization";
 import {
   chatOrganizationActions,
@@ -86,25 +79,36 @@ import {
   selectInboxSpace,
   spaceInboxItems,
 } from "../lib/inbox-spaces";
-import { dismissThreadNotifications, resumeLiveNotifications } from "../lib/live-notifications";
+import type { ChatNotifyPermissionStatus } from "../lib/live-notifications";
+import {
+  afterChatNotifyChange,
+  openLiveNotificationSettings,
+  readChatNotificationPermission,
+} from "../lib/live-notifications";
+import type { MobileScope } from "../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  isMobileSessionCurrent,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
 import { native, useThemedStyles } from "../lib/native";
 import { iosAtLeast } from "../lib/native-controls";
 import { previewSnippet } from "../lib/preview";
 import { registerPushToken } from "../lib/push";
-import { loadSavedInbox, saveInbox } from "../lib/saved-chats";
-import { querySpaceSearch } from "../lib/search";
-import { mobileSearchDestination } from "../lib/search-destination";
-import { dedupeSearchHits, searchHitListKey, searchHitRowPreview } from "../lib/search-list";
+import { readSavedInbox, savedChatsScope, saveInbox } from "../lib/saved-chats";
+import { setSearchInbox } from "../lib/search-inbox";
 import {
   currentReadySessionGeneration,
   currentSessionGeneration,
   subscribeSessionGeneration,
 } from "../lib/session";
+import { spaceRequestContext } from "../lib/space-request-context";
 import { errorText } from "../lib/user-error";
 
 const FALLBACK_COLOR = botColors[3];
 
-type InboxItem = InboxSpaceItem | { type: "search"; hit: SearchHit };
+type InboxItem = InboxSpaceItem;
 type SectionPrompt = {
   scope: string;
   spaceId: string;
@@ -163,16 +167,13 @@ function Home() {
   const [ready, setReady] = useState(false);
   const [hasSession, setHasSession] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
-  const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
   const [sectionPrompt, setSectionPrompt] = useState<SectionPrompt | null>(null);
   const [deletedSection, setDeletedSection] = useState<{
     scope: string;
     spaceId: string;
     snapshot: RemovedBotSection;
   } | null>(null);
+  const notificationRevision = useRef(0);
   const organizationBusyRef = useRef(false);
   const [organizationBusy, setOrganizationBusy] = useState(false);
   const [organizationNotice, setOrganizationNotice] = useState<string | null>(null);
@@ -196,7 +197,25 @@ function Home() {
   });
   const activityRequestId = useRef(0);
   const inboxRequestId = useRef(0);
-  const inboxLoaded = useRef(false);
+  const mounted = useRef(true);
+  const bootstrap = useRef<{ scope: MobileScope; target: string } | null>(null);
+  const publicationRevision = useRef(0);
+  const verifiedInbox = useRef<{
+    scope: MobileScope;
+    me: Pick<MobileMe, "userId" | "spaceId" | "name">;
+    rawInbox: {
+      current: Pick<InboxOrganizationState, "bots" | "groups" | "botSections"> & { id: string };
+      spaces: MobileSpace[];
+    };
+    publicationRevision: number;
+  } | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      inboxRequestId.current++;
+    };
+  }, []);
   const creatingBotRef = useRef(false);
   const spaceActionRef = useRef<{ busy: boolean; recoveryId: string | null }>({
     busy: false,
@@ -253,14 +272,9 @@ function Home() {
     )
       return;
     const requestId = ++inboxRequestId.current;
-    const apiBase = currentApiBase();
-    const generation = currentSessionGeneration();
-    let requestSpaceId = selectedSpaceId();
+    let owner = captureMobileScope();
     const current = () =>
-      requestId === inboxRequestId.current &&
-      generation === currentSessionGeneration() &&
-      apiBase === currentApiBase() &&
-      requestSpaceId === selectedSpaceId();
+      mounted.current && requestId === inboxRequestId.current && isMobileScopeCurrent(owner);
     setError(null);
     try {
       const [navigation, nextMe] = await Promise.all([
@@ -270,14 +284,43 @@ function Home() {
       if (
         !current() ||
         navigation.current.id !== nextMe.spaceId ||
-        (requestSpaceId !== null && requestSpaceId !== nextMe.spaceId)
+        (owner.spaceId !== null && owner.spaceId !== nextMe.spaceId)
       )
         return;
-      if (!(await selectInitialSpace(nextMe.spaceId))) {
-        throw new Error(t("Could not save the default space"));
+      if (owner.spaceId === null) {
+        const start = owner;
+        const operationCurrent = () =>
+          mounted.current && requestId === inboxRequestId.current && isMobileSessionCurrent(start);
+        bootstrap.current = { scope: start, target: nextMe.spaceId };
+        let selected: boolean;
+        try {
+          selected = await selectInitialSpace(nextMe.spaceId, { isCurrent: operationCurrent });
+        } finally {
+          bootstrap.current = null;
+        }
+        const claimed = captureMobileScope();
+        if (!selected && operationCurrent() && claimed.selectionSeq === start.selectionSeq + 1) {
+          setError(t("Could not save the default space"));
+          return;
+        }
+        if (
+          !selected ||
+          !operationCurrent() ||
+          claimed.spaceId !== nextMe.spaceId ||
+          claimed.selectionSeq !== start.selectionSeq + 1 ||
+          claimed.spaceGeneration !== start.spaceGeneration + 1
+        )
+          return;
+        owner = claimed;
       }
-      requestSpaceId ??= nextMe.spaceId;
       if (!current()) return;
+      verifiedInbox.current = {
+        scope: owner,
+        me: nextMe,
+        rawInbox: navigation,
+        publicationRevision: ++publicationRevision.current,
+      };
+      setSearchInbox(owner, navigation.spaces);
       inboxState.current = {
         spaceId: nextMe.spaceId,
         bots: navigation.current.bots,
@@ -290,17 +333,17 @@ function Home() {
       setGroups((current) => retainInboxValue(current, navigation.current.groups));
       setSpaces((current) => retainInboxValue(current, navigation.spaces));
       setMe((current) => retainInboxValue(current, nextMe));
-      inboxLoaded.current = true;
       saveInbox(
         {
-          apiBase,
+          apiBase: owner.apiBase,
           userId: nextMe.userId,
           spaceId: navigation.current.id,
-          sessionGeneration: generation,
-          selectionId: selectedSpaceId(),
+          sessionGeneration: owner.sessionGeneration,
+          selectionId: owner.spaceId,
         },
         navigation,
         nextMe,
+        current,
       );
     } catch (err) {
       if (!current()) return;
@@ -329,12 +372,77 @@ function Home() {
     void registerPushToken().catch(() => undefined);
   }, [hasSession]);
 
-  // Show the inbox saved on this device until the first live load replaces it.
   useEffect(() => {
     if (!hasSession) return;
     let cancelled = false;
-    void loadSavedInbox().then((saved) => {
-      if (cancelled || !saved || inboxLoaded.current) return;
+    let refreshQueued = false;
+    const refresh = () => {
+      const own = bootstrap.current;
+      const now = captureMobileScope();
+      if (
+        own &&
+        isMobileSessionCurrent(own.scope) &&
+        now.selectionSeq === own.scope.selectionSeq + 1 &&
+        ((now.spaceId === null &&
+          (now.spaceGeneration === own.scope.spaceGeneration ||
+            now.spaceGeneration === own.scope.spaceGeneration + 2)) ||
+          (now.spaceId === own.target && now.spaceGeneration === own.scope.spaceGeneration + 1))
+      )
+        return;
+      if (refreshQueued) return;
+      refreshQueued = true;
+      queueMicrotask(() => {
+        refreshQueued = false;
+        if (!cancelled) void loadBots();
+      });
+    };
+    const unsubscribe = subscribeMobileScope(refresh);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [hasSession, loadBots]);
+
+  // A cache keeps its verified owner; a late read cannot replace a live publication.
+  useEffect(() => {
+    if (!hasSession) return;
+    let cancelled = false;
+    const load = async () => {
+      const owner = captureMobileScope();
+      const revision = publicationRevision.current;
+      if (verifiedInbox.current && isMobileScopeCurrent(verifiedInbox.current.scope)) return;
+      const cacheScope = await savedChatsScope();
+      if (
+        cancelled ||
+        !mounted.current ||
+        !cacheScope ||
+        !isMobileScopeCurrent(owner) ||
+        revision !== publicationRevision.current
+      )
+        return;
+      const saved = readSavedInbox(cacheScope);
+      if (
+        !saved ||
+        saved.me.userId !== cacheScope.userId ||
+        saved.me.spaceId !== cacheScope.spaceId
+      )
+        return;
+      const rawInbox = {
+        current: {
+          id: saved.me.spaceId,
+          bots: saved.bots,
+          groups: saved.groups,
+          botSections: saved.botSections,
+        },
+        spaces: saved.spaces,
+      };
+      verifiedInbox.current = {
+        scope: owner,
+        me: saved.me,
+        rawInbox,
+        publicationRevision: ++publicationRevision.current,
+      };
+      setSearchInbox(owner, saved.spaces);
       inboxState.current = {
         spaceId: saved.me.spaceId,
         bots: saved.bots,
@@ -347,9 +455,14 @@ function Home() {
       setGroups(saved.groups);
       setSpaces(saved.spaces);
       setMe(saved.me);
+    };
+    void load();
+    const unsubscribe = subscribeMobileScope(() => {
+      void load();
     });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [hasSession]);
 
@@ -372,7 +485,7 @@ function Home() {
 
   const loadActivity = useCallback(async () => {
     if (spaceActionRef.current.busy || spaceActionRef.current.recoveryId) return;
-    if (!hasSession || !activityMode || searching || query.trim()) {
+    if (!hasSession || !activityMode) {
       activityRequestId.current += 1;
       setActivity({ active: [], recent: [] });
       return;
@@ -386,11 +499,11 @@ function Home() {
       // Keep the last good snapshot on transient RPC failures; only drop stale responses.
       if (requestId !== activityRequestId.current) return;
     }
-  }, [activityMode, hasSession, query, searching]);
+  }, [activityMode, hasSession]);
 
   useFocusEffect(
     useCallback(() => {
-      if (!hasSession || !activityMode || searching || query.trim()) return;
+      if (!hasSession || !activityMode) return;
       let cancelled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -407,63 +520,13 @@ function Home() {
         activityRequestId.current += 1;
         if (timer !== undefined) clearTimeout(timer);
       };
-    }, [activityMode, hasSession, loadActivity, query, searching]),
+    }, [activityMode, hasSession, loadActivity]),
   );
 
-  useEffect(() => {
-    const trimmed = query.trim();
-    if (!searching || !trimmed) {
-      setSearchHits([]);
-      setSearchLoading(false);
-      return;
-    }
-    const abort = new AbortController();
-    const timer = setTimeout(() => {
-      setSearchLoading(true);
-      void querySpaceSearch(trimmed)
-        .then((hits) => {
-          if (!abort.signal.aborted) setSearchHits(hits);
-        })
-        .catch(() => {
-          if (!abort.signal.aborted) setSearchHits([]);
-        })
-        .finally(() => {
-          if (!abort.signal.aborted) setSearchLoading(false);
-        });
-    }, 200);
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-    };
-  }, [query, searching]);
-
-  const visible = useMemo(() => filterBots(bots, query), [bots, query]);
-  const visibleGroups = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return groups;
-    return groups.filter((group) =>
-      `${group.name} ${group.preview}`.toLowerCase().includes(needle),
-    );
-  }, [groups, query]);
   const listData = useMemo((): InboxItem[] => {
-    if (query.trim() && searching) {
-      return dedupeSearchHits(searchHits).map((hit) => ({ type: "search" as const, hit }));
-    }
     const sidebarSpaces =
       spaces.length > 0
-        ? spaces.map((space) =>
-            space.id === me?.spaceId
-              ? { ...space, bots: visible, groups: visibleGroups, botSections }
-              : {
-                  ...space,
-                  bots: filterBots(space.bots, query),
-                  groups: space.groups.filter((group) =>
-                    `${group.name} ${group.preview}`
-                      .toLowerCase()
-                      .includes(query.trim().toLowerCase()),
-                  ),
-                },
-          )
+        ? spaces
         : me
           ? [
               {
@@ -471,30 +534,22 @@ function Home() {
                 name: t("Personal"),
                 isDefault: true,
                 hasContent: true,
-                bots: visible,
-                groups: visibleGroups,
+                bots,
+                groups,
                 botSections,
               },
             ]
           : [];
-    return spaceInboxItems(
-      sidebarSpaces,
-      collapsedRosterParents,
-      collapsedSidebarSections,
-      !!query.trim(),
-    );
+    return spaceInboxItems(sidebarSpaces, collapsedRosterParents, collapsedSidebarSections, false);
   }, [
+    bots,
+    groups,
     botSections,
+    spaces,
+    me,
     collapsedRosterParents,
     collapsedSidebarSections,
     locale,
-    me,
-    spaces,
-    query,
-    searching,
-    searchHits,
-    visible,
-    visibleGroups,
   ]);
   const initials = userInitials(me?.name ?? "");
   const insets = useSafeAreaInsets();
@@ -667,6 +722,13 @@ function Home() {
         },
         {
           type: "button" as const,
+          accessibilityLabel: t("Search"),
+          identifier: "home-search-button",
+          icon: { type: "sfSymbol" as const, name: "magnifyingglass" },
+          onPress: () => router.push("/search"),
+        },
+        {
+          type: "button" as const,
           accessibilityLabel: t("Artifacts"),
           icon: { type: "sfSymbol" as const, name: "square.stack.3d.up" },
           onPress: () => router.push("/artifacts"),
@@ -699,18 +761,6 @@ function Home() {
           },
         },
       ],
-      headerSearchBarOptions: {
-        placeholder: t("Search"),
-        hideWhenScrolling: false,
-        autoCapitalize: "none",
-        onFocus: () => setSearching(true),
-        onChangeText: (event: { nativeEvent: { text: string } }) =>
-          setQuery(event.nativeEvent.text),
-        onCancelButtonPress: () => {
-          setSearching(false);
-          setQuery("");
-        },
-      },
     });
   }, [
     nativeHeader,
@@ -726,15 +776,6 @@ function Home() {
     locale,
   ]);
 
-  const openSearchHit = useCallback(
-    (hit: SearchHit) => {
-      setQuery("");
-      setSearchHits([]);
-      // Wait for the search keyboard to close before sizing the destination composer.
-      void KeyboardController.dismiss().then(() => router.push(mobileSearchDestination(hit)));
-    },
-    [router],
-  );
   const openBot = useCallback(
     (bot: MobileBot | SpaceBot) => {
       if (
@@ -765,32 +806,41 @@ function Home() {
   );
   const applyOrganization = useCallback(
     (change: InboxOrganizationChange) => {
-      if (!me) return;
+      const verified = verifiedInbox.current;
+      if (!me || !verified || !isMobileScopeCurrent(verified.scope)) return;
       const next = reconcileInboxOrganization(inboxState.current, change);
+      const rawInbox = {
+        ...verified.rawInbox,
+        current: {
+          ...verified.rawInbox.current,
+          bots: next.bots,
+          groups: next.groups,
+          botSections: next.botSections,
+        },
+        spaces: next.spaces,
+      };
+      verifiedInbox.current = {
+        ...verified,
+        rawInbox,
+        publicationRevision: ++publicationRevision.current,
+      };
       inboxState.current = next;
-      inboxLoaded.current = true;
       setBots(next.bots);
       setGroups(next.groups);
       setBotSections(next.botSections);
       setSpaces(next.spaces);
+      setSearchInbox(verified.scope, next.spaces);
       saveInbox(
         {
-          apiBase: currentApiBase(),
-          userId: me.userId,
-          spaceId: me.spaceId,
-          sessionGeneration: currentSessionGeneration(),
-          selectionId: selectedSpaceId(),
+          apiBase: verified.scope.apiBase,
+          userId: verified.me.userId,
+          spaceId: verified.me.spaceId,
+          sessionGeneration: verified.scope.sessionGeneration,
+          selectionId: verified.scope.spaceId,
         },
-        {
-          current: {
-            id: me.spaceId,
-            bots: next.bots,
-            groups: next.groups,
-            botSections: next.botSections,
-          },
-          spaces: next.spaces,
-        },
-        me,
+        rawInbox,
+        verified.me,
+        () => mounted.current && isMobileScopeCurrent(verified.scope),
       );
     },
     [me],
@@ -802,7 +852,12 @@ function Home() {
       request: () => Promise<T>,
       confirmed: (result: T) => void | Promise<void>,
     ) => {
+      const owner = captureMobileScope();
       const current = () =>
+        mounted.current &&
+        isMobileScopeCurrent(owner) &&
+        !!verifiedInbox.current &&
+        isMobileScopeCurrent(verifiedInbox.current.scope) &&
         organizationScopeRef.current === scope &&
         scope ===
           `${currentApiBase()}:${currentSessionGeneration()}:${me?.userId}:${me?.spaceId}` &&
@@ -836,6 +891,51 @@ function Home() {
   const reportOrganizationError = useCallback(
     (cause: unknown) => {
       Alert.alert(t("Could not update chat"), errorText(cause, t("Try again.")));
+    },
+    [t],
+  );
+  const showNotificationPermission = useCallback(
+    (status: ChatNotifyPermissionStatus | null, isCurrent: () => boolean) => {
+      if (!isCurrent() || status === null || status === "allowed") return;
+      if (status === "denied") {
+        Alert.alert(t("Notifications"), t("Notifications are blocked in system settings."), [
+          { text: t("Cancel"), style: "cancel" },
+          {
+            text: t("Settings"),
+            onPress: () => {
+              void openLiveNotificationSettings(isCurrent).catch(() => undefined);
+            },
+          },
+        ]);
+      } else {
+        Alert.alert(t("Notifications"), t("Could not check notification permission."), [
+          { text: t("Cancel"), style: "cancel" },
+          {
+            text: t("Retry"),
+            onPress: () => {
+              if (!isCurrent()) return;
+              void readChatNotificationPermission(isCurrent).then((next) => {
+                if (!isCurrent() || next === null || next === "allowed") return;
+                if (next === "denied")
+                  Alert.alert(
+                    t("Notifications"),
+                    t("Notifications are blocked in system settings."),
+                    [
+                      { text: t("Cancel"), style: "cancel" },
+                      {
+                        text: t("Settings"),
+                        onPress: () => {
+                          void openLiveNotificationSettings(isCurrent).catch(() => undefined);
+                        },
+                      },
+                    ],
+                  );
+                else Alert.alert(t("Notifications"), t("Could not check notification permission."));
+              });
+            },
+          },
+        ]);
+      }
     },
     [t],
   );
@@ -887,11 +987,27 @@ function Home() {
                 }
               : null;
       if (!update) return;
+      const owner = captureMobileScope();
+      const revision =
+        "notifyOnFinish" in update ? ++notificationRevision.current : notificationRevision.current;
+      const isCurrent = () =>
+        mounted.current && isMobileScopeCurrent(owner) && revision === notificationRevision.current;
+      let requestContext: ApiRequestContext | undefined;
       void saveOrganization(
         organizationScope,
         spaceId,
-        () =>
-          rpc<MobileBot | MobileGroup>(`${kind}s/update`, { [`${kind}Id`]: chat.id, ...update }),
+        async () => {
+          if ("notifyOnFinish" in update) {
+            requestContext = await spaceRequestContext(owner, isCurrent);
+            if (!isCurrent() || requestContext.headers["x-rakazo-space-id"] !== spaceId)
+              throw new Error(t("Could not update chat"));
+          }
+          return rpc<MobileBot | MobileGroup>(
+            `${kind}s/update`,
+            { [`${kind}Id`]: chat.id, ...update },
+            requestContext ? { requestContext } : {},
+          );
+        },
         async (updated) => {
           applyOrganization({
             type: "chat",
@@ -908,28 +1024,35 @@ function Home() {
           });
           if (chat.pinned && !updated.pinned && "sectionId" in update)
             setOrganizationNotice(t("Unpinned"));
-          if (kind === "bot" && "notifyOnFinish" in update) {
-            const apiBase = currentApiBase(),
-              generation = currentSessionGeneration();
+          if (kind === "bot" && "notifyOnFinish" in update && requestContext) {
+            // The shared preference is already committed; device maintenance cannot undo it.
             try {
-              const token = await loadSessionToken();
-              if (
-                apiBase !== currentApiBase() ||
-                generation !== currentSessionGeneration() ||
-                selectedSpaceId() !== spaceId
-              )
-                return;
-              await resumeLiveNotifications(apiBase, token, spaceId).catch(() => undefined);
-              if ("notifyOnFinish" in updated && !updated.notifyOnFinish && "threadId" in chat)
-                await dismissThreadNotifications({ threadId: chat.threadId });
+              const status = await afterChatNotifyChange({
+                botId: chat.id,
+                threadId: "threadId" in chat ? chat.threadId : undefined,
+                notifyOnFinish: "notifyOnFinish" in updated && updated.notifyOnFinish,
+                apiBase: requestContext.apiBase,
+                token: requestContext.headers.authorization?.replace(/^Bearer /, "") ?? "",
+                spaceId,
+                isCurrent,
+              });
+              showNotificationPermission(status, isCurrent);
             } catch {
-              // The preference was saved even if native notification maintenance fails.
+              /* Keep the confirmed preference when the device is unavailable. */
             }
           }
         },
       ).catch(reportOrganizationError);
     },
-    [applyOrganization, me, organizationScope, reportOrganizationError, saveOrganization, t],
+    [
+      applyOrganization,
+      me,
+      organizationScope,
+      reportOrganizationError,
+      saveOrganization,
+      showNotificationPermission,
+      t,
+    ],
   );
   const handleSectionAction = useCallback(
     (section: MobileBotSection, action: string) => {
@@ -976,9 +1099,7 @@ function Home() {
 
   const renderItem = useCallback(
     ({ item }: { item: InboxItem }) =>
-      item.type === "search" ? (
-        <SearchRow hit={item.hit} onPress={openSearchHit} />
-      ) : item.type === "heading" ? (
+      item.type === "heading" ? (
         item.space ? (
           <InboxContextMenu
             enabled={canDeleteInboxSpace(item.space)}
@@ -1025,7 +1146,6 @@ function Home() {
               accessibilityRole="button"
               accessibilityLabel={item.collapsed ? `${item.title}, ${item.count}` : item.title}
               accessibilityState={{ expanded: !item.collapsed }}
-              disabled={!!query.trim()}
               onPress={() => toggleSidebarSection(item.key)}
               style={({ pressed }) => [styles.sectionToggle, pressed && styles.rowPressed]}
             >
@@ -1071,10 +1191,8 @@ function Home() {
       day,
       me?.spaceId,
       organizationBusy,
-      query,
       openBot,
       openGroup,
-      openSearchHit,
       handleChatAction,
       handleSectionAction,
       spaceBusy,
@@ -1120,13 +1238,8 @@ function Home() {
             </HeaderButton>
             <HeaderButton
               accessibilityLabel={t("Search")}
-              active={searching}
-              onPress={() =>
-                setSearching((open) => {
-                  if (open) setQuery("");
-                  return !open;
-                })
-              }
+              onPress={() => router.push("/search")}
+              testID="home-search-button"
             >
               <NativeSymbol ios="magnifyingglass" android="search" size={17} />
             </HeaderButton>
@@ -1169,16 +1282,12 @@ function Home() {
           if (item.type === "heading") return `heading-${item.key}`;
           if (item.type === "bot") return item.bot.id;
           if (item.type === "group") return `group-${item.group.id}`;
-          return searchHitListKey(item.hit);
+          return "";
         }}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         indicatorStyle={appearance === "dark" ? "white" : "black"}
-        contentContainerStyle={[
-          styles.list,
-          // iOS moves the active search bar to the bottom and removes the navigation inset.
-          nativeHeader && searching ? { paddingTop: insets.top + 12 } : undefined,
-        ]}
+        contentContainerStyle={styles.list}
         contentInsetAdjustmentBehavior="automatic"
         refreshControl={
           <RefreshControl
@@ -1194,22 +1303,6 @@ function Home() {
         }
         ListHeaderComponent={
           <>
-            {searching && !nativeHeader ? (
-              <TextInput
-                autoFocus
-                value={query}
-                onChangeText={setQuery}
-                placeholder={t("Search")}
-                placeholderTextColor={tokens.mutedForeground}
-                autoCorrect={false}
-                autoCapitalize="none"
-                returnKeyType="search"
-                keyboardAppearance={appearance}
-                clearButtonMode="while-editing"
-                style={styles.searchField}
-              />
-            ) : null}
-
             {error ? <Text style={styles.error}>{error}</Text> : null}
             {spaceRecoveryId ? (
               <Pressable
@@ -1221,29 +1314,13 @@ function Home() {
                 <Text style={styles.spaceTitle}>{t("Try again.")}</Text>
               </Pressable>
             ) : null}
-            {activityMode &&
-            !searching &&
-            !query.trim() &&
-            (activity.active.length > 0 || activity.recent.length > 0) ? (
+            {activityMode && (activity.active.length > 0 || activity.recent.length > 0) ? (
               <ActivitySection activity={activity} bots={bots} />
             ) : null}
           </>
         }
         ListEmptyComponent={
-          <Text style={styles.empty}>
-            {query.trim() && searching
-              ? searchLoading
-                ? t("Searching…")
-                : t("No results")
-              : query.trim()
-                ? t("No matching bots")
-                : searching
-                  ? t("Search conversations, files, and routines")
-                  : // Before any load (an offline launch with nothing saved) the bots are unknown.
-                    me
-                    ? t("Tap + to create a bot")
-                    : null}
-          </Text>
+          <Text style={styles.empty}>{me ? t("Tap + to create a bot") : null}</Text>
         }
         ListFooterComponent={
           inboxNeedsCreateHint(listData) ? (
@@ -1523,12 +1600,14 @@ function HeaderButton({
   children,
   onPress,
   accessibilityLabel,
+  testID,
   active = false,
   accent = false,
 }: {
   children: ReactNode;
   onPress: () => void;
   accessibilityLabel: string;
+  testID?: string;
   active?: boolean;
   accent?: boolean;
 }) {
@@ -1537,6 +1616,7 @@ function HeaderButton({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      testID={testID}
       accessibilityState={{ selected: active }}
       onPress={onPress}
       hitSlop={4}
@@ -1551,34 +1631,6 @@ function HeaderButton({
     </Pressable>
   );
 }
-
-const SearchRow = memo(function SearchRow({
-  hit,
-  onPress,
-}: {
-  hit: SearchHit;
-  onPress: (hit: SearchHit) => void;
-}) {
-  const styles = useThemedStyles(createHomeStyles);
-  return (
-    <Pressable
-      onPress={() => onPress(hit)}
-      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-    >
-      <View style={styles.rowBody}>
-        <View style={styles.rowTop}>
-          <Text style={styles.name} numberOfLines={1}>
-            {hit.title}
-          </Text>
-          <Text style={styles.time}>{hit.kind}</Text>
-        </View>
-        <Text style={styles.preview} numberOfLines={2}>
-          {searchHitRowPreview(hit)}
-        </Text>
-      </View>
-    </Pressable>
-  );
-});
 
 const BotRow = memo(function BotRow({
   bot,
@@ -1735,19 +1787,7 @@ function createHomeStyles() {
       fontSize: 15,
       fontWeight: "600",
     },
-    searchField: {
-      marginHorizontal: 16,
-      marginBottom: 8,
-      minHeight: 44,
-      paddingVertical: 10,
-      textAlignVertical: "center",
-      borderRadius: 10,
-      backgroundColor: native.fill,
-      color: native.label,
-      paddingHorizontal: 12,
-      fontSize: 17,
-      writingDirection: "auto",
-    },
+
     error: {
       color: native.secondaryLabel,
       paddingHorizontal: 20,

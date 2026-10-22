@@ -181,6 +181,16 @@ export default function Layout() {
                   }}
                 >
                   <Stack.Screen name="index" options={{ headerShown: false, title: "CogineBot" }} />
+                  <Stack.Screen
+                    name="search"
+                    options={{
+                      headerShown: false,
+                      presentation: Platform.OS === "ios" ? "formSheet" : "card",
+                      sheetAllowedDetents: [1],
+                      sheetGrabberVisible: false,
+                      sheetExpandsWhenScrolledToEdge: false,
+                    }}
+                  />
                   <Stack.Screen name="sign-in" options={{ headerShown: false }} />
                   <Stack.Screen
                     name="(settings)"
@@ -241,6 +251,7 @@ export default function Layout() {
                     name="bot-settings"
                     options={glassHeaderOptions(t("Chat settings"))}
                   />
+                  <Stack.Screen name="bot-profile" options={glassHeaderOptions(t("Profile"))} />
                   <Stack.Screen name="thread" options={{ title: t("Thread") }} />
                   <Stack.Screen name="routine" options={glassHeaderOptions(t("Routine"))} />
                   <Stack.Screen name="computer" options={{ title: t("Computer") }} />

@@ -12,6 +12,7 @@ import {
   blockText,
   captureApiRequestContext,
   changePassword,
+  clearSpace,
   currentApiBase,
   currentSpaceSelectionGeneration,
   deleteAccount,
@@ -1969,6 +1970,236 @@ describe("mobile API authentication", () => {
     await expect(pendingOlder).resolves.toBe(false);
     expect(selectedSpaceId()).toBe("space-newer");
     expect(storage.get("rakazo.space_id")).toBe("space-newer");
+  });
+
+  it("does not resume notifications for a selection superseded during persistence", async () => {
+    const storage = new Map<string, string>([["rakazo.space_id", "space-start"]]);
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => storage.get(key) ?? null);
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      storage.delete(key);
+    });
+    let release!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      if (key === "rakazo.space_id" && value === "space-old") {
+        started();
+        await held;
+      }
+      storage.set(key, value);
+    });
+    await loadApiBase();
+    await restoreSessionToken("fake-selection-owner");
+    vi.mocked(resumeLiveNotifications).mockClear();
+    const older = selectSpace("space-old");
+    await ready;
+    try {
+      await expect(selectSpace("space-new")).resolves.toBe(true);
+    } finally {
+      release();
+    }
+    await expect(older).resolves.toBe(true);
+    expect(selectedSpaceId()).toBe("space-new");
+    expect(storage.get("rakazo.space_id")).toBe("space-new");
+    expect(resumeLiveNotifications).toHaveBeenCalledTimes(1);
+    expect(resumeLiveNotifications).toHaveBeenCalledWith(
+      currentApiBase(),
+      "fake-selection-owner",
+      "space-new",
+    );
+  });
+
+  it("does not claim a Space after its route closes during selection cleanup", async () => {
+    const storage = new Map<string, string>([["rakazo.space_id", "space-current"]]);
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => storage.get(key) ?? null);
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      storage.set(key, value);
+    });
+    await loadApiBase();
+    let open = true;
+    let release!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      if (key === "rakazo.space_rollback") {
+        started();
+        await held;
+      }
+      storage.delete(key);
+    });
+    vi.mocked(resumeLiveNotifications).mockClear();
+    const selecting = selectSpace("space-other", { isCurrent: () => open });
+    await ready;
+    open = false;
+    release();
+    await expect(selecting).resolves.toBe(false);
+    expect(selectedSpaceId()).toBe("space-current");
+    expect(storage.get("rakazo.space_id")).toBe("space-current");
+    expect(resumeLiveNotifications).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a cleared Space when an older selection write finishes last", async () => {
+    const storage = new Map<string, string>([["rakazo.space_id", "space-start"]]);
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => storage.get(key) ?? null);
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      storage.delete(key);
+    });
+    let release!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      if (key === "rakazo.space_id" && value === "space-old") {
+        started();
+        await held;
+      }
+      storage.set(key, value);
+    });
+    await loadApiBase();
+    await restoreSessionToken("fake-selection-owner");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({})),
+    );
+    vi.mocked(resumeLiveNotifications).mockClear();
+    const older = selectSpace("space-old");
+    await ready;
+    try {
+      await signOut();
+    } finally {
+      release();
+    }
+    await expect(older).resolves.toBe(true);
+    expect(selectedSpaceId()).toBeNull();
+    expect(storage.get("rakazo.space_id") || null).toBeNull();
+    expect(resumeLiveNotifications).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale selection write that finishes between durable and memory cleanup", async () => {
+    const storage = new Map<string, string>([["rakazo.space_id", "space-start"]]);
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => storage.get(key) ?? null);
+    let releaseWrite!: () => void;
+    let writeStarted!: () => void;
+    const heldWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const writeReady = new Promise<void>((resolve) => {
+      writeStarted = resolve;
+    });
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      if (key === "rakazo.space_id" && value === "space-old") {
+        writeStarted();
+        await heldWrite;
+      }
+      storage.set(key, value);
+    });
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      storage.delete(key);
+    });
+    await loadApiBase();
+    await restoreSessionToken("fake-selection-owner");
+    const older = selectSpace("space-old");
+    await writeReady;
+    await clearSessionToken();
+    let releaseCleanup!: () => void;
+    let cleanupStarted!: () => void;
+    const heldCleanup = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupReady = new Promise<void>((resolve) => {
+      cleanupStarted = resolve;
+    });
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      if (key === "rakazo.space_rollback") {
+        cleanupStarted();
+        await heldCleanup;
+      }
+      storage.delete(key);
+    });
+    const clearing = clearSpace();
+    await cleanupReady;
+    releaseWrite();
+    await expect(older).resolves.toBe(true);
+    releaseCleanup();
+    await expect(clearing).resolves.toBe(true);
+    expect(selectedSpaceId()).toBeNull();
+    expect(storage.get("rakazo.space_id") || null).toBeNull();
+  });
+
+  it("keeps a newer Space when clearing the old selection finishes late", async () => {
+    const storage = new Map<string, string>([["rakazo.space_id", "space-start"]]);
+    mockSecureStore(storage);
+    await loadApiBase();
+    let release!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let once = false;
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      if (key === "rakazo.space_id" && !once) {
+        once = true;
+        started();
+        await held;
+      }
+      storage.delete(key);
+    });
+    const clearing = clearSpace();
+    await ready;
+    await expect(selectSpace("space-new")).resolves.toBe(true);
+    release();
+    await expect(clearing).resolves.toBe(false);
+    expect(selectedSpaceId()).toBe("space-new");
+    expect(storage.get("rakazo.space_id")).toBe("space-new");
+  });
+
+  it("does not resume a selection after its route closes during the durable write", async () => {
+    const storage = new Map<string, string>([["rakazo.space_id", "space-start"]]);
+    mockSecureStore(storage);
+    await loadApiBase();
+    await restoreSessionToken("fake-selection-owner");
+    let release!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      if (key === "rakazo.space_id") {
+        started();
+        await held;
+      }
+      storage.set(key, value);
+    });
+    let open = true;
+    vi.mocked(resumeLiveNotifications).mockClear();
+    const selecting = selectSpace("space-new", { isCurrent: () => open });
+    await ready;
+    open = false;
+    release();
+    await expect(selecting).resolves.toBe(true);
+    expect(selectedSpaceId()).toBe("space-new");
+    expect(storage.get("rakazo.space_id")).toBe("space-new");
+    expect(resumeLiveNotifications).not.toHaveBeenCalled();
   });
 
   it("converges durable state to the latest overlapping selection", async () => {

@@ -1,4 +1,17 @@
 export const DE_MESSAGES: Record<string, string> = {
+  Routines: "Routinen",
+  Profile: "Profil",
+  "Could not load routines": "Routinen konnten nicht geladen werden",
+  "Get notified when this Bot finishes or needs input":
+    "Benachrichtigen, wenn dieser Bot fertig ist oder eine Eingabe benötigt",
+  "Notifications are blocked in system settings.":
+    "Benachrichtigungen sind in den Systemeinstellungen blockiert.",
+  "Could not check notification permission.":
+    "Die Benachrichtigungsberechtigung konnte nicht geprüft werden.",
+  Close: "Schließen",
+  Link: "Link",
+  "Could not search": "Suche fehlgeschlagen",
+  "Could not open result": "Ergebnis konnte nicht geöffnet werden",
   Diagram: "Diagramm",
   "Show source": "Quelltext anzeigen",
   "Show diagram": "Diagramm anzeigen",

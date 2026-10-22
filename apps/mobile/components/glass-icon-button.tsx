@@ -13,6 +13,7 @@ import { NativeSymbol } from "./native-symbol";
  */
 export function GlassIconButton({
   accessibilityLabel,
+  testID,
   onPress,
   ios,
   android,
@@ -24,6 +25,7 @@ export function GlassIconButton({
   fallbackStyle,
 }: {
   accessibilityLabel: string;
+  testID?: string;
   onPress: () => void;
   ios: string;
   android: ComponentProps<typeof NativeSymbol>["android"];
@@ -50,6 +52,7 @@ export function GlassIconButton({
       ]}
     >
       <Pressable
+        testID={testID}
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
         accessibilityState={selected === undefined ? undefined : { selected }}

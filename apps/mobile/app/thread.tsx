@@ -167,6 +167,7 @@ import {
   quotableMessageSegments,
   truncateQuoteExcerpt,
 } from "../lib/message-presentation";
+import { captureMobileScope, isMobileScopeCurrent } from "../lib/mobile-scope";
 import { native, useMobileTokens, useResolvedAppearance, useThemedStyles } from "../lib/native";
 import { iosAtLeast } from "../lib/native-controls";
 import {
@@ -472,6 +473,18 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
     readOnly?: string;
   }>();
   const readOnly = readOnlyParam === "1";
+  const profileOwner = useRef(captureMobileScope());
+  const profileRoute = useRef({ botId, readOnly });
+  profileRoute.current = { botId, readOnly };
+  const profileFocused = useIsFocused();
+  const profileAvailable = useRef(false);
+  profileAvailable.current = profileFocused;
+  useEffect(
+    () => () => {
+      profileAvailable.current = false;
+    },
+    [],
+  );
   const [restoring, setRestoring] = useState(false);
   const requestedThreadId = typeof threadId === "string" && threadId ? threadId : undefined;
   const inGroup = Boolean(groupId);
@@ -827,6 +840,22 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
     return activeBotId.current === targetBotId && activeGroupId.current === targetGroupId;
   }
 
+  const openBotProfile = useCallback(() => {
+    if (
+      !botId ||
+      inGroup ||
+      !profileAvailable.current ||
+      !isMobileScopeCurrent(profileOwner.current) ||
+      profileRoute.current.botId !== botId ||
+      profileRoute.current.readOnly !== readOnly
+    )
+      return;
+    router.push({
+      pathname: "/bot-profile",
+      params: { botId, ...(readOnly ? { readOnly: "1" } : {}) },
+    });
+  }, [botId, inGroup, readOnly, router]);
+
   useLayoutEffect(() => {
     navigation.setOptions({
       title: displayName || t("Thread"),
@@ -838,12 +867,9 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
       headerTitle: () => (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={!inGroup && botId ? t("Chat settings") : displayName || t("Thread")}
-          disabled={readOnly || inGroup || !botId}
-          onPress={() => {
-            if (readOnly || !botId || inGroup) return;
-            router.push({ pathname: "/bot-settings", params: { botId } });
-          }}
+          accessibilityLabel={!inGroup && botId ? t("Profile") : displayName || t("Thread")}
+          disabled={inGroup || !botId}
+          onPress={openBotProfile}
         >
           <GlassSurface style={styles.titleCapsule} fallbackStyle={styles.titleCapsuleFill}>
             {!inGroup && currentBot ? (
@@ -919,6 +945,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
         : {}),
     });
   }, [
+    openBotProfile,
     readOnly,
     restoring,
     botId,
@@ -972,6 +999,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   }
 
   const botActions = [
+    { text: t("Profile"), onPress: openBotProfile },
     {
       text: t("Chat settings"),
       onPress: () =>
