@@ -3,7 +3,7 @@
 import type { Bot } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
-import { act } from "react";
+import { act, Suspense, startTransition } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -284,6 +284,50 @@ describe("BotSettings shared notifications", () => {
     await act(async () => pending.resolve());
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenNthCalledWith(2, { notifyOnFinish: false });
+  });
+
+  it("settles the committed owner's save after a different-owner transition is discarded", async () => {
+    const pending = deferred<void>();
+    const suspended = deferred<void>();
+    onSave.mockImplementationOnce(() => pending.promise);
+    let suspendedRenders = 0;
+    function RenderGate({ blocked }: { blocked: boolean }) {
+      if (blocked) {
+        suspendedRenders += 1;
+        throw suspended.promise;
+      }
+      return null;
+    }
+    const tree = (currentBot: Bot, blocked: boolean) => (
+      <Suspense fallback={<div>Loading settings</div>}>
+        <BotSettings
+          bot={currentBot}
+          memoryProviderConfigured={false}
+          onSkillsChange={() => undefined}
+          onSave={onSave}
+          onExport={async () => undefined}
+          onClear={() => undefined}
+        />
+        <RenderGate blocked={blocked} />
+      </Suspense>
+    );
+    const committed = tree(bot(), false);
+    await act(async () => root.render(committed));
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenCalledExactlyOnceWith({ notifyOnFinish: false });
+    expect(notificationSwitch().disabled).toBe(true);
+    await act(async () => {
+      startTransition(() => root.render(tree({ ...bot(), id: "bot-b", spaceId: "space-b" }, true)));
+    });
+    expect(suspendedRenders).toBeGreaterThan(0);
+    expect(container.textContent).not.toContain("Loading settings");
+    await act(async () => root.render(committed));
+    await act(async () => pending.reject(new Error("Current save failed")));
+    expect(notificationSwitch().disabled).toBe(false);
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Current save failed");
     await act(async () => notificationSwitch().click());
     expect(onSave).toHaveBeenNthCalledWith(2, { notifyOnFinish: false });
   });

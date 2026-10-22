@@ -32,7 +32,16 @@ import {
   Toggle,
 } from "@rakazo/ui-web";
 import { X } from "lucide-react";
-import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ErrorBoundary, SectionLoadFailed } from "../../components/ErrorBoundary";
 import { botProfilePatch } from "../../lib/bot-profile-patch";
 import { thinkingLevelLabel } from "../../lib/model-catalog";
@@ -245,13 +254,14 @@ export function BotSettings({
   const [notifyOnFinish, setNotifyOnFinish] = useState(bot.notifyOnFinish ?? true);
   const [notificationPending, setNotificationPending] = useState(false);
   const spaceGeneration = currentSpaceSelectionGeneration();
-  const notificationOwnerRef = useRef({ botId: bot.id, spaceId: bot.spaceId, spaceGeneration });
-  if (
-    notificationOwnerRef.current.botId !== bot.id ||
-    notificationOwnerRef.current.spaceId !== bot.spaceId ||
-    notificationOwnerRef.current.spaceGeneration !== spaceGeneration
-  )
-    notificationOwnerRef.current = { botId: bot.id, spaceId: bot.spaceId, spaceGeneration };
+  const notificationOwner = useMemo(
+    () => ({ botId: bot.id, spaceId: bot.spaceId, spaceGeneration }),
+    [bot.id, bot.spaceId, spaceGeneration],
+  );
+  const notificationOwnerRef = useRef(notificationOwner);
+  useLayoutEffect(() => {
+    notificationOwnerRef.current = notificationOwner;
+  }, [notificationOwner]);
   const pendingNotificationRef = useRef<{ owner: typeof notificationOwnerRef.current } | null>(
     null,
   );
