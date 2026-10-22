@@ -300,6 +300,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not load group": "无法加载群组",
   "Could not load integrations": "无法加载集成",
   "Could not load model settings": "无法加载模型设置",
+  "Could not load models": "无法加载模型",
   "Could not load routine": "无法加载例行任务",
   "Could not load the desktop. This device cannot reach the screen URL.":
     "无法加载桌面。此设备无法访问屏幕地址。",

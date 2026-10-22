@@ -311,6 +311,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Color {number}": "Farbe {number}",
   "Could not load bot": "Bot konnte nicht geladen werden",
   "Could not load model settings": "Modelleinstellungen konnten nicht geladen werden",
+  "Could not load models": "Modelle konnten nicht geladen werden",
   "Could not save": "Konnte nicht gespeichert werden",
   "Could not save bot": "Bot konnte nicht gespeichert werden",
   "Default (medium)": "Standard (mittel)",
