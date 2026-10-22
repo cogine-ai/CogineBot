@@ -27,6 +27,7 @@ const state = vi.hoisted(() => ({
   },
   listeners: new Set<() => void>(),
   ios26: true,
+  focused: true,
   options: {} as {
     headerRight?: () => ReactNode;
     unstable_headerRightItems?: () => Array<{ label: string; onPress: () => void }>;
@@ -57,7 +58,8 @@ vi.mock("expo-router", () => ({
       state.options = options;
     },
   }),
-  useFocusEffect: (effect: () => (() => void) | undefined) => useEffect(effect, [effect]),
+  useFocusEffect: (effect: () => (() => void) | undefined) =>
+    useEffect(() => (state.focused ? effect() : undefined), [effect, state.focused]),
 }));
 vi.mock("react-native", () => {
   const View = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
@@ -234,6 +236,7 @@ beforeEach(() => {
     selectionSeq: 0,
   };
   state.ios26 = true;
+  state.focused = true;
   state.options = {};
   state.rpc.mockReset().mockImplementation(async (p: string) => {
     if (p === "bots/list") return [{ id: "bot-1", name: "Assistant" }];
@@ -396,3 +399,40 @@ it("binds readonly file reads to verified Me when no global Space has been selec
   ).toBe("space-1");
   expect(state.scope.spaceId).toBeNull();
 });
+
+it.each(["versions", "content"])(
+  "retries a preview %s read dropped while the route was unfocused",
+  async (boundary) => {
+    state.params = { artifactId: "file-1" };
+    const pending = deferred<unknown>();
+    const normal = state.rpc.getMockImplementation()!;
+    let held = false;
+    state.rpc.mockImplementation((p: string, input: unknown) => {
+      if (
+        !held &&
+        p === (boundary === "versions" ? "artifacts/listVersions" : "artifacts/getById")
+      ) {
+        held = true;
+        return pending.promise;
+      }
+      return normal(p, input);
+    });
+    await render(true);
+    expect(held).toBe(true);
+    state.focused = false;
+    await render(true);
+    await act(async () =>
+      pending.resolve(
+        boundary === "versions" ? [{ ...artifact, createdAt: artifact.createdAt }] : artifact,
+      ),
+    );
+    state.focused = true;
+    await render(true);
+    expect(container.textContent).toContain("Visible notes");
+    expect(
+      state.rpc.mock.calls.filter(
+        ([p]) => p === (boundary === "versions" ? "artifacts/listVersions" : "artifacts/getById"),
+      ).length,
+    ).toBeGreaterThanOrEqual(2);
+  },
+);

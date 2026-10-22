@@ -125,55 +125,62 @@ function ArtifactDetail({
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [content, setContent] = useState<ContentState>({ status: "loading" });
 
-  useEffect(() => {
-    let cancelled = false;
-    setVersions(null);
-    setSelectedVersionId(null);
-    const eligible = () => !cancelled && current();
-    void (async () => {
-      const context = await spaceRequestContext(scope, eligible);
-      if (!eligible()) return [];
-      return listArtifactVersions(artifactId, context);
-    })()
-      .then((list) => {
-        if (!eligible()) return;
-        setVersions(list);
-        setSelectedVersionId(list[0]?.id ?? artifactId);
-      })
-      .catch(() => {
-        if (eligible()) setSelectedVersionId(artifactId);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [artifactId, current, scope]);
-
-  useEffect(() => {
-    if (!selectedVersionId) return;
-    let cancelled = false;
-    setContent({ status: "loading" });
-    const eligible = () => !cancelled && current();
-    void (async () => {
-      const context = await spaceRequestContext(scope, eligible);
-      if (!eligible()) return;
-      const artifact = await getArtifactById(selectedVersionId, context);
-      if (!eligible()) return;
-      const file = writeArtifactCacheFile(artifact.id, artifact.mimeType, artifact.contentBase64);
-      const preview = await computePreview(artifact.mimeType, file);
-      if (!eligible()) return;
-      setContent({ status: "ready", artifact, file, preview });
-    })().catch((error: unknown) => {
-      if (eligible()) {
-        setContent({
-          status: "error",
-          message: errorText(error, t("Could not load this artifact.")),
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      setVersions(null);
+      const eligible = () => !cancelled && current();
+      void (async () => {
+        const context = await spaceRequestContext(scope, eligible);
+        if (!eligible()) return [];
+        return listArtifactVersions(artifactId, context);
+      })()
+        .then((list) => {
+          if (!eligible()) return;
+          setVersions(list);
+          setSelectedVersionId((selected) =>
+            selected && list.some((version) => version.id === selected)
+              ? selected
+              : (list[0]?.id ?? artifactId),
+          );
+        })
+        .catch(() => {
+          if (eligible()) setSelectedVersionId(artifactId);
         });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedVersionId, current, scope, t]);
+      return () => {
+        cancelled = true;
+      };
+    }, [artifactId, current, scope]),
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!selectedVersionId) return;
+      let cancelled = false;
+      setContent({ status: "loading" });
+      const eligible = () => !cancelled && current();
+      void (async () => {
+        const context = await spaceRequestContext(scope, eligible);
+        if (!eligible()) return;
+        const artifact = await getArtifactById(selectedVersionId, context);
+        if (!eligible()) return;
+        const file = writeArtifactCacheFile(artifact.id, artifact.mimeType, artifact.contentBase64);
+        const preview = await computePreview(artifact.mimeType, file);
+        if (!eligible()) return;
+        setContent({ status: "ready", artifact, file, preview });
+      })().catch((error: unknown) => {
+        if (eligible()) {
+          setContent({
+            status: "error",
+            message: errorText(error, t("Could not load this artifact.")),
+          });
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [selectedVersionId, current, scope, t]),
+  );
 
   const confirmDelete = useCallback(() => {
     if (content.status !== "ready" || readOnly || !current()) return;
