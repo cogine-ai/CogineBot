@@ -248,34 +248,27 @@ function Profile({
     const request = ++permissionRequest.current;
     settingsReturn.current?.cancel();
     settingsReturn.current = null;
-    const eligible = () =>
-      current() &&
-      epoch === lifetime.current &&
+    const operation = notifyOperation.current;
+    const ownerCurrent = () =>
+      mounted.current &&
+      isMobileScopeCurrent(scope) &&
+      operation === notifyOperation.current &&
       request === permissionRequest.current &&
+      notificationEnabled.current &&
+      !readOnly &&
       !saveInFlight.current;
+    const eligible = () => current() && epoch === lifetime.current && ownerCurrent();
+    const registerAllowed = async (queryIsCurrent: () => boolean) => {
+      const requestContext = await spaceRequestContext(scope, queryIsCurrent, bot.spaceId);
+      if (!queryIsCurrent()) return;
+      await registerPushToken({ permission: "allowed", requestContext, isCurrent: queryIsCurrent });
+    };
     if (permission === "denied") {
-      const operation = notifyOperation.current;
-      const ownerCurrent = () =>
-        mounted.current &&
-        isMobileScopeCurrent(scope) &&
-        operation === notifyOperation.current &&
-        request === permissionRequest.current &&
-        notificationEnabled.current &&
-        !readOnly &&
-        !saveInFlight.current;
       const visit = createNotificationSettingsReturn({
         isCurrent: ownerCurrent,
         isFocused: () => focused.current,
         onPermission: setPermission,
-        onAllowed: async (queryIsCurrent) => {
-          const requestContext = await spaceRequestContext(scope, queryIsCurrent, bot.spaceId);
-          if (!queryIsCurrent()) return;
-          await registerPushToken({
-            permission: "allowed",
-            requestContext,
-            isCurrent: queryIsCurrent,
-          });
-        },
+        onAllowed: registerAllowed,
       });
       settingsReturn.current = visit;
       void visit.open().catch((error) => {
@@ -284,8 +277,10 @@ function Profile({
       });
     } else {
       void readChatNotificationPermission(eligible)
-        .then((status) => {
-          if (eligible()) setPermission(status);
+        .then(async (status) => {
+          if (!eligible()) return;
+          setPermission(status);
+          if (status === "allowed") await registerAllowed(eligible).catch(() => undefined);
         })
         .catch(() => {
           if (eligible()) setPermission("unknown");

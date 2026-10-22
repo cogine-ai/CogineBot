@@ -21,7 +21,7 @@ const state = vi.hoisted(() => ({
       permission: "allowed";
       requestContext: unknown;
       isCurrent: () => boolean;
-    }) => undefined,
+    }): Promise<void> => undefined,
   ),
   params: { botId: "bot-1", name: "Fallback" } as Record<string, string>,
   scope: {
@@ -34,6 +34,7 @@ const state = vi.hoisted(() => ({
   },
   listeners: new Set<() => void>(),
   focus: new Set<() => (() => void) | undefined>(),
+  focused: true,
 }));
 vi.mock("./api", () => ({
   rpc: state.rpc,
@@ -63,7 +64,7 @@ vi.mock("expo-router", () => ({
   useRouter: () => ({ push: state.push }),
   useLocalSearchParams: () => state.params,
   useFocusEffect: (effect: () => (() => void) | undefined) => {
-    useEffect(effect, [effect]);
+    useEffect(() => (state.focused ? effect() : undefined), [effect, state.focused]);
     useEffect(() => {
       state.focus.add(effect);
       return () => {
@@ -215,6 +216,7 @@ beforeEach(() => {
   state.settings.mockReset().mockResolvedValue(undefined);
   state.appState = "active";
   state.appListeners.clear();
+  state.focused = true;
   state.register.mockReset().mockResolvedValue(undefined);
   state.push.mockReset();
   state.alert.mockReset();
@@ -333,7 +335,7 @@ it("rolls back exactly the old value only for a DB failure", async () => {
   expect(state.alert).toHaveBeenCalled();
 });
 
-it("keeps a successful save when native follow-up fails and Retry only checks permission", async () => {
+it("recovers an allowed permission Retry without another preference save or native follow-up", async () => {
   state.follow.mockRejectedValue(new Error("Native unavailable"));
   await render();
   await act(async () => toggle().click());
@@ -343,7 +345,97 @@ it("keeps a successful save when native follow-up fails and Retry only checks pe
   expect(state.permission).toHaveBeenCalledTimes(1);
   expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
   expect(state.follow).toHaveBeenCalledTimes(1);
+  expect(state.register).toHaveBeenCalledExactlyOnceWith({
+    permission: "allowed",
+    requestContext: expect.objectContaining({
+      headers: expect.objectContaining({
+        authorization: "Bearer saved-token",
+        "x-rakazo-space-id": "space-1",
+      }),
+    }),
+    isCurrent: expect.any(Function),
+  });
+});
+
+it.each(["denied", "unknown", null])(
+  "does not register a Retry permission result of %s",
+  async (status) => {
+    state.follow.mockResolvedValue("unknown");
+    state.permission.mockResolvedValue(status);
+    await render();
+    await act(async () => toggle().click());
+    await act(async () => button("Retry").click());
+    expect(state.register).not.toHaveBeenCalled();
+    expect(toggle().checked).toBe(true);
+    expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
+    expect(state.follow).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("retains enabled and known allowed permission when Retry device registration fails", async () => {
+  state.follow.mockResolvedValue("unknown");
+  state.register.mockRejectedValue(new Error("Device unavailable"));
+  await render();
+  await act(async () => toggle().click());
+  await act(async () => button("Retry").click());
+  expect(state.register).toHaveBeenCalledTimes(1);
+  expect(toggle().checked).toBe(true);
+  expect(container.textContent).not.toContain("Could not check notification permission.");
+  expect(state.alert).not.toHaveBeenCalled();
+});
+
+it.each([
+  "mute",
+  "new Retry",
+  "blur",
+  "unmount",
+  "readonly",
+  "apiGeneration",
+  "sessionGeneration",
+  "spaceGeneration",
+  "selectionSeq",
+] as const)("drops an allowed Retry query after %s takes ownership", async (change) => {
+  keepSavedNotificationPreference();
+  state.follow.mockResolvedValue("unknown");
+  const permission = deferred<"allowed">();
+  state.permission.mockImplementationOnce(() => permission.promise).mockResolvedValue("denied");
+  await render();
+  await act(async () => toggle().click());
+  await act(async () => button("Retry").click());
+  if (change === "mute") await act(async () => toggle().click());
+  else if (change === "new Retry") await act(async () => button("Retry").click());
+  else if (change === "blur") {
+    state.focused = false;
+    await render();
+    state.focused = true;
+    await render();
+  } else if (change === "unmount") await act(async () => root.render(null));
+  else if (change === "readonly") {
+    state.params.readOnly = "1";
+    await render();
+  } else await changeScope({ [change]: 2 });
+  await act(async () => permission.resolve("allowed"));
   expect(state.register).not.toHaveBeenCalled();
+});
+
+it("keeps an allowed Retry registration predicate invalid after blur and refocus", async () => {
+  keepSavedNotificationPreference();
+  state.follow.mockResolvedValue("unknown");
+  const registered = deferred<void>();
+  state.register.mockImplementation(() => registered.promise);
+  await render();
+  await act(async () => toggle().click());
+  await act(async () => button("Retry").click());
+  const current = state.register.mock.calls[0]?.[0]?.isCurrent;
+  if (!current) throw new Error("Missing Retry registration guard");
+  expect(current()).toBe(true);
+  state.focused = false;
+  await render();
+  state.focused = true;
+  await render();
+  expect(current()).toBe(false);
+  await act(async () => registered.resolve());
+  expect(state.register).toHaveBeenCalledTimes(1);
 });
 
 it("registers an enabled saved preference with the exact save context and owner guard", async () => {

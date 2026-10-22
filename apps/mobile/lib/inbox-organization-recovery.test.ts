@@ -90,6 +90,7 @@ function home() {
     publicationRevision: { current: 0 },
     setSearchInbox: vi.fn(),
     notificationRevision: { current: 0 },
+    notificationPermissionRequest: { current: 0 },
     showNotificationPermission: vi.fn(),
     spaceActionRef: { current: { busy: false, recoveryId: null } },
     organizationBusyRef,
@@ -175,7 +176,9 @@ function home() {
       settingsReturn(),
     ),
     openLiveNotificationSettings: vi.fn(async () => undefined),
-    readChatNotificationPermission: vi.fn(async (_current: () => boolean) => "denied"),
+    readChatNotificationPermission: vi.fn<(_current: () => boolean) => Promise<string | null>>(
+      async () => "denied",
+    ),
     Alert: {
       alert: vi.fn(
         (_title: string, _message: string, _buttons: Array<{ onPress?: () => void }>) => undefined,
@@ -427,7 +430,7 @@ describe("confirmed mobile organization recovery", () => {
     expect(state.rpc).not.toHaveBeenCalled();
   });
 
-  it("keeps permission Retry query-only before its separate Settings action", async () => {
+  it("does not register denied Retry before its separate explicit Settings action", async () => {
     const state = home();
     const allowed = vi.fn(async (_current: () => boolean) => undefined);
     state.showPermission("unknown", () => true, allowed);
@@ -439,6 +442,131 @@ describe("confirmed mobile organization recovery", () => {
     state.Alert.alert.mock.calls.at(-1)![2][1]!.onPress!();
     expect(state.createNotificationSettingsReturn).toHaveBeenCalledOnce();
     expect(state.notificationSettingsReturn.current?.open).toHaveBeenCalledOnce();
+  });
+
+  async function unknownNotificationRetry() {
+    const state = home();
+    const chat = {
+      id: "a",
+      sectionId: null,
+      pinned: false,
+      unread: false,
+      notifyOnFinish: false,
+      spaceId: state.me.spaceId,
+    };
+    Object.assign(state.inboxState.current, { bots: [chat] });
+    state.afterChatNotifyChange.mockResolvedValueOnce("unknown");
+    state.showNotificationPermission.mockImplementation(state.showPermission);
+    state.rpc.mockImplementation(async (procedure) => {
+      if (procedure === "bots/update") return { ...chat, notifyOnFinish: true };
+      throw new Error("Offline");
+    });
+    state.handleChatAction("bot", chat, "notifications");
+    await state.trackedSave.mock.results[0]!.value;
+    const retry = state.Alert.alert.mock.calls.at(-1)![2][1]!.onPress!;
+    return { state, retry };
+  }
+
+  it("registers an allowed Retry using the saved Home context without another save or follow-up", async () => {
+    const { state, retry } = await unknownNotificationRetry();
+    state.readChatNotificationPermission.mockResolvedValue("allowed");
+    retry();
+    await vi.waitFor(() => expect(state.registerPushToken).toHaveBeenCalledOnce());
+    expect(state.registerPushToken).toHaveBeenCalledExactlyOnceWith({
+      permission: "allowed",
+      requestContext: await state.spaceRequestContext.mock.results[0]!.value,
+      isCurrent: expect.any(Function),
+    });
+    expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
+    expect(state.afterChatNotifyChange).toHaveBeenCalledOnce();
+    expect(state.createNotificationSettingsReturn).not.toHaveBeenCalled();
+    expect(state.inboxState.current.bots[0]?.notifyOnFinish).toBe(true);
+  });
+
+  it.each(["denied", "unknown", null])(
+    "does not register Home Retry permission %s",
+    async (status) => {
+      const { state, retry } = await unknownNotificationRetry();
+      state.readChatNotificationPermission.mockResolvedValue(status);
+      retry();
+      await vi.waitFor(() => expect(state.readChatNotificationPermission).toHaveBeenCalledOnce());
+      expect(state.registerPushToken).not.toHaveBeenCalled();
+      expect(state.inboxState.current.bots[0]?.notifyOnFinish).toBe(true);
+    },
+  );
+
+  it("does not undo enabled Home preference if allowed Retry registration rejects", async () => {
+    const { state, retry } = await unknownNotificationRetry();
+    state.readChatNotificationPermission.mockResolvedValue("allowed");
+    state.registerPushToken.mockRejectedValue(new Error("Device unavailable"));
+    retry();
+    await vi.waitFor(() => expect(state.registerPushToken).toHaveBeenCalledOnce());
+    expect(state.inboxState.current.bots[0]?.notifyOnFinish).toBe(true);
+    expect(state.reportOrganizationError).not.toHaveBeenCalled();
+    expect(state.Alert.alert).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "api",
+    "session",
+    "Space",
+    "selection",
+    "new notification",
+    "disabled",
+    "blur",
+    "unmount",
+    "new Retry",
+  ])("drops a Home Retry query after %s ownership changes", async (change) => {
+    const { state, retry } = await unknownNotificationRetry();
+    const read = deferred<string>();
+    state.readChatNotificationPermission.mockImplementationOnce(() => read.promise);
+    retry();
+    if (change === "api") state.live.apiGeneration++;
+    else if (change === "session") state.live.generation++;
+    else if (change === "Space") state.live.spaceGeneration++;
+    else if (change === "selection") state.live.selectionSeq++;
+    else if (change === "new notification") state.notificationRevision.current++;
+    else if (change === "disabled") state.inboxState.current.bots[0]!.notifyOnFinish = false;
+    else if (change === "blur") {
+      state.notificationFocused.current = false;
+      state.notificationPermissionRequest.current++;
+      state.notificationFocused.current = true;
+    } else if (change === "unmount") state.mounted.current = false;
+    else retry();
+    read.resolve("allowed");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(state.registerPushToken).not.toHaveBeenCalled();
+  });
+
+  it("invalidates the Home Retry token predicate when another Retry starts", async () => {
+    const { state, retry } = await unknownNotificationRetry();
+    const pending = deferred<undefined>();
+    state.readChatNotificationPermission.mockResolvedValueOnce("allowed");
+    state.registerPushToken.mockImplementationOnce(() => pending.promise);
+    retry();
+    await vi.waitFor(() => expect(state.registerPushToken).toHaveBeenCalledOnce());
+    const current = (state.registerPushToken.mock.calls[0]![0] as { isCurrent: () => boolean })
+      .isCurrent;
+    expect(current()).toBe(true);
+    retry();
+    expect(current()).toBe(false);
+    pending.resolve(undefined);
+  });
+
+  it("cancels a pending Settings visit before starting a newer explicit Retry", () => {
+    const state = home();
+    const previous = settingsReturn();
+    state.notificationSettingsReturn.current = previous;
+    state.showPermission(
+      "unknown",
+      () => true,
+      async () => undefined,
+    );
+    state.Alert.alert.mock.calls.at(-1)![2][1]!.onPress!();
+    expect(previous.cancel).toHaveBeenCalledOnce();
+    expect(state.notificationSettingsReturn.current).toBeNull();
+    expect(state.readChatNotificationPermission).toHaveBeenCalledOnce();
   });
 
   it("replaces an earlier Settings return ticket before opening Settings again", () => {
@@ -528,7 +656,9 @@ describe("confirmed mobile organization recovery", () => {
     const notificationFocused = { current: false };
     const mounted = { current: false };
     const inboxRequestId = { current: 0 };
+    const notificationPermissionRequest = { current: 0 };
     const dependencies = {
+      notificationPermissionRequest,
       mounted,
       inboxRequestId,
       notificationSettingsReturn,
@@ -562,7 +692,9 @@ describe("confirmed mobile organization recovery", () => {
     blur();
     expect(notificationFocused.current).toBe(false);
     expect(first.blur).toHaveBeenCalledOnce();
+    expect(notificationPermissionRequest.current).toBe(1);
     scopeChanged();
+    expect(notificationPermissionRequest.current).toBe(2);
     expect(first.cancel).toHaveBeenCalledOnce();
     expect(notificationSettingsReturn.current).toBeNull();
     const later = settingsReturn();
@@ -573,6 +705,7 @@ describe("confirmed mobile organization recovery", () => {
     expect(notificationSettingsReturn.current).toBeNull();
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(inboxRequestId.current).toBe(1);
+    expect(notificationPermissionRequest.current).toBe(3);
   });
 
   it("keeps notification maintenance in the busy phase after applying the confirmed preference", async () => {

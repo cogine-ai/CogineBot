@@ -172,6 +172,7 @@ function Home() {
     snapshot: RemovedBotSection;
   } | null>(null);
   const notificationRevision = useRef(0);
+  const notificationPermissionRequest = useRef(0);
   const notificationSettingsReturn = useRef<NotificationSettingsReturn | null>(null);
   const notificationFocused = useRef(false);
   const organizationBusyRef = useRef(false);
@@ -212,12 +213,14 @@ function Home() {
   useEffect(() => {
     mounted.current = true;
     const unsubscribe = subscribeMobileScope(() => {
+      notificationPermissionRequest.current++;
       notificationSettingsReturn.current?.cancel();
       notificationSettingsReturn.current = null;
     });
     return () => {
       mounted.current = false;
       inboxRequestId.current++;
+      notificationPermissionRequest.current++;
       notificationSettingsReturn.current?.cancel();
       notificationSettingsReturn.current = null;
       unsubscribe();
@@ -229,6 +232,7 @@ function Home() {
       notificationSettingsReturn.current?.focus();
       return () => {
         notificationFocused.current = false;
+        notificationPermissionRequest.current++;
         notificationSettingsReturn.current?.blur();
       };
     }, []),
@@ -931,6 +935,7 @@ function Home() {
       if (!isCurrent() || status === null || status === "allowed") return;
       const openSettings = () => {
         if (!isCurrent()) return;
+        notificationPermissionRequest.current++;
         notificationSettingsReturn.current?.cancel();
         const recovery = createNotificationSettingsReturn({
           isCurrent,
@@ -955,9 +960,20 @@ function Home() {
           {
             text: t("Retry"),
             onPress: () => {
-              if (!isCurrent()) return;
-              void readChatNotificationPermission(isCurrent).then((next) => {
-                if (!isCurrent() || next === null || next === "allowed") return;
+              if (!isCurrent() || !notificationFocused.current) return;
+              notificationSettingsReturn.current?.cancel();
+              notificationSettingsReturn.current = null;
+              const request = ++notificationPermissionRequest.current;
+              const queryIsCurrent = () =>
+                isCurrent() &&
+                notificationFocused.current &&
+                request === notificationPermissionRequest.current;
+              void readChatNotificationPermission(queryIsCurrent).then(async (next) => {
+                if (!queryIsCurrent() || next === null) return;
+                if (next === "allowed") {
+                  await onAllowed(queryIsCurrent).catch(() => undefined);
+                  return;
+                }
                 if (next === "denied")
                   Alert.alert(
                     t("Notifications"),
@@ -1029,6 +1045,7 @@ function Home() {
       if (!update) return;
       const owner = captureMobileScope();
       if ("notifyOnFinish" in update) {
+        notificationPermissionRequest.current++;
         notificationSettingsReturn.current?.cancel();
         notificationSettingsReturn.current = null;
       }
