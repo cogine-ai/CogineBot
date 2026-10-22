@@ -163,7 +163,8 @@ function home() {
       sessionGeneration: live.generation,
       headers: { authorization: "Bearer fake-notify-owner", "x-rakazo-space-id": live.selection },
     })),
-    afterChatNotifyChange: vi.fn(async () => null),
+    afterChatNotifyChange: vi.fn(async (_change: Record<string, unknown>) => null as string | null),
+    registerPushToken: vi.fn(async (_options: unknown) => undefined),
   };
   const handleSectionAction = callback("handleSectionAction", "renderItem", actions);
   const handleChatAction = callback("handleChatAction", "handleSectionAction", actions);
@@ -327,6 +328,46 @@ describe("confirmed mobile organization recovery", () => {
         spaceId: state.me.spaceId,
       }),
     );
+  });
+
+  it("registers an allowed notification device with the saved request owner", async () => {
+    const state = home();
+    const chat = {
+      id: "a",
+      sectionId: null,
+      pinned: false,
+      unread: false,
+      notifyOnFinish: false,
+      spaceId: state.me.spaceId,
+    };
+    Object.assign(state.inboxState.current, { bots: [chat] });
+    state.rpc.mockImplementation(async (procedure) => {
+      if (procedure === "bots/update")
+        return { ...chat, notifyOnFinish: true, updatedAt: "confirmed" };
+      throw new Error("Offline");
+    });
+    state.afterChatNotifyChange.mockImplementationOnce(async (change) => {
+      await (change.onAllowed as () => Promise<void>)();
+      return "allowed";
+    });
+    state.handleChatAction("bot", chat, "notifications");
+    await state.trackedSave.mock.results[0]!.value;
+    expect(state.registerPushToken).toHaveBeenCalledExactlyOnceWith({
+      permission: "allowed",
+      requestContext: await state.spaceRequestContext.mock.results[0]!.value,
+      isCurrent: expect.any(Function),
+    });
+    const options = state.registerPushToken.mock.calls[0]![0] as {
+      isCurrent: () => boolean;
+    };
+    expect(options.isCurrent()).toBe(true);
+    state.live.selectionSeq++;
+    expect(options.isCurrent()).toBe(false);
+    expect(state.inboxState.current.bots[0]?.notifyOnFinish).toBe(true);
+    expect(state.rpc.mock.calls.filter(([procedure]) => procedure === "bots/update")).toHaveLength(
+      1,
+    );
+    expect(state.reportOrganizationError).not.toHaveBeenCalled();
   });
 
   it("keeps notification maintenance in the busy phase after applying the confirmed preference", async () => {

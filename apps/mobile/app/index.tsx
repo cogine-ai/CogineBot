@@ -1036,16 +1036,23 @@ function Home() {
           if (chat.pinned && !updated.pinned && "sectionId" in update)
             setOrganizationNotice(t("Unpinned"));
           if (kind === "bot" && "notifyOnFinish" in update && requestContext) {
+            const savedRequestContext = requestContext;
             // The shared preference is already committed; device maintenance cannot undo it.
             try {
               const status = await afterChatNotifyChange({
                 botId: chat.id,
                 threadId: "threadId" in chat ? chat.threadId : undefined,
                 notifyOnFinish: "notifyOnFinish" in updated && updated.notifyOnFinish,
-                apiBase: requestContext.apiBase,
-                token: requestContext.headers.authorization?.replace(/^Bearer /, "") ?? "",
+                apiBase: savedRequestContext.apiBase,
+                token: savedRequestContext.headers.authorization?.replace(/^Bearer /, "") ?? "",
                 spaceId,
                 isCurrent,
+                onAllowed: () =>
+                  registerPushToken({
+                    permission: "allowed",
+                    requestContext: savedRequestContext,
+                    isCurrent,
+                  }),
               });
               showNotificationPermission(status, isCurrent);
             } catch {
