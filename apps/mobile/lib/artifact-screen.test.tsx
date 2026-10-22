@@ -93,7 +93,11 @@ vi.mock("react-native", () => {
     Platform: { OS: "ios" },
     StyleSheet: { create: (styles: unknown) => styles },
     Alert: { alert: state.alert },
-    RefreshControl: () => null,
+    RefreshControl: ({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => void }) => (
+      <button type="button" aria-label="Pull to refresh" aria-busy={refreshing} onClick={onRefresh}>
+        Refresh
+      </button>
+    ),
     Pressable: ({
       children,
       onPress,
@@ -133,14 +137,17 @@ vi.mock("react-native", () => {
       ListHeaderComponent,
       ListEmptyComponent,
       onEndReached,
+      refreshControl,
     }: {
       data: unknown[];
       renderItem: (value: { item: never }) => ReactNode;
       ListHeaderComponent?: ReactNode;
       ListEmptyComponent?: ReactNode;
       onEndReached: () => void;
+      refreshControl?: ReactNode;
     }) => (
       <div>
+        {refreshControl}
         {ListHeaderComponent}
         {data.length
           ? data.map((item, i) => <div key={i}>{renderItem({ item: item as never })}</div>)
@@ -436,3 +443,66 @@ it.each(["versions", "content"])(
     ).toBeGreaterThanOrEqual(2);
   },
 );
+
+it("resets an abandoned pull spinner on refocus while preserving newer refresh ownership and data", async () => {
+  type Page = { items: (typeof artifact)[]; nextCursor: string | null };
+  const abandoned = deferred<Page>();
+  const focusLoad = deferred<Page>();
+  const newerPull = deferred<Page>();
+  const normal = state.rpc.getMockImplementation()!;
+  let requests = 0;
+  state.rpc.mockImplementation((p: string, input: { botId?: string; cursor?: string }) => {
+    if (p !== "artifacts/listSpace") return normal(p, input);
+    requests += 1;
+    if (requests === 1) return Promise.resolve({ items: [artifact], nextCursor: "initial-cursor" });
+    if (requests === 2) return abandoned.promise;
+    if (requests === 3) return focusLoad.promise;
+    if (requests === 4) return newerPull.promise;
+    return Promise.resolve({ items: [], nextCursor: null });
+  });
+  const refreshControl = () => button("Pull to refresh");
+  await render();
+  await act(async () => refreshControl().click());
+  expect(refreshControl().getAttribute("aria-busy")).toBe("true");
+  state.focused = false;
+  await render();
+  state.focused = true;
+  await render();
+  expect(requests).toBe(3);
+  expect(refreshControl().getAttribute("aria-busy")).toBe("false");
+  expect(container.textContent).toContain("Notes.md");
+
+  await act(async () => refreshControl().click());
+  expect(requests).toBe(4);
+  expect(refreshControl().getAttribute("aria-busy")).toBe("true");
+  await act(async () =>
+    abandoned.resolve({
+      items: [{ ...artifact, name: "Abandoned notes" }],
+      nextCursor: "abandoned-cursor",
+    }),
+  );
+  await act(async () =>
+    focusLoad.resolve({
+      items: [{ ...artifact, name: "Superseded focus notes" }],
+      nextCursor: "superseded-cursor",
+    }),
+  );
+  expect(refreshControl().getAttribute("aria-busy")).toBe("true");
+  expect(container.textContent).toContain("Notes.md");
+  expect(container.textContent).not.toContain("Abandoned notes");
+  expect(container.textContent).not.toContain("Superseded focus notes");
+  await act(async () =>
+    newerPull.resolve({
+      items: [{ ...artifact, name: "Current notes" }],
+      nextCursor: "current-cursor",
+    }),
+  );
+  expect(refreshControl().getAttribute("aria-busy")).toBe("false");
+  expect(container.textContent).toContain("Current notes");
+  await act(async () => button("Next page").click());
+  expect(state.rpc.mock.calls.findLast(([p]) => p === "artifacts/listSpace")?.[1]).toEqual({
+    botId: "bot-1",
+    cursor: "current-cursor",
+    limit: 30,
+  });
+});

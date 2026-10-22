@@ -178,6 +178,7 @@ function Artifacts({
   useFocusEffect(
     useCallback(() => {
       focused.current = true;
+      setRefreshing(false);
       let active = true;
       const eligible = () => active && current();
       void (async () => {
