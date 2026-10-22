@@ -14,6 +14,13 @@ const state = vi.hoisted(() => ({
   follow: vi.fn(),
   permission: vi.fn(),
   settings: vi.fn(),
+  register: vi.fn(
+    async (_options: {
+      permission: "allowed";
+      requestContext: unknown;
+      isCurrent: () => boolean;
+    }) => undefined,
+  ),
   params: { botId: "bot-1", name: "Fallback" } as Record<string, string>,
   scope: {
     apiBase: "https://api.example.test",
@@ -48,6 +55,7 @@ vi.mock("./live-notifications", () => ({
   readChatNotificationPermission: state.permission,
   openLiveNotificationSettings: state.settings,
 }));
+vi.mock("./push", () => ({ registerPushToken: state.register }));
 vi.mock("expo-router", () => ({
   Stack: { Screen: () => null },
   useRouter: () => ({ push: state.push }),
@@ -194,6 +202,7 @@ beforeEach(() => {
   state.follow.mockReset().mockResolvedValue("allowed");
   state.permission.mockReset().mockResolvedValue("allowed");
   state.settings.mockReset().mockResolvedValue(undefined);
+  state.register.mockReset().mockResolvedValue(undefined);
   state.push.mockReset();
   state.alert.mockReset();
   container = document.createElement("div");
@@ -246,6 +255,7 @@ it("loads archived identity with exact ID and keeps mutating destinations disabl
     params: { botId: "bot-1", readOnly: "1" },
   });
   expect(state.rpc.mock.calls.some(([p]) => p === "bots/get" || p === "bots/update")).toBe(false);
+  expect(state.register).not.toHaveBeenCalled();
 });
 
 it("keeps successful preference enabled on OS denial and exposes an explicit settings action", async () => {
@@ -320,6 +330,29 @@ it("keeps a successful save when native follow-up fails and Retry only checks pe
   expect(state.permission).toHaveBeenCalledTimes(1);
   expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
   expect(state.follow).toHaveBeenCalledTimes(1);
+  expect(state.register).not.toHaveBeenCalled();
+});
+
+it("registers an enabled saved preference with the exact save context and owner guard", async () => {
+  state.follow.mockImplementation(async (change: { onAllowed?: () => Promise<void> }) => {
+    await change.onAllowed?.();
+    return "allowed";
+  });
+  await render();
+  await act(async () => toggle().click());
+  const savedContext = state.rpc.mock.calls.find(([p]) => p === "bots/update")?.[2]?.requestContext;
+  expect(state.register).toHaveBeenCalledExactlyOnceWith({
+    permission: "allowed",
+    requestContext: savedContext,
+    isCurrent: expect.any(Function),
+  });
+  expect(state.register.mock.calls[0]?.[0]?.requestContext).toBe(savedContext);
+  expect(toggle().checked).toBe(true);
+  const eligible = state.register.mock.calls[0]?.[0]?.isCurrent;
+  if (!eligible) throw new Error("Missing saved notification owner guard");
+  expect(eligible()).toBe(true);
+  await changeScope({ selectionSeq: 1 });
+  expect(eligible()).toBe(false);
 });
 
 it.each(["apiGeneration", "sessionGeneration", "spaceGeneration", "selectionSeq"] as const)(

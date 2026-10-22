@@ -34,6 +34,7 @@ import {
   subscribeMobileScope,
 } from "../lib/mobile-scope";
 import { native, useThemedStyles } from "../lib/native";
+import { registerPushToken } from "../lib/push";
 import { deviceTimeZone, routineRowDetail, sortRoutinesByNextRun } from "../lib/routine";
 import { spaceRequestContext } from "../lib/space-request-context";
 import { errorText } from "../lib/user-error";
@@ -196,6 +197,8 @@ function Profile({
         token,
         spaceId: spaceId ?? "",
         isCurrent: eligible,
+        onAllowed: () =>
+          registerPushToken({ permission: "allowed", requestContext, isCurrent: eligible }),
       });
       if (eligible()) setPermission(status);
     } catch (error) {

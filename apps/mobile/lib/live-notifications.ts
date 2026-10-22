@@ -181,6 +181,7 @@ export type ChatNotifyChange = Readonly<{
   token: string;
   spaceId: string;
   isCurrent: () => boolean;
+  onAllowed?: () => Promise<void>;
 }>;
 
 function notificationPermission(status: NotificationPermissionsStatus): ChatNotifyPermissionStatus {
@@ -233,10 +234,20 @@ export async function afterChatNotifyChange(
   try {
     const status = await Notifications.getPermissionsAsync();
     if (!isCurrent()) return null;
-    const permission = notificationPermission(status);
-    if (permission === "allowed" || !status.canAskAgain) return permission;
-    const requested = await Notifications.requestPermissionsAsync();
-    return isCurrent() ? notificationPermission(requested) : null;
+    let permission = notificationPermission(status);
+    if (permission !== "allowed" && status.canAskAgain) {
+      const requested = await Notifications.requestPermissionsAsync();
+      if (!isCurrent()) return null;
+      permission = notificationPermission(requested);
+    }
+    if (permission === "allowed" && isCurrent()) {
+      try {
+        await change.onAllowed?.();
+      } catch {
+        // Device registration failure does not change the known OS permission.
+      }
+    }
+    return isCurrent() ? permission : null;
   } catch {
     return isCurrent() ? "unknown" : null;
   }

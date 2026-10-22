@@ -84,6 +84,78 @@ describe("chat notification preference follow-up", () => {
     isCurrent: () => true,
     ...partial,
   });
+
+  it.each([2, 3, 4])(
+    "registers an already allowed iOS status %s without another permission prompt",
+    async (status) => {
+      const onAllowed = vi.fn(async () => undefined);
+      vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+        granted: false,
+        canAskAgain: true,
+        ios: { status },
+      } as never);
+      expect(await afterChatNotifyChange(change({ onAllowed }))).toBe("allowed");
+      expect(onAllowed).toHaveBeenCalledTimes(1);
+      expect(Notifications.requestPermissionsAsync).not.toHaveBeenCalled();
+    },
+  );
+
+  it("registers once when the current permission prompt becomes allowed", async () => {
+    const onAllowed = vi.fn(async () => undefined);
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+      granted: false,
+      status: "undetermined",
+      canAskAgain: true,
+    } as never);
+    vi.mocked(Notifications.requestPermissionsAsync).mockResolvedValue({
+      granted: true,
+      status: "granted",
+    } as never);
+    expect(await afterChatNotifyChange(change({ onAllowed }))).toBe("allowed");
+    expect(onAllowed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["denied", "unknown"] as const)(
+    "does not register a %s permission result",
+    async (status) => {
+      const onAllowed = vi.fn(async () => undefined);
+      vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+        granted: false,
+        status,
+        canAskAgain: false,
+      } as never);
+      expect(await afterChatNotifyChange(change({ onAllowed }))).toBe(status);
+      expect(onAllowed).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the known allowed permission when device registration fails", async () => {
+    const onAllowed = vi.fn(async () => {
+      throw new Error("Push service unavailable");
+    });
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({ granted: true } as never);
+    expect(await afterChatNotifyChange(change({ onAllowed }))).toBe("allowed");
+    expect(onAllowed).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops permission publication after registration settles for an old owner", async () => {
+    let current = true;
+    let finish!: () => void;
+    const onAllowed = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({ granted: true } as never);
+    const pending = afterChatNotifyChange(
+      change({ token: "", onAllowed, isCurrent: () => current }),
+    );
+    await Promise.resolve();
+    current = false;
+    finish();
+    expect(await pending).toBeNull();
+  });
   it("reports system denial without rejecting a saved preference or opening Settings", async () => {
     vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
       granted: false,
@@ -152,6 +224,7 @@ describe("chat notification preference follow-up", () => {
     "drops a permission result when ownership changes during %s",
     async (boundary) => {
       let current = true;
+      const onAllowed = vi.fn(async () => undefined);
       let finish!: (value: unknown) => void;
       const gate = new Promise((resolve) => {
         finish = resolve;
@@ -162,11 +235,14 @@ describe("chat notification preference follow-up", () => {
           : ({ granted: false, status: "undetermined", canAskAgain: true } as never),
       );
       vi.mocked(Notifications.requestPermissionsAsync).mockImplementation(() => gate as never);
-      const pending = afterChatNotifyChange(change({ token: "", isCurrent: () => current }));
+      const pending = afterChatNotifyChange(
+        change({ token: "", onAllowed, isCurrent: () => current }),
+      );
       await Promise.resolve();
       current = false;
       finish({ granted: true, status: "granted" });
       expect(await pending).toBeNull();
+      expect(onAllowed).not.toHaveBeenCalled();
       if (boundary === "read") expect(Notifications.requestPermissionsAsync).not.toHaveBeenCalled();
     },
   );
@@ -181,13 +257,15 @@ describe("chat notification preference follow-up", () => {
   });
 
   it("muting dismisses the DM while preserving group notifications and never requests permission", async () => {
+    const onAllowed = vi.fn(async () => undefined);
     vi.mocked(Notifications.getPresentedNotificationsAsync).mockResolvedValue([
       { request: { identifier: "dm", content: { data: { botId: "bot-1", threadId: "dm" } } } },
       {
         request: { identifier: "group", content: { data: { botId: "bot-1", threadId: "group" } } },
       },
     ] as never);
-    expect(await afterChatNotifyChange(change({ notifyOnFinish: false }))).toBeNull();
+    expect(await afterChatNotifyChange(change({ notifyOnFinish: false, onAllowed }))).toBeNull();
+    expect(onAllowed).not.toHaveBeenCalled();
     expect(Notifications.dismissNotificationAsync).toHaveBeenCalledExactlyOnceWith("dm");
     expect(Notifications.getPermissionsAsync).not.toHaveBeenCalled();
   });
