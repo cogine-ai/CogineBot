@@ -1,23 +1,75 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { native } = vi.hoisted(() => ({
-  native: { setOpenThread: vi.fn(async (): Promise<void> => undefined) },
+  native: {
+    setOpenThread: vi.fn(async (): Promise<void> => undefined),
+    resume: vi.fn(async () => undefined),
+    openSettings: vi.fn(async () => undefined),
+  },
 }));
 
 vi.mock("expo-modules-core", () => ({ requireNativeModule: () => native }));
-vi.mock("expo-notifications", () => ({ setNotificationHandler: vi.fn() }));
+vi.mock("expo-notifications", () => ({
+  setNotificationHandler: vi.fn(),
+  getPermissionsAsync: vi.fn(async () => ({ granted: true })),
+  getPresentedNotificationsAsync: vi.fn(async () => []),
+}));
 vi.mock("react-native", () => ({ Platform: { OS: "android" } }));
 
 describe("Android open thread", () => {
   beforeEach(() => {
     native.setOpenThread.mockReset();
     native.setOpenThread.mockImplementation(async () => undefined);
+    native.resume.mockReset().mockResolvedValue(undefined);
+    native.openSettings.mockClear();
     vi.resetModules();
   });
 
   async function openThread() {
     return import("./live-notifications");
   }
+
+  it("uses the immutable save credentials and opens native Settings on explicit action", async () => {
+    const { afterChatNotifyChange, openLiveNotificationSettings } = await openThread();
+    expect(
+      await afterChatNotifyChange({
+        botId: "bot-1",
+        notifyOnFinish: true,
+        apiBase: "https://api.example.test",
+        token: "captured-token",
+        spaceId: "captured-space",
+        isCurrent: () => true,
+      }),
+    ).toBe("allowed");
+    expect(native.resume).toHaveBeenCalledExactlyOnceWith(
+      "https://api.example.test",
+      "captured-token",
+      "captured-space",
+    );
+    expect(native.openSettings).not.toHaveBeenCalled();
+    await openLiveNotificationSettings();
+    expect(native.openSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not continue after a stale native resume, but reports permission after a current resume failure", async () => {
+    const { afterChatNotifyChange } = await openThread();
+    let current = true;
+    native.resume.mockImplementationOnce(async () => {
+      current = false;
+    });
+    const change = {
+      botId: "bot-1",
+      notifyOnFinish: true,
+      apiBase: "https://api.example.test",
+      token: "captured-token",
+      spaceId: "space-1",
+      isCurrent: () => current,
+    };
+    expect(await afterChatNotifyChange(change)).toBeNull();
+    current = true;
+    native.resume.mockRejectedValueOnce(new Error("Native unavailable"));
+    expect(await afterChatNotifyChange(change)).toBe("allowed");
+  });
 
   it("tells the native poller only when the open thread changes", async () => {
     const { setOpenNotificationThread } = await openThread();

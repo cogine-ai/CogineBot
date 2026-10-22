@@ -2,9 +2,17 @@ import { ChatMarkdown } from "@rakazo/chat-ui/native";
 import type { ArtifactVersion } from "@rakazo/contracts";
 import { isAttachmentImageMimeType } from "@rakazo/contracts";
 import type { File } from "expo-file-system";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -30,8 +38,16 @@ import {
 import { useFloatingHeaderInset } from "../lib/floating-header";
 import { t, useI18n } from "../lib/i18n";
 import { presentMessageActionSheet } from "../lib/message-action-sheet";
+import type { MobileScope } from "../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
 import { native, useResolvedAppearance, useThemedStyles } from "../lib/native";
 import { iosAtLeast } from "../lib/native-controls";
+import { spaceRequestContext } from "../lib/space-request-context";
 import { errorText } from "../lib/user-error";
 
 type PreviewContent =
@@ -53,13 +69,57 @@ async function computePreview(mimeType: string, file: File): Promise<PreviewCont
 }
 
 export default function ArtifactDetailScreen() {
-  const { artifactId } = useLocalSearchParams<{ artifactId: string }>();
+  const { artifactId, readOnly } = useLocalSearchParams<{
+    artifactId: string;
+    readOnly?: string;
+  }>();
+  const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
+  const scope = useMemo(captureMobileScope, [scopeKey]);
+  return (
+    <ArtifactDetail
+      key={JSON.stringify([scopeKey, artifactId, readOnly])}
+      artifactId={artifactId}
+      readOnly={readOnly === "1"}
+      scope={scope}
+    />
+  );
+}
+
+function ArtifactDetail({
+  artifactId,
+  readOnly,
+  scope,
+}: {
+  artifactId: string;
+  readOnly: boolean;
+  scope: MobileScope;
+}) {
   const navigation = useNavigation();
   const router = useRouter();
   const headerInset = useFloatingHeaderInset();
   const { t } = useI18n();
   const colorScheme = useResolvedAppearance();
   const styles = useThemedStyles(createStyles);
+  const mounted = useRef(true);
+  const focused = useRef(true);
+  const current = useCallback(
+    () => mounted.current && focused.current && isMobileScopeCurrent(scope),
+    [scope],
+  );
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      focused.current = true;
+      return () => {
+        focused.current = false;
+      };
+    }, []),
+  );
 
   const [versions, setVersions] = useState<ArtifactVersion[] | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
@@ -69,46 +129,54 @@ export default function ArtifactDetailScreen() {
     let cancelled = false;
     setVersions(null);
     setSelectedVersionId(null);
-    void listArtifactVersions(artifactId)
+    const eligible = () => !cancelled && current();
+    void (async () => {
+      const context = await spaceRequestContext(scope, eligible);
+      if (!eligible()) return [];
+      return listArtifactVersions(artifactId, context);
+    })()
       .then((list) => {
-        if (cancelled) return;
+        if (!eligible()) return;
         setVersions(list);
         setSelectedVersionId(list[0]?.id ?? artifactId);
       })
       .catch(() => {
-        if (!cancelled) setSelectedVersionId(artifactId);
+        if (eligible()) setSelectedVersionId(artifactId);
       });
     return () => {
       cancelled = true;
     };
-  }, [artifactId]);
+  }, [artifactId, current, scope]);
 
   useEffect(() => {
     if (!selectedVersionId) return;
     let cancelled = false;
     setContent({ status: "loading" });
-    void getArtifactById(selectedVersionId)
-      .then(async (artifact) => {
-        const file = writeArtifactCacheFile(artifact.id, artifact.mimeType, artifact.contentBase64);
-        const preview = await computePreview(artifact.mimeType, file);
-        if (cancelled) return;
-        setContent({ status: "ready", artifact, file, preview });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setContent({
-            status: "error",
-            message: errorText(error, t("Could not load this artifact.")),
-          });
-        }
-      });
+    const eligible = () => !cancelled && current();
+    void (async () => {
+      const context = await spaceRequestContext(scope, eligible);
+      if (!eligible()) return;
+      const artifact = await getArtifactById(selectedVersionId, context);
+      if (!eligible()) return;
+      const file = writeArtifactCacheFile(artifact.id, artifact.mimeType, artifact.contentBase64);
+      const preview = await computePreview(artifact.mimeType, file);
+      if (!eligible()) return;
+      setContent({ status: "ready", artifact, file, preview });
+    })().catch((error: unknown) => {
+      if (eligible()) {
+        setContent({
+          status: "error",
+          message: errorText(error, t("Could not load this artifact.")),
+        });
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [selectedVersionId, t]);
+  }, [selectedVersionId, current, scope, t]);
 
   const confirmDelete = useCallback(() => {
-    if (content.status !== "ready") return;
+    if (content.status !== "ready" || readOnly || !current()) return;
     const name = content.artifact.name;
     const versionCount = versions?.length ?? 1;
     Alert.alert(
@@ -123,22 +191,35 @@ export default function ArtifactDetailScreen() {
         {
           text: t("Delete"),
           style: "destructive",
-          onPress: () =>
-            void removeArtifact(artifactId)
-              .then(() => router.back())
-              .catch((error: unknown) =>
-                Alert.alert(t("Could not delete this artifact"), errorText(error, t("Try again."))),
-              ),
+          onPress: () => {
+            if (readOnly || !current()) return;
+            void (async () => {
+              const context = await spaceRequestContext(scope, current);
+              if (readOnly || !current()) return;
+              await removeArtifact(artifactId, context);
+            })()
+              .then(() => {
+                if (current()) router.back();
+              })
+              .catch((error: unknown) => {
+                if (current())
+                  Alert.alert(
+                    t("Could not delete this artifact"),
+                    errorText(error, t("Try again.")),
+                  );
+              });
+          },
         },
       ],
     );
-  }, [artifactId, content, router, t, versions]);
+  }, [artifactId, content, current, readOnly, router, scope, t, versions]);
 
   // The full-screen viewer fetches through the thread the artifact belongs to.
   const imageTarget = content.status === "ready" ? artifactThreadTarget(content.artifact) : null;
   const openImage =
     content.status === "ready" && imageTarget
-      ? () =>
+      ? () => {
+          if (!current()) return;
           router.push({
             pathname: "/image",
             params: {
@@ -147,11 +228,12 @@ export default function ArtifactDetailScreen() {
               mimeType: content.artifact.mimeType,
               ...imageTarget,
             },
-          })
+          });
+        }
       : null;
 
   function pickVersion() {
-    if (!versions || versions.length < 2) return;
+    if (!versions || versions.length < 2 || !current()) return;
     presentMessageActionSheet({
       title: t("Versions"),
       cancel: t("Cancel"),
@@ -159,19 +241,22 @@ export default function ArtifactDetailScreen() {
       colorScheme,
       actions: versions.map((version) => ({
         text: `v${version.version} · ${formatActivityRelativeTime(version.createdAt)}`,
-        onPress: () => setSelectedVersionId(version.id),
+        onPress: () => {
+          if (current()) setSelectedVersionId(version.id);
+        },
       })),
     });
   }
 
   const share = useCallback(async () => {
-    if (content.status !== "ready") return;
+    if (content.status !== "ready" || !current()) return;
     try {
       await shareLocalFile(content.file.uri, content.artifact.mimeType, content.artifact.name);
     } catch (error) {
-      Alert.alert(t("Could not share this artifact"), errorText(error, t("Try again.")));
+      if (current())
+        Alert.alert(t("Could not share this artifact"), errorText(error, t("Try again.")));
     }
-  }, [content, t]);
+  }, [content, current, t]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -187,19 +272,21 @@ export default function ArtifactDetailScreen() {
             >
               <NativeSymbol ios="square.and.arrow.up" android="share-social-outline" size={19} />
             </Pressable>
-            <Pressable
-              accessibilityLabel={t("Delete")}
-              hitSlop={8}
-              onPress={confirmDelete}
-              style={styles.headerButton}
-            >
-              <NativeSymbol
-                ios="trash"
-                android="trash-outline"
-                size={19}
-                color={mobileTokens().destructive}
-              />
-            </Pressable>
+            {!readOnly ? (
+              <Pressable
+                accessibilityLabel={t("Delete")}
+                hitSlop={8}
+                onPress={confirmDelete}
+                style={styles.headerButton}
+              >
+                <NativeSymbol
+                  ios="trash"
+                  android="trash-outline"
+                  size={19}
+                  color={mobileTokens().destructive}
+                />
+              </Pressable>
+            ) : null}
           </View>
         ) : null,
       ...(iosAtLeast(26)
@@ -213,19 +300,23 @@ export default function ArtifactDetailScreen() {
                       icon: { type: "sfSymbol" as const, name: "square.and.arrow.up" },
                       onPress: () => void share(),
                     },
-                    {
-                      type: "button" as const,
-                      label: t("Delete"),
-                      icon: { type: "sfSymbol" as const, name: "trash" },
-                      tintColor: mobileTokens().destructive,
-                      onPress: confirmDelete,
-                    },
+                    ...(!readOnly
+                      ? [
+                          {
+                            type: "button" as const,
+                            label: t("Delete"),
+                            icon: { type: "sfSymbol" as const, name: "trash" },
+                            tintColor: mobileTokens().destructive,
+                            onPress: confirmDelete,
+                          },
+                        ]
+                      : []),
                   ]
                 : [],
           }
         : {}),
     });
-  }, [confirmDelete, content, navigation, share, styles, t]);
+  }, [confirmDelete, content, navigation, readOnly, share, styles, t]);
 
   const scrolling = content.status === "ready" && content.preview.kind === "markdown";
   const versionPicker =

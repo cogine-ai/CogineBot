@@ -1,6 +1,6 @@
 import type { NativeRoutineEventSpec, NativeRoutineTrigger, Routine } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { routineStatusLine } from "./routine.js";
+import { routineRowDetail, routineStatusLine, sortRoutinesByNextRun } from "./routine.js";
 
 function routine(partial: Partial<Routine>): Routine {
   return {
@@ -132,5 +132,98 @@ describe("routineStatusLine", () => {
     expect(routineStatusLine(value)).toBe(
       "Active · Teams event, WeCom event, Discord bot event, Teams message · UTC",
     );
+  });
+});
+
+describe("routine profile rows", () => {
+  it.each<[NativeRoutineEventSpec, string]>([
+    [
+      { kind: "calendar.event_changed", calendarId: "calendar", target: { kind: "calendar" } },
+      "Calendar event",
+    ],
+    [
+      {
+        kind: "notion.page_content_changed",
+        target: { type: "page", pageId: "e6f387fd-b1ec-435b-8a86-83d8e4be2ba0" },
+      },
+      "Notion event",
+    ],
+    [{ kind: "gmail.message_received", labelIds: ["INBOX"] }, "Gmail event"],
+    [{ kind: "drive.file_changed", fileId: "file" }, "Drive event"],
+    [{ kind: "slack.app_mention", channelId: "C1" }, "Slack bot event"],
+    [{ kind: "sharepoint.list_item.changed", siteId: "site", listId: "list" }, "SharePoint event"],
+    [
+      {
+        kind: "excel.range.changed",
+        driveId: "drive",
+        itemId: "item",
+        worksheetId: "sheet",
+        address: "A1",
+      },
+      "Excel event",
+    ],
+    [{ kind: "planner.task.changed", planId: "plan" }, "Planner event"],
+    [
+      { kind: "teams.channel_message.created", teamId: "team", channelId: "channel" },
+      "Teams event",
+    ],
+    [{ kind: "feishu.calendar_event.changed", calendarId: "calendar" }, "Feishu / Lark event"],
+    [
+      {
+        kind: "dingtalk.calendar_event.changed",
+        userId: "user",
+        calendarId: "calendar",
+        timeMin: "2026-10-20T00:00:00Z",
+        timeMax: "2026-10-21T00:00:00Z",
+      },
+      "DingTalk event",
+    ],
+    [{ kind: "wecom.schedule.changed", calendarId: "calendar" }, "WeCom event"],
+    [{ kind: "telegram.pinned_message.changed", chatId: "123456" }, "Telegram bot event"],
+    [
+      { kind: "discord.channel_message.created", channelId: "423456789012345678" },
+      "Discord bot event",
+    ],
+  ])("retains the native event-family label in profile rows: %s", (spec, label) => {
+    const value = routine({ nativeTriggers: [trigger(spec)] });
+    expect(routineRowDetail(value, "UTC")).toBe(label);
+    expect(routineStatusLine(value)).toBe(`Active · ${label} · UTC`);
+  });
+
+  it("shows the schedule and only a different time zone or paused status", () => {
+    expect(routineRowDetail(routine({ crons: ["30 8 * * 1-5"] }), "UTC")).toBe(
+      "Weekdays at 8:30 AM",
+    );
+    expect(
+      routineRowDetail(
+        routine({ active: false, crons: ["0 6 * * *"], timezone: "Europe/Berlin" }),
+        "UTC",
+      ),
+    ).toBe("Every day at 6:00 AM · Europe/Berlin · Paused");
+  });
+
+  it("puts the soonest scheduled run first and keeps unscheduled rows oldest first", () => {
+    const rows = [
+      routine({ id: "none-new", createdAt: "2026-03-01T00:00:00Z" }),
+      routine({ id: "later", nextRunAt: "2026-11-02T00:00:00Z" }),
+      routine({ id: "none-old", createdAt: "2026-02-01T00:00:00Z" }),
+      routine({ id: "soon", nextRunAt: "2026-11-01T00:00:00Z" }),
+    ];
+    expect(sortRoutinesByNextRun(rows).map((row) => row.id)).toEqual([
+      "soon",
+      "later",
+      "none-old",
+      "none-new",
+    ]);
+    expect(rows[0]?.id).toBe("none-new");
+  });
+
+  it("treats invalid next-run timestamps as unscheduled instead of losing a known upcoming run", () => {
+    expect(
+      sortRoutinesByNextRun([
+        routine({ id: "unknown", nextRunAt: "not-a-date" }),
+        routine({ id: "scheduled", nextRunAt: "2026-11-01T00:00:00Z" }),
+      ]).map((row) => row.id),
+    ).toEqual(["scheduled", "unknown"]);
   });
 });

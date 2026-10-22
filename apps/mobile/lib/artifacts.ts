@@ -1,4 +1,5 @@
 import type { Artifact, ArtifactVersion } from "@rakazo/contracts";
+import type { ApiRequestContext } from "./api";
 import { rpc } from "./api";
 import type { MobileArtifactTarget } from "./artifact-open";
 
@@ -7,24 +8,52 @@ export type MobileArtifactWithContent = Artifact & { contentBase64: string };
 
 export type ArtifactListPage = { items: MobileArtifactSummary[]; nextCursor: string | null };
 
-export function listSpaceArtifacts(input: {
-  botId?: string;
-  cursor?: string;
-  limit?: number;
-}): Promise<ArtifactListPage> {
-  return rpc<ArtifactListPage>("artifacts/listSpace", input);
+export function listSpaceArtifacts(
+  input: {
+    botId?: string;
+    cursor?: string;
+    limit?: number;
+  },
+  requestContext?: ApiRequestContext,
+): Promise<ArtifactListPage> {
+  return rpc<ArtifactListPage>(
+    "artifacts/listSpace",
+    input,
+    requestContext ? { requestContext } : undefined,
+  );
 }
 
-export function listArtifactVersions(familyId: string): Promise<ArtifactVersion[]> {
-  return rpc<ArtifactVersion[]>("artifacts/listVersions", { familyId });
+export function listArtifactVersions(
+  familyId: string,
+  requestContext?: ApiRequestContext,
+): Promise<ArtifactVersion[]> {
+  return rpc<ArtifactVersion[]>(
+    "artifacts/listVersions",
+    { familyId },
+    requestContext ? { requestContext } : undefined,
+  );
 }
 
-export function getArtifactById(artifactId: string): Promise<MobileArtifactWithContent> {
-  return rpc<MobileArtifactWithContent>("artifacts/getById", { artifactId });
+export function getArtifactById(
+  artifactId: string,
+  requestContext?: ApiRequestContext,
+): Promise<MobileArtifactWithContent> {
+  return rpc<MobileArtifactWithContent>(
+    "artifacts/getById",
+    { artifactId },
+    requestContext ? { requestContext } : undefined,
+  );
 }
 
-export function removeArtifact(artifactId: string): Promise<{ ok: true }> {
-  return rpc<{ ok: true }>("artifacts/remove", { artifactId });
+export function removeArtifact(
+  artifactId: string,
+  requestContext?: ApiRequestContext,
+): Promise<{ ok: true }> {
+  return rpc<{ ok: true }>(
+    "artifacts/remove",
+    { artifactId },
+    requestContext ? { requestContext } : undefined,
+  );
 }
 
 /** Group scope wins: a bot-scoped read drops rows that also have a group id. */

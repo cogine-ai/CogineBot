@@ -1,6 +1,15 @@
-import { useFocusEffect, useNavigation, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type { LayoutChangeEvent } from "react-native";
 import {
   ActivityIndicator,
   Alert,
@@ -27,12 +36,42 @@ import {
   removeArtifact,
 } from "../lib/artifacts";
 import { useI18n } from "../lib/i18n";
+import type { MobileScope } from "../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
 import { native, useThemedStyles } from "../lib/native";
+import { spaceRequestContext } from "../lib/space-request-context";
 import { errorText } from "../lib/user-error";
 
 const PAGE_SIZE = 30;
 
 export default function ArtifactsScreen() {
+  const { botId, readOnly } = useLocalSearchParams<{ botId?: string; readOnly?: string }>();
+  const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
+  const scope = useMemo(captureMobileScope, [scopeKey]);
+  return (
+    <Artifacts
+      key={JSON.stringify([scopeKey, botId, readOnly])}
+      scope={scope}
+      initialBotId={botId}
+      readOnly={readOnly === "1"}
+    />
+  );
+}
+
+function Artifacts({
+  scope,
+  initialBotId,
+  readOnly,
+}: {
+  scope: MobileScope;
+  initialBotId?: string;
+  readOnly: boolean;
+}) {
   const navigation = useNavigation();
   const router = useRouter();
   const { t } = useI18n();
@@ -40,7 +79,31 @@ export default function ArtifactsScreen() {
   const insets = useSafeAreaInsets();
 
   const [bots, setBots] = useState<MobileBot[]>([]);
-  const [activeBotId, setActiveBotId] = useState<string | null>(null);
+  const [activeBotId, setActiveBotId] = useState<string | null>(initialBotId || null);
+  const mounted = useRef(true);
+  const focused = useRef(true);
+  const current = useCallback(
+    () => mounted.current && focused.current && isMobileScopeCurrent(scope),
+    [scope],
+  );
+  const chipsScrollRef = useRef<ScrollView>(null);
+  const initialChipLayout = useRef({
+    viewportWidth: 0,
+    contentWidth: 0,
+    chip: null as { x: number; width: number } | null,
+    revealed: false,
+  });
+  function revealInitialChip() {
+    const layout = initialChipLayout.current;
+    if (layout.revealed || !layout.viewportWidth || !layout.chip || !current()) return;
+    const right = layout.chip.x + layout.chip.width;
+    if (layout.contentWidth < right) return;
+    chipsScrollRef.current?.scrollTo({
+      x: Math.max(0, right - layout.viewportWidth),
+      animated: false,
+    });
+    layout.revealed = true;
+  }
   const [items, setItems] = useState<MobileArtifactSummary[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -69,86 +132,125 @@ export default function ArtifactsScreen() {
     });
   }, [navigation, t]);
 
-  useFocusEffect(
-    useCallback(() => {
-      rpc<MobileBot[]>("bots/list")
-        .then(setBots)
-        .catch(() => undefined);
-    }, []),
-  );
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      generationRef.current += 1;
+    };
+  }, []);
 
   const load = useCallback(
     async (botId: string | null, mode: "replace" | "refresh") => {
+      if (!current()) return;
       const generation = ++generationRef.current;
+      const eligible = () => current() && generation === generationRef.current;
       loadingMoreRef.current = false;
       setLoadingMore(false);
       autoFetchedCursorRef.current = null;
       setSearchPageFailed(false);
       setLoadError(null);
       if (mode === "replace") {
+        setRefreshing(false);
         setItems(null);
         setNextCursor(null);
       }
       try {
-        const page = await listSpaceArtifacts({ botId: botId ?? undefined, limit: PAGE_SIZE });
-        if (generation !== generationRef.current) return;
+        const context = await spaceRequestContext(scope, eligible);
+        if (!eligible()) return;
+        const page = await listSpaceArtifacts(
+          { botId: botId ?? undefined, limit: PAGE_SIZE },
+          context,
+        );
+        if (!eligible()) return;
         setItems(page.items);
         setNextCursor(page.nextCursor);
       } catch (error) {
-        if (generation !== generationRef.current) return;
+        if (!eligible()) return;
         if (mode === "replace") {
           setLoadError(errorText(error, t("Could not load artifacts.")));
         }
       }
     },
-    [t],
+    [t, current, scope],
   );
 
   useFocusEffect(
     useCallback(() => {
+      focused.current = true;
+      let active = true;
+      const eligible = () => active && current();
+      void (async () => {
+        const context = await spaceRequestContext(scope, eligible);
+        if (!eligible()) return;
+        const activeBots = await rpc<MobileBot[]>("bots/list", {}, { requestContext: context });
+        if (!eligible()) return;
+        if (readOnly && initialBotId && !activeBots.some((bot) => bot.id === initialBotId)) {
+          const archived = await rpc<MobileBot[]>(
+            "bots/listArchived",
+            {},
+            { requestContext: context },
+          );
+          if (!eligible()) return;
+          const target = archived.find((bot) => bot.id === initialBotId);
+          setBots(target ? [...activeBots, target] : activeBots);
+        } else setBots(activeBots);
+      })().catch(() => undefined);
       if (!didFocusRef.current) {
         didFocusRef.current = true;
-        return;
-      }
-      void load(activeBotIdRef.current, "refresh");
-    }, [load]),
+      } else void load(activeBotIdRef.current, "refresh");
+      return () => {
+        active = false;
+        focused.current = false;
+        generationRef.current += 1;
+      };
+    }, [current, initialBotId, load, readOnly, scope]),
   );
 
   const loadMore = useCallback(async () => {
-    if (!nextCursor || loadingMoreRef.current) return;
+    if (!nextCursor || loadingMoreRef.current || !current()) return;
     const generation = generationRef.current;
+    const eligible = () => current() && generation === generationRef.current;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const page = await listSpaceArtifacts({
-        botId: activeBotId ?? undefined,
-        cursor: nextCursor,
-        limit: PAGE_SIZE,
-      });
-      if (generation !== generationRef.current) return;
+      const context = await spaceRequestContext(scope, eligible);
+      if (!eligible()) return;
+      const page = await listSpaceArtifacts(
+        {
+          botId: activeBotId ?? undefined,
+          cursor: nextCursor,
+          limit: PAGE_SIZE,
+        },
+        context,
+      );
+      if (!eligible()) return;
       setItems((current) => (current ?? []).concat(page.items));
       setNextCursor(page.nextCursor);
       setSearchPageFailed(false);
     } catch {
-      if (generation === generationRef.current) setSearchPageFailed(true);
+      if (eligible()) setSearchPageFailed(true);
     } finally {
-      if (generation === generationRef.current) {
+      if (eligible()) {
         loadingMoreRef.current = false;
         setLoadingMore(false);
       }
     }
-  }, [activeBotId, nextCursor]);
+  }, [activeBotId, nextCursor, current, scope]);
 
   async function refresh() {
+    if (!current()) return;
     setRefreshing(true);
-    try {
-      await load(activeBotId, "refresh");
-    } finally {
-      setRefreshing(false);
-    }
+    const pending = load(activeBotId, "refresh");
+    const generation = generationRef.current;
+    await pending;
+    if (current() && generation === generationRef.current) setRefreshing(false);
   }
 
   function confirmDelete(item: MobileArtifactSummary) {
+    if (readOnly || !current()) return;
+    const generation = generationRef.current;
+    const eligible = () => !readOnly && current() && generation === generationRef.current;
     Alert.alert(
       t('Delete "{name}"?', { name: item.name }),
       item.versionCount > 1
@@ -161,14 +263,25 @@ export default function ArtifactsScreen() {
         {
           text: t("Delete"),
           style: "destructive",
-          onPress: () =>
-            void removeArtifact(item.id)
-              .then(() =>
-                setItems((current) => current?.filter((row) => row.id !== item.id) ?? current),
-              )
-              .catch((error: unknown) =>
-                Alert.alert(t("Could not delete this artifact"), errorText(error, t("Try again."))),
-              ),
+          onPress: () => {
+            if (!eligible()) return;
+            void (async () => {
+              const context = await spaceRequestContext(scope, eligible);
+              if (!eligible()) return;
+              await removeArtifact(item.id, context);
+            })()
+              .then(() => {
+                if (eligible())
+                  setItems((current) => current?.filter((row) => row.id !== item.id) ?? current);
+              })
+              .catch((error: unknown) => {
+                if (eligible())
+                  Alert.alert(
+                    t("Could not delete this artifact"),
+                    errorText(error, t("Try again.")),
+                  );
+              });
+          },
         },
       ],
     );
@@ -204,6 +317,15 @@ export default function ArtifactsScreen() {
       <FlatList<MobileArtifactSummary>
         ListHeaderComponent={
           <ScrollView
+            ref={chipsScrollRef}
+            onLayout={(event) => {
+              initialChipLayout.current.viewportWidth = event.nativeEvent.layout.width;
+              revealInitialChip();
+            }}
+            onContentSizeChange={(width) => {
+              initialChipLayout.current.contentWidth = width;
+              revealInitialChip();
+            }}
             horizontal
             contentInsetAdjustmentBehavior="never"
             showsHorizontalScrollIndicator={false}
@@ -213,14 +335,26 @@ export default function ArtifactsScreen() {
             <Chip
               label={t("All bots")}
               active={activeBotId === null}
-              onPress={() => setActiveBotId(null)}
+              onPress={() => {
+                if (current()) setActiveBotId(null);
+              }}
             />
             {bots.map((bot) => (
               <Chip
                 key={bot.id}
+                onLayout={
+                  bot.id === initialBotId && activeBotId === initialBotId
+                    ? (event) => {
+                        initialChipLayout.current.chip = event.nativeEvent.layout;
+                        revealInitialChip();
+                      }
+                    : undefined
+                }
                 label={bot.name}
                 active={activeBotId === bot.id}
-                onPress={() => setActiveBotId(bot.id)}
+                onPress={() => {
+                  if (current()) setActiveBotId(bot.id);
+                }}
                 avatar={<BotAvatar color={bot.color} identity={bot.id} size={16} />}
               />
             ))}
@@ -286,8 +420,14 @@ export default function ArtifactsScreen() {
           <ArtifactRow
             item={item}
             bot={activeBotId === null && item.botId ? botsById.get(item.botId) : undefined}
-            onPress={() => router.push({ pathname: "/artifact", params: { artifactId: item.id } })}
-            onLongPress={() => confirmDelete(item)}
+            onPress={() => {
+              if (current())
+                router.push({
+                  pathname: "/artifact",
+                  params: { artifactId: item.id, ...(readOnly ? { readOnly: "1" } : {}) },
+                });
+            }}
+            onLongPress={readOnly ? undefined : () => confirmDelete(item)}
           />
         )}
       />
@@ -300,11 +440,13 @@ function Chip({
   active,
   onPress,
   avatar,
+  onLayout,
 }: {
   label: string;
   active: boolean;
   onPress: () => void;
   avatar?: ReactNode;
+  onLayout?: (event: LayoutChangeEvent) => void;
 }) {
   const styles = useThemedStyles(createStyles);
   return (
@@ -312,6 +454,7 @@ function Chip({
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
       onPress={onPress}
+      onLayout={onLayout}
       style={[styles.chip, active && styles.chipActive]}
     >
       {avatar}
@@ -331,7 +474,7 @@ function ArtifactRow({
   item: MobileArtifactSummary;
   bot?: MobileBot;
   onPress: () => void;
-  onLongPress: () => void;
+  onLongPress?: () => void;
 }) {
   const styles = useThemedStyles(createStyles);
   const { t } = useI18n();
@@ -340,7 +483,7 @@ function ArtifactRow({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={bot ? `${item.name}, ${bot.name}` : item.name}
-      accessibilityHint={t("Long press to delete")}
+      accessibilityHint={onLongPress ? t("Long press to delete") : undefined}
       onPress={onPress}
       onLongPress={onLongPress}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
