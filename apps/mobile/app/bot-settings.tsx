@@ -75,9 +75,12 @@ export default function BotSettingsScreen() {
 
   useEffect(() => {
     if (!botId) return;
+    let cancelled = false;
     void rpc<BotSettingsRecord>("bots/get", { botId })
       .then((next) => {
+        if (cancelled) return;
         setBot(next);
+        setModelRevision(undefined);
         setName(next.name);
         setTitle(next.title);
         setDescription(next.description ?? "");
@@ -91,7 +94,12 @@ export default function BotSettingsScreen() {
         setThinkingLevel(next.thinkingLevel ?? "");
         setAutoSpeak(next.autoSpeak);
       })
-      .catch((err) => setError(errorText(err, t("Could not load bot"))));
+      .catch((err) => {
+        if (!cancelled) setError(errorText(err, t("Could not load bot")));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [botId]);
 
   useEffect(() => {

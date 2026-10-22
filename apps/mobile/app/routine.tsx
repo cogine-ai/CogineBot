@@ -24,6 +24,13 @@ import { routineStatusLine } from "../lib/routine";
 import { currentSessionGeneration } from "../lib/session";
 import { errorText } from "../lib/user-error";
 
+type RoutineScope = {
+  generation: number;
+  apiBase: string;
+  spaceGeneration: number;
+  sessionGeneration: number;
+};
+
 export default function RoutineDetail() {
   const tokens = useMobileTokens();
   const { t } = useI18n();
@@ -33,10 +40,18 @@ export default function RoutineDetail() {
     routineId?: string;
   }>();
   const router = useRouter();
-  const activeRef = useRef(true);
+  const routeGeneration = useRef(0);
+  const scopeRef = useRef<RoutineScope | null>(null);
+  const modelRequest = useRef(0);
+  const saveRequest = useRef(0);
+  // A dispatched save must settle before another route can write.
+  const saveInFlight = useRef(false);
   const [routine, setRoutine] = useState<Routine | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsReady, setModelsReady] = useState(false);
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const [modelKey, setModelKey] = useState("");
@@ -60,38 +75,69 @@ export default function RoutineDetail() {
     []
   ).filter((level) => level !== "off");
 
-  useEffect(() => {
-    activeRef.current = true;
-    if (!botId || !routineId) {
-      setError(t("Routine link is incomplete"));
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    const spaceGeneration = currentSpaceSelectionGeneration();
-    const sessionGeneration = currentSessionGeneration();
-    void (async () => {
+  function current(scope: RoutineScope): boolean {
+    return (
+      scopeRef.current === scope &&
+      scope.generation === routeGeneration.current &&
+      scope.spaceGeneration === currentSpaceSelectionGeneration() &&
+      scope.sessionGeneration === currentSessionGeneration() &&
+      scope.apiBase === currentApiBase()
+    );
+  }
+
+  async function loadModels(scope: RoutineScope) {
+    if (!current(scope)) return;
+    const request = ++modelRequest.current;
+    const eligible = () => current(scope) && request === modelRequest.current;
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
       const requestContext = await captureApiRequestContext();
-      const [routines, nextCatalog, nextCredentials] = await Promise.all([
-        rpc<Routine[]>("routines/list", { botId }, { requestContext }),
+      if (!eligible()) return;
+      const [nextCatalog, nextCredentials] = await Promise.all([
         rpc<ModelCatalogEntry[]>("models/list", {}, { requestContext }),
         rpc<ModelCredential[]>("models/credentials", {}, { requestContext }),
       ]);
-      if (
-        spaceGeneration !== currentSpaceSelectionGeneration() ||
-        sessionGeneration !== currentSessionGeneration() ||
-        requestContext.apiBase !== currentApiBase()
-      )
-        return;
-      if (!cancelled) {
-        setCatalog(nextCatalog);
-        setCredentials(nextCredentials);
-      }
-      return routines;
-    })()
-      .then((routines) => {
-        if (cancelled || !routines) return;
+      if (!eligible()) return;
+      setCatalog(nextCatalog);
+      setCredentials(nextCredentials);
+      setModelsReady(true);
+    } catch (loadError) {
+      if (eligible()) setModelsError(errorText(loadError, t("Could not load models")));
+    } finally {
+      if (eligible()) setModelsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const scope: RoutineScope = {
+      generation: ++routeGeneration.current,
+      apiBase: currentApiBase(),
+      spaceGeneration: currentSpaceSelectionGeneration(),
+      sessionGeneration: currentSessionGeneration(),
+    };
+    scopeRef.current = scope;
+    setRoutine(null);
+    setError(null);
+    setCredentials([]);
+    setCatalog([]);
+    setModelsReady(false);
+    setModelsError(null);
+    setModelsLoading(true);
+    setModelKey("");
+    setModelRevision(undefined);
+    setThinkingLevel("");
+    if (!botId || !routineId) {
+      setError(t("Routine link is incomplete"));
+      setLoading(false);
+    } else {
+      setLoading(true);
+      void loadModels(scope);
+      void (async () => {
+        const requestContext = await captureApiRequestContext();
+        if (!current(scope)) return;
+        const routines = await rpc<Routine[]>("routines/list", { botId }, { requestContext });
+        if (!current(scope)) return;
         const match = routines.find((item) => item.id === routineId);
         if (match) {
           setRoutine(match);
@@ -102,35 +148,40 @@ export default function RoutineDetail() {
           );
           setThinkingLevel(match.thinkingLevel ?? "");
         } else setError(t("This routine no longer exists"));
-      })
-      .catch((loadError) => {
-        if (!cancelled) {
-          setError(errorText(loadError, t("Could not load routine")));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      })()
+        .catch((loadError) => {
+          if (current(scope)) setError(errorText(loadError, t("Could not load routine")));
+        })
+        .finally(() => {
+          if (current(scope)) setLoading(false);
+        });
+    }
     return () => {
-      cancelled = true;
-      activeRef.current = false;
+      if (scopeRef.current === scope) scopeRef.current = null;
     };
   }, [botId, routineId]);
 
+  const shownScope = scopeRef.current;
   async function saveModel() {
-    if (!routine || savingModel) return;
-    const spaceGeneration = currentSpaceSelectionGeneration();
-    const sessionGeneration = currentSessionGeneration();
+    const scope = shownScope;
+    if (
+      !scope ||
+      !current(scope) ||
+      !routine ||
+      saveInFlight.current ||
+      !modelsReady ||
+      modelsLoading ||
+      modelsError
+    )
+      return;
+    const request = ++saveRequest.current;
+    const eligible = () => current(scope) && request === saveRequest.current;
+    saveInFlight.current = true;
     setSavingModel(true);
     setError(null);
     try {
       const requestContext = await captureApiRequestContext();
-      const current = () =>
-        activeRef.current &&
-        spaceGeneration === currentSpaceSelectionGeneration() &&
-        sessionGeneration === currentSessionGeneration() &&
-        requestContext.apiBase === currentApiBase();
-      if (!current()) return;
+      if (!eligible()) return;
       const saved = await rpc<Routine>(
         "routines/update",
         {
@@ -143,17 +194,12 @@ export default function RoutineDetail() {
         },
         { requestContext },
       );
-      if (!current()) return;
-      setRoutine(saved);
+      if (eligible()) setRoutine(saved);
     } catch (err) {
-      if (
-        activeRef.current &&
-        spaceGeneration === currentSpaceSelectionGeneration() &&
-        sessionGeneration === currentSessionGeneration()
-      )
-        setError(errorText(err, t("Could not save")));
+      if (eligible()) setError(errorText(err, t("Could not save")));
     } finally {
-      setSavingModel(false);
+      saveInFlight.current = false;
+      if (scopeRef.current) setSavingModel(false);
     }
   }
 
@@ -199,66 +245,84 @@ export default function RoutineDetail() {
               {routine.prompt}
             </Text>
           </View>
-          <View style={{ backgroundColor: native.fill, borderRadius: 16 }}>
-            <MenuPicker
-              label={t("Model")}
-              value={modelKey}
-              choices={[
-                { key: "", label: t("Bot model") },
-                ...(modelKey && !modelOptions.some((entry) => entry.key === modelKey)
-                  ? [{ key: modelKey, label: selectedModel?.modelId ?? modelKey }]
-                  : []),
-                ...modelOptions.map((entry) => ({ key: entry.key, label: entry.label })),
-              ]}
-              onChange={(key) => {
-                if (savingModel) return;
-                setModelKey(key);
-                setModelRevision(
-                  modelOptions.find((entry) => entry.key === key)?.connectionRevision,
-                );
-                setThinkingLevel("");
-              }}
-            />
-            {thinkingOptions.length ? (
-              <MenuPicker
-                label={t("Thinking")}
-                value={thinkingLevel}
-                choices={[
-                  { key: "", label: t("Default") },
-                  ...thinkingOptions.map((level) => ({
-                    key: level,
-                    label: thinkingLevelLabel(level, t),
-                  })),
-                ]}
-                onChange={(level) => {
-                  if (savingModel) return;
-                  setThinkingLevel(level);
-                  setModelRevision(modelRevision ?? selectedCredential?.connectionRevision);
+          {modelsLoading ? <ActivityIndicator color={tokens.mutedForeground} /> : null}
+          {modelsError ? (
+            <View style={{ gap: 8 }}>
+              <Text style={{ color: tokens.destructive, fontSize: 15 }}>{modelsError}</Text>
+              <NativeActionButton
+                label={t("Retry")}
+                disabled={modelsLoading}
+                onPress={() => {
+                  if (shownScope) void loadModels(shownScope);
                 }}
-                divider
               />
-            ) : null}
-          </View>
-          <NativeActionButton
-            label={savingModel ? t("Saving…") : t("Save model")}
-            disabled={
-              savingModel ||
-              ((selectedModel?.provider ?? null) === routine.modelProvider &&
-                (selectedModel?.modelId ?? null) === routine.modelId &&
-                (selectedModel?.modelCredentialId ?? null) ===
-                  (routine.modelCredentialId ?? null) &&
-                (thinkingLevel || null) === routine.thinkingLevel)
-            }
-            onPress={() => void saveModel()}
-          />
+            </View>
+          ) : null}
+          {modelsReady && !modelsLoading && !modelsError ? (
+            <>
+              <View style={{ backgroundColor: native.fill, borderRadius: 16 }}>
+                <MenuPicker
+                  label={t("Model")}
+                  value={modelKey}
+                  choices={[
+                    { key: "", label: t("Bot model") },
+                    ...(modelKey && !modelOptions.some((entry) => entry.key === modelKey)
+                      ? [{ key: modelKey, label: selectedModel?.modelId ?? modelKey }]
+                      : []),
+                    ...modelOptions.map((entry) => ({ key: entry.key, label: entry.label })),
+                  ]}
+                  onChange={(key) => {
+                    if (!shownScope || !current(shownScope) || savingModel) return;
+                    setModelKey(key);
+                    setModelRevision(
+                      modelOptions.find((entry) => entry.key === key)?.connectionRevision,
+                    );
+                    setThinkingLevel("");
+                  }}
+                />
+                {thinkingOptions.length ? (
+                  <MenuPicker
+                    label={t("Thinking")}
+                    value={thinkingLevel}
+                    choices={[
+                      { key: "", label: t("Default") },
+                      ...thinkingOptions.map((level) => ({
+                        key: level,
+                        label: thinkingLevelLabel(level, t),
+                      })),
+                    ]}
+                    onChange={(level) => {
+                      if (!shownScope || !current(shownScope) || savingModel) return;
+                      setThinkingLevel(level);
+                      setModelRevision(modelRevision ?? selectedCredential?.connectionRevision);
+                    }}
+                    divider
+                  />
+                ) : null}
+              </View>
+              <NativeActionButton
+                label={savingModel ? t("Saving…") : t("Save model")}
+                disabled={
+                  savingModel ||
+                  ((selectedModel?.provider ?? null) === routine.modelProvider &&
+                    (selectedModel?.modelId ?? null) === routine.modelId &&
+                    (selectedModel?.modelCredentialId ?? null) ===
+                      (routine.modelCredentialId ?? null) &&
+                    (thinkingLevel || null) === routine.thinkingLevel)
+                }
+                onPress={() => void saveModel()}
+              />
+            </>
+          ) : null}
           <NativeActionButton
             label={t("Open conversation")}
-            onPress={() =>
+            onPress={() => {
+              if (!shownScope || !current(shownScope)) return;
               router.push({
                 pathname: "/thread",
                 params: { botId: botId ?? "", name: botName ?? t("Bot") },
-              })
-            }
+              });
+            }}
           />
         </>
       ) : null}

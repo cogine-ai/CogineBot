@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { modelOptionKey } from "@rakazo/core";
 import type { ReactNode } from "react";
 import { act, useEffect } from "react";
 import type { Root } from "react-dom/client";
@@ -11,19 +12,21 @@ import { resetI18nForTests } from "./i18n";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
+  push: vi.fn(),
+  params: { botId: "bot-1", routineId: "routine-1" },
+  apiBase: "https://api.example.test",
   spaceGeneration: 0,
   sessionGeneration: 0,
   focus: undefined as undefined | (() => (() => void) | undefined),
   blur: undefined as undefined | (() => void),
 }));
-const apiBase = "https://api.example.test";
 vi.mock("./api", () => ({
   rpc: state.rpc,
-  currentApiBase: () => apiBase,
+  currentApiBase: () => state.apiBase,
   currentSpaceSelectionGeneration: () => state.spaceGeneration,
   selectedSpaceId: () => "space-1",
   captureApiRequestContext: async () => ({
-    apiBase,
+    apiBase: state.apiBase,
     spaceId: "space-1",
     sessionGeneration: state.sessionGeneration,
   }),
@@ -31,8 +34,8 @@ vi.mock("./api", () => ({
 vi.mock("./session", () => ({ currentSessionGeneration: () => state.sessionGeneration }));
 vi.mock("expo-router", () => ({
   Stack: { Screen: () => null },
-  useRouter: () => ({ back: vi.fn() }),
-  useLocalSearchParams: () => ({ botId: "bot-1", routineId: "routine-1" }),
+  useRouter: () => ({ back: vi.fn(), push: state.push }),
+  useLocalSearchParams: () => state.params,
   useFocusEffect: (effect: () => () => void) =>
     useEffect(() => {
       state.focus = effect;
@@ -168,10 +171,12 @@ let container: HTMLDivElement;
 let root: Root;
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 function button(label: string) {
   const found = [...container.querySelectorAll("button")].find(
@@ -203,6 +208,9 @@ async function refocus() {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   resetI18nForTests("en");
+  state.push.mockReset();
+  state.params = { botId: "bot-1", routineId: "routine-1" };
+  state.apiBase = "https://api.example.test";
   state.spaceGeneration = 0;
   state.sessionGeneration = 0;
   state.focus = undefined;
@@ -353,5 +361,195 @@ it.each([
         labels[index],
       ]),
     );
+  },
+);
+
+it.each(["models/list", "models/credentials"])(
+  "keeps the Routine available when %s fails and retries only model metadata",
+  async (failedProcedure) => {
+    const normal = state.rpc.getMockImplementation()!;
+    let unavailable = true;
+    state.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === failedProcedure && unavailable)
+        throw Object.assign(new Error("Model service unavailable"), { status: 503 });
+      if (procedure === "routines/update")
+        return { ...(await normal("routines/list"))[0], ...input };
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    expect(container.textContent).toContain("Review");
+    expect(container.textContent).toContain("Model service unavailable");
+    expect(container.textContent).not.toContain("Could not load routine");
+    await act(async () => button("Open conversation").click());
+    expect(state.push).toHaveBeenCalledWith({
+      pathname: "/thread",
+      params: { botId: "bot-1", name: "Bot" },
+    });
+    unavailable = false;
+    await act(async () => button("Retry").click());
+    expect(
+      state.rpc.mock.calls.filter(([procedure]) => procedure === "routines/list"),
+    ).toHaveLength(1);
+    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (!model) throw new Error("Missing Routine model picker");
+    expect(model.value).toBe(modelOptionKey("openai-compatible", "model-a", "connection-a"));
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        model,
+        modelOptionKey("openai-compatible", "model-b", "connection-a"),
+      );
+      model.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => button("Save model").click());
+    expect(
+      state.rpc.mock.calls.find(([procedure]) => procedure === "routines/update")?.[1],
+    ).toMatchObject({
+      routineId: "routine-1",
+      modelProvider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 7,
+    });
+  },
+);
+
+async function chooseRoutineModel(modelId: string) {
+  const picker = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+  if (!picker) throw new Error("Missing Routine model picker");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+      picker,
+      modelOptionKey("openai-compatible", modelId, "connection-a"),
+    );
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+it.each(["resolves", "rejects"])(
+  "keeps saves serialized when an old Routine save %s after A to B to A",
+  async (outcome) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const template = (await normal("routines/list"))[0];
+    const oldSave = deferred<typeof template>();
+    const newSave = deferred<typeof template>();
+    let returned = false;
+    let saves = 0;
+    state.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === "routines/list")
+        return [
+          {
+            ...template,
+            id: state.params.routineId,
+            botId: state.params.botId,
+            prompt:
+              state.params.botId === "bot-2" ? "Current B" : returned ? "Current A" : "Original A",
+          },
+        ];
+      if (procedure === "models/credentials" && returned)
+        return [{ ...credential, connectionRevision: 9 }];
+      if (procedure === "routines/update") return ++saves === 1 ? oldSave.promise : newSave.promise;
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    await chooseRoutineModel("model-b");
+    await act(async () => button("Save model").click());
+    state.params = { botId: "bot-2", routineId: "routine-2" };
+    await act(async () => root.render(<RoutineDetail />));
+    returned = true;
+    state.params = { botId: "bot-1", routineId: "routine-1" };
+    await act(async () => root.render(<RoutineDetail />));
+    expect(button("Saving…").disabled).toBe(true);
+    expect(
+      state.rpc.mock.calls.filter(([procedure]) => procedure === "routines/update"),
+    ).toHaveLength(1);
+    await act(async () => {
+      if (outcome === "resolves")
+        oldSave.resolve({ ...template, prompt: "Old A saved", modelId: "model-b" });
+      else oldSave.reject(new Error("Old A failed"));
+    });
+    expect(container.textContent).toContain("Current A");
+    expect(container.textContent).not.toContain("Old A saved");
+    expect(container.textContent).not.toContain("Old A failed");
+    await chooseRoutineModel("model-b");
+    await act(async () => button("Save model").click());
+    expect(
+      state.rpc.mock.calls.filter(([procedure]) => procedure === "routines/update")[1]?.[1],
+    ).toMatchObject({
+      routineId: "routine-1",
+      modelCredentialId: "connection-a",
+      modelId: "model-b",
+      expectedRevision: 9,
+    });
+    expect(button("Saving…").disabled).toBe(true);
+    await act(async () =>
+      newSave.resolve({ ...template, prompt: "Current A saved", modelId: "model-b" }),
+    );
+    expect(container.textContent).toContain("Current A saved");
+  },
+);
+
+it.each(["models/list", "models/credentials"])(
+  "preserves a new Routine model draft when an old %s retry fails late",
+  async (procedure) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const template = (await normal("routines/list"))[0];
+    const retry = deferred<unknown[]>();
+    let metadataRequests = 0;
+    state.rpc.mockImplementation(async (name: string, input: Record<string, unknown>) => {
+      if (name === procedure && state.params.botId === "bot-1") {
+        if (++metadataRequests === 1) throw new Error("First metadata failure");
+        return retry.promise;
+      }
+      if (name === "routines/list")
+        return [
+          {
+            ...template,
+            id: state.params.routineId,
+            botId: state.params.botId,
+            prompt: "Current routine",
+          },
+        ];
+      if (name === "routines/update") return { ...template, ...input };
+      return normal(name, input);
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    await act(async () => button("Retry").click());
+    expect(button("Open conversation").disabled).toBe(false);
+    state.params = { botId: "bot-2", routineId: "routine-2" };
+    await act(async () => root.render(<RoutineDetail />));
+    await chooseRoutineModel("model-b");
+    await act(async () => retry.reject(new Error("Old metadata failed")));
+    expect(container.textContent).toContain("Current routine");
+    expect(container.textContent).not.toContain("Old metadata failed");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')?.value).toBe(
+      modelOptionKey("openai-compatible", "model-b", "connection-a"),
+    );
+    await act(async () => button("Save model").click());
+    expect(state.rpc.mock.calls.find(([name]) => name === "routines/update")?.[1]).toMatchObject({
+      routineId: "routine-2",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 7,
+    });
+  },
+);
+
+it.each(["space", "session", "api"] as const)(
+  "ignores late optional model failure after the %s owner changes",
+  async (owner) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const metadata = deferred<unknown[]>();
+    state.rpc.mockImplementation((procedure: string, input: unknown) =>
+      procedure === "models/credentials" ? metadata.promise : normal(procedure, input),
+    );
+    await act(async () => root.render(<RoutineDetail />));
+    expect(container.textContent).toContain("Review");
+    if (owner === "space") state.spaceGeneration += 2;
+    else if (owner === "session") state.sessionGeneration += 2;
+    else state.apiBase = "https://replacement.example.test";
+    await act(async () => metadata.reject(new Error("Old owner metadata failed")));
+    expect(container.textContent).not.toContain("Old owner metadata failed");
+    await act(async () => button("Open conversation").click());
+    expect(state.push).not.toHaveBeenCalled();
   },
 );
