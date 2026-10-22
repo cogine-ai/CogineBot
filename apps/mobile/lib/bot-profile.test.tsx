@@ -14,6 +14,8 @@ const state = vi.hoisted(() => ({
   follow: vi.fn(),
   permission: vi.fn(),
   settings: vi.fn(),
+  appState: "active",
+  appListeners: new Set<(state: string) => void>(),
   register: vi.fn(
     async (_options: {
       permission: "allowed";
@@ -80,6 +82,15 @@ vi.mock("react-native", () => {
     StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 },
     useWindowDimensions: () => ({ fontScale: 1 }),
     Alert: { alert: state.alert },
+    AppState: {
+      get currentState() {
+        return state.appState;
+      },
+      addEventListener: (_name: string, listener: (state: string) => void) => {
+        state.appListeners.add(listener);
+        return { remove: () => state.appListeners.delete(listener) };
+      },
+    },
     Pressable: ({
       children,
       onPress,
@@ -202,6 +213,8 @@ beforeEach(() => {
   state.follow.mockReset().mockResolvedValue("allowed");
   state.permission.mockReset().mockResolvedValue("allowed");
   state.settings.mockReset().mockResolvedValue(undefined);
+  state.appState = "active";
+  state.appListeners.clear();
   state.register.mockReset().mockResolvedValue(undefined);
   state.push.mockReset();
   state.alert.mockReset();
@@ -353,6 +366,143 @@ it("registers an enabled saved preference with the exact save context and owner 
   expect(eligible()).toBe(true);
   await changeScope({ selectionSeq: 1 });
   expect(eligible()).toBe(false);
+});
+
+async function emitAppState(next: string) {
+  await act(async () => {
+    state.appState = next;
+    for (const listener of [...state.appListeners]) listener(next);
+  });
+}
+
+function keepSavedNotificationPreference() {
+  let enabled = false;
+  state.rpc.mockImplementation(async (procedure: string, input?: { notifyOnFinish?: boolean }) => {
+    if (procedure === "bots/get") return { ...bot, notifyOnFinish: enabled };
+    if (procedure === "bots/update") {
+      enabled = input?.notifyOnFinish ?? enabled;
+      return {};
+    }
+    if (procedure === "routines/list") return [];
+    if (procedure === "bots/listArchived")
+      return [{ ...bot, notifyOnFinish: enabled, archivedAt: "2026-10-20" }];
+    throw new Error(procedure);
+  });
+  return {
+    disableOnServer() {
+      enabled = false;
+    },
+  };
+}
+
+async function openDeniedNotificationSettings() {
+  state.follow.mockResolvedValue("denied");
+  await render();
+  await act(async () => toggle().click());
+  await act(async () => button("Settings").click());
+}
+
+it("rechecks and registers the enabled preference after this Settings visit returns, without another save", async () => {
+  keepSavedNotificationPreference();
+  await openDeniedNotificationSettings();
+  expect(state.permission).not.toHaveBeenCalled();
+  expect(state.register).not.toHaveBeenCalled();
+  await emitAppState("background");
+  await emitAppState("active");
+  await refocus();
+  await emitAppState("active");
+  expect(state.permission).toHaveBeenCalledTimes(1);
+  expect(state.register).toHaveBeenCalledTimes(1);
+  expect(toggle().checked).toBe(true);
+  expect(container.textContent).not.toContain("Notifications are blocked in system settings.");
+  expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
+  expect(state.follow).toHaveBeenCalledTimes(1);
+});
+
+it("does not recheck or register on an ordinary foreground cycle without opening Settings", async () => {
+  keepSavedNotificationPreference();
+  state.follow.mockResolvedValue("denied");
+  await render();
+  await act(async () => toggle().click());
+  await emitAppState("background");
+  await emitAppState("active");
+  await refocus();
+  expect(state.permission).not.toHaveBeenCalled();
+  expect(state.register).not.toHaveBeenCalled();
+  expect(toggle().checked).toBe(true);
+});
+
+it("drops a returning permission result when a new mute intent takes ownership", async () => {
+  keepSavedNotificationPreference();
+  const permission = deferred<"allowed">();
+  state.permission.mockImplementation(() => permission.promise);
+  await openDeniedNotificationSettings();
+  await emitAppState("background");
+  await emitAppState("active");
+  expect(state.permission).toHaveBeenCalledTimes(1);
+  await act(async () => toggle().click());
+  await act(async () => permission.resolve("allowed"));
+  expect(toggle().checked).toBe(false);
+  expect(state.register).not.toHaveBeenCalled();
+  expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(2);
+  expect(state.appListeners.size).toBe(0);
+});
+
+it("cancels a return when an authoritative focus read says notifications were disabled", async () => {
+  const server = keepSavedNotificationPreference();
+  const permission = deferred<"allowed">();
+  state.permission.mockImplementation(() => permission.promise);
+  await openDeniedNotificationSettings();
+  await emitAppState("background");
+  await emitAppState("active");
+  server.disableOnServer();
+  await refocus();
+  await act(async () => permission.resolve("allowed"));
+  expect(toggle().checked).toBe(false);
+  expect(state.register).not.toHaveBeenCalled();
+  expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
+  expect(state.appListeners.size).toBe(0);
+});
+
+it.each(["apiGeneration", "sessionGeneration", "spaceGeneration", "selectionSeq"] as const)(
+  "cancels a Settings-return ticket across same-ID %s changes",
+  async (field) => {
+    keepSavedNotificationPreference();
+    const permission = deferred<"allowed">();
+    state.permission.mockImplementation(() => permission.promise);
+    await openDeniedNotificationSettings();
+    await emitAppState("background");
+    await emitAppState("active");
+    await changeScope({ [field]: 2 });
+    await act(async () => permission.resolve("allowed"));
+    expect(state.register).not.toHaveBeenCalled();
+    expect(state.appListeners.size).toBe(0);
+    expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
+  },
+);
+
+it("does not register when a waiting profile is replaced by its readonly route", async () => {
+  keepSavedNotificationPreference();
+  await openDeniedNotificationSettings();
+  await emitAppState("background");
+  state.params.readOnly = "1";
+  await render();
+  await emitAppState("active");
+  expect(toggle().disabled).toBe(true);
+  expect(state.permission).not.toHaveBeenCalled();
+  expect(state.register).not.toHaveBeenCalled();
+  expect(state.appListeners.size).toBe(0);
+});
+
+it("removes the pending Settings listener on unmount", async () => {
+  keepSavedNotificationPreference();
+  await openDeniedNotificationSettings();
+  await act(async () => root.render(null));
+  await emitAppState("background");
+  await emitAppState("active");
+  expect(state.permission).not.toHaveBeenCalled();
+  expect(state.register).not.toHaveBeenCalled();
+  expect(state.appListeners.size).toBe(0);
 });
 
 it.each(["apiGeneration", "sessionGeneration", "spaceGeneration", "selectionSeq"] as const)(

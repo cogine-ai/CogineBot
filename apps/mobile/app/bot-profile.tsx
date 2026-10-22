@@ -21,11 +21,7 @@ import type { MobileBot } from "../lib/api";
 import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import type { ChatNotifyPermissionStatus } from "../lib/live-notifications";
-import {
-  afterChatNotifyChange,
-  openLiveNotificationSettings,
-  readChatNotificationPermission,
-} from "../lib/live-notifications";
+import { afterChatNotifyChange, readChatNotificationPermission } from "../lib/live-notifications";
 import type { MobileScope } from "../lib/mobile-scope";
 import {
   captureMobileScope,
@@ -34,6 +30,8 @@ import {
   subscribeMobileScope,
 } from "../lib/mobile-scope";
 import { native, useThemedStyles } from "../lib/native";
+import type { NotificationSettingsReturn } from "../lib/notification-settings-return";
+import { createNotificationSettingsReturn } from "../lib/notification-settings-return";
 import { registerPushToken } from "../lib/push";
 import { deviceTimeZone, routineRowDetail, sortRoutinesByNextRun } from "../lib/routine";
 import { spaceRequestContext } from "../lib/space-request-context";
@@ -86,6 +84,8 @@ function Profile({
   const notifyOperation = useRef(0);
   const saveInFlight = useRef(false);
   const permissionRequest = useRef(0);
+  const notificationEnabled = useRef(false);
+  const settingsReturn = useRef<NotificationSettingsReturn | null>(null);
   const name = bot?.name.trim() || nameParam?.trim() || t("Bot");
   const timeZone = deviceTimeZone();
   const current = useCallback(
@@ -96,6 +96,7 @@ function Profile({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      settingsReturn.current?.cancel();
     };
   }, []);
 
@@ -122,6 +123,10 @@ function Profile({
       )
         throw new Error(t("Could not load bot"));
       const overlapped = saves % 2 === 1 || saves !== notifySaves.current;
+      if (!overlapped) {
+        notificationEnabled.current = next.notifyOnFinish;
+        if (!next.notifyOnFinish) settingsReturn.current?.cancel();
+      }
       setBot((shown) =>
         overlapped && shown ? { ...next, notifyOnFinish: shown.notifyOnFinish } : next,
       );
@@ -155,8 +160,10 @@ function Profile({
       lifetime.current += 1;
       void loadBot();
       void loadRoutines();
+      settingsReturn.current?.focus();
       return () => {
         focused.current = false;
+        settingsReturn.current?.blur();
         lifetime.current += 1;
         botRequest.current += 1;
         routinesRequest.current += 1;
@@ -171,6 +178,9 @@ function Profile({
     const eligible = () =>
       current() && epoch === lifetime.current && operation === notifyOperation.current;
     const previous = bot.notifyOnFinish;
+    settingsReturn.current?.cancel();
+    settingsReturn.current = null;
+    notificationEnabled.current = notifyOnFinish;
     saveInFlight.current = true;
     setPending(true);
     notifySaves.current += 1;
@@ -204,12 +214,14 @@ function Profile({
     } catch (error) {
       if (!eligible()) {
         if (!saved && current() && operation === notifyOperation.current) {
+          notificationEnabled.current = previous;
           setBot((shown) => shown && { ...shown, notifyOnFinish: previous });
         }
         return;
       }
       if (saved) setPermission(notifyOnFinish ? "unknown" : null);
       else {
+        notificationEnabled.current = previous;
         setBot((shown) => shown && { ...shown, notifyOnFinish: previous });
         Alert.alert(t("Could not update notifications"), errorText(error, t("Try again.")));
       }
@@ -234,14 +246,41 @@ function Profile({
       return;
     const epoch = lifetime.current;
     const request = ++permissionRequest.current;
+    settingsReturn.current?.cancel();
+    settingsReturn.current = null;
     const eligible = () =>
       current() &&
       epoch === lifetime.current &&
       request === permissionRequest.current &&
       !saveInFlight.current;
     if (permission === "denied") {
-      void openLiveNotificationSettings(eligible).catch((error) => {
-        if (eligible()) Alert.alert(t("Settings"), errorText(error, t("Try again.")));
+      const operation = notifyOperation.current;
+      const ownerCurrent = () =>
+        mounted.current &&
+        isMobileScopeCurrent(scope) &&
+        operation === notifyOperation.current &&
+        request === permissionRequest.current &&
+        notificationEnabled.current &&
+        !readOnly &&
+        !saveInFlight.current;
+      const visit = createNotificationSettingsReturn({
+        isCurrent: ownerCurrent,
+        isFocused: () => focused.current,
+        onPermission: setPermission,
+        onAllowed: async (queryIsCurrent) => {
+          const requestContext = await spaceRequestContext(scope, queryIsCurrent, bot.spaceId);
+          if (!queryIsCurrent()) return;
+          await registerPushToken({
+            permission: "allowed",
+            requestContext,
+            isCurrent: queryIsCurrent,
+          });
+        },
+      });
+      settingsReturn.current = visit;
+      void visit.open().catch((error) => {
+        if (ownerCurrent() && focused.current)
+          Alert.alert(t("Settings"), errorText(error, t("Try again.")));
       });
     } else {
       void readChatNotificationPermission(eligible)
