@@ -1,7 +1,7 @@
 export const ZH_MESSAGES: Record<string, string> = {
-  Routines: "例程",
+  Routines: "例行任务",
   Profile: "资料",
-  "Could not load routines": "无法加载例程",
+  "Could not load routines": "无法加载例行任务",
   "Get notified when this Bot finishes or needs input": "此伙伴完成任务或需要输入时接收通知",
   "Notifications are blocked in system settings.": "系统设置已禁用通知。",
   "Could not check notification permission.": "无法检查通知权限。",

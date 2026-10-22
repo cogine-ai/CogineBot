@@ -291,10 +291,21 @@ function Home() {
         const start = owner;
         const operationCurrent = () =>
           mounted.current && requestId === inboxRequestId.current && isMobileSessionCurrent(start);
+        const selectionCurrent = () => {
+          if (!mounted.current || !isMobileSessionCurrent(start)) return false;
+          if (requestId === inboxRequestId.current) return true;
+          const claim = captureMobileScope();
+          // A newer roster read must not cancel maintenance for our committed selection.
+          return (
+            claim.spaceId === nextMe.spaceId &&
+            claim.selectionSeq === start.selectionSeq + 1 &&
+            claim.spaceGeneration === start.spaceGeneration + 1
+          );
+        };
         bootstrap.current = { scope: start, target: nextMe.spaceId };
         let selected: boolean;
         try {
-          selected = await selectInitialSpace(nextMe.spaceId, { isCurrent: operationCurrent });
+          selected = await selectInitialSpace(nextMe.spaceId, { isCurrent: selectionCurrent });
         } finally {
           bootstrap.current = null;
         }

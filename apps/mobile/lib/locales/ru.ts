@@ -1,7 +1,7 @@
 export const RU_MESSAGES: Record<string, string> = {
-  Routines: "Сценарии",
+  Routines: "Задачи",
   Profile: "Профиль",
-  "Could not load routines": "Не удалось загрузить сценарии",
+  "Could not load routines": "Не удалось загрузить задачи",
   "Get notified when this Bot finishes or needs input":
     "Уведомлять, когда этот бот завершит работу или запросит ввод",
   "Notifications are blocked in system settings.":
