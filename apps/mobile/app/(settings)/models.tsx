@@ -126,6 +126,37 @@ export default function Models() {
   const [savedBaseUrl, setSavedBaseUrl] = useState<string | undefined>();
   const [references, setReferences] = useState<ModelCredentialReference[]>([]);
   const backupOptionsSnapshotRef = useRef(new Map<string, ModelBackupChoice>());
+  const savedBackupOptionsRef = useRef(new Map<string, Map<string, ModelBackupChoice>>());
+  const savedBackupOwnerRef = useRef<{
+    apiBase: string;
+    spaceGeneration: number;
+    sessionGeneration: number;
+  } | null>(null);
+  const clearStaleSavedBackupOptions = useCallback(() => {
+    const owner = savedBackupOwnerRef.current;
+    if (
+      owner &&
+      (owner.apiBase !== currentApiBase() ||
+        owner.spaceGeneration !== currentSpaceSelectionGeneration() ||
+        owner.sessionGeneration !== currentSessionGeneration())
+    ) {
+      savedBackupOptionsRef.current.clear();
+      savedBackupOwnerRef.current = null;
+    }
+  }, []);
+  const reconcileSavedBackupChoice = useCallback(
+    (choice: ModelBackupChoice) => {
+      clearStaleSavedBackupOptions();
+      const saved = choice.modelCredentialId
+        ? savedBackupOptionsRef.current.get(choice.modelCredentialId)?.get(backupChoiceKey(choice))
+        : undefined;
+      return saved?.expectedRevision === undefined ||
+        saved.expectedRevision <= (choice.expectedRevision ?? 0)
+        ? choice
+        : { ...choice, expectedRevision: saved.expectedRevision };
+    },
+    [clearStaleSavedBackupOptions],
+  );
   const modelRequestGenerationRef = useRef(0);
   const selectionRevisionRef = useRef(0);
   // The provider whose optional personal-key form is open.
@@ -212,6 +243,23 @@ export default function Models() {
   function clearFeedback() {
     setFeedbackAnchor("connection");
     setError(null);
+  }
+
+  function acceptSavedBackupConnection(saved: MobileModelCredential) {
+    clearStaleSavedBackupOptions();
+    savedBackupOwnerRef.current = {
+      apiBase: currentApiBase(),
+      spaceGeneration: currentSpaceSelectionGeneration(),
+      sessionGeneration: currentSessionGeneration(),
+    };
+    savedBackupOptionsRef.current.set(
+      saved.id,
+      new Map(
+        connectedBackupOptions(catalog, [saved]).map((option) => [backupChoiceKey(option), option]),
+      ),
+    );
+    setBackupModels((current) => current.map(reconcileSavedBackupChoice));
+    setSavedBackupModels((current) => current.map(reconcileSavedBackupChoice));
   }
 
   const copyOAuthCode = useCallback((code: string) => {
@@ -378,7 +426,9 @@ export default function Models() {
           const revision = choice.modelCredentialId
             ? optionSnapshot.get(backupChoiceKey(choice))?.expectedRevision
             : undefined;
-          return revision === undefined ? { ...choice } : { ...choice, expectedRevision: revision };
+          return reconcileSavedBackupChoice(
+            revision === undefined ? { ...choice } : { ...choice, expectedRevision: revision },
+          );
         });
         setSavedBackupModels(snapshot);
         setBackupModels(snapshot);
@@ -396,7 +446,7 @@ export default function Models() {
         }
       }
     },
-    [t],
+    [reconcileSavedBackupChoice, t],
   );
 
   useFocusEffect(
@@ -413,6 +463,8 @@ export default function Models() {
         modelRequestGenerationRef.current += 1;
         selectionRevisionRef.current += 1;
         backupRequestGenerationRef.current += 1;
+        savedBackupOptionsRef.current.clear();
+        savedBackupOwnerRef.current = null;
         backupReadyRef.current = false;
         backupLoadingRef.current = true;
         backupSavingRef.current = false;
@@ -934,6 +986,7 @@ export default function Models() {
       );
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
+      acceptSavedBackupConnection(savedConnection);
       setApiKey("");
       await load({ provider, modelId, connectionId: savedConnection.id });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
@@ -955,18 +1008,28 @@ export default function Models() {
   }
 
   async function finishSubscriptionSignIn(loginId: string, controller: AbortController) {
+    const revision = selectionRevisionRef.current;
+    const scope = meRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const sessionGeneration = currentSessionGeneration();
+    const apiBase = currentApiBase();
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      apiBase === currentApiBase() &&
+      operationCurrent(revision, scope, spaceGeneration, sessionGeneration);
     await waitForModelOAuth(loginId, controller.signal);
-    if (controller.signal.aborted) return;
+    if (!isCurrent()) return;
     const savedConnection = await rpc<MobileModelCredential>(
       "models/finishOAuth",
       { loginId },
       { signal: controller.signal },
     );
-    if (controller.signal.aborted) return;
+    if (!isCurrent()) return;
     oauthLoginIdRef.current = null;
     setOauth(null);
+    acceptSavedBackupConnection(savedConnection);
     await load({ provider, modelId, connectionId: savedConnection.id });
-    if (controller.signal.aborted) return;
+    if (!isCurrent()) return;
     publishFeedback("connection", {
       notice: t("Connected and using {label}.", { label: selected?.label ?? t("this model") }),
     });
@@ -1636,12 +1699,12 @@ export default function Models() {
       }
       return [
         ...current,
-        {
+        reconcileSavedBackupChoice({
           provider: choice.provider,
           modelId: choice.modelId,
           modelCredentialId: choice.modelCredentialId,
           expectedRevision: choice.expectedRevision,
-        },
+        }),
       ];
     });
     setBackupError(null);
@@ -1656,17 +1719,34 @@ export default function Models() {
       backupModels.length >= MAX_MODEL_BACKUPS
     )
       return;
+    const owner = meRef.current;
+    const generation = backupRequestGenerationRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const sessionGeneration = currentSessionGeneration();
+    const apiBase = currentApiBase();
     presentMessageActionSheet({
       title: t("Add connected model"),
       actions: addableBackupOptions.map((option) => ({
         text: `${option.providerName} · ${option.label}`,
-        onPress: () =>
+        onPress: () => {
+          if (
+            !owner ||
+            generation !== backupRequestGenerationRef.current ||
+            spaceGeneration !== currentSpaceSelectionGeneration() ||
+            sessionGeneration !== currentSessionGeneration() ||
+            apiBase !== currentApiBase() ||
+            owner.userId !== meRef.current?.userId ||
+            owner.spaceId !== meRef.current?.spaceId ||
+            (selectedSpaceId() !== null && selectedSpaceId() !== owner.spaceId)
+          )
+            return;
           addBackupChoice({
             provider: option.provider,
             modelId: option.modelId,
             modelCredentialId: option.modelCredentialId,
             expectedRevision: option.expectedRevision,
-          }),
+          });
+        },
       })),
       colorScheme,
       cancel: t("Cancel"),
@@ -1732,7 +1812,7 @@ export default function Models() {
       ) {
         return;
       }
-      setSavedBackupModels(choices);
+      setSavedBackupModels(choices.map(reconcileSavedBackupChoice));
       setBackupNotice(t("Backup models saved."));
     } catch (err) {
       if (requestGeneration !== backupRequestGenerationRef.current) return;

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Models from "../app/(settings)/models";
 import RoutineDetail from "../app/routine";
 import { resetI18nForTests } from "./i18n";
+import { presentMessageActionSheet } from "./message-action-sheet";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -74,7 +75,24 @@ vi.mock("../components/native-action-button", () => ({
     </button>
   ),
 }));
-vi.mock("../components/native-switch", () => ({ NativeSwitch: () => null }));
+vi.mock("../components/native-switch", () => ({
+  NativeSwitch: ({
+    accessibilityLabel,
+    value,
+    onValueChange,
+  }: {
+    accessibilityLabel: string;
+    value: boolean;
+    onValueChange: (value: boolean) => void;
+  }) => (
+    <input
+      type="checkbox"
+      aria-label={accessibilityLabel}
+      checked={value}
+      onChange={(event) => onValueChange(event.target.checked)}
+    />
+  ),
+}));
 vi.mock("../components/menu-picker", () => ({
   MenuPicker: ({
     label,
@@ -295,6 +313,456 @@ it("finishes backup loading after refocus metadata arrives behind an endpoint dr
     credentialId: "connection-a",
     expectedRevision: 7,
   });
+});
+
+it("keeps a reordered backup draft usable after its connection is saved", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let revision = 7;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/credentials")
+      return [
+        { ...credential, connectionRevision: revision },
+        {
+          ...credential,
+          id: "connection-b",
+          label: "Other",
+          isDefault: false,
+          connectionRevision: revision === 7 ? 3 : 11,
+        },
+      ];
+    if (procedure === "models/backups")
+      return [
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+        { provider: "openai-compatible", modelId: "model-b", modelCredentialId: "connection-a" },
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-b" },
+      ];
+    if (procedure === "models/connect") {
+      revision = 9;
+      return { ...credential, connectionRevision: revision };
+    }
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () =>
+    button("Move Server · https://models.example.test/v1 · model-a down").click(),
+  );
+  await act(async () => button("Save").click());
+  expect(state.rpc.mock.calls.filter(([name]) => name === "models/backups")).toHaveLength(1);
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-b",
+      expectedRevision: 3,
+    },
+  ]);
+});
+
+it("uses its acknowledged connection revision when an earlier backup load finishes later", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const backupLoad = deferred<unknown[]>();
+  let loads = 0;
+  let revision = 7;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/credentials")
+      return [{ ...credential, connectionRevision: revision }];
+    if (procedure === "models/backups") return ++loads === 1 ? [] : backupLoad.promise;
+    if (procedure === "models/connect") {
+      revision = 9;
+      return { ...credential, connectionRevision: revision };
+    }
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await refocus();
+  await act(async () => button("Save").click());
+  await act(async () =>
+    backupLoad.resolve([
+      { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+      { provider: "openai-compatible", modelId: "model-b", modelCredentialId: "connection-a" },
+    ]),
+  );
+  await act(async () =>
+    button("Move Server · https://models.example.test/v1 · model-a down").click(),
+  );
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+  ]);
+});
+
+it("updates an open backup picker only from its own connection save receipt", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const saving = deferred<typeof credential>();
+  let revision = 7;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/credentials")
+      return [{ ...credential, connectionRevision: revision }];
+    if (procedure === "models/connect") return saving.promise;
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Save").click());
+  await act(async () => button("Add connected model").click());
+  const menu = vi.mocked(presentMessageActionSheet).mock.lastCall?.[0];
+  if (!menu) throw new Error("Missing backup model picker");
+  const choice = menu.actions.find((action) => action.text.endsWith(" · model-b"));
+  if (!choice) throw new Error("Missing model-b option");
+  revision = 9;
+  await act(async () => saving.resolve({ ...credential, connectionRevision: revision }));
+  await act(async () => choice.onPress());
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+  ]);
+});
+
+it.each(["space", "session", "api"] as const)(
+  "ignores a captured backup picker after its %s owner changes",
+  async (owner) => {
+    await act(async () => root.render(<Models />));
+    await act(async () => button("Add connected model").click());
+    const menu = vi.mocked(presentMessageActionSheet).mock.lastCall?.[0];
+    if (!menu) throw new Error("Missing backup model picker");
+    if (owner === "space") state.spaceGeneration += 2;
+    else if (owner === "session") state.sessionGeneration += 2;
+    else state.apiBase = "https://replacement.example.test";
+    await act(async () => menu.actions[0]!.onPress());
+    expect(button("Save backups").disabled).toBe(true);
+    expect(container.textContent).not.toContain("1. Server");
+  },
+);
+
+it("keeps an already dispatched backup write locked while acknowledging a connection save", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const saving = deferred<unknown>();
+  let revision = 7;
+  let writes = 0;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/credentials")
+      return [{ ...credential, connectionRevision: revision }];
+    if (procedure === "models/backups")
+      return [
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+        { provider: "openai-compatible", modelId: "model-b", modelCredentialId: "connection-a" },
+      ];
+    if (procedure === "models/connect") {
+      revision = 9;
+      return { ...credential, connectionRevision: revision };
+    }
+    if (procedure === "models/setBackups") return ++writes === 1 ? saving.promise : input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () =>
+    button("Move Server · https://models.example.test/v1 · model-a down").click(),
+  );
+  await act(async () => button("Save backups").click());
+  const first = state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1];
+  await act(async () => button("Save").click());
+  expect(button("Save backups").disabled).toBe(true);
+  expect(first).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 7,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 7,
+    },
+  ]);
+  expect(writes).toBe(1);
+  await act(async () => saving.resolve(first));
+  await act(async () =>
+    button("Move Server · https://models.example.test/v1 · model-b down").click(),
+  );
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.filter(([name]) => name === "models/setBackups")[1]?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+  ]);
+});
+
+it("retains a staged unavailable backup and its captured revision after a connection save", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let saved = false;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    const connection = saved
+      ? { ...credential, enabledModelIds: ["model-a"], connectionRevision: 9 }
+      : credential;
+    if (procedure === "models/credentials") return [connection];
+    if (procedure === "models/backups")
+      return [
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+      ];
+    if (procedure === "models/connect") {
+      saved = true;
+      return { ...credential, enabledModelIds: ["model-a"], connectionRevision: 9 };
+    }
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Add connected model").click());
+  const menu = vi.mocked(presentMessageActionSheet).mock.lastCall?.[0];
+  if (!menu) throw new Error("Missing backup model picker");
+  await act(async () => menu.actions[0]!.onPress());
+  const enabledModel = container.querySelector<HTMLInputElement>('input[aria-label="model-b"]');
+  if (!enabledModel) throw new Error("Missing enabled model switch");
+  await act(async () => enabledModel.click());
+  await act(async () => button("Save").click());
+  expect(container.textContent).toContain("Not connected");
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 7,
+    },
+  ]);
+});
+
+it("reconciles backups after this screen renews a subscription connection", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const entry = {
+    provider: "subscription",
+    providerName: "Subscription",
+    id: "model-a",
+    label: "Model A",
+    billing: "",
+    auth: "oauth",
+    signIn: "device-code",
+  };
+  const connection = {
+    ...credential,
+    provider: "subscription",
+    label: "Subscription",
+    baseUrl: undefined,
+  };
+  let revision = 7;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "me")
+      return {
+        userId: "user-1",
+        spaceId: "space-1",
+        defaultProvider: "subscription",
+        defaultModel: "model-a",
+      };
+    if (procedure === "models/list") return [entry, { ...entry, id: "model-b", label: "Model B" }];
+    if (procedure === "models/credentials")
+      return [{ ...connection, connectionRevision: revision }];
+    if (procedure === "models/backups")
+      return [
+        { provider: "subscription", modelId: "model-a", modelCredentialId: "connection-a" },
+        { provider: "subscription", modelId: "model-b", modelCredentialId: "connection-a" },
+      ];
+    if (procedure === "models/beginOAuth")
+      return {
+        loginId: "login-a",
+        mode: "device-code",
+        verificationUri: "https://auth.example.test",
+        userCode: "CODE",
+        expiresInSeconds: 600,
+      };
+    if (procedure === "models/completeOAuth") return { status: "ready" };
+    if (procedure === "models/finishOAuth") {
+      revision = 9;
+      return { ...connection, connectionRevision: revision };
+    }
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Move Subscription · Model A down").click());
+  await act(async () => button("Sign in again").click());
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "subscription",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "subscription",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+  ]);
+});
+
+it("keeps a newer revision captured by an explicit backup retry", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let revision = 7;
+  let retry = false;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/credentials")
+      return [{ ...credential, connectionRevision: revision }];
+    if (procedure === "models/backups") {
+      if (!retry) throw new Error("Backup service unavailable");
+      return [
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+        { provider: "openai-compatible", modelId: "model-b", modelCredentialId: "connection-a" },
+      ];
+    }
+    if (procedure === "models/connect") {
+      revision = 8;
+      return { ...credential, connectionRevision: revision };
+    }
+    if (procedure === "models/setDefault") {
+      revision = 9;
+      return undefined;
+    }
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Save").click());
+  await act(async () => button("model-b").click());
+  await act(async () => button("Use this model").click());
+  retry = true;
+  await act(async () => button("Retry").click());
+  await act(async () =>
+    button("Move Server · https://models.example.test/v1 · model-a down").click(),
+  );
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+  ]);
+});
+
+it("discards acknowledged backup revisions when another server becomes the owner", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const other = {
+    ...credential,
+    id: "connection-b",
+    label: "Other",
+    isDefault: false,
+    connectionRevision: 5,
+  };
+  let savedFirst = false;
+  let retry = false;
+  state.rpc.mockImplementation(async (procedure: string, input: { credentialId?: string }) => {
+    const replacement = state.apiBase === "https://replacement.example.test";
+    if (procedure === "models/credentials")
+      return [
+        { ...credential, connectionRevision: replacement ? 3 : savedFirst ? 8 : 7 },
+        { ...other, connectionRevision: replacement ? 6 : 5 },
+      ];
+    if (procedure === "models/backups") {
+      if (!retry) throw new Error("Backup service unavailable");
+      return [
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+        { provider: "openai-compatible", modelId: "model-b", modelCredentialId: "connection-a" },
+      ];
+    }
+    if (procedure === "models/connect") {
+      savedFirst = true;
+      return input.credentialId === "connection-a"
+        ? { ...credential, connectionRevision: 8 }
+        : { ...other, connectionRevision: 6 };
+    }
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Save").click());
+  state.apiBase = "https://replacement.example.test";
+  const picker = container.querySelector<HTMLSelectElement>('select[aria-label="Connection"]');
+  if (!picker) throw new Error("Missing connection picker");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+      picker,
+      "connection-b",
+    );
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => button("Save").click());
+  retry = true;
+  await act(async () => button("Retry").click());
+  await act(async () =>
+    button("Move Server · https://models.example.test/v1 · model-a down").click(),
+  );
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 3,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 3,
+    },
+  ]);
 });
 
 it.each(["space", "session"] as const)(

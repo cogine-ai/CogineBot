@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ModelCredentialReference } from "@rakazo/contracts";
+import type { ModelBackupChoice, ModelCredentialReference } from "@rakazo/contracts";
 import type { ComponentProps, ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -11,7 +11,7 @@ const models = vi.hoisted(() => ({
   references: vi.fn<() => Promise<{ references: ModelCredentialReference[] }>>(async () => ({
     references: [],
   })),
-  backups: vi.fn(async () => []),
+  backups: vi.fn<() => Promise<ModelBackupChoice[]>>(async () => []),
   setBackups: vi.fn(async () => ({ ok: true })),
   credentials: vi.fn(),
   connect: vi.fn(),
@@ -229,6 +229,8 @@ beforeEach(() => {
   models.list.mockResolvedValue([deepseekEntry]);
   models.credentials.mockResolvedValue([]);
   models.connect.mockReset().mockResolvedValue({ id: "cred-saved", connectionRevision: 1 });
+  models.backups.mockReset().mockResolvedValue([]);
+  models.setBackups.mockReset().mockResolvedValue({ ok: true });
   models.disconnect.mockResolvedValue(undefined);
 });
 
@@ -460,6 +462,123 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+it("keeps a reordered backup draft usable after this screen saves its connection", async () => {
+  const connection = compatibleConnection();
+  const savedConnection = { ...connection, connectionRevision: 8 };
+  useCompatibleConnections([connection]);
+  models.backups.mockResolvedValue([
+    { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+    { provider: "openai-compatible", modelId: "model-b", modelCredentialId: "connection-a" },
+  ]);
+  models.connect.mockResolvedValue(savedConnection);
+  models.credentials.mockResolvedValueOnce([connection]).mockResolvedValue([savedConnection]);
+  const view = await renderSettings();
+  try {
+    await act(async () => {
+      view.container
+        .querySelector<HTMLButtonElement>('[data-testid="model-backup-2"] button')
+        ?.click();
+    });
+    await typeInto(compatibleKeyField(view.container), "synthetic-replacement-key");
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(models.connect).toHaveBeenCalledOnce();
+    await act(async () => buttons(view.container, "Save backups")[0]?.click());
+    expect(models.setBackups).toHaveBeenCalledWith(
+      [
+        {
+          provider: "openai-compatible",
+          modelId: "model-b",
+          modelCredentialId: "connection-a",
+          expectedRevision: 8,
+        },
+        {
+          provider: "openai-compatible",
+          modelId: "model-a",
+          modelCredentialId: "connection-a",
+          expectedRevision: 8,
+        },
+      ],
+      { context: { spaceId: "space-1" } },
+    );
+    expect(models.backups).toHaveBeenCalledOnce();
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("acknowledges subscription sign-in for an existing backup connection", async () => {
+  const connection = {
+    id: "subscription-connection",
+    provider: "openai",
+    label: "Subscription",
+    hasKey: true,
+    isDefault: true,
+    modelId: "model-a",
+    connectionRevision: 7,
+    authKind: "oauth",
+  };
+  const entry = {
+    provider: "openai",
+    providerName: "OpenAI",
+    id: "model-a",
+    label: "Model A",
+    billing: "Subscription",
+    auth: "oauth" as const,
+    signIn: "device-code" as const,
+  };
+  const savedConnection = { ...connection, connectionRevision: 9 };
+  vi.mocked(rpc.me).mockResolvedValue(account("openai", "model-a"));
+  models.list.mockResolvedValue([entry, { ...entry, id: "model-b", label: "Model B" }]);
+  models.credentials.mockResolvedValueOnce([connection]).mockResolvedValue([savedConnection]);
+  models.backups.mockResolvedValue([
+    { provider: "openai", modelId: "model-a", modelCredentialId: connection.id },
+    { provider: "openai", modelId: "model-b", modelCredentialId: connection.id },
+  ]);
+  models.beginOAuth.mockResolvedValue({
+    loginId: "synthetic-login",
+    provider: "openai",
+    mode: "device-code",
+    userCode: "SYNTHETIC",
+    verificationUri: "https://signin.example.test/device",
+    expiresInSeconds: 60,
+  });
+  models.completeOAuth.mockResolvedValue({ status: "ready" });
+  models.finishOAuth.mockResolvedValue(savedConnection);
+  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  const view = await renderSettings();
+  try {
+    await act(async () => {
+      view.container
+        .querySelector<HTMLButtonElement>('[data-testid="model-backup-2"] button')
+        ?.click();
+    });
+    await act(async () => buttons(view.container, "Sign in again")[0]?.click());
+    expect(models.finishOAuth).toHaveBeenCalledOnce();
+    await act(async () => buttons(view.container, "Save backups")[0]?.click());
+    expect(models.setBackups).toHaveBeenCalledWith(
+      [
+        {
+          provider: "openai",
+          modelId: "model-b",
+          modelCredentialId: connection.id,
+          expectedRevision: 9,
+        },
+        {
+          provider: "openai",
+          modelId: "model-a",
+          modelCredentialId: connection.id,
+          expectedRevision: 9,
+        },
+      ],
+      { context: { spaceId: "space-1" } },
+    );
+    expect(models.backups).toHaveBeenCalledOnce();
+  } finally {
+    await view.unmount();
+    open.mockRestore();
+  }
+});
 
 it("discovers without enabling models and saves explicit enabled choices with connection identity", async () => {
   useCompatibleConnections();

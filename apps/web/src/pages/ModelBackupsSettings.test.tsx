@@ -11,6 +11,7 @@ const backupApi = vi.hoisted(() => ({
   backups: vi.fn(),
   setBackups: vi.fn(),
   selectedSpaceId: vi.fn(() => "space-a"),
+  spaceGeneration: 0,
   translate: (parts: TemplateStringsArray, ...values: string[]) =>
     parts.reduce((text, part, index) => `${text}${part}${values[index] ?? ""}`, ""),
 }));
@@ -21,6 +22,7 @@ vi.mock("../lib/rpc", () => ({
     models: { backups: backupApi.backups, setBackups: backupApi.setBackups },
   },
   selectedSpaceId: backupApi.selectedSpaceId,
+  currentSpaceSelectionGeneration: () => backupApi.spaceGeneration,
 }));
 vi.mock("@lingui/react/macro", () => ({
   useLingui: () => ({ t: backupApi.translate }),
@@ -125,6 +127,7 @@ beforeEach(() => {
   backupApi.backups.mockReset().mockResolvedValue([]);
   backupApi.setBackups.mockReset().mockResolvedValue({ ok: true });
   backupApi.selectedSpaceId.mockReturnValue(scope.spaceId);
+  backupApi.spaceGeneration = 0;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -406,4 +409,351 @@ it("snapshots exact-ID revisions for loaded backups before a reorder or removal"
     ],
     { context: { spaceId: scope.spaceId } },
   );
+});
+
+it("acknowledges this screen's connection save for a pending picker choice", async () => {
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  await flush();
+  await pickConnectedModel("OpenAI · GPT test");
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 9 }))}
+        connectionSave={{
+          ...scope,
+          spaceGeneration: 0,
+          credential: { ...credentials[1]!, connectionRevision: 9 },
+        }}
+      />,
+    );
+  });
+  await clickButton("Add");
+  await clickButton("Save backups");
+  expect(backupApi.setBackups).toHaveBeenCalledWith(
+    [
+      {
+        provider: "openai",
+        modelId: "gpt-test",
+        modelCredentialId: "openai-credential",
+        expectedRevision: 9,
+      },
+    ],
+    { context: { spaceId: scope.spaceId } },
+  );
+  expect(backupApi.backups).toHaveBeenCalledOnce();
+});
+
+it("applies an acknowledged save after the initial backup list arrives late", async () => {
+  let resolveBackups!: (choices: unknown[]) => void;
+  backupApi.backups.mockReturnValueOnce(
+    new Promise((resolve) => {
+      resolveBackups = resolve;
+    }),
+  );
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 9 }))}
+        connectionSave={{
+          ...scope,
+          spaceGeneration: 0,
+          credential: { ...credentials[1]!, connectionRevision: 9 },
+        }}
+      />,
+    );
+    resolveBackups([
+      {
+        provider: "anthropic",
+        modelId: "claude-sonnet",
+        modelCredentialId: "anthropic-credential",
+      },
+      { provider: "openai", modelId: "gpt-test", modelCredentialId: "openai-credential" },
+    ]);
+  });
+  await clickButton("Remove Anthropic · Claude Sonnet");
+  await clickButton("Save backups");
+  expect(backupApi.setBackups).toHaveBeenCalledWith(
+    [
+      {
+        provider: "openai",
+        modelId: "gpt-test",
+        modelCredentialId: "openai-credential",
+        expectedRevision: 9,
+      },
+    ],
+    { context: { spaceId: scope.spaceId } },
+  );
+  expect(backupApi.backups).toHaveBeenCalledOnce();
+});
+
+it("keeps a dispatched backup write locked while acknowledging a connection save", async () => {
+  let rejectSave!: (error: Error) => void;
+  backupApi.setBackups.mockReturnValueOnce(
+    new Promise((_, reject) => {
+      rejectSave = reject;
+    }),
+  );
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  await pickConnectedModel("OpenAI · GPT test");
+  await clickButton("Add");
+  await clickButton("Save backups");
+  expect(backupApi.setBackups).toHaveBeenCalledOnce();
+  expect(backupApi.setBackups.mock.calls[0]?.[0]).toEqual([
+    {
+      provider: "openai",
+      modelId: "gpt-test",
+      modelCredentialId: "openai-credential",
+      expectedRevision: 2,
+    },
+  ]);
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 9 }))}
+        connectionSave={{
+          ...scope,
+          spaceGeneration: 0,
+          credential: { ...credentials[1]!, connectionRevision: 9 },
+        }}
+      />,
+    );
+  });
+  expect(button("Saving…").disabled).toBe(true);
+  expect(button("Add").disabled).toBe(true);
+  await clickButton("Saving…");
+  expect(backupApi.setBackups).toHaveBeenCalledOnce();
+  await act(async () => rejectSave(new Error("Model connection changed. Reload and try again.")));
+  expect(backupRows()).toEqual(["OpenAI · GPT test"]);
+  await clickButton("Save backups");
+  expect(backupApi.setBackups.mock.calls[1]?.[0]).toEqual([
+    {
+      provider: "openai",
+      modelId: "gpt-test",
+      modelCredentialId: "openai-credential",
+      expectedRevision: 9,
+    },
+  ]);
+});
+
+it("retains an unavailable draft tuple without replacing it with another connection", async () => {
+  const connection = {
+    id: "compatible-a",
+    provider: "openai-compatible",
+    label: "Server A",
+    baseUrl: "https://models-a.example.test/v1",
+    hasKey: true,
+    isDefault: true,
+    modelId: "model-a",
+    enabledModelIds: ["model-a", "model-b"],
+    connectionRevision: 7,
+  };
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={[connection]} />);
+  });
+  const picker = container.querySelector<HTMLSelectElement>("select")!;
+  const pending = [...picker.options].find((option) => option.textContent?.includes("model-b"))!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+      picker,
+      pending.value,
+    );
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await clickButton("Add");
+  const savedConnection = { ...connection, connectionRevision: 9, enabledModelIds: ["model-a"] };
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={[
+          savedConnection,
+          { ...connection, id: "compatible-b", connectionRevision: 11 },
+        ]}
+        connectionSave={{ ...scope, spaceGeneration: 0, credential: savedConnection }}
+      />,
+    );
+  });
+  expect(container.textContent).toContain("Not connected");
+  backupApi.setBackups.mockRejectedValueOnce(
+    new Error("Model connection changed. Reload and try again."),
+  );
+  await clickButton("Save backups");
+  expect(backupApi.setBackups.mock.calls[0]?.[0]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "compatible-a",
+      expectedRevision: 7,
+    },
+  ]);
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+    "Model connection changed. Reload and try again.",
+  );
+  expect(container.querySelector('[data-testid="model-backup-1"]')).not.toBeNull();
+});
+
+it("does not replay an earlier own-save receipt after the settings owner changes", async () => {
+  backupApi.me.mockImplementation((options: { context: { spaceId: string } }) =>
+    Promise.resolve({
+      userId: options.context.spaceId === "space-a" ? "user-a" : "user-b",
+      spaceId: options.context.spaceId,
+    }),
+  );
+  backupApi.backups.mockResolvedValue([
+    { provider: "anthropic", modelId: "claude-sonnet", modelCredentialId: "anthropic-credential" },
+    { provider: "openai", modelId: "gpt-test", modelCredentialId: "openai-credential" },
+  ]);
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  const connectionSave = {
+    ...scope,
+    spaceGeneration: 0,
+    credential: { ...credentials[1]!, connectionRevision: 9 },
+  };
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials}
+        connectionSave={connectionSave}
+      />,
+    );
+  });
+  backupApi.selectedSpaceId.mockReturnValue("space-b");
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        userId="user-b"
+        spaceId="space-b"
+        catalog={catalog}
+        credentials={credentials}
+        connectionSave={connectionSave}
+      />,
+    );
+  });
+  backupApi.selectedSpaceId.mockReturnValue("space-a");
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials}
+        connectionSave={connectionSave}
+      />,
+    );
+  });
+  await clickButton("Remove Anthropic · Claude Sonnet");
+  await clickButton("Save backups");
+  expect(backupApi.setBackups).toHaveBeenCalledWith(
+    [
+      {
+        provider: "openai",
+        modelId: "gpt-test",
+        modelCredentialId: "openai-credential",
+        expectedRevision: 2,
+      },
+    ],
+    { context: { spaceId: scope.spaceId } },
+  );
+});
+
+it("keeps a newer revision accepted by an explicit backup retry", async () => {
+  backupApi.backups
+    .mockRejectedValueOnce(new Error("Temporary load failure"))
+    .mockResolvedValueOnce([
+      {
+        provider: "anthropic",
+        modelId: "claude-sonnet",
+        modelCredentialId: "anthropic-credential",
+      },
+      { provider: "openai", modelId: "gpt-test", modelCredentialId: "openai-credential" },
+    ]);
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  const connectionSave = {
+    ...scope,
+    spaceGeneration: 0,
+    credential: { ...credentials[1]!, connectionRevision: 8 },
+  };
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 8 }))}
+        connectionSave={connectionSave}
+      />,
+    );
+  });
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 9 }))}
+        connectionSave={connectionSave}
+      />,
+    );
+  });
+  await clickButton("Retry");
+  await clickButton("Remove Anthropic · Claude Sonnet");
+  await clickButton("Save backups");
+  expect(backupApi.setBackups.mock.calls[0]?.[0]).toEqual([
+    {
+      provider: "openai",
+      modelId: "gpt-test",
+      modelCredentialId: "openai-credential",
+      expectedRevision: 9,
+    },
+  ]);
+});
+
+it("ignores an own-save receipt from before a same-ID Space reselection", async () => {
+  await act(async () => {
+    root.render(<ModelBackupsSettings {...scope} catalog={catalog} credentials={credentials} />);
+  });
+  await pickConnectedModel("OpenAI · GPT test");
+  const connectionSave = {
+    ...scope,
+    spaceGeneration: 0,
+    credential: { ...credentials[1]!, connectionRevision: 9 },
+  };
+  backupApi.spaceGeneration = 2;
+  await act(async () => {
+    root.render(
+      <ModelBackupsSettings
+        {...scope}
+        catalog={catalog}
+        credentials={credentials.map((entry) => ({ ...entry, connectionRevision: 9 }))}
+        connectionSave={connectionSave}
+      />,
+    );
+  });
+  await clickButton("Add");
+  await clickButton("Save backups");
+  expect(backupApi.setBackups.mock.calls[0]?.[0]).toEqual([
+    {
+      provider: "openai",
+      modelId: "gpt-test",
+      modelCredentialId: "openai-credential",
+      expectedRevision: 2,
+    },
+  ]);
 });

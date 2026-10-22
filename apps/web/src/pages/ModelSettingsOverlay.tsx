@@ -74,6 +74,7 @@ import {
 import { currentSpaceSelectionGeneration, rpc, selectedSpaceId } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
+import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
 
 function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
@@ -96,6 +97,7 @@ export function ModelSettingsOverlay({
   const { t } = useLingui();
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
+  const [connectionSave, setConnectionSave] = useState<ModelConnectionSave | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [provider, setProvider] = useState("");
   const [connectionId, setConnectionId] = useState<string | null>(null);
@@ -151,6 +153,11 @@ export function ModelSettingsOverlay({
   const mountedRef = useRef(true);
   const meRef = useRef(me);
   meRef.current = me;
+  const oauthScopeRef = useRef<{
+    scope: Me | null;
+    selectionRevision: number;
+    spaceGeneration: number;
+  } | null>(null);
 
   const {
     oauth,
@@ -165,6 +172,19 @@ export function ModelSettingsOverlay({
     onClearError: () => setError(null),
     onError: setError,
     onFinished: async (controller, credential) => {
+      const owner = oauthScopeRef.current;
+      if (
+        owner?.scope &&
+        !controller.signal.aborted &&
+        operationCurrent(owner.selectionRevision, owner.scope, owner.spaceGeneration)
+      ) {
+        setConnectionSave({
+          userId: owner.scope.userId,
+          spaceId: owner.scope.spaceId,
+          spaceGeneration: owner.spaceGeneration,
+          credential,
+        });
+      }
       await refresh(credential.id);
       if (controller.signal.aborted) return;
       setNotice(t`Connected and using ${selectedLabelRef.current ?? "this model"}.`);
@@ -780,6 +800,13 @@ export function ModelSettingsOverlay({
         { context: { spaceId: scope?.spaceId } },
       );
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
+      if (scope)
+        setConnectionSave({
+          userId: scope.userId,
+          spaceId: scope.spaceId,
+          spaceGeneration,
+          credential: savedConnection,
+        });
       setApiKey("");
       await refresh(savedConnection.id);
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
@@ -838,6 +865,11 @@ export function ModelSettingsOverlay({
 
   function beginSelectedSubscriptionSignIn() {
     if (!selected) return;
+    oauthScopeRef.current = {
+      scope: me,
+      selectionRevision: selectionRevisionRef.current,
+      spaceGeneration: currentSpaceSelectionGeneration(),
+    };
     setNotice(null);
     void startSubscriptionSignIn({
       provider: selected.provider,
@@ -1733,6 +1765,7 @@ export function ModelSettingsOverlay({
               spaceId={me.spaceId}
               catalog={catalog}
               credentials={credentials}
+              connectionSave={connectionSave}
             />
           ) : null}
         </div>

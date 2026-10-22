@@ -9,9 +9,13 @@ import {
 } from "@rakazo/contracts";
 import { Button, NativeSelect, NativeSelectOption } from "@rakazo/ui-web";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { rpc, selectedSpaceId } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, rpc, selectedSpaceId } from "../lib/rpc";
 
 type Scope = { userId: string; spaceId: string };
+export type ModelConnectionSave = Scope & {
+  credential: ModelCredential;
+  spaceGeneration: number;
+};
 type BackupsState = {
   scopeKey: string;
   loading: boolean;
@@ -24,6 +28,11 @@ type BackupsState = {
   error: string | null;
   notice: string | null;
 };
+type AcknowledgedRevisions = {
+  scopeKey: string;
+  spaceGeneration: number;
+  revisions: Map<string, number>;
+};
 
 function scopeKey(scope: Scope): string {
   return JSON.stringify([scope.userId, scope.spaceId]);
@@ -34,17 +43,57 @@ function isSelectedSpace(spaceId: string): boolean {
   return selected === null || selected === spaceId;
 }
 
+function acknowledgedBackupChoice(
+  choice: ModelBackupChoice,
+  owner: AcknowledgedRevisions,
+  activeScopeKey: string,
+): ModelBackupChoice {
+  if (
+    owner.scopeKey !== activeScopeKey ||
+    owner.spaceGeneration !== currentSpaceSelectionGeneration()
+  )
+    return choice;
+  const revision = owner.revisions.get(backupChoiceKey(choice));
+  return revision === undefined || revision <= (choice.expectedRevision ?? 0)
+    ? choice
+    : { ...choice, expectedRevision: revision };
+}
+
 export function ModelBackupsSettings({
   userId,
   spaceId,
   catalog,
   credentials,
-}: Scope & { catalog: ModelCatalogEntry[]; credentials: ModelCredential[] }) {
+  connectionSave,
+}: Scope & {
+  catalog: ModelCatalogEntry[];
+  credentials: ModelCredential[];
+  connectionSave?: ModelConnectionSave | null;
+}) {
   const { t } = useLingui();
   const activeScopeKey = scopeKey({ userId, spaceId });
   const activeScopeRef = useRef(activeScopeKey);
   activeScopeRef.current = activeScopeKey;
   const requestGenerationRef = useRef(0);
+  const appliedConnectionSaveRef = useRef(connectionSave);
+  const spaceGeneration = currentSpaceSelectionGeneration();
+  // A successful save acknowledges its new revision. Background metadata alone
+  // must retain the revision captured by a pending backup draft.
+  const acknowledgedRevisionsRef = useRef({
+    scopeKey: activeScopeKey,
+    spaceGeneration,
+    revisions: new Map<string, number>(),
+  });
+  if (
+    acknowledgedRevisionsRef.current.scopeKey !== activeScopeKey ||
+    acknowledgedRevisionsRef.current.spaceGeneration !== spaceGeneration
+  ) {
+    acknowledgedRevisionsRef.current = {
+      scopeKey: activeScopeKey,
+      spaceGeneration,
+      revisions: new Map(),
+    };
+  }
   const [reloadNonce, setReloadNonce] = useState(0);
   const [state, setState] = useState<BackupsState>({
     scopeKey: activeScopeKey,
@@ -111,7 +160,11 @@ export function ModelBackupsSettings({
           const revision = choice.modelCredentialId
             ? optionByKey.get(backupChoiceKey(choice))?.expectedRevision
             : undefined;
-          return revision === undefined ? { ...choice } : { ...choice, expectedRevision: revision };
+          return acknowledgedBackupChoice(
+            revision === undefined ? { ...choice } : { ...choice, expectedRevision: revision },
+            acknowledgedRevisionsRef.current,
+            activeScopeKey,
+          );
         });
         setState({
           scopeKey: activeScopeKey,
@@ -144,6 +197,40 @@ export function ModelBackupsSettings({
       if (requestGenerationRef.current === generation) requestGenerationRef.current += 1;
     };
   }, [activeScopeKey, reloadNonce, spaceId, t, userId]);
+
+  useEffect(() => {
+    if (!connectionSave || connectionSave === appliedConnectionSaveRef.current) return;
+    appliedConnectionSaveRef.current = connectionSave;
+    if (
+      connectionSave.userId !== userId ||
+      connectionSave.spaceId !== spaceId ||
+      connectionSave.spaceGeneration !== currentSpaceSelectionGeneration() ||
+      activeScopeRef.current !== activeScopeKey ||
+      !isSelectedSpace(spaceId)
+    )
+      return;
+    const owner = acknowledgedRevisionsRef.current;
+    for (const option of connectedBackupOptions(catalog, [connectionSave.credential])) {
+      if (option.expectedRevision !== undefined)
+        owner.revisions.set(backupChoiceKey(option), option.expectedRevision);
+    }
+    setState((previous) =>
+      previous.scopeKey === activeScopeKey
+        ? {
+            ...previous,
+            saved: previous.saved.map((choice) =>
+              acknowledgedBackupChoice(choice, owner, activeScopeKey),
+            ),
+            draft: previous.draft.map((choice) =>
+              acknowledgedBackupChoice(choice, owner, activeScopeKey),
+            ),
+            selectedChoice: previous.selectedChoice
+              ? acknowledgedBackupChoice(previous.selectedChoice, owner, activeScopeKey)
+              : null,
+          }
+        : previous,
+    );
+  }, [activeScopeKey, catalog, connectionSave, spaceGeneration, spaceId, userId]);
 
   function updateDraft(next: (draft: ModelBackupChoice[]) => ModelBackupChoice[]) {
     if (!editable) return;
@@ -218,7 +305,9 @@ export function ModelBackupsSettings({
           ? {
               ...previous,
               saving: false,
-              saved: choices,
+              saved: choices.map((choice) =>
+                acknowledgedBackupChoice(choice, acknowledgedRevisionsRef.current, activeScopeKey),
+              ),
               error: null,
               notice: t`Backup models saved.`,
             }
