@@ -3010,7 +3010,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
     return {
       provider,
       id: modelId,
-      modelCredentialId: credential.id,
+      modelCredentialId: resolved.modelCredentialId,
       apiKey: resolved.oauth ? undefined : resolved.apiKey,
       ...cloudflareRunFields(resolved),
       baseUrl: resolved.baseUrl,
@@ -3108,7 +3108,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       return {
         provider,
         id,
-        modelCredentialId: credential?.id ?? null,
+        modelCredentialId: resolved.modelCredentialId,
         apiKey: resolved.oauth ? undefined : resolved.apiKey,
         ...cloudflareRunFields(resolved),
         baseUrl: resolved.baseUrl,
@@ -3782,7 +3782,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             data: {
               modelProvider: runModelProvider,
               modelId: runModelId,
-              modelCredentialId: credential?.id ?? null,
+              modelCredentialId: resolved.modelCredentialId,
             },
           });
         }
@@ -4511,6 +4511,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         }),
                       runtime: deps.runtime,
                       checker: checker!,
+                      modelCredentialId: judgeKey.modelCredentialId,
                       apiKey: judgeKey.oauth ? undefined : judgeKey.apiKey,
                       accountId: judgeKey.accountId,
                       gatewayId: judgeKey.gatewayId,
@@ -6730,7 +6731,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               model: {
                 provider: runModelProvider,
                 id: runModelId,
-                modelCredentialId: credential?.id ?? null,
+                modelCredentialId: resolved.modelCredentialId,
                 apiKey: resolved.oauth ? undefined : resolved.apiKey,
                 ...cloudflareRunFields(resolved),
                 baseUrl: resolved.baseUrl,
@@ -8619,6 +8620,7 @@ async function resolveModelKey(
   registerSecrets?: (values: string[]) => void,
   requireStoredSecret = false,
 ): Promise<{
+  modelCredentialId: string | null;
   apiKey?: string;
   accountId?: string;
   gatewayId?: string;
@@ -8649,7 +8651,7 @@ async function resolveModelKey(
           throw new UnavailableModelForAuthError("Model connection is unavailable");
         }
         cloudflareGatewayProviderEnv({ provider });
-        return { apiKey: deploymentKeyFor(deps, provider), redact: [] };
+        return { modelCredentialId: null, apiKey: deploymentKeyFor(deps, provider), redact: [] };
       }
       const plaintext = await deps.secretStore.load(row.ciphertext, row.id);
       registerSecrets?.(secretValuesToRedact(parseModelSecret(plaintext)));
@@ -8719,6 +8721,7 @@ async function resolveModelKey(
       const gatewayId = resolved.secret.kind === "api_key" ? resolved.secret.gatewayId : undefined;
       cloudflareGatewayProviderEnv({ provider, accountId, gatewayId });
       return {
+        modelCredentialId: credential.id,
         apiKey: resolved.apiKey,
         accountId,
         gatewayId,
@@ -8777,7 +8780,7 @@ async function resolveModelKey(
   }
   if (requireStoredSecret) throw new Error("Backup model credential is no longer available");
   cloudflareGatewayProviderEnv({ provider });
-  return { apiKey: deploymentKeyFor(deps, provider), redact: [] };
+  return { modelCredentialId: null, apiKey: deploymentKeyFor(deps, provider), redact: [] };
 }
 
 function cloudflareRunFields(resolved: { accountId?: string; gatewayId?: string }): {

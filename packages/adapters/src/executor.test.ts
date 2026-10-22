@@ -2989,6 +2989,8 @@ description: Prepare standup notes
     ).resolves.toMatchObject({
       provider,
       id: "bot-vision-model",
+      modelCredentialId: "credential-openai-compatible",
+      apiKey: "",
       acceptsImages: true,
       maxImagesPerPrompt: 1,
       maxTokens: 8192,
