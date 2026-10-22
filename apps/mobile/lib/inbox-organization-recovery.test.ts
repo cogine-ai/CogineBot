@@ -27,6 +27,10 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function settingsReturn() {
+  return { open: vi.fn(async () => undefined), focus: vi.fn(), blur: vi.fn(), cancel: vi.fn() };
+}
+
 function home() {
   const live = {
     api: "https://api.example.test",
@@ -165,10 +169,37 @@ function home() {
     })),
     afterChatNotifyChange: vi.fn(async (_change: Record<string, unknown>) => null as string | null),
     registerPushToken: vi.fn(async (_options: unknown) => undefined),
+    notificationFocused: { current: true },
+    notificationSettingsReturn: { current: null as ReturnType<typeof settingsReturn> | null },
+    createNotificationSettingsReturn: vi.fn((_options: Record<string, unknown>) =>
+      settingsReturn(),
+    ),
+    openLiveNotificationSettings: vi.fn(async () => undefined),
+    readChatNotificationPermission: vi.fn(async (_current: () => boolean) => "denied"),
+    Alert: {
+      alert: vi.fn(
+        (_title: string, _message: string, _buttons: Array<{ onPress?: () => void }>) => undefined,
+      ),
+    },
   };
+  const showPermission = callback(
+    "showNotificationPermission",
+    "handleChatAction",
+    Object.fromEntries(
+      Object.entries(actions).filter(([key]) => key !== "showNotificationPermission"),
+    ),
+  );
   const handleSectionAction = callback("handleSectionAction", "renderItem", actions);
   const handleChatAction = callback("handleChatAction", "handleSectionAction", actions);
-  return { live, navigation, trackedSave, handleSectionAction, handleChatAction, ...actions };
+  return {
+    live,
+    navigation,
+    trackedSave,
+    handleSectionAction,
+    handleChatAction,
+    showPermission,
+    ...actions,
+  };
 }
 
 describe("confirmed mobile organization recovery", () => {
@@ -368,6 +399,180 @@ describe("confirmed mobile organization recovery", () => {
       1,
     );
     expect(state.reportOrganizationError).not.toHaveBeenCalled();
+  });
+
+  it("arms Settings return only from the explicit alert action", async () => {
+    const state = home();
+    const allowed = vi.fn(async (_current: () => boolean) => undefined);
+    let current = true;
+    state.showPermission("denied", () => current, allowed);
+    expect(state.createNotificationSettingsReturn).not.toHaveBeenCalled();
+    state.Alert.alert.mock.calls.at(-1)![2][1]!.onPress!();
+    expect(state.createNotificationSettingsReturn).toHaveBeenCalledOnce();
+    const options = state.createNotificationSettingsReturn.mock.calls[0]![0] as {
+      isCurrent: () => boolean;
+      isFocused: () => boolean;
+      onAllowed: (current: () => boolean) => Promise<void>;
+    };
+    expect(options.isCurrent()).toBe(true);
+    expect(options.isFocused()).toBe(true);
+    const queryCurrent = () => true;
+    await options.onAllowed(queryCurrent);
+    expect(allowed).toHaveBeenCalledExactlyOnceWith(queryCurrent);
+    expect(state.notificationSettingsReturn.current?.open).toHaveBeenCalledOnce();
+    current = false;
+    expect(options.isCurrent()).toBe(false);
+    state.notificationFocused.current = false;
+    expect(options.isFocused()).toBe(false);
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+
+  it("keeps permission Retry query-only before its separate Settings action", async () => {
+    const state = home();
+    const allowed = vi.fn(async (_current: () => boolean) => undefined);
+    state.showPermission("unknown", () => true, allowed);
+    state.Alert.alert.mock.calls.at(-1)![2][1]!.onPress!();
+    await vi.waitFor(() => expect(state.Alert.alert).toHaveBeenCalledTimes(2));
+    expect(state.readChatNotificationPermission).toHaveBeenCalledOnce();
+    expect(state.createNotificationSettingsReturn).not.toHaveBeenCalled();
+    expect(allowed).not.toHaveBeenCalled();
+    state.Alert.alert.mock.calls.at(-1)![2][1]!.onPress!();
+    expect(state.createNotificationSettingsReturn).toHaveBeenCalledOnce();
+    expect(state.notificationSettingsReturn.current?.open).toHaveBeenCalledOnce();
+  });
+
+  it("replaces an earlier Settings return ticket before opening Settings again", () => {
+    const state = home();
+    state.showPermission(
+      "denied",
+      () => true,
+      async () => undefined,
+    );
+    const press = state.Alert.alert.mock.calls.at(-1)![2][1]!.onPress!;
+    press();
+    const previous = state.notificationSettingsReturn.current!;
+    press();
+    expect(previous.cancel).toHaveBeenCalledOnce();
+    expect(state.createNotificationSettingsReturn).toHaveBeenCalledTimes(2);
+    expect(state.notificationSettingsReturn.current).not.toBe(previous);
+  });
+
+  it("keeps Settings recovery tied to the latest enabled Bot and saved owner", async () => {
+    const state = home();
+    const chat = {
+      id: "a",
+      sectionId: null,
+      pinned: false,
+      unread: false,
+      notifyOnFinish: false,
+      spaceId: state.me.spaceId,
+    };
+    Object.assign(state.inboxState.current, { bots: [chat] });
+    state.afterChatNotifyChange.mockResolvedValueOnce("denied");
+    state.rpc.mockImplementation(async (procedure) => {
+      if (procedure === "bots/update") return { ...chat, notifyOnFinish: true };
+      throw new Error("Offline");
+    });
+    state.handleChatAction("bot", chat, "notifications");
+    await state.trackedSave.mock.results[0]!.value;
+    const [status, current, allowed] = state.showNotificationPermission.mock
+      .calls[0]! as unknown as [string, () => boolean, (current: () => boolean) => Promise<void>];
+    expect(status).toBe("denied");
+    expect(current()).toBe(true);
+    state.inboxState.current.bots[0]!.notifyOnFinish = false;
+    expect(current()).toBe(false);
+    state.inboxState.current.bots[0]!.notifyOnFinish = true;
+    const queryCurrent = () => true;
+    await allowed(queryCurrent);
+    expect(state.registerPushToken).toHaveBeenCalledExactlyOnceWith({
+      permission: "allowed",
+      requestContext: await state.spaceRequestContext.mock.results[0]!.value,
+      isCurrent: queryCurrent,
+    });
+    state.live.selectionSeq++;
+    expect(current()).toBe(false);
+  });
+
+  it("cancels a Settings ticket before starting a newer notification intent", async () => {
+    const state = home();
+    const previous = settingsReturn();
+    state.notificationSettingsReturn.current = previous;
+    const chat = {
+      id: "a",
+      sectionId: null,
+      pinned: false,
+      unread: false,
+      notifyOnFinish: false,
+      spaceId: state.me.spaceId,
+    };
+    Object.assign(state.inboxState.current, { bots: [chat] });
+    state.rpc.mockImplementation(async (procedure) => {
+      if (procedure === "bots/update") return { ...chat, notifyOnFinish: true };
+      throw new Error("Offline");
+    });
+    state.handleChatAction("bot", chat, "notifications");
+    expect(previous.cancel).toHaveBeenCalledOnce();
+    expect(state.notificationSettingsReturn.current).toBeNull();
+    await state.trackedSave.mock.results[0]!.value;
+  });
+
+  it("cleans up Settings return ownership on Home scope changes, focus and unmount", () => {
+    let unmount!: () => void;
+    let focus!: () => () => void;
+    let scopeChanged!: () => void;
+    const unsubscribe = vi.fn();
+    const first = settingsReturn();
+    const notificationSettingsReturn = {
+      current: first as ReturnType<typeof settingsReturn> | null,
+    };
+    const notificationFocused = { current: false };
+    const mounted = { current: false };
+    const inboxRequestId = { current: 0 };
+    const dependencies = {
+      mounted,
+      inboxRequestId,
+      notificationSettingsReturn,
+      notificationFocused,
+      subscribeMobileScope: (listener: () => void) => {
+        scopeChanged = listener;
+        return unsubscribe;
+      },
+      useEffect: (setup: () => () => void) => {
+        unmount = setup();
+      },
+      useCallback: (setup: () => () => void) => setup,
+      useFocusEffect: (setup: () => () => void) => {
+        focus = setup;
+      },
+    };
+    const start = source.indexOf("  useEffect(() => {\n    mounted.current = true;");
+    const end = source.indexOf("  const creatingBotRef", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    new Function(
+      ...Object.keys(dependencies),
+      ts.transpileModule(source.slice(start, end), {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+      }).outputText,
+    )(...Object.values(dependencies));
+    const blur = focus();
+    expect(mounted.current).toBe(true);
+    expect(notificationFocused.current).toBe(true);
+    expect(first.focus).toHaveBeenCalledOnce();
+    blur();
+    expect(notificationFocused.current).toBe(false);
+    expect(first.blur).toHaveBeenCalledOnce();
+    scopeChanged();
+    expect(first.cancel).toHaveBeenCalledOnce();
+    expect(notificationSettingsReturn.current).toBeNull();
+    const later = settingsReturn();
+    notificationSettingsReturn.current = later;
+    unmount();
+    expect(mounted.current).toBe(false);
+    expect(later.cancel).toHaveBeenCalledOnce();
+    expect(notificationSettingsReturn.current).toBeNull();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(inboxRequestId.current).toBe(1);
   });
 
   it("keeps notification maintenance in the busy phase after applying the confirmed preference", async () => {

@@ -80,11 +80,7 @@ import {
   spaceInboxItems,
 } from "../lib/inbox-spaces";
 import type { ChatNotifyPermissionStatus } from "../lib/live-notifications";
-import {
-  afterChatNotifyChange,
-  openLiveNotificationSettings,
-  readChatNotificationPermission,
-} from "../lib/live-notifications";
+import { afterChatNotifyChange, readChatNotificationPermission } from "../lib/live-notifications";
 import type { MobileScope } from "../lib/mobile-scope";
 import {
   captureMobileScope,
@@ -94,6 +90,8 @@ import {
 } from "../lib/mobile-scope";
 import { native, useThemedStyles } from "../lib/native";
 import { iosAtLeast } from "../lib/native-controls";
+import type { NotificationSettingsReturn } from "../lib/notification-settings-return";
+import { createNotificationSettingsReturn } from "../lib/notification-settings-return";
 import { previewSnippet } from "../lib/preview";
 import { registerPushToken } from "../lib/push";
 import { readSavedInbox, savedChatsScope, saveInbox } from "../lib/saved-chats";
@@ -174,6 +172,8 @@ function Home() {
     snapshot: RemovedBotSection;
   } | null>(null);
   const notificationRevision = useRef(0);
+  const notificationSettingsReturn = useRef<NotificationSettingsReturn | null>(null);
+  const notificationFocused = useRef(false);
   const organizationBusyRef = useRef(false);
   const [organizationBusy, setOrganizationBusy] = useState(false);
   const [organizationNotice, setOrganizationNotice] = useState<string | null>(null);
@@ -211,11 +211,28 @@ function Home() {
   } | null>(null);
   useEffect(() => {
     mounted.current = true;
+    const unsubscribe = subscribeMobileScope(() => {
+      notificationSettingsReturn.current?.cancel();
+      notificationSettingsReturn.current = null;
+    });
     return () => {
       mounted.current = false;
       inboxRequestId.current++;
+      notificationSettingsReturn.current?.cancel();
+      notificationSettingsReturn.current = null;
+      unsubscribe();
     };
   }, []);
+  useFocusEffect(
+    useCallback(() => {
+      notificationFocused.current = true;
+      notificationSettingsReturn.current?.focus();
+      return () => {
+        notificationFocused.current = false;
+        notificationSettingsReturn.current?.blur();
+      };
+    }, []),
+  );
   const creatingBotRef = useRef(false);
   const spaceActionRef = useRef<{ busy: boolean; recoveryId: string | null }>({
     busy: false,
@@ -906,16 +923,30 @@ function Home() {
     [t],
   );
   const showNotificationPermission = useCallback(
-    (status: ChatNotifyPermissionStatus | null, isCurrent: () => boolean) => {
+    (
+      status: ChatNotifyPermissionStatus | null,
+      isCurrent: () => boolean,
+      onAllowed: (queryIsCurrent: () => boolean) => Promise<void>,
+    ) => {
       if (!isCurrent() || status === null || status === "allowed") return;
+      const openSettings = () => {
+        if (!isCurrent()) return;
+        notificationSettingsReturn.current?.cancel();
+        const recovery = createNotificationSettingsReturn({
+          isCurrent,
+          isFocused: () => notificationFocused.current,
+          onPermission: () => undefined,
+          onAllowed,
+        });
+        notificationSettingsReturn.current = recovery;
+        void recovery.open().catch(() => undefined);
+      };
       if (status === "denied") {
         Alert.alert(t("Notifications"), t("Notifications are blocked in system settings."), [
           { text: t("Cancel"), style: "cancel" },
           {
             text: t("Settings"),
-            onPress: () => {
-              void openLiveNotificationSettings(isCurrent).catch(() => undefined);
-            },
+            onPress: openSettings,
           },
         ]);
       } else {
@@ -935,9 +966,7 @@ function Home() {
                       { text: t("Cancel"), style: "cancel" },
                       {
                         text: t("Settings"),
-                        onPress: () => {
-                          void openLiveNotificationSettings(isCurrent).catch(() => undefined);
-                        },
+                        onPress: openSettings,
                       },
                     ],
                   );
@@ -999,6 +1028,10 @@ function Home() {
               : null;
       if (!update) return;
       const owner = captureMobileScope();
+      if ("notifyOnFinish" in update) {
+        notificationSettingsReturn.current?.cancel();
+        notificationSettingsReturn.current = null;
+      }
       const revision =
         "notifyOnFinish" in update ? ++notificationRevision.current : notificationRevision.current;
       const isCurrent = () =>
@@ -1037,6 +1070,20 @@ function Home() {
             setOrganizationNotice(t("Unpinned"));
           if (kind === "bot" && "notifyOnFinish" in update && requestContext) {
             const savedRequestContext = requestContext;
+            const registerAllowed = (queryIsCurrent = isCurrent) =>
+              registerPushToken({
+                permission: "allowed",
+                requestContext: savedRequestContext,
+                isCurrent: queryIsCurrent,
+              });
+            const notificationCurrent = () =>
+              isCurrent() &&
+              inboxState.current.bots.some(
+                (item) =>
+                  item.id === chat.id &&
+                  (item.spaceId ?? inboxState.current.spaceId) === spaceId &&
+                  item.notifyOnFinish,
+              );
             // The shared preference is already committed; device maintenance cannot undo it.
             try {
               const status = await afterChatNotifyChange({
@@ -1047,14 +1094,9 @@ function Home() {
                 token: savedRequestContext.headers.authorization?.replace(/^Bearer /, "") ?? "",
                 spaceId,
                 isCurrent,
-                onAllowed: () =>
-                  registerPushToken({
-                    permission: "allowed",
-                    requestContext: savedRequestContext,
-                    isCurrent,
-                  }),
+                onAllowed: registerAllowed,
               });
-              showNotificationPermission(status, isCurrent);
+              showNotificationPermission(status, notificationCurrent, registerAllowed);
             } catch {
               /* Keep the confirmed preference when the device is unavailable. */
             }
