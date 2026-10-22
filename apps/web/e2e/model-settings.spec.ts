@@ -639,8 +639,36 @@ test("saves and reloads an ordered backup model list for connected models", asyn
 
   const firstLabel = `${targets[0]!.providerName ?? targets[0]!.provider} · ${targets[0]!.label}`;
   const secondLabel = `${targets[1]!.providerName ?? targets[1]!.provider} · ${targets[1]!.label}`;
+  const rotateBackupConnection = async () => {
+    await settings.getByPlaceholder("Search providers").fill("openai");
+    await settings
+      .getByRole("button")
+      .filter({ has: page.getByText("OpenAI", { exact: true }) })
+      .click();
+    await settings
+      .getByLabel("Replace API key", { exact: true })
+      .fill(`fake-backup-openai-replacement-${connections[1]!.connectionRevision}`);
+    const connected = page.waitForResponse(
+      (response) => response.url().includes("/rpc/models/connect") && response.ok(),
+    );
+    await settings.getByRole("button", { name: "Replace API key", exact: true }).click();
+    await connected;
+    await expect(settings.getByText(/Connected and using/)).toBeVisible();
+    const refreshed = await rpc<Array<{ id: string; connectionRevision: number }>>(
+      page,
+      "models/credentials",
+      {},
+    );
+    const rotated = refreshed.find((entry) => entry.id === connections[1]!.id);
+    expect(rotated).toBeDefined();
+    expect(rotated!.connectionRevision).toBeGreaterThan(connections[1]!.connectionRevision);
+    connections[1] = rotated!;
+  };
   await panel.getByRole("button", { name: `Move ${secondLabel} up` }).click();
   const rows = panel.locator('[data-testid^="model-backup-"]');
+  await expect(rows.nth(0)).toContainText(secondLabel);
+  await expect(rows.nth(1)).toContainText(firstLabel);
+  await rotateBackupConnection();
   await expect(rows.nth(0)).toContainText(secondLabel);
   await expect(rows.nth(1)).toContainText(firstLabel);
   await panel.scrollIntoViewIfNeeded();
@@ -686,6 +714,10 @@ test("saves and reloads an ordered backup model list for connected models", asyn
   const reloadedRows = reloadedPanel.locator('[data-testid^="model-backup-"]');
   await expect(reloadedRows.nth(0)).toContainText(secondLabel);
   await expect(reloadedRows.nth(1)).toContainText(firstLabel);
+  // The mounted backup list must also accept a connection edit after reloading saved rows.
+  await rotateBackupConnection();
+  await expect(reloadedRows.nth(0)).toContainText(secondLabel);
+  await expect(reloadedRows.nth(1)).toContainText(firstLabel);
   await reloadedPanel.scrollIntoViewIfNeeded();
   await expect(reloadedPanel).toBeInViewport();
   await testInfo.attach("settings-backup-models-control", {
@@ -693,12 +725,21 @@ test("saves and reloads an ordered backup model list for connected models", asyn
     contentType: "image/png",
   });
   await captureScreenshot(page, testInfo, "settings-backup-models-order");
+  await captureScreenshot(page, testInfo, "a1-backup-after-connection-save");
   await reloadedPanel.getByRole("button", { name: `Remove ${firstLabel}` }).click();
   const removalResponse = page.waitForResponse(
     (response) => response.url().includes("/rpc/models/setBackups") && response.ok(),
   );
   await reloadedPanel.getByRole("button", { name: "Save backups", exact: true }).click();
-  await removalResponse;
+  const removedBackupResponse = await removalResponse;
+  expect(removedBackupResponse.request().postDataJSON().json).toEqual([
+    {
+      provider: targets[1]!.provider,
+      modelId: targets[1]!.id,
+      modelCredentialId: connections[1]!.id,
+      expectedRevision: connections[1]!.connectionRevision,
+    },
+  ]);
   expect(await rpc(page, "models/backups", {})).toEqual([
     {
       provider: targets[1]!.provider,
