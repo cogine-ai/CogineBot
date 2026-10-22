@@ -4,27 +4,24 @@ import { expect, it, vi } from "vitest";
 
 const source = readFileSync(new URL("../app/thread.tsx", import.meta.url), "utf8");
 function route(readOnly = false, inGroup = false) {
+  const binding = { scope: {}, botId: "bot-example", inGroup, readOnly };
   const state = {
-    botId: "bot-example",
-    inGroup,
-    readOnly,
-    profileAvailable: { current: true },
-    profileOwner: { current: {} },
-    profileRoute: { current: { botId: "bot-example", readOnly } },
+    binding,
+    committedProfile: { current: binding },
+    focused: true,
     current: true,
+    pending: false,
     router: { push: vi.fn() },
   };
   const dependencies = {
     ...state,
+    navigation: { isFocused: () => state.focused },
     useCallback: (fn: unknown) => fn,
     isMobileScopeCurrent: () => state.current,
+    isSpaceSelectionPending: () => state.pending,
   };
-  const callback = source.slice(
-    source.indexOf("  const openBotProfile = useCallback("),
-    source.indexOf(
-      "  useLayoutEffect(() => {\n    navigation.setOptions({\n      title: displayName",
-    ),
-  );
+  const start = source.indexOf("  const openBotProfile = useCallback(");
+  const callback = source.slice(start, source.indexOf("  return openBotProfile;", start));
   const open = new Function(
     ...Object.keys(dependencies),
     ts.transpileModule(`${callback}\nreturn openBotProfile;`, {
@@ -36,6 +33,9 @@ function route(readOnly = false, inGroup = false) {
     open,
     invalidate: () => {
       state.current = false;
+    },
+    blur: () => {
+      state.focused = false;
     },
   };
 }
@@ -55,10 +55,10 @@ it.each(["group", "closed", "owner", "target", "readonly"])(
   "rejects a retained profile callback after %s changes",
   (edge) => {
     const state = route(false, edge === "group");
-    if (edge === "closed") state.profileAvailable.current = false;
+    if (edge === "closed") state.blur();
     if (edge === "owner") state.invalidate();
-    if (edge === "target") state.profileRoute.current.botId = "new-bot";
-    if (edge === "readonly") state.profileRoute.current.readOnly = true;
+    if (edge === "target") state.committedProfile.current = { ...state.binding, botId: "new-bot" };
+    if (edge === "readonly") state.committedProfile.current = { ...state.binding, readOnly: true };
     state.open();
     expect(state.router.push).not.toHaveBeenCalled();
   },

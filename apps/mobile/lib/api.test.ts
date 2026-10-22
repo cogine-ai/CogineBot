@@ -19,6 +19,7 @@ import {
   fetchAccountSecurity,
   IDLE_TIMEOUT_MS,
   isServerReachable,
+  isSpaceSelectionPending,
   loadApiBase,
   MAX_MOBILE_AUTH_RESPONSE_BYTES,
   MAX_MOBILE_RPC_RESPONSE_BYTES,
@@ -38,8 +39,10 @@ import {
   signIn,
   signOut,
   signUp,
+  subscribeSelectedSpace,
   subscribeServerReachable,
   subscribeSessionRejected,
+  subscribeSpaceSelectionPending,
   subscribeThread,
 } from "./api.js";
 import {
@@ -75,6 +78,175 @@ afterEach(() => {
 });
 
 describe("mobile API authentication", () => {
+  it("reports same-ID selection pending from cleanup through durable settlement on its separate channel", async () => {
+    await selectSpace("space-a");
+    let releaseCleanup!: () => void, releaseWrite!: () => void;
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseCleanup = resolve;
+        }),
+    );
+    vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseWrite = resolve;
+        }),
+    );
+    const pendingEvents: boolean[] = [];
+    const spaceEvents = vi.fn();
+    const stopPending = subscribeSpaceSelectionPending(() =>
+      pendingEvents.push(isSpaceSelectionPending()),
+    );
+    const stopSpace = subscribeSelectedSpace(spaceEvents);
+    try {
+      const selecting = selectSpace("space-a");
+      expect(isSpaceSelectionPending()).toBe(true);
+      expect(selectedSpaceId()).toBe("space-a");
+      releaseCleanup();
+      await vi.waitFor(() => expect(releaseWrite).toBeTypeOf("function"));
+      expect(isSpaceSelectionPending()).toBe(true);
+      const originalSpaceEvents = spaceEvents.mock.calls.length;
+      releaseWrite();
+      await expect(selecting).resolves.toBe(true);
+      expect(isSpaceSelectionPending()).toBe(false);
+      expect(pendingEvents).toEqual([true, false]);
+      expect(spaceEvents).toHaveBeenCalledTimes(originalSpaceEvents);
+    } finally {
+      stopPending();
+      stopSpace();
+    }
+  });
+
+  it("clears the pending observation if an existing selection listener interrupts publication", async () => {
+    const stop = subscribeSelectedSpace(() => {
+      throw new Error("existing observer interrupted");
+    });
+    try {
+      await expect(selectSpace("space-interrupted")).rejects.toThrow(
+        "existing observer interrupted",
+      );
+      expect(isSpaceSelectionPending()).toBe(false);
+    } finally {
+      stop();
+    }
+  });
+
+  it("keeps the current selection pending while its captured token is loading", async () => {
+    await saveSessionToken("synthetic-token-owner");
+    let release!: (value: string) => void;
+    vi.mocked(SecureStore.getItemAsync).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const selecting = selectSpace("space-token");
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(isSpaceSelectionPending()).toBe(true);
+    release("synthetic-token-owner");
+    await expect(selecting).resolves.toBe(true);
+    expect(isSpaceSelectionPending()).toBe(false);
+  });
+
+  it("does not let an older finally clear the latest pending selection", async () => {
+    let finishA!: () => void, finishB!: () => void;
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      if (key === "rakazo.space_id" && value === "space-a")
+        await new Promise<void>((resolve) => {
+          finishA = resolve;
+        });
+      if (key === "rakazo.space_id" && value === "space-b" && !finishB)
+        await new Promise<void>((resolve) => {
+          finishB = resolve;
+        });
+    });
+    const a = selectSpace("space-a");
+    await vi.waitFor(() => expect(finishA).toBeTypeOf("function"));
+    const b = selectSpace("space-b");
+    await vi.waitFor(() => expect(finishB).toBeTypeOf("function"));
+    finishA();
+    await a;
+    expect(isSpaceSelectionPending()).toBe(true);
+    finishB();
+    await b;
+    expect(isSpaceSelectionPending()).toBe(false);
+  });
+
+  it.each(["API", "session"])(
+    "invalidates an abandoned pending observation across %s replacement",
+    async (boundary) => {
+      let release!: () => void;
+      vi.mocked(SecureStore.deleteItemAsync).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const events: boolean[] = [];
+      const stop = subscribeSpaceSelectionPending(() => events.push(isSpaceSelectionPending()));
+      try {
+        const selecting = selectSpace("space-old");
+        expect(isSpaceSelectionPending()).toBe(true);
+        if (boundary === "API") await saveApiBase("https://replacement.example.test");
+        else await restoreSessionToken("replacement-owner");
+        expect(isSpaceSelectionPending()).toBe(false);
+        expect(events).toContain(false);
+        release();
+        await selecting;
+        expect(isSpaceSelectionPending()).toBe(false);
+      } finally {
+        stop();
+        if (boundary === "API") await resetApiBase();
+      }
+    },
+  );
+
+  it("settles early false, failed cleanup and rollback without letting observer errors change receipts", async () => {
+    const stop = subscribeSpaceSelectionPending(() => {
+      throw new Error("observer failed");
+    });
+    try {
+      await expect(selectSpace("space-unused", { isCurrent: () => false })).resolves.toBe(false);
+      expect(isSpaceSelectionPending()).toBe(false);
+      vi.mocked(SecureStore.deleteItemAsync).mockRejectedValueOnce(new Error("locked"));
+      vi.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error("locked"));
+      await expect(selectSpace("space-cleanup-failed")).resolves.toBe(false);
+      expect(isSpaceSelectionPending()).toBe(false);
+      await expect(selectSpace("space-original")).resolves.toBe(true);
+      vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+        if (key === "rakazo.space_id" && value === "space-failed") throw new Error("locked");
+      });
+      await expect(selectSpace("space-failed")).resolves.toBe(false);
+      expect(isSpaceSelectionPending()).toBe(false);
+      expect(selectedSpaceId()).toBe("space-original");
+    } finally {
+      stop();
+    }
+  });
+
+  it.each(["clear", "adopt", "load"])(
+    "invalidates a pending observation after an external Space %s",
+    async (boundary) => {
+      let release!: () => void;
+      vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const selecting = selectSpace("space-held");
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(isSpaceSelectionPending()).toBe(true);
+      if (boundary === "clear") await clearSpace();
+      else if (boundary === "adopt") await adoptDeletedSpaceFallback("space-new");
+      else await loadApiBase();
+      expect(isSpaceSelectionPending()).toBe(false);
+      release();
+      await selecting;
+    },
+  );
+
   it("changes the selection generation across A to B to A and sign-out", async () => {
     vi.stubGlobal(
       "fetch",
