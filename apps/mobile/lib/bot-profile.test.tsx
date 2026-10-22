@@ -369,6 +369,10 @@ it.each(["denied", "unknown", null])(
     expect(toggle().checked).toBe(true);
     expect(state.rpc.mock.calls.filter(([p]) => p === "bots/update")).toHaveLength(1);
     expect(state.follow).toHaveBeenCalledTimes(1);
+    if (status === null) {
+      expect(container.textContent).toContain("Could not check notification permission.");
+      expect(button("Retry")).toBeTruthy();
+    }
   },
 );
 

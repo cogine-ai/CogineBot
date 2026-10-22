@@ -278,7 +278,7 @@ function Profile({
     } else {
       void readChatNotificationPermission(eligible)
         .then(async (status) => {
-          if (!eligible()) return;
+          if (!eligible() || status === null) return;
           setPermission(status);
           if (status === "allowed") await registerAllowed(eligible).catch(() => undefined);
         })
