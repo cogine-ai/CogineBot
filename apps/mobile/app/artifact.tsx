@@ -6,7 +6,6 @@ import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "
 import type { ReactNode } from "react";
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
