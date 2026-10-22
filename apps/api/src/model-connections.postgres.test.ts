@@ -1,8 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EncryptedSecretStore, parseModelSecret } from "@rakazo/adapters";
+import {
+  ComposedSecretStore,
+  EncryptedSecretStore,
+  parseModelSecret,
+  persistPreparedSecret,
+} from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
@@ -32,6 +38,9 @@ describePostgres("model connection HTTP acceptance", () => {
   let dataDir: string;
   let database: ReturnType<typeof createDb>;
   let afterSecretRead: ((secretId: string) => Promise<void>) | undefined;
+  let afterSecretCreate:
+    | ((record: { id: string; ciphertext: string }) => Promise<void>)
+    | undefined;
   let ordinal = 0;
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "model-connection-"));
@@ -39,6 +48,11 @@ describePostgres("model connection HTTP acceptance", () => {
     const instrumented = database.prisma.$extends({
       query: {
         secret: {
+          async create({ args, query }) {
+            const row = await query(args);
+            await afterSecretCreate?.(row);
+            return row;
+          },
           async findFirst({ args, query }) {
             const row = await query(args);
             if (typeof args.where?.id === "string") await afterSecretRead?.(args.where.id);
@@ -62,6 +76,7 @@ describePostgres("model connection HTTP acceptance", () => {
   });
   afterEach(() => {
     afterSecretRead = undefined;
+    afterSecretCreate = undefined;
     vi.restoreAllMocks();
   });
   afterAll(async () => {
@@ -86,7 +101,13 @@ describePostgres("model connection HTTP acceptance", () => {
     const me = await rpc<{ userId: string; spaceId: string }>(cookie, "me");
     return { cookie, actor: { userId: me.userId, spaceId: me.spaceId } };
   }
-  function raw(cookie: string, procedure: string, input: unknown = {}, spaceId?: string) {
+  function raw(
+    cookie: string,
+    procedure: string,
+    input: unknown = {},
+    spaceId?: string,
+    signal?: AbortSignal,
+  ) {
     return handles.app.request(`/rpc/${procedure}`, {
       method: "POST",
       headers: {
@@ -96,6 +117,7 @@ describePostgres("model connection HTTP acceptance", () => {
         ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
       },
       body: JSON.stringify({ json: input }),
+      signal,
     });
   }
   async function rpc<T = unknown>(
@@ -144,6 +166,187 @@ describePostgres("model connection HTTP acceptance", () => {
       notifyOnFinish: false,
     });
   }
+
+  function externalSecrets() {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    const deleted: string[] = [];
+    let afterPut: ((plaintext: string, ref: string) => Promise<void>) | undefined;
+    const load = ComposedSecretStore.prototype.load;
+    const remove = ComposedSecretStore.prototype.delete;
+    vi.spyOn(ComposedSecretStore.prototype, "put").mockImplementation(async (plaintext) => {
+      const id = randomUUID();
+      const ref = `synthetic-vault:${id}`;
+      values.set(ref, plaintext);
+      writes.push(ref);
+      await afterPut?.(plaintext, ref);
+      return { id, ref, ciphertext: ref };
+    });
+    vi.spyOn(ComposedSecretStore.prototype, "load").mockImplementation(function (ref, context) {
+      if (!ref.startsWith("synthetic-vault:")) return load.call(this, ref, context);
+      const value = values.get(ref);
+      if (value === undefined) throw new Error("Synthetic secret was deleted");
+      return Promise.resolve(value);
+    });
+    vi.spyOn(ComposedSecretStore.prototype, "delete").mockImplementation(
+      async function (ref, context) {
+        if (!ref.startsWith("synthetic-vault:")) return remove.call(this, ref, context);
+        deleted.push(ref);
+        values.delete(ref);
+      },
+    );
+    return {
+      values,
+      writes,
+      deleted,
+      setAfterPut(callback: typeof afterPut) {
+        afterPut = callback;
+      },
+    };
+  }
+
+  it("cleans a staged external secret after a concurrent model connection save wins", async () => {
+    const vault = externalSecrets();
+    const { cookie } = await account();
+    const credential = await rpc<ModelCredential>(cookie, "models/connect", input());
+    let release!: () => void;
+    let staged!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      staged = resolve;
+    });
+    vault.setAfterPut(async (plaintext) => {
+      if (plaintext.includes("losing-fake-key")) {
+        staged();
+        await held;
+      }
+    });
+    const losing = raw(cookie, "models/connect", edit(credential, { apiKey: "losing-fake-key" }));
+    await ready;
+    try {
+      const winner = await rpc<ModelCredential>(
+        cookie,
+        "models/connect",
+        edit(credential, { apiKey: "winning-fake-key" }),
+      );
+      expect(winner.connectionRevision).toBe(credential.connectionRevision! + 1);
+    } finally {
+      release();
+    }
+    expect((await losing).status).toBe(409);
+    expect(vault.writes).toHaveLength(3);
+    expect(vault.values.size).toBe(1);
+    expect([...vault.values.values()][0]).toContain("winning-fake-key");
+    expect(vault.deleted).toContain(vault.writes[1]);
+  });
+
+  it("cleans staged external material when an in-use model prevents shrinking", async () => {
+    const vault = externalSecrets();
+    const { cookie } = await account();
+    const credential = await rpc<ModelCredential>(cookie, "models/connect", input());
+    const target = await bot(cookie);
+    await rpc(cookie, "bots/update", { botId: target.id, ...binding(credential, "second-model") });
+
+    const rejected = await raw(
+      cookie,
+      "models/connect",
+      edit(credential, { enabledModelIds: ["same-model"] }),
+    );
+
+    expect(rejected.status).toBe(400);
+    expect(vault.writes).toHaveLength(2);
+    expect(vault.values.size).toBe(1);
+    expect(vault.values.has(vault.writes[0]!)).toBe(true);
+    expect(vault.deleted).toContain(vault.writes[1]);
+    expect(await rpc<ModelCredential[]>(cookie, "models/credentials")).toEqual([
+      expect.objectContaining({
+        id: credential.id,
+        connectionRevision: credential.connectionRevision,
+      }),
+    ]);
+  });
+
+  it("cleans a staged external secret when cancellation arrives after the put", async () => {
+    const vault = externalSecrets();
+    const { cookie } = await account();
+    const cancelled = new AbortController();
+    vault.setAfterPut(async () => {
+      cancelled.abort(new Error("Synthetic request cancellation"));
+    });
+
+    const rejected = await raw(cookie, "models/connect", input(), undefined, cancelled.signal);
+
+    expect(rejected.status).toBeGreaterThanOrEqual(400);
+    expect(vault.writes).toHaveLength(1);
+    expect(vault.values.size).toBe(0);
+    expect(vault.deleted).toContain(vault.writes[0]);
+    expect(await rpc(cookie, "models/credentials")).toEqual([]);
+  });
+
+  it("keeps the prepared external secret through a rolled-back serialization retry", async () => {
+    const vault = externalSecrets();
+    const { cookie } = await account();
+    const credential = await rpc<ModelCredential>(cookie, "models/connect", input());
+    let attempts = 0;
+    afterSecretCreate = async (record) => {
+      if (record.ciphertext !== vault.writes[1]) return;
+      attempts += 1;
+      expect(vault.values.has(record.ciphertext)).toBe(true);
+      expect(vault.deleted).not.toContain(record.ciphertext);
+      if (attempts === 1)
+        throw Object.assign(new Error("Synthetic serialization conflict"), { code: "P2034" });
+    };
+
+    const saved = await rpc<ModelCredential>(
+      cookie,
+      "models/connect",
+      edit(credential, { apiKey: "retried-fake-key" }),
+    );
+
+    expect(attempts).toBe(2);
+    expect(saved.connectionRevision).toBe(credential.connectionRevision! + 1);
+    expect(vault.writes).toHaveLength(2);
+    expect(vault.values.size).toBe(1);
+    expect(vault.values.get(vault.writes[1]!)).toContain("retried-fake-key");
+    expect(vault.deleted).not.toContain(vault.writes[1]);
+  });
+
+  it("retains externally stored material when a committed write loses its acknowledgement", async () => {
+    const vault = externalSecrets();
+    const { actor } = await account();
+    const store = new ComposedSecretStore(new EncryptedSecretStore(encryptionKey));
+    const written = await store.put("committed-fake-key", {
+      operationId: "test",
+      traceId: "test",
+      ...actor,
+      signal: new AbortController().signal,
+    });
+
+    await expect(
+      persistPreparedSecret(handles.prisma, store, written, async () => {
+        await handles.prisma.$transaction(async (tx) =>
+          tx.secret.create({
+            data: {
+              id: written.id,
+              userId: actor.userId,
+              spaceId: null,
+              kind: "model",
+              ciphertext: written.ciphertext,
+            },
+          }),
+        );
+        throw new Error("Synthetic lost commit acknowledgement");
+      }),
+    ).rejects.toThrow("Synthetic lost commit acknowledgement");
+
+    expect(vault.values.get(written.ciphertext)).toBe("committed-fake-key");
+    expect(vault.deleted).not.toContain(written.ciphertext);
+    await handles.prisma.secret.delete({ where: { id: written.id } });
+    expect(vault.values.size).toBe(0);
+    await store.close();
+  });
 
   it("rotates the newest catalog connection with its own saved key and limits", async () => {
     const { cookie, actor } = await account();

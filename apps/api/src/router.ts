@@ -7331,138 +7331,140 @@ async function persistModelCredential(
     userId: actor.userId,
     signal: input.signal ?? new AbortController().signal,
   });
-  throwIfAborted(input.signal);
-  const cred = await withSerializableRetry(() =>
-    deps.prisma.$transaction(
-      async (tx) => {
-        throwIfAborted(input.signal);
-        const existing = input.credentialId
-          ? await tx.userModelCredential.findFirst({
-              where: { id: input.credentialId, userId: actor.userId, provider: input.provider },
-            })
-          : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
-            ? null
-            : await tx.userModelCredential.findFirst({
-                where: { userId: actor.userId, provider: input.provider },
-                orderBy: newestModelCredentialOrder,
-              });
-        if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
-        if (existing && input.credentialId) {
-          assertConnectionRevision(existing, input.expectedRevision);
-          if (input.expectedCiphertext !== undefined) {
-            const secret = await tx.secret.findFirst({
-              where: { id: existing.secretId, userId: actor.userId, spaceId: null },
-              select: { ciphertext: true },
-            });
-            if ((secret?.ciphertext ?? null) !== input.expectedCiphertext)
-              throw new ORPCError("CONFLICT", {
-                message: "Model connection changed. Reload and try again.",
-              });
-          }
-        }
-        if (existing && input.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
-          const thinking = compatibleThinkingLevels(
-            { ...existing, isDefault: true, defaultModel },
-            input.plaintext,
-            defaultModel ?? "",
-          );
-          const allowed = new Set(thinking.enabledModelIds);
-          const references = await listModelConnectionReferences(tx, actor.userId, existing.id);
-          await refuseAccountModelReferences(
-            tx,
-            actor.userId,
-            references.filter(
-              (reference) =>
-                !(reference.kind === "space-default" && reference.spaceId === actor.spaceId) &&
-                reference.modelId !== null &&
-                !allowed.has(reference.modelId),
-            ),
-          );
-          await tx.spaceModelPreference.updateMany({
-            where: {
-              userId: actor.userId,
-              credentialId: existing.id,
-              isDefault: false,
-              modelId: { notIn: [...allowed] },
-            },
-            data: { modelId: null, thinkingLevel: null },
-          });
-        }
-        throwIfAborted(input.signal);
-        const secret = await tx.secret.create({
-          data: {
-            id: stored.id,
-            userId: actor.userId,
-            spaceId: null,
-            kind: "model",
-            ciphertext: stored.ciphertext,
-          },
-        });
-        throwIfAborted(input.signal);
-        const credential = !existing
-          ? await tx.userModelCredential.create({
-              data: {
-                userId: actor.userId,
-                provider: input.provider,
-                label: input.label ?? input.provider,
-                secretId: secret.id,
-                supportsImages: input.supportsImages ?? false,
-              },
-            })
-          : await tx.userModelCredential
-              .update({
-                where: { id: existing.id, connectionRevision: existing.connectionRevision },
-                data: {
-                  label: input.label ?? input.provider,
-                  secretId: secret.id,
-                  connectionRevision: { increment: 1 },
-                  ...(input.supportsImages !== undefined
-                    ? { supportsImages: input.supportsImages }
-                    : {}),
-                },
+  const cred = await persistPreparedSecret(deps.prisma, deps.secrets, stored, async () => {
+    throwIfAborted(input.signal);
+    return withSerializableRetry(() =>
+      deps.prisma.$transaction(
+        async (tx) => {
+          throwIfAborted(input.signal);
+          const existing = input.credentialId
+            ? await tx.userModelCredential.findFirst({
+                where: { id: input.credentialId, userId: actor.userId, provider: input.provider },
               })
-              .catch((error: unknown) => {
-                if (isRecordNotFound(error))
-                  throw new ORPCError("CONFLICT", {
-                    message: "Model connection changed. Reload and try again.",
-                  });
-                throw error;
+            : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+              ? null
+              : await tx.userModelCredential.findFirst({
+                  where: { userId: actor.userId, provider: input.provider },
+                  orderBy: newestModelCredentialOrder,
+                });
+          if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
+          if (existing && input.credentialId) {
+            assertConnectionRevision(existing, input.expectedRevision);
+            if (input.expectedCiphertext !== undefined) {
+              const secret = await tx.secret.findFirst({
+                where: { id: existing.secretId, userId: actor.userId, spaceId: null },
+                select: { ciphertext: true },
               });
-        throwIfAborted(input.signal);
-        let thinkingLevel = input.thinkingLevel;
-        if (thinkingLevel === undefined) {
-          // A stored effort only carries over while it still names this model.
-          const previous = await tx.spaceModelPreference.findFirst({
-            where: {
-              spaceId: actor.spaceId,
+              if ((secret?.ciphertext ?? null) !== input.expectedCiphertext)
+                throw new ORPCError("CONFLICT", {
+                  message: "Model connection changed. Reload and try again.",
+                });
+            }
+          }
+          if (existing && input.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
+            const thinking = compatibleThinkingLevels(
+              { ...existing, isDefault: true, defaultModel },
+              input.plaintext,
+              defaultModel ?? "",
+            );
+            const allowed = new Set(thinking.enabledModelIds);
+            const references = await listModelConnectionReferences(tx, actor.userId, existing.id);
+            await refuseAccountModelReferences(
+              tx,
+              actor.userId,
+              references.filter(
+                (reference) =>
+                  !(reference.kind === "space-default" && reference.spaceId === actor.spaceId) &&
+                  reference.modelId !== null &&
+                  !allowed.has(reference.modelId),
+              ),
+            );
+            await tx.spaceModelPreference.updateMany({
+              where: {
+                userId: actor.userId,
+                credentialId: existing.id,
+                isDefault: false,
+                modelId: { notIn: [...allowed] },
+              },
+              data: { modelId: null, thinkingLevel: null },
+            });
+          }
+          throwIfAborted(input.signal);
+          const secret = await tx.secret.create({
+            data: {
+              id: stored.id,
               userId: actor.userId,
-              credentialId: credential.id,
+              spaceId: null,
+              kind: "model",
+              ciphertext: stored.ciphertext,
             },
-            select: { modelId: true, thinkingLevel: true },
-          });
-          thinkingLevel =
-            previous?.modelId === usableModelId(defaultModel) ? previous.thinkingLevel : null;
-        }
-        // Connect and limit saves can still carry an effort chosen for the previous
-        // model. Keep it only when this model supports it; otherwise clamp or clear.
-        thinkingLevel = defaultModel
-          ? clampCatalogThinkingLevel(thinkingLevel, allowedThinking)
-          : null;
-        await selectSpaceModelPreference(tx, actor, credential.id, defaultModel, thinkingLevel);
-        throwIfAborted(input.signal);
-        if (existing) {
-          await deleteUnreferencedCredentialSecret(tx, {
-            credentialKind: "model",
-            credentialId: existing.id,
-            secretId: existing.secretId,
           });
           throwIfAborted(input.signal);
-        }
-        return { ...credential, isDefault: true, defaultModel };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    ),
-  );
+          const credential = !existing
+            ? await tx.userModelCredential.create({
+                data: {
+                  userId: actor.userId,
+                  provider: input.provider,
+                  label: input.label ?? input.provider,
+                  secretId: secret.id,
+                  supportsImages: input.supportsImages ?? false,
+                },
+              })
+            : await tx.userModelCredential
+                .update({
+                  where: { id: existing.id, connectionRevision: existing.connectionRevision },
+                  data: {
+                    label: input.label ?? input.provider,
+                    secretId: secret.id,
+                    connectionRevision: { increment: 1 },
+                    ...(input.supportsImages !== undefined
+                      ? { supportsImages: input.supportsImages }
+                      : {}),
+                  },
+                })
+                .catch((error: unknown) => {
+                  if (isRecordNotFound(error))
+                    throw new ORPCError("CONFLICT", {
+                      message: "Model connection changed. Reload and try again.",
+                    });
+                  throw error;
+                });
+          throwIfAborted(input.signal);
+          let thinkingLevel = input.thinkingLevel;
+          if (thinkingLevel === undefined) {
+            // A stored effort only carries over while it still names this model.
+            const previous = await tx.spaceModelPreference.findFirst({
+              where: {
+                spaceId: actor.spaceId,
+                userId: actor.userId,
+                credentialId: credential.id,
+              },
+              select: { modelId: true, thinkingLevel: true },
+            });
+            thinkingLevel =
+              previous?.modelId === usableModelId(defaultModel) ? previous.thinkingLevel : null;
+          }
+          // Connect and limit saves can still carry an effort chosen for the previous
+          // model. Keep it only when this model supports it; otherwise clamp or clear.
+          thinkingLevel = defaultModel
+            ? clampCatalogThinkingLevel(thinkingLevel, allowedThinking)
+            : null;
+          await selectSpaceModelPreference(tx, actor, credential.id, defaultModel, thinkingLevel);
+          throwIfAborted(input.signal);
+          if (existing) {
+            await deleteUnreferencedCredentialSecret(tx, {
+              credentialKind: "model",
+              credentialId: existing.id,
+              secretId: existing.secretId,
+            });
+            throwIfAborted(input.signal);
+          }
+          return { ...credential, isDefault: true, defaultModel };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
+  });
   return modelCredentialDto(cred, input.plaintext);
 }
 
