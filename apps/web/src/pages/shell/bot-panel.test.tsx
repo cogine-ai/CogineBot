@@ -38,15 +38,15 @@ vi.mock("@rakazo/ui-web", () => ({
   NativeSelect: (props: ComponentProps<"select">) => <select {...props} />,
   NativeSelectOption: (props: ComponentProps<"option">) => <option {...props} />,
   Switch: ({
-    onCheckedChange: _onCheckedChange,
-    checked: _checked,
+    onCheckedChange,
+    checked,
     ...props
   }: ComponentProps<"button"> & {
     checked?: boolean;
     onCheckedChange?: (checked: boolean) => void;
-  }) => <button type="button" {...props} />,
+  }) => <button type="button" {...props} onClick={() => onCheckedChange?.(!checked)} />,
   Toggle: ({
-    onPressedChange: _onPressedChange,
+    onPressedChange,
     pressed,
     variant: _variant,
     size: _size,
@@ -57,7 +57,12 @@ vi.mock("@rakazo/ui-web", () => ({
     pressed?: boolean;
     onPressedChange?: (pressed: boolean) => void;
   }) => (
-    <button type="button" aria-pressed={pressed} {...props}>
+    <button
+      type="button"
+      aria-pressed={pressed}
+      {...props}
+      onClick={() => onPressedChange?.(!pressed)}
+    >
       {props.children}
     </button>
   ),
@@ -114,12 +119,12 @@ const onSave = vi.fn(
   async (_patch: Parameters<ComponentProps<typeof BotSettings>["onSave"]>[0]) => undefined,
 );
 
-async function render(description = "Billing") {
+async function render(description = "Billing", memoryProviderConfigured = false) {
   await act(async () => {
     root.render(
       <BotSettings
         bot={bot(description)}
-        memoryProviderConfigured={false}
+        memoryProviderConfigured={memoryProviderConfigured}
         onSkillsChange={() => undefined}
         onSave={onSave}
         onExport={async () => undefined}
@@ -137,7 +142,7 @@ function descriptionField(): HTMLTextAreaElement {
 
 function saveButton(): HTMLButtonElement {
   const found = [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Save",
+    (button) => button.textContent === "Save" || button.textContent === "Save other settings",
   );
   if (!(found instanceof HTMLButtonElement)) throw new Error("Missing Save button");
   return found;
@@ -170,6 +175,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   onSave.mockReset().mockResolvedValue(undefined);
   modelScope.generation = 0;
+  vi.mocked(rpc.voice.voices).mockReset().mockResolvedValue([]);
   vi.mocked(rpc.models.credentials).mockReset().mockResolvedValue([]);
   vi.mocked(rpc.models.list).mockReset().mockResolvedValue([]);
   container = document.createElement("div");
@@ -379,7 +385,8 @@ it("refreshes a conflicted connection and requires explicit acceptance before re
   expect(container.querySelector("select")?.value).toBe(key);
   expect(descriptionField().value).toBe("Preserve these instructions");
   expect(onSave).toHaveBeenCalledTimes(1);
-  expect(saveButton().disabled).toBe(true);
+  expect(saveButton().disabled).toBe(false);
+  expect(saveButton().textContent).toBe("Save other settings");
   const accept = [...container.querySelectorAll("button")].find(
     (entry) => entry.textContent === "Use updated connection",
   );
@@ -447,7 +454,8 @@ it.each([false, true])(
         expect(patch).not.toHaveProperty(field);
     }
     expect(container.querySelector("select")?.value).toBe(key);
-    expect(saveButton().disabled).toBe(true);
+    expect(saveButton().disabled).toBe(false);
+    expect(saveButton().textContent).toBe("Save other settings");
 
     if (refreshFails) {
       credentials.mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
@@ -467,6 +475,112 @@ it.each([false, true])(
       modelCredentialId: "connection-a",
       expectedRevision: 9,
       name: "Renamed during conflict",
+    });
+  },
+);
+
+it.each(["failed", "ready", "refreshing"] as const)(
+  "manually saves other settings while a model conflict is %s without adopting its draft",
+  async (refreshState) => {
+    const refreshed = deferred<Array<ReturnType<typeof pinnedCredential>>>();
+    const credentials = vi
+      .mocked(rpc.models.credentials)
+      .mockResolvedValueOnce([pinnedCredential("connection-a", 7)]);
+    if (refreshState === "ready") {
+      credentials.mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
+    } else {
+      credentials.mockRejectedValueOnce(new Error("Offline"));
+      credentials.mockImplementationOnce(() => refreshed.promise);
+    }
+    vi.mocked(rpc.voice.voices).mockResolvedValueOnce([{ id: "voice-b", label: "Second voice" }]);
+    onSave.mockRejectedValueOnce(
+      Object.assign(new Error("Connection changed"), { code: "CONFLICT" }),
+    );
+    await render("Billing", true);
+    const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+    await chooseModel(key);
+    await clickSave();
+    if (refreshState === "refreshing") {
+      const retry = [...container.querySelectorAll("button")].find(
+        (entry) => entry.textContent === "Retry",
+      );
+      expect(retry).toBeDefined();
+      await act(async () => retry?.click());
+    }
+
+    const option = (label: string) => {
+      const entry = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === label,
+      );
+      if (!entry) throw new Error(`Missing option ${label}`);
+      return entry;
+    };
+    await act(async () => option("Private").click());
+    await act(async () => option("Isolated").click());
+    const autoSpeak = container.querySelector<HTMLButtonElement>('button[id$="-auto-speak"]');
+    if (!autoSpeak) throw new Error("Missing read-aloud control");
+    await act(async () => autoSpeak.click());
+    const voice = container.querySelector<HTMLSelectElement>('select[id$="-voice"]');
+    if (!voice) throw new Error("Missing voice picker");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        voice,
+        "voice-b",
+      );
+      voice.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(saveButton().disabled).toBe(false);
+    expect(saveButton().textContent).toBe("Save other settings");
+    const saved = deferred<undefined>();
+    onSave.mockImplementationOnce(() => saved.promise);
+    await clickSave();
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      computerMode: "dedicated",
+      memoryScope: "isolated",
+      autoSpeak: true,
+      voiceId: "voice-b",
+    });
+    for (const field of [
+      "modelProvider",
+      "modelId",
+      "modelCredentialId",
+      "expectedRevision",
+      "thinkingLevel",
+    ])
+      expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty(field);
+    expect(saveButton().disabled).toBe(true);
+    expect(container.querySelector("select")?.value).toBe(key);
+    await act(async () => saved.resolve(undefined));
+    expect(saveButton().disabled).toBe(false);
+    expect(saveButton().textContent).toBe("Save other settings");
+    expect(container.querySelector("select")?.value).toBe(key);
+
+    if (refreshState === "failed") {
+      const retry = [...container.querySelectorAll("button")].find(
+        (entry) => entry.textContent === "Retry",
+      );
+      expect(retry).toBeDefined();
+      await act(async () => retry?.click());
+    }
+    if (refreshState !== "ready") {
+      await act(async () => refreshed.resolve([pinnedCredential("connection-a", 9)]));
+    }
+    const accept = [...container.querySelectorAll("button")].find(
+      (entry) => entry.textContent === "Use updated connection",
+    );
+    expect(accept).toBeDefined();
+    await act(async () => accept?.click());
+    expect(saveButton().textContent).toBe("Save");
+    await clickSave();
+    expect(onSave.mock.calls[2]?.[0]).toMatchObject({
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+      computerMode: "dedicated",
+      memoryScope: "isolated",
+      autoSpeak: true,
+      voiceId: "voice-b",
     });
   },
 );
@@ -518,7 +632,8 @@ it("retries only the connection refresh after a failed conflict reload before ac
   await chooseModel(key);
   await setDescription("Keep while offline");
   await clickSave();
-  expect(saveButton().disabled).toBe(true);
+  expect(saveButton().disabled).toBe(false);
+  expect(saveButton().textContent).toBe("Save other settings");
   const retry = [...container.querySelectorAll("button")].find(
     (entry) => entry.textContent === "Retry",
   );

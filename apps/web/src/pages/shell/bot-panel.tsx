@@ -842,7 +842,7 @@ export function BotSettings({
       ) : null}
       <div className="mt-5 flex flex-col items-start gap-3">
         <Button
-          disabled={saving || modelConflict !== null}
+          disabled={saving}
           onClick={() => {
             void enqueueSave({
               name,
@@ -853,7 +853,7 @@ export function BotSettings({
             });
           }}
         >
-          <Trans>Save</Trans>
+          {modelConflict !== null ? <Trans>Save other settings</Trans> : <Trans>Save</Trans>}
         </Button>
         <Button variant="ghost" size="sm" className="-ms-2.5" onClick={() => void onExport()}>
           <Trans>Export</Trans>
