@@ -79,10 +79,10 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     const otherCookie = await signup(app, `backup-other-${stamp}@rakazo.test`, "Other");
     const owner = await rpc<Actor>(app, ownerCookie, "me");
     const other = await rpc<Actor>(app, otherCookie, "me");
-    const first = [{ provider: "provider-a", modelId: "first" }];
+    const first = [{ provider: "provider-a", modelId: "first", modelCredentialId: null }];
     const second = [
-      { provider: "provider-b", modelId: "second" },
-      { provider: "provider-c", modelId: "third" },
+      { provider: "provider-b", modelId: "second", modelCredentialId: null },
+      { provider: "provider-c", modelId: "third", modelCredentialId: null },
     ];
     await replaceSpaceBackupModels(handles.prisma, other, first);
     await Promise.all([

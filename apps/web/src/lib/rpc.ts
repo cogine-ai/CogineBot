@@ -6,6 +6,11 @@ import { LOCAL_SETTINGS_PAGE, LOCAL_SETTINGS_RPC } from "@rakazo/contracts";
 import { desktopBridge } from "./desktop";
 
 const SPACE_STORAGE_KEY = "rakazo:space-id";
+let spaceSelectionGeneration = 0;
+
+export function currentSpaceSelectionGeneration(): number {
+  return spaceSelectionGeneration;
+}
 
 type RpcClientContext = { spaceId?: string | null };
 
@@ -21,6 +26,7 @@ export function selectedSpaceId(): string | null {
 export function selectSpace(id: string): boolean {
   try {
     window.localStorage.setItem(SPACE_STORAGE_KEY, id);
+    spaceSelectionGeneration += 1;
     return true;
   } catch {
     try {
@@ -33,6 +39,7 @@ export function selectSpace(id: string): boolean {
 }
 
 export function clearSpaceSelection(): void {
+  spaceSelectionGeneration += 1;
   try {
     window.localStorage.removeItem(SPACE_STORAGE_KEY);
   } catch {

@@ -150,6 +150,7 @@ describe("createBackgroundJobHandlers", () => {
     ).resolves.toEqual({
       provider: "openrouter",
       id: "openai/gpt-6-luna",
+      modelCredentialId: null,
       apiKey: "deployment-key",
       baseUrl: undefined,
       thinkingLevel: null,
@@ -177,6 +178,7 @@ describe("createBackgroundJobHandlers", () => {
     ).resolves.toEqual({
       provider: "local",
       id: "qwen3:4b",
+      modelCredentialId: null,
       apiKey: undefined,
       baseUrl: undefined,
       thinkingLevel: null,

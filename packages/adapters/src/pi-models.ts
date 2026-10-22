@@ -215,7 +215,7 @@ function catalogBilling(
     return `${name} subscription login is not in the Rakazo UI yet. Skip if this deployment already has credentials.`;
   }
   if (opts.apiKey) {
-    return `Uses your ${name} API key. Rakazo does not pay for model usage.`;
+    return `Uses your ${name} API key. CogineBot does not pay for model usage.`;
   }
   return `Uses your ${name} key. Rakazo does not pay for model usage.`;
 }

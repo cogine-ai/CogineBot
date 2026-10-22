@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/server";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import {
   aiRecipient,
   cloudAgentsEnabled,
+  listHelperModelConnections,
   parseModelSecret,
   selectConfiguredModel,
   toStringRecord,
@@ -10,6 +12,7 @@ import {
 import type { Actor, AiConsentQuery, AiConsentStatus, AiRecipient } from "@rakazo/contracts";
 import { AI_DISCLOSURE_VERSION, AI_PRIVACY_URL } from "@rakazo/contracts";
 import {
+  findBoundModelCredential,
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   findModelCredential,
@@ -35,6 +38,7 @@ export async function aiConsentStatus(
     preferences,
     backups,
     defaultCredential,
+    helperChoices,
     bots,
     routines,
     voices,
@@ -56,6 +60,13 @@ export async function aiConsentStatus(
       : [],
     modelsEnabled ? findDefaultModelCredential(deps.prisma, actor) : null,
     modelsEnabled
+      ? listHelperModelConnections(deps.prisma, deps.secrets, actor).catch((error) => {
+          if (error instanceof SecretStoreUnavailableError)
+            throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
+          throw error;
+        })
+      : [],
+    modelsEnabled
       ? deps.prisma.bot.findMany({
           where: {
             userId: actor.userId,
@@ -63,7 +74,12 @@ export async function aiConsentStatus(
             archivedAt: null,
             ...(botIds ? { id: { in: botIds } } : {}),
           },
-          select: { modelProvider: true, modelId: true, thinkingLevel: true },
+          select: {
+            modelProvider: true,
+            modelId: true,
+            modelCredentialId: true,
+            thinkingLevel: true,
+          },
         })
       : [],
     // An active routine with its own model is another recipient for this bot.
@@ -80,7 +96,12 @@ export async function aiConsentStatus(
             ...(botIds ? { botId: { in: botIds } } : {}),
             OR: query.routineId ? [{ active: true }, { id: query.routineId }] : [{ active: true }],
           },
-          select: { modelProvider: true, modelId: true, thinkingLevel: true },
+          select: {
+            modelProvider: true,
+            modelId: true,
+            modelCredentialId: true,
+            thinkingLevel: true,
+          },
         })
       : [],
     uses.includes("voice")
@@ -115,12 +136,11 @@ export async function aiConsentStatus(
       (target ? [...bots, ...routines] : [null, ...bots, ...routines]).map(async (override) => {
         const overrideCredential =
           override?.modelProvider && override.modelId
-            ? await findModelCredential(
-                deps.prisma,
-                actor,
-                override.modelProvider,
-                override.modelId,
-              )
+            ? await findBoundModelCredential(deps.prisma, actor, {
+                provider: override.modelProvider,
+                modelId: override.modelId,
+                modelCredentialId: override.modelCredentialId ?? null,
+              })
             : null;
         return selectConfiguredModel({
           override,
@@ -146,12 +166,11 @@ export async function aiConsentStatus(
       });
     const backupModels = await Promise.all(
       backups.map(async (backup) => {
-        const credential = await findModelCredential(
-          deps.prisma,
-          actor,
-          backup.provider,
-          backup.modelId,
-        );
+        const credential = await findBoundModelCredential(deps.prisma, actor, {
+          provider: backup.provider,
+          modelId: backup.modelId,
+          modelCredentialId: backup.modelCredentialId,
+        });
         return credential
           ? { provider: backup.provider, id: backup.modelId, credential, thinkingLevel: null }
           : null;
@@ -205,6 +224,19 @@ export async function aiConsentStatus(
         }),
       ),
     );
+    // Helpers can explicitly select any owned connection, including one with no preference here.
+    for (const choice of helperChoices) {
+      for (const modelId of choice.modelIds) {
+        add(
+          aiRecipient({
+            provider: choice.provider,
+            modelId,
+            baseUrl: choice.baseUrl,
+            use: "model",
+          }),
+        );
+      }
+    }
     for (const model of models) {
       add(
         aiRecipient({

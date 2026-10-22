@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator } from "@rakazo/adapters";
+import type { ModelCredential } from "@rakazo/contracts";
 import { recordUsage } from "@rakazo/db";
 import { describe, expect, it } from "vitest";
 import { runAutoReviewJudge } from "../../adapters/src/auto-review.js";
@@ -120,7 +121,7 @@ describe.skipIf(!enabled)("persisted Pi usage accounting", () => {
           throw new Error(`${procedure}: ${body.error?.message ?? response.status}`);
         return body.json;
       };
-      await rpc("models/connect", {
+      const credential = await rpc<ModelCredential>("models/connect", {
         provider: model.model.provider,
         modelId: model.model.id,
         baseUrl: model.baseUrl,
@@ -143,6 +144,8 @@ describe.skipIf(!enabled)("persisted Pi usage accounting", () => {
         botId: bot.id,
         modelProvider: model.model.provider,
         modelId: model.model.id,
+        modelCredentialId: credential.id,
+        expectedRevision: credential.connectionRevision,
       });
       const connectedThread = await handles.prisma.thread.findFirstOrThrow({
         where: { botId: bot.id },

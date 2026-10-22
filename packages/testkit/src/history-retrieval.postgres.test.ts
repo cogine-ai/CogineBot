@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator } from "@rakazo/adapters";
+import type { ModelCredential } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -205,7 +206,7 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
             throw new Error(`${procedure}: ${body.error?.message ?? response.status}`);
           return body.json;
         };
-        await rpc("models/connect", {
+        const credential = await rpc<ModelCredential>("models/connect", {
           provider: model.model.provider,
           modelId: model.model.id,
           baseUrl: model.baseUrl,
@@ -227,6 +228,8 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
           botId: bot.id,
           modelProvider: model.model.provider,
           modelId: model.model.id,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
         });
         const thread = await handles.prisma.thread.findFirstOrThrow({ where: { botId: bot.id } });
         await handles.prisma.$transaction([

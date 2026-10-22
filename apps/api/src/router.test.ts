@@ -24,6 +24,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
 import { createRouter, enqueueBotIntroRun, HEARTBEAT_MS, SESSION_RECHECK_MS } from "./router.js";
 
+function explicitCredentialFixture<
+  T extends { id: string; userId: string; provider: string; secretId: string },
+>(rows: T[]) {
+  const findMany = vi.fn().mockResolvedValue(rows);
+  return {
+    findMany,
+    findFirst: vi.fn(
+      async (args: { where: { id?: string; userId?: string; provider?: string } }) => {
+        const row = ((await findMany()) as T[]).find(
+          (item) =>
+            item.id === args.where.id &&
+            item.userId === args.where.userId &&
+            (!args.where.provider || item.provider === args.where.provider),
+        );
+        return row ? { ...row, connectionRevision: 1, preferences: [] } : null;
+      },
+    ),
+  };
+}
+
 describe("account preferences", () => {
   function preferencesDeps(avatarStyle: string) {
     const update = vi.fn().mockResolvedValue({});
@@ -2864,7 +2884,7 @@ describe("codex live catalog", () => {
     };
     const upsert = vi.fn(async () => ({ id: "pref-spark" }));
     const tx = {
-      userModelCredential: { findMany: vi.fn().mockResolvedValue([oauthCredential]) },
+      userModelCredential: explicitCredentialFixture([oauthCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([]),
         updateMany: vi.fn(async () => ({ count: 0 })),
@@ -2891,6 +2911,8 @@ describe("codex live catalog", () => {
     const response = await call(handler, "models/setDefault", {
       provider: "openai-codex",
       modelId: spark,
+      modelCredentialId: "cred-oauth",
+      expectedRevision: 1,
     });
 
     expect(response.status).toBe(200);
@@ -2920,7 +2942,7 @@ describe("codex live catalog", () => {
       updatedAt: stamp,
     };
     const tx = {
-      userModelCredential: { findMany: vi.fn().mockResolvedValue([oauthCredential]) },
+      userModelCredential: explicitCredentialFixture([oauthCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([]),
         updateMany: vi.fn(async () => ({ count: 0 })),
@@ -2947,6 +2969,8 @@ describe("codex live catalog", () => {
     const response = await call(handler, "models/setDefault", {
       provider: "openai-codex",
       modelId: spark,
+      modelCredentialId: "cred-oauth",
+      expectedRevision: 1,
     });
 
     expect(response.status).toBe(400);
@@ -2973,7 +2997,7 @@ describe("codex live catalog", () => {
       };
       const upsert = vi.fn(async () => ({ id: "pref-spark" }));
       const tx = {
-        userModelCredential: { findMany: vi.fn().mockResolvedValue([oauthCredential]) },
+        userModelCredential: explicitCredentialFixture([oauthCredential]),
         spaceModelPreference: {
           findMany: vi.fn().mockResolvedValue([]),
           updateMany: vi.fn(async () => ({ count: 0 })),
@@ -3040,6 +3064,8 @@ describe("codex live catalog", () => {
       const response = await call(handler, "models/setDefault", {
         provider: "openai-codex",
         modelId: spark,
+        modelCredentialId: "cred-oauth",
+        expectedRevision: 1,
       });
 
       expect(elapsed).toBe(15_000);
@@ -3118,9 +3144,7 @@ describe("model set default auth", () => {
     });
     const upsert = vi.fn(async () => ({ id: "pref-spark" }));
     const tx = {
-      userModelCredential: {
-        findMany: vi.fn().mockResolvedValue([oauthCredential, apiCredential]),
-      },
+      userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -3164,6 +3188,8 @@ describe("model set default auth", () => {
     const response = await call(handler, "models/setDefault", {
       provider: "openai-codex",
       modelId: spark,
+      modelCredentialId: "cred-api",
+      expectedRevision: 1,
     });
 
     expect(response.status).toBe(200);
@@ -3220,9 +3246,7 @@ describe("model set default auth", () => {
     const upsert = vi.fn(async () => ({ id: "pref-luna" }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const tx = {
-      userModelCredential: {
-        findMany: vi.fn().mockResolvedValue([oauthCredential, apiCredential]),
-      },
+      userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -3259,6 +3283,8 @@ describe("model set default auth", () => {
     const response = await call(handler, "models/setDefault", {
       provider: "openai-codex",
       modelId: luna,
+      modelCredentialId: "cred-oauth",
+      expectedRevision: 1,
     });
 
     expect(response.status).toBe(200);
@@ -3312,9 +3338,7 @@ describe("model set default auth", () => {
     };
     const upsert = vi.fn(async () => ({ id: "pref-luna" }));
     const tx = {
-      userModelCredential: {
-        findMany: vi.fn().mockResolvedValue([oauthCredential, apiCredential]),
-      },
+      userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -3362,6 +3386,8 @@ describe("model set default auth", () => {
     const response = await call(handler, "models/setDefault", {
       provider: "openai-codex",
       modelId: luna,
+      modelCredentialId: "cred-api",
+      expectedRevision: 1,
     });
 
     expect(response.status).toBe(200);
@@ -3481,8 +3507,20 @@ describe("bot model auth on save", () => {
       title: bot.title,
       description: bot.description,
     }));
+    const credentialFindFirst = vi.fn(async (args: { where: { id?: string } }) => {
+      const id = args.where.id;
+      return id === "cred-api" || id === "cred-oauth"
+        ? {
+            ...credentialRow(id, id === "cred-api" ? "secret-api" : "secret-oauth"),
+            connectionRevision: 1,
+            preferences: [],
+          }
+        : null;
+    });
     const tx = {
-      bot: { update: botUpdate },
+      userModelCredential: { findFirst: credentialFindFirst },
+      secret: { findFirst: secretFindFirst },
+      bot: { findFirst: vi.fn(async () => bot), update: botUpdate },
       thread: { update: vi.fn(async () => ({ nextEventSeq: 2 })) },
       event: { create: vi.fn(async () => ({ seq: 1 })) },
     };
@@ -3494,7 +3532,7 @@ describe("bot model auth on save", () => {
       },
       spaceModelPreference: { findFirst: preferenceFindFirst },
       thread: { findMany: vi.fn(async () => []) },
-      userModelCredential: { findFirst: vi.fn(async () => null) },
+      userModelCredential: { findFirst: credentialFindFirst },
       secret: { findFirst: secretFindFirst },
       $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
     };
@@ -3520,7 +3558,7 @@ describe("bot model auth on save", () => {
     };
   }
 
-  it("saves a rename while resending an existing Spark override", async () => {
+  it("saves a rename without revalidating an unchanged Spark override", async () => {
     const { preferenceFindFirst, secretFindFirst, botUpdate, handler } = saveDeps({
       modelId: spark,
       preferences: () => null,
@@ -3529,8 +3567,6 @@ describe("bot model auth on save", () => {
     const response = await call(handler, "bots/update", {
       botId: "bot-1",
       name: "Ada renamed",
-      modelProvider: "openai-codex",
-      modelId: spark,
     });
 
     expect(response.status).toBe(200);
@@ -3541,7 +3577,7 @@ describe("bot model auth on save", () => {
     expect(secretFindFirst).not.toHaveBeenCalled();
     expect(botUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ name: "Ada renamed", modelId: spark }),
+        data: expect.objectContaining({ name: "Ada renamed" }),
       }),
     );
   });
@@ -3563,6 +3599,8 @@ describe("bot model auth on save", () => {
       botId: "bot-1",
       modelProvider: "openai-codex",
       modelId: spark,
+      modelCredentialId: "cred-oauth",
+      expectedRevision: 1,
     });
 
     expect(response.status).toBe(400);
@@ -3572,14 +3610,7 @@ describe("bot model auth on save", () => {
         message: expect.stringMatching(/not available with your current sign-in/i),
       }),
     });
-    expect(preferenceFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          modelId: spark,
-          credential: { provider: "openai-codex" },
-        }),
-      }),
-    );
+    expect(preferenceFindFirst).not.toHaveBeenCalled();
   });
 
   it("accepts Spark when the preference that owns that model is an API key", async () => {
@@ -3602,6 +3633,8 @@ describe("bot model auth on save", () => {
       botId: "bot-1",
       modelProvider: "openai-codex",
       modelId: spark,
+      modelCredentialId: "cred-api",
+      expectedRevision: 1,
     });
 
     expect(response.status).toBe(200);
@@ -3867,14 +3900,18 @@ describe("routines.update", () => {
     { modelProvider: "openai-compatible", modelId: "new-model", thinkingLevel: "low" },
     { modelProvider: "openrouter" },
     { modelId: null },
-    { thinkingLevel: "high" },
-  ])("keeps deferred model fields out of a public update: %j", async (patch) => {
+  ])("rejects a model mutation without a complete connection binding: %j", async (patch) => {
     const { call, update } = fixture(false);
-    expect((await call(patch)).response.status).toBe(200);
-    const write = update.mock.calls[0]![0];
-    expect(write.where).toEqual({ id: "routine-1", bot: { archivedAt: null } });
-    for (const column of ["modelProvider", "modelId", "thinkingLevel"])
-      expect(write.data).not.toHaveProperty(column);
+    expect((await call(patch)).response.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
+  it("persists a routine thinking override without introducing a model pin", async () => {
+    const { call, update } = fixture(false);
+    expect((await call({ thinkingLevel: "high" })).response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ thinkingLevel: "high" }) }),
+    );
+    expect(update.mock.calls[0]![0].data).not.toHaveProperty("modelProvider");
   });
 
   it("does not bypass the archive guard with deferred model fields", async () => {

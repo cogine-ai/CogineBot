@@ -1,10 +1,11 @@
 import type {
   AgentRunRequest,
+  AgentRuntime,
   AutoReviewProvider,
   ConnectorCall,
   ConnectorTool,
 } from "@rakazo/adapter-kit";
-import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
+import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,8 @@ import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { connectorAccountRevision } from "./connector-account-binding.js";
 import { createRunExecutor } from "./executor.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
+import { serializeModelSecret } from "./pi-oauth.js";
+import { PiAgentRuntime } from "./pi-runtime.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -61,6 +64,8 @@ function fixture({
   readOnly = true,
   rules = [] as ActionApprovalRule[],
   autoReview = false,
+  reviewProvider = autoReviewProvider,
+  deploymentModelKey,
   trigger = "user",
   secrets = [] as string[],
   prompt = "Read the item",
@@ -88,6 +93,8 @@ function fixture({
   readOnly?: boolean;
   rules?: ActionApprovalRule[];
   autoReview?: boolean;
+  reviewProvider?: AutoReviewProvider | null;
+  deploymentModelKey?: string;
   trigger?: string;
   secrets?: string[];
   prompt?: string;
@@ -222,7 +229,11 @@ function fixture({
       }),
     },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
-    userModelCredential: { findFirst: vi.fn(async () => null) },
+    userModelCredential: {
+      findFirst: vi.fn(async () => null),
+      findMany: vi.fn(async () => []),
+    },
+    secret: { findMany: vi.fn(async () => []) },
     deploymentSettings: {
       findUnique: vi.fn(async () => ({
         defaultModelProvider: "scripted",
@@ -249,7 +260,7 @@ function fixture({
   let calls: { args: Record<string, unknown>; executionId: string }[] = [
     { args: { id: "item-1" }, executionId: "call-1" },
   ];
-  const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
+  const runtimeRun = vi.fn<AgentRuntime["run"]>(async function* (request: AgentRunRequest) {
     for (const call of calls) {
       const result = await request.executeTool!(
         catalog ? "demo_execute_tool" : name,
@@ -311,12 +322,15 @@ function fixture({
     events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets,
-    autoReview: autoReviewProvider,
+    secretStore: { load: async (ciphertext: string) => ciphertext },
+    deploymentModelKey,
+    autoReview: reviewProvider ?? undefined,
     shutdownSignal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
     tool,
     prisma,
+    runtimeRun,
     effects,
     results,
     execute,
@@ -346,6 +360,210 @@ function fixture({
     },
   };
 }
+
+describe("automatic review connection accounting", () => {
+  it.each([
+    {
+      selected: "connection-a",
+      missingSecret: false,
+      answerId: "connection-a",
+      reviewId: "connection-a",
+    },
+    {
+      selected: "connection-b",
+      missingSecret: false,
+      answerId: "connection-a",
+      reviewId: "connection-b",
+    },
+    { selected: null, missingSecret: false, answerId: null, reviewId: null },
+    { selected: "connection-a", missingSecret: true, answerId: null, reviewId: null },
+  ])(
+    "attributes actual answer and review calls to their auth source ($selected, missing=$missingSecret)",
+    async ({ selected, missingSecret, answerId, reviewId }) => {
+      const provider = "openrouter";
+      const modelId = "openai/gpt-5.6-luna";
+      vi.stubEnv("RAKAZO_AUTO_REVIEW_PROVIDER", provider);
+      vi.stubEnv("RAKAZO_AUTO_REVIEW_MODEL", modelId);
+      vi.stubEnv("PI_DEFAULT_PROVIDER", provider);
+      vi.stubEnv("OPENROUTER_API_KEY", "synthetic-host-key");
+      const reply = `${[
+        {
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: '{"decision":"pass"}' },
+              finish_reason: null,
+            },
+          ],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+      ]
+        .map((frame) => `data: ${JSON.stringify({ id: "review-fixture", ...frame })}\n\n`)
+        .join("")}data: [DONE]\n\n`;
+      const fetcher = vi.fn(
+        async () => new Response(reply, { headers: { "content-type": "text/event-stream" } }),
+      );
+      vi.stubGlobal("fetch", fetcher);
+      try {
+        const f = fixture({
+          name: "demo_send_message",
+          autoReview: true,
+          reviewProvider: null,
+          deploymentModelKey: "synthetic-host-key",
+        });
+        const at = new Date("2026-01-01T00:00:00Z");
+        const credentials = selected
+          ? ["connection-a", "connection-b"].map((id) => ({
+              id,
+              userId: "user-1",
+              provider,
+              label: id,
+              secretId: `secret-${id}`,
+              connectionRevision: 1,
+              createdAt: at,
+              updatedAt: at,
+            }))
+          : [];
+        const preferences = credentials.map((credential) => ({
+          id: `preference-${credential.id}`,
+          credentialId: credential.id,
+          spaceId: "space-1",
+          userId: "user-1",
+          modelId,
+          thinkingLevel: null,
+          isDefault: credential.id === selected,
+          updatedAt: at,
+          credential,
+        }));
+        const chosen = preferences.find((row) => row.isDefault) ?? null;
+        Object.assign(f.prisma.spaceModelPreference, {
+          findFirst: vi.fn(async () => chosen),
+          findMany: vi.fn(async () => preferences),
+        });
+        Object.assign(f.prisma.userModelCredential, {
+          findFirst: vi.fn(async ({ where }: { where: { id?: string; userId: string } }) => {
+            const row = credentials.find(
+              (row) => row.id === where.id && row.userId === where.userId,
+            );
+            return row
+              ? { ...row, preferences: preferences.filter((item) => item.credentialId === row.id) }
+              : null;
+          }),
+          findMany: vi.fn(async () => credentials),
+        });
+        Object.assign(f.prisma.secret, {
+          findFirst: vi.fn(
+            async ({ where }: { where: { id: string; userId: string; spaceId: null } }) => {
+              const credential = credentials.find(
+                (row) => row.secretId === where.id && row.userId === where.userId,
+              );
+              if (!credential || missingSecret || where.spaceId !== null) return null;
+              return {
+                id: where.id,
+                ciphertext: serializeModelSecret({
+                  kind: "api_key",
+                  key: `synthetic-${credential.id}-key`,
+                  maxTokens: 64,
+                }),
+              };
+            },
+          ),
+        });
+        f.prisma.deploymentSettings.findUnique.mockResolvedValue({
+          defaultModelProvider: provider,
+          defaultModelId: modelId,
+        });
+        if (selected === "connection-b") {
+          const originalBot = f.prisma.bot.findUniqueOrThrow.getMockImplementation()!;
+          f.prisma.bot.findUniqueOrThrow.mockImplementation(async () => ({
+            ...(await originalBot()),
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: "connection-a",
+            thinkingLevel: null,
+          }));
+        }
+        const ledger: Array<Record<string, unknown>> = [];
+        Object.assign(f.prisma, {
+          usageRecord: {
+            createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
+              ledger.push(...data);
+              return { count: data.length };
+            }),
+          },
+        });
+        const primary = f.runtimeRun.getMockImplementation()!;
+        const pi = new PiAgentRuntime();
+        f.runtimeRun.mockImplementation(async function* (
+          request: AgentRunRequest,
+          context?: Parameters<typeof pi.run>[1],
+        ) {
+          yield* pi.run({ ...request, tools: [], claimSteering: undefined }, context);
+          if (!request.runId.endsWith(":auto-review")) yield* primary(request);
+        });
+        await f.run();
+        expect(f.execute).toHaveBeenCalledOnce();
+        expect(f.prisma.run.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              modelProvider: provider,
+              modelId,
+              modelCredentialId: answerId,
+            }),
+          }),
+        );
+        expect(
+          f.runtimeRun.mock.calls.map(([request]) => ({
+            id: request.model.modelCredentialId,
+            key: request.model.apiKey,
+          })),
+        ).toEqual([
+          { id: answerId, key: answerId ? `synthetic-${answerId}-key` : "synthetic-host-key" },
+          { id: reviewId, key: reviewId ? `synthetic-${reviewId}-key` : "synthetic-host-key" },
+        ]);
+        expect(
+          ledger.map((row) => ({
+            credential: row.modelCredentialId,
+            operation: row.operationKind,
+            provider: row.provider,
+            model: row.model,
+          })),
+        ).toEqual([
+          { credential: answerId, operation: "answer", provider, model: modelId },
+          { credential: reviewId, operation: "setup", provider, model: modelId },
+        ]);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        expect(new Set(ledger.map((row) => row.callId)).size).toBe(2);
+        for (const row of ledger) expect(row.callId).toEqual(expect.any(String));
+      } finally {
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+});
+
+describe("optional helper model discovery", () => {
+  it.each([
+    ["database", new Error("model connection database unavailable")],
+    ["secret store", new SecretStoreUnavailableError(503)],
+  ])("continues the active run when the %s hint lookup fails", async (_kind, error) => {
+    const f = fixture();
+    f.prisma.userModelCredential.findMany.mockRejectedValue(error);
+
+    await f.run();
+
+    expect(f.prisma.userModelCredential.findMany).toHaveBeenCalledOnce();
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.results).toHaveLength(1);
+    const helper = f.runtimeRun.mock.calls[0]?.[0].tools.find(
+      (tool) => tool.name === "run_subagent",
+    );
+    expect(helper).toBeDefined();
+    expect(helper?.description).not.toContain("Available explicit model choices");
+  });
+});
 
 describe("disabled builtins", () => {
   it("refuses a direct call before any effect or memory write", async () => {

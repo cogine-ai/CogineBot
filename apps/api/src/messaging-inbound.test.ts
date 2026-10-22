@@ -17,7 +17,15 @@ function createDeps(
     invitedMember?: unknown;
     approvedMember?: unknown;
     sendResult?: { messageId: string; runId: string | null; seq: number };
-    routines?: Array<{ id: string; name: string; prompt: string }>;
+    routines?: Array<{
+      id: string;
+      name: string;
+      prompt: string;
+      modelProvider?: string | null;
+      modelId?: string | null;
+      modelCredentialId?: string | null;
+      thinkingLevel?: string | null;
+    }>;
   } = {},
 ) {
   const identity =
@@ -118,7 +126,13 @@ function createDeps(
     },
     messagingLinkCode,
     bot: { findUnique: vi.fn(async () => ({ name: "Chief" })) },
-    routine: { findMany: vi.fn(async () => overrides.routines ?? []) },
+    routine: {
+      findMany: vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
+        (overrides.routines ?? []).map((row) =>
+          Object.fromEntries(Object.entries(row).filter(([key]) => select[key])),
+        ),
+      ),
+    },
     thread: { findFirst: vi.fn(async () => ({ id: "thread-1" })) },
     messagingChannel: {
       findUnique: vi.fn(async () => channel),
@@ -406,6 +420,43 @@ describe("createMessagingInboundHandler DM routing", () => {
     expect(routinePrompt).toContain("&lt;/untrusted_delivery_payload&gt;");
     expect(deps.enqueue).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["connection-a", "connection-b"])(
+    "captures a message routine connection through its database projection: %s",
+    async (modelCredentialId) => {
+      const deps = createDeps({
+        routines: [
+          {
+            id: "routine-model",
+            name: "Review",
+            prompt: "Review this update",
+            modelProvider: "openai-compatible",
+            modelId: "same-model",
+            modelCredentialId,
+            thinkingLevel: "high",
+          },
+        ],
+      });
+      await expect(
+        wakeMessageRoutines(
+          deps,
+          { spaceId: "ws-1", userId: "user-1", botId: "bot-1", threadId: "thread-1" },
+          dmEvent,
+        ),
+      ).resolves.toBe(true);
+      expect(deps.sendUserMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          modelPin: {
+            routineIds: ["routine-model"],
+            modelProvider: "openai-compatible",
+            modelId: "same-model",
+            modelCredentialId,
+            thinkingLevel: "high",
+          },
+        }),
+      );
+    },
+  );
 
   it("does not double-wake a DM when message routines match", async () => {
     const deps = createDeps({

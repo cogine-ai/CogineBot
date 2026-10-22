@@ -4462,6 +4462,10 @@ msgstr ""
 msgid "Save"
 msgstr "Speichern"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Save other settings"
+msgstr "Andere Einstellungen speichern"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Save application"
 msgstr ""
@@ -5981,3 +5985,39 @@ msgstr ""
 msgctxt "sidebar grouping"
 msgid "Group"
 msgstr ""
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Connection"
+msgstr "Verbindung"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "New connection"
+msgstr "Neue Verbindung"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Unavailable connection"
+msgstr "Verbindung nicht verfügbar"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Used by"
+msgstr "Verwendet von"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a connection for saved models"
+msgstr "Verbindung für gespeicherte Modelle auswählen"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose another model for these items before disconnecting."
+msgstr "Wähle für diese Einträge ein anderes Modell, bevor du die Verbindung trennst."
+
+#: src/pages/RoutineEditor.tsx
+msgid "Routine model"
+msgstr "Routinenmodell"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Bot model"
+msgstr "Bot-Modell"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Use updated connection"
+msgstr "Aktualisierte Verbindung verwenden"

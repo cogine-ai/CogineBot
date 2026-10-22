@@ -19,7 +19,8 @@ import {
 } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
-import type { Prisma, PrismaClient } from "./client.js";
+import type { PrismaClient } from "./client.js";
+import { Prisma } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { ownedConnectionSelection, updateTaskConnectionSelection } from "./connection-selection.js";
 import {
@@ -28,6 +29,7 @@ import {
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import { IsolationError } from "./scope.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
 const EVENT_BATCH_SIZE = 200;
@@ -216,8 +218,11 @@ export interface SendUserMessageInput {
   allowParallelRun?: boolean;
   /** Model every routine in an inbound delivery agreed on. */
   modelPin?: {
+    /** Trusted Routine rows which produced this server-side capture. */
+    routineIds: string[];
     modelProvider: string;
     modelId: string;
+    modelCredentialId?: string | null;
     thinkingLevel: string | null;
   };
 }
@@ -355,6 +360,46 @@ export async function clearThread(
   };
 }
 
+async function lockInboundRoutineModelPin(
+  tx: Prisma.TransactionClient,
+  input: SendUserMessageInput,
+  pin: NonNullable<SendUserMessageInput["modelPin"]>,
+): Promise<void> {
+  const ids = [...new Set(pin.routineIds)].sort();
+  if (ids.length === 0) throw new IsolationError("Routine model selection changed.");
+  const routines = await tx.$queryRaw<
+    Array<{
+      id: string;
+      modelProvider: string | null;
+      modelId: string | null;
+      modelCredentialId: string | null;
+      thinkingLevel: string | null;
+    }>
+  >(Prisma.sql`
+    SELECT id, "modelProvider", "modelId", "modelCredentialId", "thinkingLevel"
+    FROM routines
+    WHERE id IN (${Prisma.join(ids)}) AND "userId"=${input.userId}
+      AND "spaceId"=${input.spaceId} AND "botId"=${input.botId}
+    ORDER BY id FOR UPDATE`);
+  if (
+    routines.length !== ids.length ||
+    routines.some(
+      (routine) =>
+        routine.modelProvider !== pin.modelProvider ||
+        routine.modelId !== pin.modelId ||
+        routine.modelCredentialId !== (pin.modelCredentialId ?? null) ||
+        routine.thinkingLevel !== pin.thinkingLevel,
+    )
+  )
+    throw new IsolationError("Routine model selection changed.");
+  if (pin.modelCredentialId) {
+    const credential = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT id FROM user_model_credentials WHERE id=${pin.modelCredentialId}
+        AND "userId"=${input.userId} AND provider=${pin.modelProvider} FOR KEY SHARE`);
+    if (credential.length !== 1) throw new IsolationError("Model connection is unavailable.");
+  }
+}
+
 export async function sendUserMessage(
   prisma: PrismaClient,
   input: SendUserMessageInput,
@@ -388,6 +433,8 @@ export async function sendUserMessage(
 
   const commit = () =>
     prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Hold the source Routine selection until its Run or steering reference is durable.
+      if (input.modelPin) await lockInboundRoutineModelPin(tx, input, input.modelPin);
       // Message first: its thread-row lock serializes the whole send against clearThread, so a
       // concurrent clear either sees the committed run and cancels it, or strictly precedes this
       // transaction. Created in separate transactions, the run could land inside the clear's
@@ -447,6 +494,7 @@ export async function sendUserMessage(
               ? {
                   modelProvider: input.modelPin.modelProvider,
                   modelId: input.modelPin.modelId,
+                  modelCredentialId: input.modelPin.modelCredentialId ?? null,
                   thinkingLevel: input.modelPin.thinkingLevel,
                   modelPinned: true,
                 }
@@ -470,6 +518,7 @@ export async function sendUserMessage(
               ? {
                   modelProvider: input.modelPin.modelProvider,
                   modelId: input.modelPin.modelId,
+                  modelCredentialId: input.modelPin.modelCredentialId ?? null,
                   thinkingLevel: input.modelPin.thinkingLevel,
                 }
               : {}),
@@ -1348,6 +1397,7 @@ function continuationModelPin(
   batch: ReadonlyArray<{
     modelProvider?: string | null;
     modelId?: string | null;
+    modelCredentialId?: string | null;
     thinkingLevel?: string | null;
   }>,
 ) {
@@ -1357,12 +1407,14 @@ function continuationModelPin(
     (item) =>
       item.modelProvider === first.modelProvider &&
       item.modelId === first.modelId &&
+      (item.modelCredentialId ?? null) === (first.modelCredentialId ?? null) &&
       (item.thinkingLevel ?? null) === (first.thinkingLevel ?? null),
   );
   if (!agreed) return null;
   return {
     modelProvider: first.modelProvider,
     modelId: first.modelId,
+    modelCredentialId: first.modelCredentialId ?? null,
     thinkingLevel: first.thinkingLevel ?? null,
     modelPinned: true,
   };

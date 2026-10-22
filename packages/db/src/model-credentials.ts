@@ -63,6 +63,7 @@ function withModelPreference<
       provider: string;
       label: string;
       secretId: string;
+      connectionRevision: number;
       createdAt: Date;
       updatedAt: Date;
     };
@@ -80,7 +81,7 @@ function withModelPreference<
 }
 
 export async function findDefaultModelCredential(
-  prisma: PrismaClient,
+  prisma: Pick<PrismaClient, "spaceModelPreference">,
   scope: ModelCredentialScope,
 ) {
   const preference = await prisma.spaceModelPreference.findFirst({
@@ -92,7 +93,7 @@ export async function findDefaultModelCredential(
 }
 
 export function findNewestUserModelCredential(
-  prisma: PrismaClient,
+  prisma: Pick<PrismaClient, "userModelCredential">,
   userId: string,
   provider: string,
 ) {
@@ -123,9 +124,9 @@ function compareDescendingId(left: string, right: string) {
   return left < right ? 1 : -1;
 }
 
-function comparePreferenceOrder<C extends OrderedCredential>(
-  left: OrderedPreference<C>,
-  right: OrderedPreference<C>,
+export function comparePreferenceOrder(
+  left: Pick<OrderedPreference<OrderedCredential>, "id" | "isDefault" | "updatedAt">,
+  right: Pick<OrderedPreference<OrderedCredential>, "id" | "isDefault" | "updatedAt">,
 ) {
   if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
   const updated = right.updatedAt.getTime() - left.updatedAt.getTime();
@@ -241,6 +242,7 @@ function credentialFromChoice<
     userId: string;
     label: string;
     secretId: string;
+    connectionRevision: number;
   },
 >(choice: ReturnType<typeof chooseModelCredential<C>>) {
   if (!choice) return null;
@@ -249,7 +251,7 @@ function credentialFromChoice<
 }
 
 export async function findModelCredential(
-  prisma: PrismaClient,
+  prisma: Pick<PrismaClient, "spaceModelPreference" | "userModelCredential">,
   scope: ModelCredentialScope,
   provider: string,
   modelId?: string | null,
@@ -319,4 +321,35 @@ export async function findModelCredential(
       credentials: credential ? [credential] : [],
     }),
   );
+}
+
+/** An explicit model choice never changes its connection when that connection is missing. */
+export async function findBoundModelCredential(
+  prisma: Pick<PrismaClient, "userModelCredential">,
+  scope: ModelCredentialScope,
+  binding: { provider: string; modelId: string; modelCredentialId: string | null },
+) {
+  if (!binding.modelCredentialId || !usableModelId(binding.modelId)) return null;
+  const row = await prisma.userModelCredential.findFirst({
+    where: {
+      id: binding.modelCredentialId,
+      userId: scope.userId,
+      provider: binding.provider,
+    },
+    include: {
+      preferences: {
+        where: { userId: scope.userId, spaceId: scope.spaceId },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      },
+    },
+  });
+  if (!row) return null;
+  const { preferences, ...credential } = row;
+  const preference = preferences[0];
+  return {
+    ...credential,
+    isDefault: preference?.isDefault ?? false,
+    defaultModel: usableModelId(preference?.modelId),
+    thinkingLevel: preference?.thinkingLevel ?? null,
+  };
 }

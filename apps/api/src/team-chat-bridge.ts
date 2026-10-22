@@ -65,6 +65,7 @@ type TargetBot = {
   name: string;
   modelProvider: string | null;
   modelId: string | null;
+  modelCredentialId: string | null;
 };
 
 export type TeamChatInboundTarget = {
@@ -164,6 +165,7 @@ export class TeamChatBridge {
         name: true,
         modelProvider: true,
         modelId: true,
+        modelCredentialId: true,
       },
     });
     throwIfStopped();
@@ -783,6 +785,7 @@ export class TeamChatBridge {
         name: true,
         modelProvider: true,
         modelId: true,
+        modelCredentialId: true,
         teamChatAmbientEnabled: true,
         teamChatRules: true,
       },

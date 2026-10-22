@@ -132,7 +132,7 @@ test("routine editing updates in place, preserves timezone, and deletion persist
   await expect(updatedButton).toHaveCount(0);
 });
 
-test("routine editing keeps the bot model without exposing model override controls", async ({
+test("routine editing inherits the bot model through unrelated edits", async ({
   page,
 }, testInfo) => {
   await signup(
@@ -149,21 +149,30 @@ test("routine editing keeps the bot model without exposing model override contro
   await page.locator("label:has-text('Instruction') textarea").fill("Check the inbox");
   await addScheduleTrigger(page, "Every day");
   await expect(page.getByRole("button", { name: "Advanced", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("combobox", { name: "Model", exact: true })).toHaveCount(0);
+  const model = page.locator('select[aria-label="Routine model"]');
+  await expect(model).toHaveCount(1);
+  await expect(model).toBeHidden();
+  await expect(model).toHaveValue("");
   const createdInput = await saveAndReturn(page, "routines/create");
-  for (const column of ["modelProvider", "modelId", "thinkingLevel"])
-    expect(createdInput).not.toHaveProperty(column);
+  expect(createdInput).toMatchObject({
+    modelProvider: null,
+    modelId: null,
+    modelCredentialId: null,
+    thinkingLevel: null,
+  });
+  expect(createdInput).not.toHaveProperty("expectedRevision");
   const [routine] = await rpc<Routine[]>(page, "routines/list", { botId });
   expect(routine).toMatchObject({
     name: "Model check",
     modelProvider: null,
     modelId: null,
+    modelCredentialId: null,
     thinkingLevel: null,
   });
   await page.getByRole("button", { name: /Model check/ }).click();
   await page.locator("label:has-text('Name') input").fill("Renamed model check");
   const patch = await saveAndReturn(page, "routines/update");
-  for (const column of ["modelProvider", "modelId", "thinkingLevel"])
+  for (const column of ["modelProvider", "modelId", "modelCredentialId", "thinkingLevel"])
     expect(patch).not.toHaveProperty(column);
   await expect(page.getByRole("button", { name: /Renamed model check/ })).toBeVisible();
   await captureScreenshot(page, testInfo, "routine-default-model");

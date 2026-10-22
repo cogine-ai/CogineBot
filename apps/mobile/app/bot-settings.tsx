@@ -8,6 +8,7 @@ import {
 } from "@rakazo/contracts";
 import {
   connectedModelChoices,
+  credentialForModel,
   GAZE_BOT_COLORS,
   modelOptionKey,
   parseModelOptionKey,
@@ -32,6 +33,7 @@ import { deviceVoices, setVoiceForBot, voiceForBot, voiceLabel } from "../lib/bo
 import { COMPUTER_LIFECYCLE_TIMEOUT_MS } from "../lib/computer";
 import { loadDeviceVoiceEnabled } from "../lib/device-voice";
 import { useI18n } from "../lib/i18n";
+import { thinkingLevelLabel } from "../lib/model-catalog";
 import { native, useMobileTokens } from "../lib/native";
 import { errorText } from "../lib/user-error";
 import { stopVoicePlayback } from "../lib/voice";
@@ -54,6 +56,7 @@ export default function BotSettingsScreen() {
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [modelKey, setModelKey] = useState("");
+  const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
   const [autoSpeak, setAutoSpeak] = useState(false);
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
@@ -72,9 +75,12 @@ export default function BotSettingsScreen() {
 
   useEffect(() => {
     if (!botId) return;
+    let cancelled = false;
     void rpc<BotSettingsRecord>("bots/get", { botId })
       .then((next) => {
+        if (cancelled) return;
         setBot(next);
+        setModelRevision(undefined);
         setName(next.name);
         setTitle(next.title);
         setDescription(next.description ?? "");
@@ -82,13 +88,18 @@ export default function BotSettingsScreen() {
         setComputerMode(next.computerMode);
         setModelKey(
           next.modelProvider && next.modelId
-            ? modelOptionKey(next.modelProvider, next.modelId)
+            ? modelOptionKey(next.modelProvider, next.modelId, next.modelCredentialId ?? undefined)
             : "",
         );
         setThinkingLevel(next.thinkingLevel ?? "");
         setAutoSpeak(next.autoSpeak);
       })
-      .catch((err) => setError(errorText(err, t("Could not load bot"))));
+      .catch((err) => {
+        if (!cancelled) setError(errorText(err, t("Could not load bot")));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [botId]);
 
   useEffect(() => {
@@ -118,11 +129,12 @@ export default function BotSettingsScreen() {
   const selectedModel = storedModel
     ? {
         provider: storedModel.provider,
+        modelCredentialId: storedModel.modelCredentialId,
         modelId: resolveSelectableModelId(catalog, storedModel.provider, storedModel.modelId),
       }
     : null;
   const selectedModelKey = selectedModel
-    ? modelOptionKey(selectedModel.provider, selectedModel.modelId)
+    ? modelOptionKey(selectedModel.provider, selectedModel.modelId, selectedModel.modelCredentialId)
     : "";
 
   const effectiveProvider = selectedModel?.provider ?? me?.defaultProvider ?? null;
@@ -135,9 +147,14 @@ export default function BotSettingsScreen() {
             resolveSelectableModelId(catalog, entry.provider, entry.id) === effectiveModelId,
         )
       : undefined;
-  const effectiveCredential = credentials.find(
-    (entry) => entry.provider === effectiveProvider && entry.modelId === effectiveModelId,
-  );
+  const effectiveCredential = selectedModel
+    ? credentialForModel(
+        credentials,
+        effectiveProvider,
+        effectiveModelId,
+        selectedModel.modelCredentialId,
+      )
+    : credentials.find((entry) => entry.isDefault);
   const thinkingOptions = (
     effectiveCredential?.thinkingLevels ??
     effectiveEntry?.thinkingLevels ??
@@ -175,6 +192,7 @@ export default function BotSettingsScreen() {
 
   function selectModel(key: string) {
     if (key === selectedModelKey) return;
+    setModelRevision(connectedOptions.find((option) => option.key === key)?.connectionRevision);
     setModelKey(key);
     setThinkingLevel("");
   }
@@ -285,6 +303,8 @@ export default function BotSettingsScreen() {
         color?: string;
         modelProvider?: string | null;
         modelId?: string | null;
+        modelCredentialId?: string | null;
+        expectedRevision?: number;
         thinkingLevel?: ThinkingLevel | null;
         autoSpeak?: boolean;
       } = { botId };
@@ -298,11 +318,14 @@ export default function BotSettingsScreen() {
       if (color !== bot.color) input.color = color;
       const modelChanged =
         (selected?.provider ?? null) !== (bot.modelProvider ?? null) ||
-        (selected?.modelId ?? null) !== (bot.modelId ?? null);
+        (selected?.modelId ?? null) !== (bot.modelId ?? null) ||
+        (selected?.modelCredentialId ?? null) !== (bot.modelCredentialId ?? null);
       const thinkingChanged = (thinkingLevel || null) !== (bot.thinkingLevel ?? null);
-      if (modelChanged) {
+      if (modelChanged || thinkingChanged) {
         input.modelProvider = selected?.provider ?? null;
         input.modelId = selected?.modelId ?? null;
+        input.modelCredentialId = selected?.modelCredentialId ?? null;
+        input.expectedRevision = selected ? modelRevision : undefined;
       }
       if (modelMetaReady && (modelChanged || thinkingChanged)) {
         input.thinkingLevel = thinkingOptions.length
@@ -545,7 +568,11 @@ export default function BotSettingsScreen() {
                   choices={thinkingChoices}
                   divider
                   label={t("Thinking")}
-                  onChange={setThinkingLevel}
+                  onChange={(value) => {
+                    if (modelRevision === undefined)
+                      setModelRevision(effectiveCredential?.connectionRevision);
+                    setThinkingLevel(value);
+                  }}
                   value={thinkingLevel}
                 />
               ) : null}
@@ -576,16 +603,6 @@ function catalogLabel(
 ) {
   if (!provider) return undefined;
   return catalog.find((entry) => entry.provider === provider && entry.id === modelId)?.label;
-}
-
-function thinkingLevelLabel(level: ThinkingLevel, t: (message: string) => string) {
-  if (level === "xhigh") return t("Extra high");
-  if (level === "low") return t("Low");
-  if (level === "medium") return t("Medium");
-  if (level === "high") return t("High");
-  if (level === "minimal") return t("Minimal");
-  if (level === "max") return t("Max");
-  return `${level.slice(0, 1).toUpperCase()}${level.slice(1)}`;
 }
 
 const styles = StyleSheet.create({

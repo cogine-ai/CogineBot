@@ -1955,3 +1955,91 @@ describe("team chat bridge", () => {
     );
   });
 });
+
+it("projects the connection ID both when starting and when refreshing an ambient judge policy", async () => {
+  const row = {
+    id: "bot-1",
+    spaceId: "space-1",
+    userId: "owner-1",
+    name: "Arthur",
+    modelProvider: "openai-compatible",
+    modelId: "same-model",
+    modelCredentialId: "connection-a",
+    teamChatAmbientEnabled: true,
+    teamChatRules: "Join for release dates.",
+  };
+  let observed = false;
+  const decide = vi.fn(async () => ({ act: false }));
+  const findFirst = vi.fn(
+    async ({
+      where,
+      select,
+    }: {
+      where: { id: string; archivedAt: null };
+      select: Record<string, boolean>;
+    }) => {
+      if (where.id !== row.id || where.archivedAt !== null) return null;
+      return Object.fromEntries(Object.entries(row).filter(([key]) => select[key] === true));
+    },
+  );
+  const bridge = new TeamChatBridge({
+    prisma: {
+      bot: { findFirst },
+      externalMessage: {
+        updateMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async ({ where }: { where: { status?: string } }) =>
+          where.status === "observed" && observed
+            ? [
+                {
+                  id: "message-1",
+                  providerEventId: "event-1",
+                  senderId: "person-1",
+                  senderName: "Ada",
+                  senderIsBot: false,
+                  content: "When do we release?",
+                  createdAt: new Date(0),
+                  externalConversationId: "conversation-1",
+                  externalConversation: {
+                    conversationId: "channel-1",
+                    displayName: "Release",
+                    teamChatAmbientEnabled: null,
+                    teamChatRules: null,
+                    automatedSenderPolicies: {},
+                  },
+                },
+              ]
+            : [],
+        ),
+      },
+      run: { findMany: vi.fn(async () => []) },
+    } as unknown as PrismaClient,
+    events: { sendUserMessage: vi.fn() },
+    jobs: { enqueue: vi.fn() },
+    send: vi.fn(),
+    providerId: "slack",
+    botId: "bot-1",
+    judge: { decide },
+    ambientDebounceMs: 0,
+    reconcileIntervalMs: 60000,
+  });
+  try {
+    await bridge.start();
+    expect(
+      (bridge as unknown as { target: { modelCredentialId: string } }).target.modelCredentialId,
+    ).toBe("connection-a");
+    row.modelCredentialId = "connection-b";
+    observed = true;
+    await bridge.reconcileOnce();
+    expect(decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bot: expect.objectContaining({
+          modelProvider: "openai-compatible",
+          modelId: "same-model",
+          modelCredentialId: "connection-b",
+        }),
+      }),
+    );
+  } finally {
+    await bridge.stop();
+  }
+});

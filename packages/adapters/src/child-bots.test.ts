@@ -131,6 +131,106 @@ describe("spawned bot creation", () => {
     expect(enqueue).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    "stable",
+    "changed cipher",
+    "changed revision",
+    "disabled model",
+    "changed inherited binding",
+  ] as const)(
+    "validates an inherited connection inside the child creation transaction: %s",
+    async (change) => {
+      const parent = {
+        modelProvider: "openai-compatible",
+        modelId: "extra-model",
+        modelCredentialId: "parent-connection",
+      };
+      const plaintext = JSON.stringify({
+        kind: "openai_compatible",
+        baseUrl: "http://127.0.0.1:8000/v1",
+        enabledModelIds:
+          change === "disabled model" ? ["default-model"] : ["default-model", "extra-model"],
+      });
+      const credential = {
+        id: parent.modelCredentialId,
+        userId: "user-1",
+        provider: parent.modelProvider,
+        label: "Local",
+        secretId: "parent-secret",
+        connectionRevision: 1,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+        preferences: [{ modelId: "default-model", isDefault: true, thinkingLevel: null }],
+      };
+      const prisma = {
+        bot: { findFirst: vi.fn(async () => parent), findUnique: vi.fn(async () => null) },
+        userModelCredential: { findFirst: vi.fn(async () => credential) },
+        secret: {
+          findFirst: vi.fn(async () => ({ id: "parent-secret", ciphertext: "original-cipher" })),
+        },
+      } as unknown as PrismaClient;
+      const inserted = vi.fn();
+      const createBot = vi.fn(
+        async (
+          _actor: unknown,
+          input: { validateModel: (tx: unknown, binding: typeof parent) => Promise<void> },
+        ) => {
+          const tx = {
+            userModelCredential: {
+              findFirst: vi.fn(async () => ({
+                ...credential,
+                connectionRevision: change === "changed revision" ? 2 : 1,
+              })),
+            },
+            secret: {
+              findFirst: vi.fn(async () => ({
+                ciphertext: change === "changed cipher" ? "new-cipher" : "original-cipher",
+              })),
+            },
+          };
+          await input.validateModel(tx, {
+            ...parent,
+            modelCredentialId:
+              change === "changed inherited binding"
+                ? "another-connection"
+                : parent.modelCredentialId,
+          });
+          inserted();
+          return { id: "child-bound", name: "Scout", title: "", threadId: "child-thread" };
+        },
+      );
+      const createReposSpy = vi
+        .spyOn(await import("@rakazo/db"), "createRepos")
+        .mockReturnValue({ createBot } as unknown as ReturnType<typeof createRepos>);
+      try {
+        const result = spawnBot(
+          {
+            prisma,
+            secretStore: { load: async () => plaintext },
+            jobs: { enqueue: vi.fn() } as unknown as JobPublisher,
+          },
+          {
+            spawnedBy: { id: "parent-1", name: "Chief", userId: "user-1", spaceId: "workspace-1" },
+            runId: "parent-run",
+            spawnKey: "spawn-bound",
+            name: "Scout",
+          },
+        );
+        if (change === "stable") {
+          await expect(result).resolves.toMatchObject({ ok: true, botId: "child-bound" });
+          expect(inserted).toHaveBeenCalledOnce();
+        } else {
+          await expect(result).rejects.toThrow(
+            change === "disabled model" ? "not enabled" : "connection changed",
+          );
+          expect(inserted).not.toHaveBeenCalled();
+        }
+      } finally {
+        createReposSpy.mockRestore();
+      }
+    },
+  );
+
   it("passes computerMode through to createBot", async () => {
     const createBot = vi.fn().mockResolvedValue({
       id: "child-2",
@@ -144,7 +244,15 @@ describe("spawned bot creation", () => {
 
     const result = await spawnBot(
       {
-        prisma: {} as PrismaClient,
+        prisma: {
+          bot: {
+            findFirst: vi.fn(async () => ({
+              modelProvider: null,
+              modelId: null,
+              modelCredentialId: null,
+            })),
+          },
+        } as unknown as PrismaClient,
         jobs: { enqueue: vi.fn() } as unknown as JobPublisher,
       },
       {

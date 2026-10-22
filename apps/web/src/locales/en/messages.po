@@ -4462,6 +4462,10 @@ msgstr "Runs when this bot receives a verified message from this provider."
 msgid "Save"
 msgstr "Save"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Save other settings"
+msgstr "Save other settings"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Save application"
 msgstr "Save application"
@@ -5981,3 +5985,39 @@ msgstr "Section name"
 msgctxt "sidebar grouping"
 msgid "Group"
 msgstr "Group"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Connection"
+msgstr "Connection"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "New connection"
+msgstr "New connection"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Unavailable connection"
+msgstr "Unavailable connection"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Used by"
+msgstr "Used by"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a connection for saved models"
+msgstr "Choose a connection for saved models"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose another model for these items before disconnecting."
+msgstr "Choose another model for these items before disconnecting."
+
+#: src/pages/RoutineEditor.tsx
+msgid "Routine model"
+msgstr "Routine model"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Bot model"
+msgstr "Bot model"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Use updated connection"
+msgstr "Use updated connection"

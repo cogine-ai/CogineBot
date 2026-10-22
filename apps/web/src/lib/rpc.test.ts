@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clearSpaceSelection, selectedSpaceId, selectSpace } from "./rpc.js";
+import {
+  clearSpaceSelection,
+  currentSpaceSelectionGeneration,
+  selectedSpaceId,
+  selectSpace,
+} from "./rpc.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -48,4 +53,23 @@ describe("space selection storage", () => {
     expect(selectSpace("space-support")).toBe(true);
     expect(setItem).toHaveBeenCalledWith("rakazo:space-id", "space-support");
   });
+});
+
+it("advances the selection generation across A to B to A and logout", () => {
+  const stored = new Map<string, string>();
+  const localStorage = {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value),
+    removeItem: (key: string) => stored.delete(key),
+  };
+  vi.stubGlobal("window", { localStorage });
+  const initial = currentSpaceSelectionGeneration();
+  expect(selectSpace("space-a")).toBe(true);
+  expect(selectSpace("space-b")).toBe(true);
+  expect(selectSpace("space-a")).toBe(true);
+  expect(selectedSpaceId()).toBe("space-a");
+  expect(currentSpaceSelectionGeneration()).toBe(initial + 3);
+  clearSpaceSelection();
+  expect(selectedSpaceId()).toBeNull();
+  expect(currentSpaceSelectionGeneration()).toBe(initial + 4);
 });

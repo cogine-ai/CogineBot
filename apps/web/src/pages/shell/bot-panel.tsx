@@ -17,6 +17,7 @@ import {
 } from "@rakazo/contracts";
 import {
   connectedModelChoices,
+  credentialForModel,
   modelOptionKey,
   parseModelOptionKey,
   resolveSelectableModelId,
@@ -35,7 +36,7 @@ import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
 import { ErrorBoundary, SectionLoadFailed } from "../../components/ErrorBoundary";
 import { botProfilePatch } from "../../lib/bot-profile-patch";
 import { thinkingLevelLabel } from "../../lib/model-catalog";
-import { rpc } from "../../lib/rpc";
+import { currentSpaceSelectionGeneration, rpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
 import { AvatarStudioPopover } from "./avatar-studio-popover";
 import { BotCredentialsSection } from "./bot-credentials";
@@ -221,6 +222,8 @@ export function BotSettings({
     voiceId?: string | null;
     modelProvider?: string | null;
     modelId?: string | null;
+    modelCredentialId?: string | null;
+    expectedRevision?: number;
     thinkingLevel?: ThinkingLevel | null;
     disabledBuiltinTools?: string[];
   }) => Promise<void>;
@@ -246,8 +249,11 @@ export function BotSettings({
   const [voiceId, setVoiceId] = useState(bot.voiceId ?? "");
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [modelKey, setModelKey] = useState(
-    bot.modelProvider && bot.modelId ? modelOptionKey(bot.modelProvider, bot.modelId) : "",
+    bot.modelProvider && bot.modelId
+      ? modelOptionKey(bot.modelProvider, bot.modelId, bot.modelCredentialId ?? undefined)
+      : "",
   );
+  const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState(bot.thinkingLevel ?? "");
   const [disabledBuiltinTools, setDisabledBuiltinTools] = useState<string[]>(
     bot.disabledBuiltinTools ?? [],
@@ -269,6 +275,12 @@ export function BotSettings({
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [modelMetaReady, setModelMetaReady] = useState(false);
+  const [modelConflict, setModelConflict] = useState<"refreshing" | "ready" | "failed" | null>(
+    null,
+  );
+  const modelSelectionRevisionRef = useRef(0);
+  const modelMetadataRevisionRef = useRef(0);
+  const mountedRef = useRef(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const saveQueueRef = useRef(Promise.resolve());
@@ -284,12 +296,21 @@ export function BotSettings({
     }) => Promise<void>
   >(async () => undefined);
   useEffect(() => {
+    mountedRef.current = true;
+    const revision = ++modelMetadataRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
     void rpc.voice
       .voices({})
       .then(setVoices)
       .catch(() => setVoices([]));
     void Promise.all([rpc.models.credentials(), rpc.models.list(), rpc.me()])
       .then(([nextCredentials, nextCatalog, nextMe]) => {
+        if (
+          !mountedRef.current ||
+          revision !== modelMetadataRevisionRef.current ||
+          spaceGeneration !== currentSpaceSelectionGeneration()
+        )
+          return;
         setCredentials(nextCredentials);
         setCatalog(nextCatalog);
         setMe(nextMe);
@@ -298,6 +319,10 @@ export function BotSettings({
         setModelMetaReady(true);
       })
       .catch(() => undefined);
+    return () => {
+      mountedRef.current = false;
+      modelMetadataRevisionRef.current += 1;
+    };
   }, []);
 
   const connectedOptions = connectedModelChoices(credentials, catalog);
@@ -305,11 +330,12 @@ export function BotSettings({
   const selectedModel = storedModel
     ? {
         provider: storedModel.provider,
+        modelCredentialId: storedModel.modelCredentialId,
         modelId: resolveSelectableModelId(catalog, storedModel.provider, storedModel.modelId),
       }
     : null;
   const selectedModelKey = selectedModel
-    ? modelOptionKey(selectedModel.provider, selectedModel.modelId)
+    ? modelOptionKey(selectedModel.provider, selectedModel.modelId, selectedModel.modelCredentialId)
     : "";
 
   const effectiveProvider = selectedModel?.provider ?? me?.defaultProvider ?? null;
@@ -322,15 +348,42 @@ export function BotSettings({
             resolveSelectableModelId(catalog, entry.provider, entry.id) === effectiveModelId,
         )
       : undefined;
-  const effectiveCredential = credentials.find(
-    (entry) => entry.provider === effectiveProvider && entry.modelId === effectiveModelId,
-  );
+  const effectiveCredential = selectedModel
+    ? credentialForModel(
+        credentials,
+        effectiveProvider,
+        effectiveModelId,
+        selectedModel.modelCredentialId,
+      )
+    : credentials.find((entry) => entry.isDefault);
   const thinkingOptions = (
     effectiveCredential?.thinkingLevels ??
     effectiveEntry?.thinkingLevels ??
     []
   ).filter((level) => level !== "off");
   const defaultThinkingLevel = effectiveCredential?.thinkingLevel ?? "medium";
+
+  async function refreshConflictedConnection(selectionRevision: number, spaceGeneration: number) {
+    if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
+    const revision = ++modelMetadataRevisionRef.current;
+    const current = () =>
+      mountedRef.current &&
+      revision === modelMetadataRevisionRef.current &&
+      spaceGeneration === currentSpaceSelectionGeneration();
+    const sameDraft = () => selectionRevision === modelSelectionRevisionRef.current;
+    if (sameDraft()) setModelConflict("refreshing");
+    try {
+      const nextCredentials = await rpc.models.credentials(
+        {},
+        { context: { spaceId: bot.spaceId } },
+      );
+      if (!current()) return;
+      setCredentials(nextCredentials);
+      if (sameDraft()) setModelConflict("ready");
+    } catch {
+      if (current() && sameDraft()) setModelConflict("failed");
+    }
+  }
 
   async function executeSave(patchOverrides?: {
     name?: string;
@@ -342,6 +395,13 @@ export function BotSettings({
     baseDisabledBuiltinTools?: string[];
   }) {
     const selected = selectedModel;
+    const selectionRevision = modelSelectionRevisionRef.current;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const modelChanged =
+      (selected?.provider ?? null) !== bot.modelProvider ||
+      (selected?.modelId ?? null) !== bot.modelId ||
+      (selected?.modelCredentialId ?? null) !== (bot.modelCredentialId ?? null) ||
+      (thinkingLevel || null) !== bot.thinkingLevel;
     const nextName = (patchOverrides?.name !== undefined ? patchOverrides.name : name).trim();
     const nextTitle = (patchOverrides?.title !== undefined ? patchOverrides.title : title).trim();
     const nextDescription = (
@@ -355,6 +415,8 @@ export function BotSettings({
     setTitle(nextTitle);
     setDescription(nextDescription);
 
+    // A conflicted model draft must not block unrelated profile/tool auto-saves.
+    const saveModel = modelChanged && modelConflict === null;
     try {
       setSaving(true);
       setError(null);
@@ -372,13 +434,19 @@ export function BotSettings({
         memoryScope,
         autoSpeak,
         voiceId: voiceId || null,
-        modelProvider: selected?.provider ?? null,
-        modelId: selected?.modelId ?? null,
-        ...(modelMetaReady
+        ...(saveModel
           ? {
-              thinkingLevel: thinkingOptions.length
-                ? ((thinkingLevel || null) as ThinkingLevel | null)
-                : null,
+              modelProvider: selected?.provider ?? null,
+              modelId: selected?.modelId ?? null,
+              modelCredentialId: selected?.modelCredentialId ?? null,
+              expectedRevision: selected ? modelRevision : undefined,
+              ...(modelMetaReady
+                ? {
+                    thinkingLevel: thinkingOptions.length
+                      ? ((thinkingLevel || null) as ThinkingLevel | null)
+                      : null,
+                  }
+                : {}),
             }
           : {}),
       };
@@ -416,7 +484,10 @@ export function BotSettings({
       }
       savedDescriptionRef.current = nextDescription;
     } catch (err) {
+      if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
       setError(errorText(err, t`Could not save`));
+      if (saveModel && err && typeof err === "object" && "code" in err && err.code === "CONFLICT")
+        await refreshConflictedConnection(selectionRevision, spaceGeneration);
     } finally {
       pendingSavesRef.current -= 1;
       if (pendingSavesRef.current === 0) {
@@ -573,7 +644,17 @@ export function BotSettings({
             id={`${ids}-model`}
             className="mt-2 w-full"
             value={selectedModelKey}
+            disabled={
+              !modelMetaReady || modelConflict === "refreshing" || modelConflict === "failed"
+            }
             onChange={(event) => {
+              modelSelectionRevisionRef.current += 1;
+              setModelConflict(null);
+              setError(null);
+              setModelRevision(
+                connectedOptions.find((option) => option.key === event.target.value)
+                  ?.connectionRevision,
+              );
               setModelKey(event.target.value);
               setThinkingLevel("");
             }}
@@ -604,7 +685,13 @@ export function BotSettings({
               id={`${ids}-thinking`}
               className="mt-2 w-full"
               value={thinkingLevel}
-              onChange={(event) => setThinkingLevel(event.target.value)}
+              disabled={modelConflict === "refreshing" || modelConflict === "failed"}
+              onChange={(event) => {
+                modelSelectionRevisionRef.current += 1;
+                if (modelRevision === undefined)
+                  setModelRevision(effectiveCredential?.connectionRevision);
+                setThinkingLevel(event.target.value);
+              }}
             >
               <NativeSelectOption value="">
                 {t`Default (${thinkingLevelLabel(defaultThinkingLevel)})`}
@@ -720,6 +807,39 @@ export function BotSettings({
         {advancedOpened ? <BotCredentialsSection botId={bot.id} /> : null}
       </details>
       {error ? <p className="mt-2 text-[13px] text-destructive">{error}</p> : null}
+      {modelConflict === "ready" &&
+      connectedOptions.some(
+        (option) => option.key === selectedModelKey && option.connectionRevision !== undefined,
+      ) ? (
+        <Button
+          variant="outline"
+          className="mt-2"
+          onClick={() => {
+            const option = connectedOptions.find((entry) => entry.key === selectedModelKey);
+            if (option?.connectionRevision === undefined) return;
+            modelSelectionRevisionRef.current += 1;
+            setModelRevision(option.connectionRevision);
+            setModelConflict(null);
+            setError(null);
+          }}
+        >
+          <Trans>Use updated connection</Trans>
+        </Button>
+      ) : null}
+      {modelConflict === "failed" ? (
+        <Button
+          variant="outline"
+          className="mt-2"
+          onClick={() =>
+            void refreshConflictedConnection(
+              modelSelectionRevisionRef.current,
+              currentSpaceSelectionGeneration(),
+            )
+          }
+        >
+          <Trans>Retry</Trans>
+        </Button>
+      ) : null}
       <div className="mt-5 flex flex-col items-start gap-3">
         <Button
           disabled={saving}
@@ -733,7 +853,7 @@ export function BotSettings({
             });
           }}
         >
-          <Trans>Save</Trans>
+          {modelConflict !== null ? <Trans>Save other settings</Trans> : <Trans>Save</Trans>}
         </Button>
         <Button variant="ghost" size="sm" className="-ms-2.5" onClick={() => void onExport()}>
           <Trans>Export</Trans>

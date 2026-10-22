@@ -76,6 +76,7 @@ export const BotSchema = z.object({
   autoSpeak: z.boolean(),
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
+  modelCredentialId: Id.nullable().optional(),
   thinkingLevel: ThinkingLevelSchema.nullable(),
   teamChatAmbientEnabled: z.boolean(),
   teamChatRules: z.string(),
@@ -377,6 +378,41 @@ export function normalizeCreateBotProfile(
   };
 }
 
+/** Explicit pins identify the connection and the revision the user selected. */
+export function validateModelPinInput(
+  value: {
+    modelProvider?: string | null;
+    modelId?: string | null;
+    modelCredentialId?: string | null;
+    expectedRevision?: number;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const providerProvided = value.modelProvider !== undefined;
+  const modelProvided = value.modelId !== undefined;
+  if (!providerProvided && !modelProvided && value.modelCredentialId === undefined) return;
+  if (
+    providerProvided &&
+    modelProvided &&
+    value.modelProvider === null &&
+    value.modelId === null &&
+    !value.modelCredentialId
+  )
+    return;
+  if (
+    !value.modelProvider ||
+    !value.modelId ||
+    !value.modelCredentialId ||
+    value.expectedRevision === undefined
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Select a model connection and its current revision, or clear the model selection",
+      path: ["modelCredentialId"],
+    });
+  }
+}
+
 export const UpdateBotInput = z
   .object({
     botId: Id,
@@ -392,36 +428,15 @@ export const UpdateBotInput = z
     voiceId: z.string().max(120).nullable().optional(),
     autoSpeak: z.boolean().optional(),
     modelProvider: z.string().trim().min(1).max(80).nullable().optional(),
-    modelId: z.string().trim().min(1).max(200).nullable().optional(),
+    modelId: z.string().trim().min(1).max(512).nullable().optional(),
+    modelCredentialId: Id.nullable().optional(),
+    expectedRevision: z.number().int().positive().optional(),
     thinkingLevel: ThinkingLevelSchema.nullable().optional(),
     teamChatAmbientEnabled: z.boolean().optional(),
     teamChatRules: z.string().max(TEAM_CHAT_RULES_MAX_LENGTH).optional(),
     disabledBuiltinTools: DisabledBuiltinToolsSchema.optional(),
   })
-  .superRefine((value, ctx) => {
-    const providerProvided = value.modelProvider !== undefined;
-    const modelProvided = value.modelId !== undefined;
-    if (!providerProvided && !modelProvided) return;
-    // Reject partial shapes like `{ modelId: null }` (provider omitted) so a
-    // clear cannot succeed without updating both persisted fields.
-    if (providerProvided !== modelProvided) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Model provider and model id must both be set or both cleared",
-        path: ["modelId"],
-      });
-      return;
-    }
-    const bothNull = value.modelProvider === null && value.modelId === null;
-    const bothSet = Boolean(value.modelProvider) && Boolean(value.modelId);
-    if (!bothNull && !bothSet) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Model provider and model id must both be set or both cleared",
-        path: ["modelId"],
-      });
-    }
-  });
+  .superRefine(validateModelPinInput);
 
 export const RoutineSchema = z.object({
   nativeTriggers: z.array(NativeRoutineTriggerSchema).optional(),
@@ -444,6 +459,7 @@ export const RoutineSchema = z.object({
   /** Null runs this routine on its bot's model. */
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
+  modelCredentialId: Id.nullable().optional(),
   thinkingLevel: ThinkingLevelSchema.nullable(),
   lastRunAt: z.string().nullable(),
   nextRunAt: z.string().nullable(),
@@ -461,6 +477,11 @@ export const CreateRoutineInput = z
     timezone: z.string().default("UTC"),
     notify: z.boolean().default(true),
     active: z.boolean().default(false),
+    modelProvider: z.string().trim().min(1).max(80).nullable().optional(),
+    modelId: z.string().trim().min(1).max(512).nullable().optional(),
+    modelCredentialId: Id.nullable().optional(),
+    thinkingLevel: ThinkingLevelSchema.nullable().optional(),
+    expectedRevision: z.number().int().positive().optional(),
     webhookEnabled: z.boolean().default(false),
     githubEnabled: z.boolean().default(false),
     messageProvider: z
@@ -472,6 +493,7 @@ export const CreateRoutineInput = z
       .default(null),
   })
   .superRefine((value, ctx) => {
+    validateModelPinInput(value, ctx);
     if (
       value.crons.length === 0 &&
       !value.webhookEnabled &&
@@ -939,6 +961,7 @@ export const RunSchema = z.object({
   routineId: Id.nullable(),
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
+  modelCredentialId: Id.nullable().optional(),
   error: z.string().nullable(),
   startedAt: z.string().nullable(),
   completedAt: z.string().nullable(),
@@ -1048,6 +1071,7 @@ export function modelOutputLeavesInputRoom(
 export const ModelCredentialSchema = z.object({
   ...ModelContextLimitsSchema.shape,
   id: Id,
+  connectionRevision: z.number().int().positive().optional(),
   provider: z.string(),
   label: z.string(),
   hasKey: z.boolean(),
@@ -1062,24 +1086,52 @@ export const ModelCredentialSchema = z.object({
   supportsImages: z.boolean().optional(),
   maxImagesPerPrompt: z.number().int().min(1).max(1000).optional(),
   thinkingLevels: z.array(ThinkingLevelSchema).optional(),
+  enabledModelIds: z.array(z.string()).optional(),
   /** Stored secret kind. Absent when the secret could not be read. */
   authKind: z.enum(["api_key", "oauth", "openai_compatible"]).optional(),
 });
 export type ModelCredential = z.infer<typeof ModelCredentialSchema>;
 
+export const ModelCredentialReferenceSchema = z.object({
+  kind: z.enum(["bot", "routine", "backup", "space-default", "run", "steering"]),
+  id: z.string(),
+  name: z.string(),
+  spaceId: Id,
+  provider: z.string(),
+  modelId: z.string().nullable(),
+  modelCredentialId: Id.nullable(),
+  unresolved: z.boolean(),
+});
+export type ModelCredentialReference = z.infer<typeof ModelCredentialReferenceSchema>;
+
 export const MAX_MODEL_BACKUPS = 10;
 export const ModelBackupChoiceSchema = z.object({
   provider: z.string().trim().min(1).max(128),
   modelId: z.string().trim().min(1).max(512),
+  modelCredentialId: Id.nullable().optional(),
+  expectedRevision: z.number().int().positive().optional(),
 });
 export type ModelBackupChoice = z.infer<typeof ModelBackupChoiceSchema>;
 export const ModelBackupListSchema = z
   .array(ModelBackupChoiceSchema)
   .max(MAX_MODEL_BACKUPS)
   .superRefine((choices, ctx) => {
+    for (const [index, choice] of choices.entries()) {
+      if (!choice.modelCredentialId || choice.expectedRevision === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Select a model connection and its current revision",
+          path: [index, "modelCredentialId"],
+        });
+      }
+    }
     const seen = new Set<string>();
     for (const [index, choice] of choices.entries()) {
-      const key = JSON.stringify([choice.provider, choice.modelId]);
+      const key = JSON.stringify([
+        choice.provider,
+        choice.modelId,
+        choice.modelCredentialId ?? null,
+      ]);
       if (seen.has(key)) {
         ctx.addIssue({
           code: "custom",
@@ -1092,11 +1144,14 @@ export const ModelBackupListSchema = z
   });
 
 export const OPENAI_COMPATIBLE_PROVIDER_ID = "openai-compatible";
+export const MAX_ENABLED_MODEL_IDS = 500;
 
 export const ModelConnectInputSchema = z
   .object({
     ...ModelContextLimitsSchema.shape,
     provider: z.string(),
+    credentialId: Id.optional(),
+    expectedRevision: z.number().int().positive().optional(),
     apiKey: z.string().optional(),
     accountId: z.string().optional(),
     gatewayId: z.string().optional(),
@@ -1108,8 +1163,31 @@ export const ModelConnectInputSchema = z
     maxTokens: z.number().int().min(1).max(MAX_MODEL_MAX_TOKENS).nullable().optional(),
     supportsImages: z.boolean().optional(),
     maxImagesPerPrompt: z.number().int().min(1).max(1000).nullable().optional(),
+    enabledModelIds: z
+      .array(z.string().trim().min(1).max(512))
+      .max(MAX_ENABLED_MODEL_IDS)
+      .transform((ids) => [...new Set(ids)])
+      .optional(),
   })
   .superRefine((value, ctx) => {
+    if (Boolean(value.credentialId) !== (value.expectedRevision !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Connection and expected revision must be provided together",
+        path: ["expectedRevision"],
+      });
+    }
+    if (
+      value.enabledModelIds !== undefined &&
+      new Set([...value.enabledModelIds, value.modelId?.trim()].filter(Boolean)).size >
+        MAX_ENABLED_MODEL_IDS
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Enable at most 500 models including the default",
+        path: ["enabledModelIds"],
+      });
+    }
     if (!modelOutputLeavesInputRoom(value.maxTokens, value.contextWindow)) {
       ctx.addIssue({
         code: "custom",
@@ -1145,6 +1223,13 @@ export const ModelConnectInputSchema = z
         ctx.addIssue({
           code: "custom",
           message: "Model id is required for OpenAI-compatible models",
+          path: ["modelId"],
+        });
+      }
+      if ((value.modelId?.trim().length ?? 0) > 512) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Model id must contain at most 512 characters",
           path: ["modelId"],
         });
       }

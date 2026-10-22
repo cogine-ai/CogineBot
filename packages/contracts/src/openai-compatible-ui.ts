@@ -11,3 +11,53 @@ export function openAiCompatibleProbeSuccessMessage(modelCount: number): string 
     ? `Found ${modelCount} model${modelCount === 1 ? "" : "s"}.`
     : "Server found. Enter a model name.";
 }
+
+/** The canonical endpoint the server stores: trailing slashes dropped, `/v1` added when no `/vN`. */
+export function normalizeOpenAiCompatibleBaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("Base URL must be an absolute HTTP(S) URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Base URL must use http or https");
+  }
+  if (url.username || url.password) {
+    throw new Error("Base URL must not contain credentials");
+  }
+  let path = url.pathname.replace(/\/+$/, "") || "";
+  const VERSIONED_API_ROOT = /\/v\d+$/;
+  if (!VERSIONED_API_ROOT.test(path)) {
+    path = path ? `${path}/v1` : "/v1";
+  }
+  return `${url.origin}${path}`;
+}
+
+/** Partial form text cannot authorize reusing a saved endpoint's key. */
+export function sameOpenAiCompatibleBaseUrl(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  if (!left || !right) return false;
+  try {
+    return normalizeOpenAiCompatibleBaseUrl(left) === normalizeOpenAiCompatibleBaseUrl(right);
+  } catch {
+    return false;
+  }
+}
+
+/** Keep identical model names on separate servers distinguishable. */
+export function modelConnectionLabel(credential: {
+  provider: string;
+  label: string;
+  baseUrl?: string;
+}): string {
+  if (credential.provider !== "openai-compatible" || !credential.baseUrl) return credential.label;
+  try {
+    return `${credential.label} · ${normalizeOpenAiCompatibleBaseUrl(credential.baseUrl)}`;
+  } catch {
+    return credential.label;
+  }
+}

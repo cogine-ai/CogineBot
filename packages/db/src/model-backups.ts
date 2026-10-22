@@ -13,7 +13,7 @@ export async function listSpaceBackupModels(
   return prisma.spaceBackupModel.findMany({
     where: scoped,
     orderBy: { position: "asc" },
-    select: { provider: true, modelId: true },
+    select: { provider: true, modelId: true, modelCredentialId: true },
   });
 }
 
@@ -21,6 +21,7 @@ export async function replaceSpaceBackupModels(
   prisma: Pick<PrismaClient, "$transaction">,
   scope: BackupModelScope,
   models: ModelBackupChoice[],
+  validate?: (tx: Prisma.TransactionClient) => Promise<void>,
 ): Promise<void> {
   const scoped = { userId: scope.userId, spaceId: scope.spaceId };
   await withTransactionRetry(() =>
@@ -34,13 +35,26 @@ export async function replaceSpaceBackupModels(
           FOR UPDATE
         `;
         if (membership.length !== 1) throw new Error("Space membership not found");
+        await validate?.(tx);
         await tx.spaceBackupModel.deleteMany({ where: scoped });
         if (models.length === 0) return;
         await tx.spaceBackupModel.createMany({
-          data: models.map((model, position) => ({ ...scoped, ...model, position })),
+          data: models.map((model, position) => ({
+            ...scoped,
+            provider: model.provider,
+            modelId: model.modelId,
+            ...(model.modelCredentialId !== undefined
+              ? { modelCredentialId: model.modelCredentialId }
+              : {}),
+            position,
+          })),
         });
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      {
+        isolationLevel: validate
+          ? Prisma.TransactionIsolationLevel.Serializable
+          : Prisma.TransactionIsolationLevel.ReadCommitted,
+      },
     ),
   );
 }

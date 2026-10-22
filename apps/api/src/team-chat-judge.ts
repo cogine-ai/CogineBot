@@ -7,14 +7,17 @@ import type {
   SecretStore,
 } from "@rakazo/adapter-kit";
 import {
+  enabledOpenAiCompatibleModelIds,
   formatCurrentTimeInstruction,
   matchesFailedOAuthSecret,
   resolveModelAuth,
   serializeModelSecret,
   toOAuthCredential,
 } from "@rakazo/adapters";
+import { usableModelId } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import {
+  findBoundModelCredential,
   findDefaultModelCredential,
   findModelCredential,
   recordUsage,
@@ -43,6 +46,7 @@ export interface TeamChatEngagementInput {
     name: string;
     modelProvider: string | null;
     modelId: string | null;
+    modelCredentialId: string | null;
   };
   channelId: string;
   channelName?: string;
@@ -198,31 +202,37 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
   private async resolveModel(bot: TeamChatEngagementInput["bot"]): Promise<{
     model: AgentRunModel;
   } | null> {
-    const settings = await this.deps.prisma.deploymentSettings.findUnique({
-      where: { id: "default" },
-    });
     const scope = { userId: bot.userId, spaceId: bot.spaceId };
-    const defaultCredential = await findDefaultModelCredential(this.deps.prisma, scope);
-    const requestedProvider = this.deps.providerOverride ?? bot.modelProvider;
-    const requestedModel = this.deps.modelOverride ?? bot.modelId;
-    const overrideCredential = requestedProvider
-      ? await findModelCredential(this.deps.prisma, scope, requestedProvider)
-      : null;
-    const explicitJudgeOverride = Boolean(this.deps.providerOverride && this.deps.modelOverride);
-    const useOverride = Boolean(
-      requestedProvider && requestedModel && (explicitJudgeOverride || overrideCredential),
+    const hasBotPin = [bot.modelProvider, bot.modelId, bot.modelCredentialId].some(
+      (value) => value !== null && value !== undefined,
     );
-    const credential = useOverride ? overrideCredential : defaultCredential;
-    const provider =
-      (useOverride ? requestedProvider : null) ??
-      credential?.provider ??
-      settings?.defaultModelProvider ??
-      this.deps.deploymentProvider;
-    const modelId =
-      (useOverride ? requestedModel : null) ??
-      credential?.defaultModel ??
-      settings?.defaultModelId ??
-      this.deps.deploymentModel;
+    let credential: Awaited<ReturnType<typeof findModelCredential>>;
+    let provider: string | null | undefined;
+    let modelId: string | null | undefined;
+    if (this.deps.providerOverride && this.deps.modelOverride) {
+      provider = this.deps.providerOverride;
+      modelId = this.deps.modelOverride;
+      credential = await findModelCredential(this.deps.prisma, scope, provider);
+    } else if (hasBotPin) {
+      const pinnedModelId = usableModelId(bot.modelId);
+      if (!bot.modelProvider || !pinnedModelId || !bot.modelCredentialId) return null;
+      provider = bot.modelProvider;
+      modelId = pinnedModelId;
+      credential = await findBoundModelCredential(this.deps.prisma, scope, {
+        provider,
+        modelId,
+        modelCredentialId: bot.modelCredentialId,
+      });
+      if (!credential) return null;
+    } else {
+      const settings = await this.deps.prisma.deploymentSettings.findUnique({
+        where: { id: "default" },
+      });
+      credential = await findDefaultModelCredential(this.deps.prisma, scope);
+      provider =
+        credential?.provider ?? settings?.defaultModelProvider ?? this.deps.deploymentProvider;
+      modelId = credential?.defaultModel ?? settings?.defaultModelId ?? this.deps.deploymentModel;
+    }
     if (!provider || !modelId) return null;
 
     if (!credential) {
@@ -274,6 +284,12 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
     const plaintext = await this.deps.secrets.load(secret.ciphertext, secret.id);
     const auth = await resolveModelAuth(plaintext, provider, { persist, retire });
     const parsed = auth.secret;
+    if (
+      provider === "openai-compatible" &&
+      (parsed.kind !== "openai_compatible" ||
+        !enabledOpenAiCompatibleModelIds(parsed, credential.defaultModel).includes(modelId))
+    )
+      return null;
     const limit = parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {};
     const context =
       parsed.kind === "oauth"
@@ -287,6 +303,7 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
         model: {
           provider,
           id: modelId,
+          modelCredentialId: credential.id,
           ...limit,
           oauth: {
             credential: { ...parsed.credential },
@@ -309,6 +326,7 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
         model: {
           provider,
           id: modelId,
+          modelCredentialId: credential.id,
           apiKey: parsed.apiKey,
           baseUrl: parsed.baseUrl,
           ...limit,
@@ -320,6 +338,7 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
       model: {
         provider,
         id: modelId,
+        modelCredentialId: credential.id,
         apiKey: auth.apiKey,
         ...limit,
         ...context,

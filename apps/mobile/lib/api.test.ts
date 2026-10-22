@@ -13,6 +13,7 @@ import {
   captureApiRequestContext,
   changePassword,
   currentApiBase,
+  currentSpaceSelectionGeneration,
   deleteAccount,
   fetchAccountSecurity,
   IDLE_TIMEOUT_MS,
@@ -73,6 +74,21 @@ afterEach(() => {
 });
 
 describe("mobile API authentication", () => {
+  it("changes the selection generation across A to B to A and sign-out", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({})),
+    );
+    const initial = currentSpaceSelectionGeneration();
+    await selectSpace("space-a");
+    await selectSpace("space-b");
+    await selectSpace("space-a");
+    expect(selectedSpaceId()).toBe("space-a");
+    expect(currentSpaceSelectionGeneration()).toBeGreaterThanOrEqual(initial + 3);
+    const selectedGeneration = currentSpaceSelectionGeneration();
+    await signOut();
+    expect(currentSpaceSelectionGeneration()).toBeGreaterThan(selectedGeneration);
+  });
   it("does not send a captured old bearer after the session changes", async () => {
     await saveSessionToken("fake-session-a");
     const context = await captureApiRequestContext();

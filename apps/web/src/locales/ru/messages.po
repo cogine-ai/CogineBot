@@ -4462,6 +4462,10 @@ msgstr "Запускается, когда этот бот получает пр
 msgid "Save"
 msgstr "Сохранить"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Save other settings"
+msgstr "Сохранить другие настройки"
+
 #: src/components/integrations/NativeApplicationSetup.tsx
 msgid "Save application"
 msgstr ""
@@ -5981,3 +5985,39 @@ msgstr ""
 msgctxt "sidebar grouping"
 msgid "Group"
 msgstr ""
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Connection"
+msgstr "Подключение"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "New connection"
+msgstr "Новое подключение"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Unavailable connection"
+msgstr "Подключение недоступно"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Used by"
+msgstr "Используется в"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a connection for saved models"
+msgstr "Выберите подключение для сохранённых моделей"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose another model for these items before disconnecting."
+msgstr "Выберите другую модель для этих элементов перед отключением."
+
+#: src/pages/RoutineEditor.tsx
+msgid "Routine model"
+msgstr "Модель задачи"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Bot model"
+msgstr "Модель бота"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Use updated connection"
+msgstr "Использовать обновлённое подключение"

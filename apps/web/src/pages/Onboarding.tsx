@@ -1,4 +1,5 @@
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
+import type { ModelCredential } from "@rakazo/contracts";
 import {
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
   cloudflareGatewayRouting,
@@ -173,16 +174,27 @@ export function OnboardingPage() {
   } = useModelOAuthSignIn({
     onClearError: () => setError(null),
     onError: setError,
-    onFinished: async () => {
+    onFinished: async (_controller, credential) => {
       // OAuth connect ignores thinkingLevel; persist the staged catalog choice.
       const level = clampCatalogThinkingLevel(
         thinkingLevel,
         catalog.find((entry) => entry.provider === provider && entry.id === modelId)
           ?.thinkingLevels,
       );
-      if (level && provider !== OPENAI_COMPATIBLE_PROVIDER_ID && modelId) {
+      if (
+        level &&
+        provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
+        modelId &&
+        credential.connectionRevision !== undefined
+      ) {
         try {
-          await rpc.models.setDefault({ provider, modelId, thinkingLevel: level as ThinkingLevel });
+          await rpc.models.setDefault({
+            provider,
+            modelId,
+            modelCredentialId: credential.id,
+            expectedRevision: credential.connectionRevision,
+            thinkingLevel: level as ThinkingLevel,
+          });
         } catch {
           // The connection itself succeeded; the effort stays adjustable in Models.
         }
@@ -445,6 +457,7 @@ export function OnboardingPage() {
     if (!canSaveModel) return;
     setError(null);
     try {
+      let connection: ModelCredential | undefined;
       if (isOpenAiCompatible) {
         const parsedMaxImagesPerPrompt = parseModelMaxImagesPerPrompt(
           maxImagesPerPrompt,
@@ -471,7 +484,7 @@ export function OnboardingPage() {
           );
           return;
         }
-        await rpc.models.connect({
+        connection = await rpc.models.connect({
           provider,
           baseUrl: baseUrl.trim(),
           modelId: modelId.trim(),
@@ -485,7 +498,7 @@ export function OnboardingPage() {
           label: selected?.providerName ?? provider,
         });
       } else if (apiKey) {
-        await rpc.models.connect({
+        connection = await rpc.models.connect({
           provider,
           apiKey,
           ...(isCloudflareGateway
@@ -499,8 +512,14 @@ export function OnboardingPage() {
       // Catalog providers keep the staged effort on the saved model preference;
       // openai-compatible already stored its level inside the endpoint config.
       const level = stagedThinkingLevel();
-      if (level && !isOpenAiCompatible && modelId) {
-        await rpc.models.setDefault({ provider, modelId, thinkingLevel: level });
+      if (level && !isOpenAiCompatible && modelId && connection?.connectionRevision !== undefined) {
+        await rpc.models.setDefault({
+          provider,
+          modelId,
+          modelCredentialId: connection.id,
+          expectedRevision: connection.connectionRevision,
+          thinkingLevel: level,
+        });
       }
       setStep(nextStepAfterModel(needsIntegrationSetup));
     } catch (err) {

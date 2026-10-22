@@ -587,6 +587,7 @@ function mapRun(run: {
   routineId: string | null;
   modelProvider: string | null;
   modelId: string | null;
+  modelCredentialId?: string | null;
   error: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -602,6 +603,7 @@ function mapRun(run: {
     routineId: run.routineId ?? null,
     modelProvider: run.modelProvider,
     modelId: run.modelId,
+    modelCredentialId: run.modelCredentialId ?? null,
     // Same display clamp as live run.failed events so a huge stored error cannot bypass it.
     error:
       run.status === "failed"

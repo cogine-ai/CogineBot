@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator, FakeSandboxProvider } from "@rakazo/adapters";
+import type { ModelCredential } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -124,7 +125,7 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
         });
         expect(signup.status).toBeLessThan(400);
         const cookie = sessionCookieHeader(signup);
-        await rpc(handles.app, cookie, "models/connect", {
+        const credential = await rpc<ModelCredential>(handles.app, cookie, "models/connect", {
           provider: model.model.provider,
           modelId: model.model.id,
           baseUrl: model.baseUrl,
@@ -144,6 +145,8 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
           botId: bot.id,
           modelProvider: model.model.provider,
           modelId: model.model.id,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
         });
         const storedBot = await handles.prisma.bot.findUniqueOrThrow({ where: { id: bot.id } });
         await handles.prisma.actionApprovalRule.create({

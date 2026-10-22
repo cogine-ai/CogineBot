@@ -20,8 +20,10 @@ export type WebhookEvents = {
     clientNonce?: string;
     allowParallelRun?: boolean;
     modelPin?: {
+      routineIds: string[];
       modelProvider: string;
       modelId: string;
+      modelCredentialId: string | null;
       thinkingLevel: string | null;
     };
   }): Promise<{ messageId: string; runId: string | null; seq: number }>;
@@ -268,10 +270,12 @@ export async function deliverWebhookEvent(
   input: {
     prompt: string;
     routines: Array<{
+      id: string;
       name: string;
       prompt: string;
       modelProvider: string | null;
       modelId: string | null;
+      modelCredentialId: string | null;
       thinkingLevel: string | null;
     }>;
     source: "webhook" | "github" | "messaging";
@@ -314,8 +318,10 @@ export async function deliverWebhookEvent(
     ...(pin.modelProvider && pin.modelId
       ? {
           modelPin: {
+            routineIds: input.routines.map((routine) => routine.id),
             modelProvider: pin.modelProvider,
             modelId: pin.modelId,
+            modelCredentialId: pin.modelCredentialId ?? null,
             thinkingLevel: pin.thinkingLevel ?? null,
           },
         }

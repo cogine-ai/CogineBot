@@ -9,6 +9,7 @@ import type {
   NativeRoutineEventSpec,
 } from "@rakazo/contracts";
 import { nativeEventApp, nativeEventResource } from "@rakazo/contracts";
+import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, describe, it, vi } from "vitest";
@@ -619,6 +620,118 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
     assert.equal(
       (await db.thread.findUniqueOrThrow({ where: { id: f.thread.id } })).nextMessageSeq,
       0,
+    );
+  });
+  it("holds the Routine model through event commit before a competing connection rebind", async () => {
+    const f = await fixture();
+    const firstModel = await db.userModelCredential.create({
+      data: {
+        userId: owner,
+        provider: f.routine.modelProvider!,
+        label: "First synthetic model",
+        secretId: f.secret.id,
+      },
+    });
+    const secondModel = await db.userModelCredential.create({
+      data: {
+        userId: owner,
+        provider: f.routine.modelProvider!,
+        label: "Second synthetic model",
+        secretId: f.secret.id,
+      },
+    });
+    await db.routine.update({
+      where: { id: f.routine.id },
+      data: { modelCredentialId: firstModel.id },
+    });
+    let captured!: () => void;
+    let release!: () => void;
+    const modelRead = new Promise<void>((resolve) => {
+      captured = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const instrumented = db.$extends({
+      query: {
+        routine: {
+          async findFirst({ args, query }) {
+            const routine = await query(args);
+            if (args.where?.id === f.routine.id) {
+              assert.equal(routine?.modelCredentialId, firstModel.id);
+              captured();
+              await resume;
+            }
+            return routine;
+          },
+        },
+      },
+    });
+    const claiming = claimNativeRoutineEvent(
+      instrumented as unknown as PrismaClient,
+      scope,
+      f.event,
+      f.leaseId,
+    );
+    let result: Awaited<typeof claiming>;
+    try {
+      await Promise.race([
+        modelRead,
+        claiming.then(() => {
+          throw new Error("Event claim finished before the model snapshot barrier");
+        }),
+      ]);
+      const competing = await second.pool.connect();
+      try {
+        await competing.query("BEGIN");
+        await assert.rejects(
+          async () => {
+            await competing.query(
+              'SELECT id FROM routines WHERE id=$1 AND "userId"=$2 AND "spaceId"=$3 FOR UPDATE NOWAIT',
+              [f.routine.id, owner, space],
+            );
+            await competing.query(
+              'UPDATE routines SET "modelCredentialId"=$1, "modelId"=$2 WHERE id=$3',
+              [secondModel.id, "replacement-model", f.routine.id],
+            );
+          },
+          (error: unknown) =>
+            Boolean(
+              error && typeof error === "object" && "code" in error && error.code === "55P03",
+            ),
+        );
+      } finally {
+        await competing.query("ROLLBACK");
+        competing.release();
+      }
+      assert.equal(
+        (await db.routine.findUniqueOrThrow({ where: { id: f.routine.id } })).modelCredentialId,
+        firstModel.id,
+      );
+    } finally {
+      release();
+      result = await claiming;
+    }
+    assert.ok(result?.created);
+    const queued = await db.run.findUniqueOrThrow({ where: { id: result.runId } });
+    assert.equal(queued.modelCredentialId, firstModel.id);
+    assert.equal(queued.modelId, f.routine.modelId);
+    await peer.routine.update({
+      where: { id: f.routine.id },
+      data: { modelCredentialId: secondModel.id, modelId: "replacement-model" },
+    });
+    const rebound = await db.routine.findUniqueOrThrow({ where: { id: f.routine.id } });
+    assert.equal(rebound.modelCredentialId, secondModel.id);
+    assert.deepEqual(
+      await db.run.findMany({
+        where: {
+          userId: owner,
+          modelCredentialId: firstModel.id,
+          status: { in: [...ACTIVE_RUN_STATUSES] },
+        },
+        select: { id: true },
+      }),
+      [{ id: queued.id }],
     );
   });
   it("API Actor extras never enter ORM filters or Task/Run writes", async () => {

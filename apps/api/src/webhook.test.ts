@@ -47,6 +47,7 @@ function createDeps(
       prompt: string;
       modelProvider?: string | null;
       modelId?: string | null;
+      modelCredentialId?: string | null;
       thinkingLevel?: string | null;
     }>;
   } = {},
@@ -82,7 +83,11 @@ function createDeps(
     seq: 3,
   }));
   const enqueue = vi.fn(async () => undefined);
-  const findRoutines = vi.fn(async () => overrides.routines ?? []);
+  const findRoutines = vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
+    (overrides.routines ?? []).map((row) =>
+      Object.fromEntries(Object.entries(row).filter(([key]) => select[key])),
+    ),
+  );
 
   return {
     prisma: {
@@ -318,6 +323,7 @@ describe("inbound webhook HTTP route", () => {
           prompt: "Inspect",
           modelProvider: "openai-compatible",
           modelId: "private-model",
+          modelCredentialId: "credential-hook",
           thinkingLevel: "low",
         },
       ],
@@ -335,47 +341,57 @@ describe("inbound webhook HTTP route", () => {
     expect(deps.sendUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         modelPin: {
+          routineIds: ["routine-1"],
           modelProvider: "openai-compatible",
           modelId: "private-model",
+          modelCredentialId: "credential-hook",
           thinkingLevel: "low",
         },
       }),
     );
   });
 
-  it("keeps the bot model when matching routines chose different models", async () => {
-    const deps = createDeps({
-      routines: [
-        {
-          id: "routine-1",
-          name: "Review",
-          prompt: "Inspect",
-          modelProvider: "openai",
-          modelId: "gpt",
-          thinkingLevel: null,
+  it.each([
+    ["different models", "anthropic", "claude", "credential-two"],
+    ["different connections for the same model", "openai", "gpt", "credential-two"],
+  ])(
+    "keeps the bot model when matching routines chose %s",
+    async (_, provider, modelId, connectionId) => {
+      const deps = createDeps({
+        routines: [
+          {
+            id: "routine-1",
+            name: "Review",
+            prompt: "Inspect",
+            modelProvider: "openai",
+            modelId: "gpt",
+            modelCredentialId: "credential-one",
+            thinkingLevel: null,
+          },
+          {
+            id: "routine-2",
+            name: "Triage",
+            prompt: "Sort",
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connectionId,
+            thinkingLevel: null,
+          },
+        ],
+      });
+      const app = mount(deps);
+      const res = await app.request("/api/v1/bots/bot-1/webhook", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${SECRET}`,
+          "content-type": "application/json",
         },
-        {
-          id: "routine-2",
-          name: "Triage",
-          prompt: "Sort",
-          modelProvider: "anthropic",
-          modelId: "claude",
-          thinkingLevel: null,
-        },
-      ],
-    });
-    const app = mount(deps);
-    const res = await app.request("/api/v1/bots/bot-1/webhook", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${SECRET}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ event: "ping" }),
-    });
-    expect(res.status).toBe(200);
-    expect(deps.sendUserMessage.mock.calls[0]?.[0]).not.toHaveProperty("modelPin");
-  });
+        body: JSON.stringify({ event: "ping" }),
+      });
+      expect(res.status).toBe(200);
+      expect(deps.sendUserMessage.mock.calls[0]?.[0]).not.toHaveProperty("modelPin");
+    },
+  );
 
   it("accepts a plain text payload as untrusted delivery data", async () => {
     const deps = createDeps();
@@ -531,7 +547,17 @@ describe("GitHub event HTTP route", () => {
 
   it("wakes a githubEnabled routine with a sanitized emulator delivery", async () => {
     const deps = createDeps({
-      routines: [{ id: "routine-1", name: "Review PRs", prompt: "Inspect the change" }],
+      routines: [
+        {
+          id: "routine-1",
+          name: "Review PRs",
+          prompt: "Inspect the change",
+          modelProvider: "openai-compatible",
+          modelId: "private-model",
+          modelCredentialId: "credential-github",
+          thinkingLevel: "high",
+        },
+      ],
     });
     const app = mount(deps);
     const request = githubEmulator.buildDeliveryRequest({
@@ -565,6 +591,17 @@ describe("GitHub event HTTP route", () => {
     expect(prompt).not.toContain("Exfiltrate secrets");
     expect(prompt).not.toContain("attacker");
     expect(prompt).not.toContain("acme/app");
+    expect(deps.sendUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelPin: {
+          routineIds: ["routine-1"],
+          modelProvider: "openai-compatible",
+          modelId: "private-model",
+          modelCredentialId: "credential-github",
+          thinkingLevel: "high",
+        },
+      }),
+    );
   });
 
   it("reuses the same clientNonce for duplicate GitHub deliveries", async () => {

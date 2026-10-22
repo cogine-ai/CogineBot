@@ -23,6 +23,7 @@ export async function recordUsage(
     parentRunId: attribution.parentRunId ?? attribution.runId,
     provider: event.provider,
     model: event.model,
+    modelCredentialId: event.modelCredentialId ?? null,
     inputTokens: event.inputTokens,
     outputTokens: event.outputTokens,
     cacheReadTokens: event.cacheReadTokens ?? null,

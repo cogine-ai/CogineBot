@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@rakazo/db", () => ({
   appendEventInTransaction: vi.fn(),
+  withTransactionRetry: async (operation: () => Promise<unknown>) => operation(),
 }));
 
 import { botProfileLabelsChanged, commitBotUpdate } from "./bot-update.js";
@@ -17,6 +18,66 @@ describe("botProfileLabelsChanged", () => {
 });
 
 describe("commitBotUpdate", () => {
+  it("validates a model binding in the same serializable transaction before writing", async () => {
+    const update = vi
+      .fn()
+      .mockResolvedValue({ id: "bot-1", name: "Chief", title: "", description: "" });
+    const tx = { bot: { update } };
+    const transaction = vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+      operation(tx),
+    );
+    const validate = vi.fn(async (client: unknown) => {
+      expect(client).toBe(tx);
+      expect(update).not.toHaveBeenCalled();
+    });
+    const notify = vi.fn();
+    await commitBotUpdate({
+      prisma: { $transaction: transaction } as never,
+      notify,
+      spaceId: "space-1",
+      threadId: "thread-1",
+      botId: "bot-1",
+      data: { modelCredentialId: "connection-a" },
+      emitBotUpdated: false,
+      validate,
+    });
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
+    });
+    expect(validate).toHaveBeenCalledOnce();
+    expect(update).toHaveBeenCalledOnce();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("does not write or emit when transactional model validation rejects", async () => {
+    const update = vi.fn();
+    const tx = { bot: { update } };
+    const transaction = vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+      operation(tx),
+    );
+    const notify = vi.fn();
+    const append = vi.fn();
+    await expect(
+      commitBotUpdate(
+        {
+          prisma: { $transaction: transaction } as never,
+          notify,
+          spaceId: "space-1",
+          threadId: "thread-1",
+          botId: "bot-1",
+          data: { name: "New", modelCredentialId: "connection-a" },
+          emitBotUpdated: true,
+          validate: async () => {
+            throw new Error("connection changed");
+          },
+        },
+        append,
+      ),
+    ).rejects.toThrow("connection changed");
+    expect(update).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
   it("writes the bot row and bot.updated in one transaction when labels change", async () => {
     const updated = {
       id: "bot-1",

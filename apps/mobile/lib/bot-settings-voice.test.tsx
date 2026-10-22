@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { modelOptionKey } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
 import { act, createElement, useEffect } from "react";
 import type { Root } from "react-dom/client";
@@ -9,6 +10,8 @@ import BotSettingsScreen from "../app/bot-settings";
 import { MenuPicker } from "../components/menu-picker";
 
 const mocks = vi.hoisted(() => ({
+  rpc: vi.fn(),
+  botId: "bot-fixture",
   deviceVoices: vi.fn(),
   voiceForBot: vi.fn(),
   setVoiceForBot: vi.fn(),
@@ -40,24 +43,11 @@ vi.mock("./bot-voices", () => ({
 vi.mock("./device-voice", () => ({ loadDeviceVoiceEnabled: async () => true }));
 vi.mock("./voice", () => ({ stopVoicePlayback: mocks.stopVoicePlayback }));
 vi.mock("expo-speech", () => ({ stop: mocks.stop, speak: mocks.speak }));
-vi.mock("./api", () => ({
-  rpc: async (procedure: string) => {
-    if (procedure === "bots/get")
-      return {
-        id: "bot-fixture",
-        name: "Fixture",
-        title: "",
-        color: "#62A8EC",
-        computerMode: "team",
-      };
-    if (procedure === "me") return {};
-    return [];
-  },
-}));
+vi.mock("./api", () => ({ rpc: mocks.rpc }));
 vi.mock("expo-router", () => ({
   Stack: { Screen: () => null },
   useRouter: () => ({ back: vi.fn() }),
-  useLocalSearchParams: () => ({ botId: "bot-fixture" }),
+  useLocalSearchParams: () => ({ botId: mocks.botId }),
   useFocusEffect: (effect: () => (() => void) | undefined) => useEffect(effect, [effect]),
 }));
 vi.mock("react-native", () => {
@@ -108,7 +98,21 @@ vi.mock("./i18n", () => {
 });
 vi.mock("../components/bot-avatar", () => ({ BotAvatar: () => null }));
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
-vi.mock("../components/native-action-button", () => ({ NativeActionButton: () => null }));
+vi.mock("../components/native-action-button", () => ({
+  NativeActionButton: ({
+    label,
+    disabled,
+    onPress,
+  }: {
+    label: string;
+    disabled?: boolean;
+    onPress: () => void;
+  }) => (
+    <button type="button" disabled={disabled} onClick={onPress}>
+      {label}
+    </button>
+  ),
+}));
 vi.mock("../components/native-switch", () => ({ NativeSwitch: () => null }));
 vi.mock("../components/row-accessories", () => ({ Chevron: () => null }));
 vi.mock("../components/native-symbol", () => ({
@@ -138,6 +142,7 @@ vi.mock("@expo/ui/community/menu", () => ({
             type: "button",
             key: action.id,
             "data-state": action.state,
+            "data-choice": action.id,
             onClick: () => onPressAction({ nativeEvent: { event: action.id } }),
           },
           action.title,
@@ -151,6 +156,19 @@ describe("bot settings device voice menu", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.botId = "bot-fixture";
+    mocks.rpc.mockReset().mockImplementation(async (procedure: string) => {
+      if (procedure === "bots/get")
+        return {
+          id: "bot-fixture",
+          name: "Fixture",
+          title: "",
+          color: "#62A8EC",
+          computerMode: "team",
+        };
+      if (procedure === "me") return {};
+      return [];
+    });
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     mocks.deviceVoices.mockResolvedValue(offered);
     mocks.voiceForBot.mockResolvedValue("voice-a");
@@ -299,6 +317,74 @@ describe("bot settings device voice menu", () => {
     expect(menu()).not.toBeNull();
     expect(container.textContent).not.toContain("Could not load voices");
     expect(mocks.speak).not.toHaveBeenCalled();
+  });
+
+  it("captures the displayed Bot connection revision after the same settings route changes", async () => {
+    const connection = (id: string, revision: number) => ({
+      id,
+      provider: "openai-compatible",
+      label: id,
+      hasKey: true,
+      isDefault: true,
+      modelId: "model-a",
+      enabledModelIds: ["model-a", "model-b"],
+      connectionRevision: revision,
+      thinkingLevels: ["low", "high"],
+    });
+    mocks.botId = "bot-a";
+    mocks.rpc.mockImplementation(async (procedure: string, input: { botId?: string }) => {
+      if (procedure === "bots/get")
+        return {
+          id: input.botId,
+          name: input.botId,
+          title: "",
+          description: "",
+          color: "#62A8EC",
+          computerMode: "team",
+          modelProvider: "openai-compatible",
+          modelId: "model-a",
+          modelCredentialId: input.botId === "bot-a" ? "connection-a" : "connection-b",
+          thinkingLevel: null,
+          autoSpeak: false,
+        };
+      if (procedure === "models/credentials")
+        return [connection("connection-a", 7), connection("connection-b", 9)];
+      if (procedure === "me") return {};
+      return [];
+    });
+    await render();
+    const namedButton = (label: string) => {
+      const found = [...container.querySelectorAll("button")].find(
+        (entry) => entry.textContent === label,
+      );
+      if (!found) throw new Error(`Missing button ${label}`);
+      return found;
+    };
+    await act(async () => namedButton("Advanced").click());
+    const choice = [...container.querySelectorAll('[data-menu="Model"] button')].find(
+      (entry) =>
+        entry.getAttribute("data-choice") ===
+        `choice:${modelOptionKey("openai-compatible", "model-b", "connection-a")}`,
+    );
+    if (!(choice instanceof HTMLButtonElement)) throw new Error("Missing explicit model choice");
+    await act(async () => choice.click());
+    mocks.botId = "bot-b";
+    await render();
+    const high = [
+      ...container.querySelectorAll<HTMLButtonElement>('[data-menu="Thinking"] button'),
+    ].find((entry) => entry.textContent === "High");
+    if (!high) throw new Error("Missing thinking level");
+    await act(async () => high.click());
+    await act(async () => namedButton("Save").click());
+    expect(
+      mocks.rpc.mock.calls.find(([procedure]) => procedure === "bots/update")?.[1],
+    ).toMatchObject({
+      botId: "bot-b",
+      modelCredentialId: "connection-b",
+      modelId: "model-a",
+      thinkingLevel: "high",
+      expectedRevision: 9,
+    });
   });
 
   it("preserves Model/Thinking menus and their empty default choice", async () => {

@@ -1,3 +1,4 @@
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import { AI_DISCLOSURE_VERSION } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -16,7 +17,7 @@ function setup() {
     prisma: {
       spaceModelPreference: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
       spaceBackupModel: { findMany: vi.fn(async () => []) },
-      userModelCredential: { findMany: vi.fn(async () => []) },
+      userModelCredential: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
       secret: { findMany: vi.fn(async () => []) },
       bot: { findMany: vi.fn(async () => []) },
       routine: { findMany: vi.fn(async () => []) },
@@ -33,6 +34,217 @@ function setup() {
   return { deps, upsert, actor: { userId: "user", spaceId: "space" } as Actor };
 }
 describe("consent grants", () => {
+  it.each(["bot", "routine", "backup"] as const)(
+    "discloses the exact %s connection rather than a newer same-model endpoint",
+    async (kind) => {
+      const { deps, actor } = setup();
+      deps.env.agentRuntime = "pi";
+      const rows = ["selected", "newer"].map((id, index) => ({
+        id,
+        provider: "openai-compatible",
+        userId: actor.userId,
+        label: "Server",
+        secretId: `secret-${id}`,
+        connectionRevision: 1,
+        preferences: [],
+        createdAt: new Date(index),
+        updatedAt: new Date(index),
+      }));
+      const pin = {
+        modelProvider: "openai-compatible",
+        modelId: "same-model",
+        modelCredentialId: "selected",
+        thinkingLevel: null,
+      };
+      const project = async ({ select }: { select?: Record<string, boolean> }) => [
+        Object.fromEntries(Object.entries(pin).filter(([key]) => !select || select[key])),
+      ];
+      if (kind === "backup")
+        vi.mocked(deps.prisma.spaceBackupModel.findMany).mockResolvedValue([
+          { provider: pin.modelProvider, modelId: pin.modelId, modelCredentialId: "selected" },
+        ] as never);
+      else
+        Object.assign(kind === "bot" ? deps.prisma.bot : deps.prisma.routine, {
+          findMany: vi.fn(project),
+        });
+      Object.assign(deps.prisma.userModelCredential, {
+        findMany: vi.fn(async () => [rows[1]]),
+        findFirst: vi.fn(
+          async ({ where }: { where: { id: string; userId: string; provider: string } }) =>
+            rows.find(
+              (row) =>
+                row.id === where.id &&
+                row.userId === where.userId &&
+                row.provider === where.provider,
+            ) ?? null,
+        ),
+      });
+      Object.assign(deps.prisma.secret, {
+        findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+          rows
+            .filter((row) => where.id.in.includes(row.secretId))
+            .map((row) => ({ id: row.secretId, ciphertext: row.id })),
+        ),
+      });
+      Object.assign(deps, {
+        secrets: {
+          load: vi.fn(async (ciphertext: string) =>
+            JSON.stringify({
+              kind: "openai_compatible",
+              baseUrl: `https://${ciphertext}.example/v1`,
+              enabledModelIds: ["same-model"],
+            }),
+          ),
+        },
+      });
+      const status = await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] });
+      expect(status.recipients).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "OpenAI-compatible (https://selected.example)",
+            detail: "same-model",
+          }),
+        ]),
+      );
+    },
+  );
+  it("discloses enabled helper models from an owned connection without a Space preference", async () => {
+    const { deps, actor } = setup();
+    deps.env.agentRuntime = "pi";
+    const rows = [
+      {
+        id: "other-space",
+        userId: actor.userId,
+        provider: "openai-compatible",
+        secretId: "helper-secret",
+        preferences: [],
+      },
+      {
+        id: "retired",
+        userId: actor.userId,
+        provider: "openai-compatible",
+        secretId: "missing-secret",
+        preferences: [],
+      },
+      {
+        id: "foreign",
+        userId: "another-user",
+        provider: "openai-compatible",
+        secretId: "foreign-secret",
+        preferences: [],
+      },
+    ];
+    Object.assign(deps.prisma.userModelCredential, {
+      findMany: vi.fn(async ({ where }: { where: { userId: string } }) =>
+        rows.filter((row) => row.userId === where.userId),
+      ),
+    });
+    Object.assign(deps.prisma.secret, {
+      findMany: vi.fn(
+        async ({ where }: { where: { userId: string; spaceId: null; id: { in: string[] } } }) =>
+          where.userId === actor.userId &&
+          where.spaceId === null &&
+          where.id.in.includes("helper-secret")
+            ? [{ id: "helper-secret", ciphertext: "helper-ciphertext" }]
+            : [],
+      ),
+    });
+    Object.assign(deps, {
+      secrets: {
+        load: vi.fn(async () =>
+          JSON.stringify({
+            kind: "openai_compatible",
+            baseUrl: "https://helper.example/v1",
+            apiKey: "synthetic-key",
+            enabledModelIds: ["same-model", "extra-model"],
+            discoveredModelIds: ["disabled-model"],
+          }),
+        ),
+      },
+    });
+
+    const status = await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] });
+
+    expect(
+      status.recipients.map(({ name, detail, allowed }) => ({ name, detail, allowed })),
+    ).toEqual([
+      { name: "OpenAI-compatible (https://helper.example)", detail: "same-model", allowed: false },
+      { name: "OpenAI-compatible (https://helper.example)", detail: "extra-model", allowed: false },
+    ]);
+    expect(deps.prisma.userModelCredential.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: actor.userId },
+      }),
+    );
+    expect(deps.secrets.load).toHaveBeenCalledTimes(1);
+  });
+  it("discloses helper catalog models allowed by the saved authentication", async () => {
+    const { deps, actor } = setup();
+    deps.env.agentRuntime = "pi";
+    vi.mocked(deps.prisma.userModelCredential.findMany).mockResolvedValue([
+      {
+        id: "subscription",
+        userId: actor.userId,
+        provider: "openai-codex",
+        secretId: "oauth-secret",
+        preferences: [],
+      },
+    ] as never);
+    vi.mocked(deps.prisma.secret.findMany).mockResolvedValue([
+      {
+        id: "oauth-secret",
+        ciphertext: "synthetic-oauth-ciphertext",
+      },
+    ] as never);
+    Object.assign(deps, {
+      secrets: {
+        load: vi.fn(async () =>
+          JSON.stringify({
+            kind: "oauth",
+            provider: "openai-codex",
+            credential: {
+              type: "oauth",
+              access: "synthetic-access",
+              refresh: "synthetic-refresh",
+              expires: 9999999999999,
+            },
+          }),
+        ),
+      },
+    });
+
+    const status = await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] });
+
+    expect(status.recipients.some(({ detail }) => detail === "gpt-6.1-sol")).toBe(true);
+    expect(status.recipients.some(({ detail }) => detail === "gpt-5.3-codex-spark")).toBe(false);
+  });
+  it("rejects an incomplete helper disclosure while the secret store is unavailable", async () => {
+    const { deps, actor } = setup();
+    deps.env.agentRuntime = "pi";
+    vi.mocked(deps.prisma.userModelCredential.findMany).mockResolvedValue([
+      {
+        id: "other-space",
+        userId: actor.userId,
+        provider: "openai-compatible",
+        secretId: "helper-secret",
+        preferences: [],
+      },
+    ] as never);
+    vi.mocked(deps.prisma.secret.findMany).mockResolvedValue([
+      { id: "helper-secret", ciphertext: "fixture" },
+    ] as never);
+    Object.assign(deps, {
+      secrets: {
+        load: vi.fn(async () => {
+          throw new SecretStoreUnavailableError(503, "temporary fixture outage");
+        }),
+      },
+    });
+
+    await expect(
+      aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] }),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+  });
   it("includes reachable helper models and cloud services for a targeted send", async () => {
     const { deps, actor } = setup();
     deps.env.agentRuntime = "pi";
@@ -81,19 +293,18 @@ describe("consent grants", () => {
     const { deps, actor } = setup();
     deps.env.agentRuntime = "pi";
     vi.mocked(deps.prisma.spaceBackupModel.findMany).mockResolvedValue([
-      { provider: "anthropic", modelId: "claude-backup" },
+      { provider: "anthropic", modelId: "claude-backup", modelCredentialId: "backup-credential" },
     ] as never);
-    vi.mocked(deps.prisma.userModelCredential.findMany).mockResolvedValue([
-      {
-        id: "backup-credential",
-        userId: actor.userId,
-        provider: "anthropic",
-        label: "fixture",
-        secretId: "backup-secret",
-        createdAt: new Date(0),
-        updatedAt: new Date(0),
-      },
-    ] as never);
+    vi.mocked(deps.prisma.userModelCredential.findFirst).mockResolvedValue({
+      id: "backup-credential",
+      userId: actor.userId,
+      provider: "anthropic",
+      label: "fixture",
+      secretId: "backup-secret",
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      preferences: [],
+    } as never);
 
     const status = await aiConsentStatus(deps, actor, { uses: ["model"] });
 

@@ -1,9 +1,14 @@
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
+  compatibleThinkingLevels,
   defaultCatalogModelId,
+  enabledOpenAiCompatibleModelIds,
+  helperModelChoicesDescription,
   inboundRoutineModelPin,
+  loadStoredModelSecret,
   modelCredentialAuthKindsForSpace,
   pinnedModelCredentialError,
   readStoredModelAuth,
@@ -29,6 +34,7 @@ function credential(
     provider,
     label: provider,
     secretId: `secret-${provider}`,
+    connectionRevision: 1,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     isDefault: false,
@@ -39,7 +45,12 @@ function credential(
 
 const spaceCredential = credential("space-provider", "space-model");
 const overrideCredential = credential("bot-provider", "stored-model");
-const bot = { modelProvider: "bot-provider", modelId: "bot-model", thinkingLevel: "high" };
+const bot = {
+  modelProvider: "bot-provider",
+  modelId: "bot-model",
+  modelCredentialId: "credential-bot-provider",
+  thinkingLevel: "high",
+};
 const defaults: SelectionInput = {
   override: null,
   overrideCredential: null,
@@ -65,13 +76,13 @@ describe("configured model selection", () => {
       },
     },
     {
-      name: "drops override thinking when its provider has no credential",
+      name: "keeps an unavailable explicit override for the caller to reject",
       input: { override: bot },
       expected: {
-        provider: "space-provider",
-        id: "space-model",
-        credential: spaceCredential,
-        thinkingLevel: null,
+        provider: "bot-provider",
+        id: "bot-model",
+        credential: null,
+        thinkingLevel: "high",
       },
     },
     {
@@ -206,6 +217,7 @@ describe("routine model pin", () => {
   const routine = {
     modelProvider: "routine-provider",
     modelId: "routine-model",
+    modelCredentialId: "credential-routine-provider",
     thinkingLevel: "low",
   };
 
@@ -213,6 +225,7 @@ describe("routine model pin", () => {
     expect(routineRunModelPin(routine)).toEqual({
       modelProvider: "routine-provider",
       modelId: "routine-model",
+      modelCredentialId: "credential-routine-provider",
       thinkingLevel: "low",
       modelPinned: true,
     });
@@ -281,16 +294,59 @@ describe("routine model pin", () => {
     ).toEqual({});
   });
 
-  it("rejects a pinned model whose credential is missing or belongs to another free-form model", () => {
-    expect(pinnedModelCredentialError(routine, null)).toBe("Connect that model provider first");
-    expect(pinnedModelCredentialError(routine, { defaultModel: "other-model" })).toBe(
-      "Unknown model for that provider",
-    );
-    expect(pinnedModelCredentialError(routine, { defaultModel: routine.modelId })).toBeUndefined();
+  it("keeps same-name models on different connections distinct in grouped inbound pins", () => {
+    expect(
+      inboundRoutineModelPin([routine, { ...routine, modelCredentialId: "another-connection" }]),
+    ).toEqual({});
+    expect(inboundRoutineModelPin([routine, routine])).toMatchObject({
+      modelCredentialId: routine.modelCredentialId,
+    });
+  });
+
+  it("rejects missing, retired and mismatched explicit ids without choosing another credential", () => {
     expect(
       pinnedModelCredentialError(
-        { modelProvider: "xai", modelId: "grok-4.6", thinkingLevel: null },
-        { defaultModel: "other-model" },
+        { ...routine, modelCredentialId: null },
+        { id: "another-connection", defaultModel: routine.modelId },
+      ),
+    ).toBe("Connect that model provider first");
+    expect(
+      pinnedModelCredentialError(routine, {
+        id: "another-connection",
+        defaultModel: routine.modelId,
+      }),
+    ).toBe("Connect that model provider first");
+    expect(
+      runModelChoice(
+        { ...routine, modelPinned: true },
+        { ...bot, modelCredentialId: "new-bot-connection" },
+      ),
+    ).toMatchObject({ modelCredentialId: routine.modelCredentialId });
+  });
+
+  it("rejects a pinned model whose credential is missing or belongs to another free-form model", () => {
+    expect(pinnedModelCredentialError(routine, null)).toBe("Connect that model provider first");
+    expect(
+      pinnedModelCredentialError(routine, {
+        id: routine.modelCredentialId,
+        defaultModel: "other-model",
+      }),
+    ).toBe("Unknown model for that provider");
+    expect(
+      pinnedModelCredentialError(routine, {
+        id: routine.modelCredentialId,
+        defaultModel: routine.modelId,
+      }),
+    ).toBeUndefined();
+    expect(
+      pinnedModelCredentialError(
+        {
+          modelProvider: "xai",
+          modelId: "grok-4.6",
+          modelCredentialId: "credential-xai",
+          thinkingLevel: null,
+        },
+        { id: "credential-xai", defaultModel: "other-model" },
       ),
     ).toBeUndefined();
   });
@@ -966,90 +1022,264 @@ describe("model auth availability", () => {
 });
 
 describe("connected model validation", () => {
-  const actor: Pick<Actor, "userId" | "spaceId"> = {
-    userId: "user-1",
-    spaceId: "space-1",
-  };
-
-  it("accepts catalog and saved free-form models but rejects unavailable choices", async () => {
-    const catalogPrisma = {
-      spaceModelPreference: { findFirst: async () => null },
-      userModelCredential: { findFirst: async () => credential("xai", null) },
-    } as unknown as PrismaClient;
-    await expect(
-      validateConnectedModelChoice(catalogPrisma, actor, "xai", "grok-4.6"),
-    ).resolves.toBeUndefined();
-    await expect(
-      validateConnectedModelChoice(catalogPrisma, actor, "xai", "not-a-model"),
-    ).resolves.toBe("Unknown model for that provider");
-
-    const preferenceFindFirst = vi.fn(
-      async (args: {
-        where: {
-          spaceId?: string;
-          userId?: string;
-          modelId?: string;
-          credential?: { provider?: string; userId?: string };
-        };
-      }) => {
-        if (args.where.modelId) {
-          if (
-            args.where.spaceId === actor.spaceId &&
-            args.where.userId === actor.userId &&
-            args.where.modelId === "private-model" &&
-            args.where.credential?.provider === "openai-compatible" &&
-            args.where.credential?.userId === actor.userId
-          ) {
-            return { id: "saved-private-model" };
-          }
-          return null;
-        }
-        if (args.where.credential?.provider === "openai-compatible") {
-          return {
-            credential: credential("openai-compatible", "newest-model"),
-            isDefault: true,
-            modelId: "newest-model",
-            thinkingLevel: null,
-          };
-        }
-        return null;
+  const actor: Pick<Actor, "userId" | "spaceId"> = { userId: "user-1", spaceId: "space-1" };
+  const secretStore = { load: async (ciphertext: string) => ciphertext };
+  const rows = [
+    { ...credential("openai-compatible", "same-model"), id: "connection-a", secretId: "secret-a" },
+    { ...credential("openai-compatible", "same-model"), id: "connection-b", secretId: "secret-b" },
+    credential("xai", "grok-4.6"),
+  ];
+  function fixture() {
+    const findFirst = vi.fn(
+      async ({ where }: { where: { id?: string; provider: string; userId: string } }) => {
+        const row = rows.find(
+          (candidate) =>
+            candidate.id === where.id &&
+            candidate.provider === where.provider &&
+            candidate.userId === where.userId,
+        );
+        return row
+          ? {
+              ...row,
+              preferences: [{ modelId: row.defaultModel, thinkingLevel: null, isDefault: true }],
+            }
+          : null;
       },
     );
-    const customPrisma = {
-      spaceModelPreference: { findFirst: preferenceFindFirst },
-      userModelCredential: { findFirst: async () => null },
-    } as unknown as PrismaClient;
-    await expect(
-      validateConnectedModelChoice(customPrisma, actor, "openai-compatible", "private-model"),
-    ).resolves.toBeUndefined();
-    expect(preferenceFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          spaceId: actor.spaceId,
-          userId: actor.userId,
-          modelId: "private-model",
-          credential: { userId: actor.userId, provider: "openai-compatible" },
+    const secretFindFirst = vi.fn(
+      async ({ where }: { where: { id: string; userId: string; spaceId: null } }) => ({
+        id: where.id,
+        ciphertext: JSON.stringify({
+          kind: "openai_compatible",
+          baseUrl:
+            where.id === "secret-a" ? "http://127.0.0.1:4111/v1" : "http://127.0.0.1:4222/v1",
+          enabledModelIds: ["same-model", where.id === "secret-a" ? "only-a" : "only-b"],
         }),
-        select: { id: true },
+      }),
+    );
+    const prisma = {
+      userModelCredential: { findFirst },
+      spaceModelPreference: { findFirst: vi.fn(async () => null) },
+      secret: { findFirst: secretFindFirst },
+    } as unknown as PrismaClient;
+    return { prisma, findFirst, secretFindFirst };
+  }
+
+  it("keeps a model on its explicitly selected connection even when another connection enables the same id", async () => {
+    const { prisma, findFirst } = fixture();
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        secretStore,
+        actor,
+        "openai-compatible",
+        "same-model",
+        "connection-b",
+      ),
+    ).resolves.toBeUndefined();
+    expect(findFirst).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        where: { id: "connection-b", userId: actor.userId, provider: "openai-compatible" },
       }),
     );
     await expect(
-      validateConnectedModelChoice(customPrisma, actor, "openai-compatible", "missing-model"),
+      validateConnectedModelChoice(
+        prisma,
+        secretStore,
+        actor,
+        "openai-compatible",
+        "only-a",
+        "connection-b",
+      ),
     ).resolves.toBe("Unknown model for that provider");
+  });
 
-    const disconnectedPrisma = {
-      spaceModelPreference: { findFirst: async () => null },
-      userModelCredential: { findFirst: async () => null },
-    } as unknown as PrismaClient;
+  it.each([null, "missing", "credential-xai"])(
+    "rejects an unavailable compatible binding %s without scanning other connections",
+    async (id) => {
+      const { prisma, findFirst } = fixture();
+      await expect(
+        validateConnectedModelChoice(
+          prisma,
+          secretStore,
+          actor,
+          "openai-compatible",
+          "same-model",
+          id,
+        ),
+      ).resolves.toBe("Connect that model provider first");
+      expect(findFirst).toHaveBeenCalledTimes(id === null ? 0 : 1);
+    },
+  );
+
+  it("rejects another account's binding and checks catalog models on the selected connection", async () => {
+    const { prisma } = fixture();
     await expect(
-      validateConnectedModelChoice(disconnectedPrisma, actor, "anthropic", "claude-opus-4-6"),
+      validateConnectedModelChoice(
+        prisma,
+        secretStore,
+        { ...actor, userId: "other-user" },
+        "openai-compatible",
+        "same-model",
+        "connection-a",
+      ),
     ).resolves.toBe("Connect that model provider first");
-
-    await expect(validateConnectedModelChoice(catalogPrisma, actor, "xai", "null")).resolves.toBe(
-      "Unknown model for that provider",
-    );
     await expect(
-      validateConnectedModelChoice(catalogPrisma, actor, "xai", "undefined"),
+      validateConnectedModelChoice(prisma, secretStore, actor, "xai", "grok-4.6", "credential-xai"),
+    ).resolves.toBeUndefined();
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        secretStore,
+        actor,
+        "xai",
+        "missing-model",
+        "credential-xai",
+      ),
     ).resolves.toBe("Unknown model for that provider");
+  });
+
+  it("treats old compatible secrets as one enabled default rather than enabling arbitrary ids", async () => {
+    const { prisma, secretFindFirst } = fixture();
+    secretFindFirst.mockImplementation(async ({ where }) => ({
+      id: where.id,
+      ciphertext: JSON.stringify({
+        kind: "openai_compatible",
+        baseUrl: "http://127.0.0.1:4111/v1",
+      }),
+    }));
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        secretStore,
+        actor,
+        "openai-compatible",
+        "same-model",
+        "connection-a",
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        secretStore,
+        actor,
+        "openai-compatible",
+        "unlisted-model",
+        "connection-a",
+      ),
+    ).resolves.toBe("Unknown model for that provider");
+  });
+
+  it("does not turn secret-store outages into keyless or other-connection success", async () => {
+    const { prisma } = fixture();
+    const outage = new SecretStoreUnavailableError(503, "unavailable");
+    const store = {
+      load: vi.fn(async () => {
+        throw outage;
+      }),
+    };
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        store,
+        actor,
+        "openai-compatible",
+        "same-model",
+        "connection-a",
+      ),
+    ).rejects.toBe(outage);
+    expect(store.load).toHaveBeenCalledOnce();
+  });
+
+  it("reports missing and undecryptable selected secrets separately from storage outages", async () => {
+    const { prisma, secretFindFirst } = fixture();
+    secretFindFirst.mockResolvedValueOnce(null as never);
+    await expect(
+      loadStoredModelSecret(prisma, secretStore, actor.userId, "secret-a"),
+    ).resolves.toEqual({ status: "missing" });
+    const store = {
+      load: async () => {
+        throw new Error("bad ciphertext");
+      },
+    };
+    await expect(
+      loadStoredModelSecret(prisma, store, actor.userId, "secret-a"),
+    ).resolves.toMatchObject({ status: "unreadable" });
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        store,
+        actor,
+        "openai-compatible",
+        "same-model",
+        "connection-a",
+      ),
+    ).resolves.toBe("Model connection is unavailable");
+  });
+
+  it("normalizes effective ids and limits reasoning to enabled models", () => {
+    const secret = {
+      kind: "openai_compatible" as const,
+      baseUrl: "http://127.0.0.1/v1",
+      enabledModelIds: [" extra ", "extra", "EXTRA", " "],
+    };
+    expect(enabledOpenAiCompatibleModelIds(secret, " default ")).toEqual([
+      "default",
+      "extra",
+      "EXTRA",
+    ]);
+    const row = {
+      id: "connection-a",
+      provider: "openai-compatible",
+      label: "Local",
+      isDefault: true,
+      defaultModel: "default",
+    };
+    expect(
+      compatibleThinkingLevels(row, JSON.stringify({ ...secret, reasoning: true }), "extra")
+        .allowed,
+    ).toContain("high");
+    expect(
+      compatibleThinkingLevels(row, JSON.stringify({ ...secret, reasoning: true }), "disabled")
+        .allowed,
+    ).toEqual(["off"]);
+  });
+});
+
+describe("helper model discovery metadata", () => {
+  it("bounds legal large Unicode model lists and keeps usable complete tuples", () => {
+    const choices = Array.from({ length: 50 }, (_, connection) => ({
+      modelCredentialId: `connection-${connection}`,
+      provider: "openai-compatible",
+      modelIds: Array.from(
+        { length: 500 },
+        (_, model) => `${String(model).padStart(3, "0")}-${"界".repeat(508)}`,
+      ),
+    }));
+    const description = helperModelChoicesDescription(choices);
+    expect(new TextEncoder().encode(description).byteLength).toBeLessThanOrEqual(12_000);
+    const payload = JSON.parse(
+      description.slice(description.indexOf("{"), description.lastIndexOf("}") + 1),
+    ) as {
+      connections: Array<{
+        model_credential_id: string;
+        model_provider: string;
+        model_ids: string[];
+      }>;
+      truncated: boolean;
+    };
+    expect(payload.truncated).toBe(true);
+    expect(payload.connections.length).toBeGreaterThan(0);
+    expect(payload.connections.length).toBeLessThanOrEqual(20);
+    for (const entry of payload.connections) {
+      const original = choices.find(
+        (choice) => choice.modelCredentialId === entry.model_credential_id,
+      )!;
+      expect(entry.model_provider).toBe(original.provider);
+      expect(entry.model_ids.length).toBeGreaterThan(0);
+      expect(entry.model_ids.length).toBeLessThanOrEqual(8);
+      expect(entry.model_ids.every((id) => original.modelIds.includes(id))).toBe(true);
+    }
+    expect(description).toContain("inherit the active model");
   });
 });

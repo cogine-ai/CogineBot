@@ -5,8 +5,10 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_ID as CONTRACT_OPENAI_COMPAT,
   cloudflareGatewayRouting,
   isCloudflareAiGatewayProvider,
+  MAX_ENABLED_MODEL_IDS,
   modelOutputLeavesInputRoom,
 } from "@rakazo/contracts";
+import { enabledOpenAiCompatibleModelIds } from "./model-selection.js";
 import { modelIdSupportsImages, updateModelImageCapabilities } from "./model-vision.js";
 import { modelCredentialAuthKind } from "./pi-catalog-availability.js";
 import {
@@ -83,6 +85,17 @@ export function buildModelConnectPlaintext(
     const includeVisionModelIds =
       !options?.omitVisionModelIds &&
       (input.supportsImages !== undefined || previousVisionModelIds !== undefined);
+    const enabledModelIds = enabledOpenAiCompatibleModelIds(
+      {
+        kind: "openai_compatible",
+        baseUrl: prepared.baseUrl,
+        enabledModelIds: input.enabledModelIds ?? compatiblePrevious?.enabledModelIds,
+      },
+      prepared.modelId,
+    );
+    if (enabledModelIds.length > MAX_ENABLED_MODEL_IDS) {
+      throw new Error(`Enable at most ${MAX_ENABLED_MODEL_IDS} models`);
+    }
     const compatibleCacheCapabilities =
       input.cacheCapabilities ?? compatiblePrevious?.cacheCapabilities;
     const secret: StoredModelSecret = {
@@ -97,6 +110,7 @@ export function buildModelConnectPlaintext(
       ...(contextWindow !== undefined ? { contextWindow } : {}),
       ...(prepared.apiKey ? { apiKey: prepared.apiKey } : {}),
       ...(includeVisionModelIds ? { visionModelIds } : {}),
+      enabledModelIds,
       ...(maxImagesPerPrompt !== undefined ? { maxImagesPerPrompt } : {}),
     };
     return serializeModelSecret(secret);
@@ -220,6 +234,7 @@ export function modelCredentialDto(
     defaultModel?: string | null;
     thinkingLevel?: string | null;
     supportsImages?: boolean;
+    connectionRevision?: number;
   },
   plaintext?: string,
 ): ModelCredential {
@@ -229,6 +244,7 @@ export function modelCredentialDto(
     label: row.label,
     hasKey: storedModelSecretHasApiKey(plaintext),
     isDefault: row.isDefault,
+    connectionRevision: row.connectionRevision ?? 1,
     ...(row.defaultModel ? { modelId: row.defaultModel } : {}),
     // Space-scoped effort stored beside the preference's modelId; the
     // openai-compatible secret may still contribute below when unset.
@@ -278,6 +294,7 @@ export function modelCredentialDto(
     ...(parsed.maxImagesPerPrompt !== undefined
       ? { maxImagesPerPrompt: parsed.maxImagesPerPrompt }
       : {}),
+    enabledModelIds: enabledOpenAiCompatibleModelIds(parsed, row.defaultModel),
     thinkingLevels: getSupportedThinkingLevels(
       openAiCompatibleModel(row.defaultModel ?? "custom", parsed.baseUrl, parsed.reasoning),
     ) as ThinkingLevel[],

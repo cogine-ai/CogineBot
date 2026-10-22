@@ -343,6 +343,8 @@ describe("contracts", () => {
         botId: "bot-1",
         modelProvider: "xai",
         modelId: "grok-4.6",
+        modelCredentialId: "connection-one",
+        expectedRevision: 1,
       }).success,
     ).toBe(true);
   });
@@ -429,7 +431,7 @@ describe("contracts", () => {
     expect(ReorderBotsInput.safeParse({ botIds: ["bot-1", "bot-1"] }).success).toBe(false);
   });
 
-  it("does not expose routine model writes on the public create boundary", () => {
+  it("accepts an explicit routine connection binding on the public create boundary", () => {
     const parsed = CreateRoutineInput.parse({
       botId: "bot-1",
       name: "Daily report",
@@ -437,10 +439,20 @@ describe("contracts", () => {
       crons: ["0 9 * * *"],
       modelProvider: "openai-compatible",
       modelId: "different-model",
+      modelCredentialId: "connection-one",
+      expectedRevision: 1,
       thinkingLevel: "high",
     });
-    for (const field of ["modelProvider", "modelId", "thinkingLevel"])
-      expect(parsed).not.toHaveProperty(field);
+    expect(parsed).toMatchObject({
+      modelProvider: "openai-compatible",
+      modelId: "different-model",
+      modelCredentialId: "connection-one",
+      expectedRevision: 1,
+      thinkingLevel: "high",
+    });
+    expect(CreateRoutineInput.safeParse({ ...parsed, modelCredentialId: undefined }).success).toBe(
+      false,
+    );
   });
 
   it("accepts a GitHub-only routine trigger", () => {
