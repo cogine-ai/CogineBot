@@ -16,7 +16,8 @@ function event(
       | "run.completed"
       | "run.failed"
       | "run.cancelled"
-      | "run.started";
+      | "run.started"
+      | "bot.updated";
     threadId: string;
     id: string;
     runId: string;
@@ -64,6 +65,9 @@ describe("browser notifications", () => {
   it("only accepts a new bot message for the hidden or unfocused subscribed thread", () => {
     expect(shouldNotifyBrowser(event(), context())).toBe(true);
     expect(shouldNotifyBrowser(event({ type: "run.started" }), context())).toBe(false);
+    expect(
+      shouldNotifyBrowser(event({ type: "bot.updated", payload: { botId: "bot-1" } }), context()),
+    ).toBe(false);
     expect(shouldNotifyBrowser(event({ type: "run.failed" }), context())).toBe(true);
     expect(shouldNotifyBrowser(event({ type: "run.cancelled" }), context())).toBe(true);
     expect(shouldNotifyBrowser(event({ payload: { role: "user", blocks: [] } }), context())).toBe(

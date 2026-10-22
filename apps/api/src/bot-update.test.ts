@@ -5,19 +5,59 @@ vi.mock("@rakazo/db", () => ({
   withTransactionRetry: async (operation: () => Promise<unknown>) => operation(),
 }));
 
-import { botProfileLabelsChanged, commitBotUpdate } from "./bot-update.js";
+import { botProfileChanged, commitBotUpdate } from "./bot-update.js";
 
-describe("botProfileLabelsChanged", () => {
+describe("botProfileChanged", () => {
   it("is true when name, title, description, or color is present", () => {
-    expect(botProfileLabelsChanged({})).toBe(false);
-    expect(botProfileLabelsChanged({ name: "SEO" })).toBe(true);
-    expect(botProfileLabelsChanged({ title: "Strategist" })).toBe(true);
-    expect(botProfileLabelsChanged({ description: "Helps with SEO" })).toBe(true);
-    expect(botProfileLabelsChanged({ color: "#8B5CF6::shape_1" })).toBe(true);
+    expect(botProfileChanged({})).toBe(false);
+    expect(botProfileChanged({ name: "SEO" })).toBe(true);
+    expect(botProfileChanged({ title: "Strategist" })).toBe(true);
+    expect(botProfileChanged({ description: "Helps with SEO" })).toBe(true);
+    expect(botProfileChanged({ color: "#8B5CF6::shape_1" })).toBe(true);
+  });
+  it("includes an explicit notification preference and omits an absent one", () => {
+    expect(botProfileChanged({ notifyOnFinish: false })).toBe(true);
+    expect(botProfileChanged({ notifyOnFinish: true })).toBe(true);
+    expect(botProfileChanged({ notifyOnFinish: undefined })).toBe(false);
   });
 });
 
 describe("commitBotUpdate", () => {
+  it("commits a notification preference before a best-effort realtime failure", async () => {
+    let committed = false;
+    const updated = { id: "bot-1", name: "Chief", title: "", description: "" };
+    const update = vi.fn().mockResolvedValue(updated);
+    const tx = { bot: { update } };
+    const transaction = vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => {
+      const result = await operation(tx);
+      committed = true;
+      return result;
+    });
+    const append = vi.fn().mockResolvedValue({ seq: 17 });
+    const notify = vi.fn(async () => {
+      expect(committed).toBe(true);
+      throw new Error("realtime unavailable");
+    });
+    await expect(
+      commitBotUpdate(
+        {
+          prisma: { $transaction: transaction } as never,
+          notify,
+          spaceId: "space-1",
+          threadId: "thread-1",
+          botId: "bot-1",
+          data: { notifyOnFinish: false },
+          emitBotUpdated: true,
+        },
+        append,
+      ),
+    ).resolves.toEqual(updated);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { notifyOnFinish: false } }),
+    );
+    expect(append).toHaveBeenCalledWith(tx, expect.objectContaining({ type: "bot.updated" }));
+    expect(notify).toHaveBeenCalledWith("thread-1", 17);
+  });
   it("validates a model binding in the same serializable transaction before writing", async () => {
     const update = vi
       .fn()

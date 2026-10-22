@@ -282,6 +282,7 @@ export async function listNativeRoutineTriggersBatch(
   prisma: PrismaClient,
   scope: NativeEventScope,
   routineIds: readonly string[],
+  options: { includeArchived?: boolean } = {},
 ): Promise<Map<string, NativeRoutineTrigger[]>> {
   const ids = [...new Set(routineIds)];
   if (ids.length === 0) return new Map();
@@ -290,7 +291,8 @@ export async function listNativeRoutineTriggersBatch(
     SELECT r.id AS "ownedRoutineId", t.* FROM routines r JOIN bots b ON b.id=r."botId"
     LEFT JOIN native_routine_triggers t ON t."routineId"=r.id
     WHERE r.id IN (${Prisma.join(ids)}) AND r."userId"=${scope.userId} AND r."spaceId"=${scope.spaceId}
-      AND b."userId"=${scope.userId} AND b."spaceId"=${scope.spaceId} AND b."archivedAt" IS NULL
+      AND b."userId"=${scope.userId} AND b."spaceId"=${scope.spaceId}
+      ${options.includeArchived ? Prisma.empty : Prisma.sql`AND b."archivedAt" IS NULL`}
       AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=${scope.userId} AND m."spaceId"=${scope.spaceId})
     ORDER BY r.id,t."createdAt",t.id`);
   const grouped = new Map<string, NativeRoutineTrigger[]>();

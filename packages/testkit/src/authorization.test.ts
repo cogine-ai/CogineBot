@@ -1,8 +1,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ComposioEmulator, ExpoPushProvider, loadPushToken } from "@rakazo/adapters";
-import type { appContract, Space, SpaceNavigation } from "@rakazo/contracts";
+import {
+  ComposioEmulator,
+  ExpoPushProvider,
+  listNativeRoutineTriggersBatch,
+  loadPushToken,
+} from "@rakazo/adapters";
+import type {
+  Artifact,
+  ArtifactWithContent,
+  appContract,
+  Bot as BotDto,
+  Routine,
+  Space,
+  SpaceNavigation,
+} from "@rakazo/contracts";
 import {
   claimEmptySpaceDeletionForMember,
   deleteEmptySpaceForMember,
@@ -12,6 +25,7 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
+import { commitBotUpdate } from "../../../apps/api/src/bot-update.js";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -1064,6 +1078,285 @@ describeWithDatabase("API authorization and resource isolation", () => {
       expectedRevision: 1,
     });
     expect(missing.status).toBe(404);
+  });
+
+  it("persists the shared notification preference as a metadata event without conversation activity", async () => {
+    const cookie = await signup(
+      app,
+      `notification-setting-${stamp}@rakazo.test`,
+      "Notification Setting",
+    );
+    const bot = await rpc<BotDto>(app, cookie, "bots/create", {
+      ...botInput("Notification Bot"),
+      notifyOnFinish: true,
+    });
+    const snapshot = async () => ({
+      thread: await handles.prisma.thread.findUniqueOrThrow({
+        where: { id: bot.threadId },
+        select: { nextEventSeq: true, nextMessageSeq: true, unread: true },
+      }),
+      messages: await handles.prisma.message.count({ where: { threadId: bot.threadId } }),
+      runs: await handles.prisma.run.count({ where: { botId: bot.id } }),
+      tasks: await handles.prisma.task.count({ where: { botId: bot.id } }),
+    });
+    const before = await snapshot();
+    const beforeBot = await rpc<BotDto>(app, cookie, "bots/get", { botId: bot.id });
+    const updated = await rpc<BotDto>(app, cookie, "bots/update", {
+      botId: bot.id,
+      notifyOnFinish: false,
+    });
+    expect(updated.notifyOnFinish).toBe(false);
+    expect((await rpc<BotDto>(app, cookie, "bots/get", { botId: bot.id })).notifyOnFinish).toBe(
+      false,
+    );
+    const after = await snapshot();
+    expect(after).toEqual({
+      ...before,
+      thread: { ...before.thread, nextEventSeq: before.thread.nextEventSeq + 1 },
+    });
+    const events = await handles.prisma.event.findMany({
+      where: { threadId: bot.threadId, seq: { gte: before.thread.nextEventSeq } },
+    });
+    expect(events).toEqual([
+      expect.objectContaining({ type: "bot.updated", botId: bot.id, runId: null }),
+    ]);
+    expect(updated).toMatchObject({
+      preview: beforeBot.preview,
+      unread: beforeBot.unread,
+      status: beforeBot.status,
+      attentionMessageId: beforeBot.attentionMessageId,
+    });
+    const notify = vi.fn();
+    await expect(
+      commitBotUpdate(
+        {
+          prisma: handles.prisma,
+          notify,
+          botId: bot.id,
+          spaceId: bot.spaceId,
+          threadId: bot.threadId,
+          data: { notifyOnFinish: true },
+          emitBotUpdated: true,
+        },
+        async () => {
+          throw new Error("durable event rejected");
+        },
+      ),
+    ).rejects.toThrow("durable event rejected");
+    expect((await rpc<BotDto>(app, cookie, "bots/get", { botId: bot.id })).notifyOnFinish).toBe(
+      false,
+    );
+    expect(await snapshot()).toEqual(after);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("reads archived profile resources only for their owner in the selected shared Space", async () => {
+    const ownerCookie = await signup(
+      app,
+      `archived-profile-owner-${stamp}@rakazo.test`,
+      "Archived Owner",
+    );
+    const owner = await rpc<Actor>(app, ownerCookie, "me");
+    const shared = await rpc<Space>(app, ownerCookie, "spaces/create", { name: "Shared history" });
+    const sharedRow = await handles.prisma.space.findUniqueOrThrow({
+      where: { id: shared.id },
+      select: { organizationId: true },
+    });
+    const memberCookie = await signup(
+      app,
+      `archived-profile-member-${stamp}@rakazo.test`,
+      "Archived Member",
+    );
+    const member = await rpc<Actor>(app, memberCookie, "me");
+    await handles.prisma.member.deleteMany({ where: { userId: member.userId } });
+    await handles.prisma.member.create({
+      data: {
+        id: `archived-profile-org-member-${stamp}`,
+        organizationId: sharedRow.organizationId,
+        userId: member.userId,
+        role: "member",
+        createdAt: new Date(),
+      },
+    });
+    await handles.prisma.spaceMember.create({
+      data: {
+        id: `archived-profile-space-member-${stamp}`,
+        organizationId: sharedRow.organizationId,
+        spaceId: shared.id,
+        userId: member.userId,
+        role: "member",
+        createdAt: new Date(),
+      },
+    });
+    expect((await rpc<Actor>(app, memberCookie, "me", {}, shared.id)).spaceId).toBe(shared.id);
+    const createBot = (cookie: string, name: string, spaceId = shared.id) =>
+      rpc<BotDto>(
+        app,
+        cookie,
+        "bots/create",
+        { ...botInput(name), description: `${name} history` },
+        spaceId,
+      );
+    const archived = await createBot(ownerCookie, "Archived owned bot");
+    const other = await createBot(ownerCookie, "Other owned bot");
+    const foreign = await createBot(memberCookie, "Member bot");
+    const outside = await createBot(ownerCookie, "Other Space bot", owner.spaceId);
+    const createArtifact = (cookie: string, target: BotDto, name: string, text: string) =>
+      rpc<Artifact>(
+        app,
+        cookie,
+        "artifacts/create",
+        {
+          botId: target.id,
+          name,
+          mimeType: "text/plain",
+          contentBase64: Buffer.from(text).toString("base64"),
+        },
+        target.spaceId,
+      );
+    const routine = await rpc<Routine>(
+      app,
+      ownerCookie,
+      "routines/create",
+      routineInput(archived.id),
+      shared.id,
+    );
+    const original = await createArtifact(ownerCookie, archived, "history.txt", "first version");
+    const latest = await createArtifact(ownerCookie, archived, "history.txt", "latest version");
+    await createArtifact(ownerCookie, archived, "other.txt", "second family");
+    const otherArtifact = await createArtifact(ownerCookie, other, "other-bot.txt", "other Bot");
+    const foreignArtifact = await createArtifact(
+      memberCookie,
+      foreign,
+      "member.txt",
+      "member private",
+    );
+    const outsideArtifact = await createArtifact(
+      ownerCookie,
+      outside,
+      "outside.txt",
+      "other Space",
+    );
+    await rpc(app, ownerCookie, "bots/archive", { botId: archived.id }, shared.id);
+    await rpc(app, memberCookie, "bots/archive", { botId: foreign.id }, shared.id);
+    const archivedScope = { userId: owner.userId, spaceId: shared.id };
+    await expect(
+      listNativeRoutineTriggersBatch(handles.prisma, archivedScope, [routine.id]),
+    ).rejects.toThrow("Routine not found");
+    expect(
+      (
+        await listNativeRoutineTriggersBatch(handles.prisma, archivedScope, [routine.id], {
+          includeArchived: true,
+        })
+      ).get(routine.id),
+    ).toEqual([]);
+    await expect(
+      listNativeRoutineTriggersBatch(
+        handles.prisma,
+        { userId: member.userId, spaceId: shared.id },
+        [routine.id],
+        { includeArchived: true },
+      ),
+    ).rejects.toThrow("Routine not found");
+    await expectDenied(app, ownerCookie, "bots/get", { botId: archived.id }, shared.id);
+    expect(await rpc<BotDto[]>(app, ownerCookie, "bots/listArchived", {}, shared.id)).toEqual([
+      expect.objectContaining({ id: archived.id, description: "Archived owned bot history" }),
+    ]);
+    expect(
+      await rpc<Routine[]>(app, ownerCookie, "routines/list", { botId: archived.id }, shared.id),
+    ).toEqual([expect.objectContaining({ id: routine.id, botId: archived.id })]);
+    const first = await rpc<{ items: Artifact[]; nextCursor: string | null }>(
+      app,
+      ownerCookie,
+      "artifacts/listSpace",
+      {
+        botId: archived.id,
+        limit: 1,
+      },
+      shared.id,
+    );
+    expect(first.items).toHaveLength(1);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = await rpc<{ items: Artifact[]; nextCursor: string | null }>(
+      app,
+      ownerCookie,
+      "artifacts/listSpace",
+      {
+        botId: archived.id,
+        limit: 1,
+        cursor: first.nextCursor,
+      },
+      shared.id,
+    );
+    expect([...first.items, ...second.items].map((item) => item.botId)).toEqual([
+      archived.id,
+      archived.id,
+    ]);
+    expect([...first.items, ...second.items]).toContainEqual(
+      expect.objectContaining({ id: original.id, name: "history.txt", version: 2 }),
+    );
+    const content = await rpc<ArtifactWithContent>(
+      app,
+      ownerCookie,
+      "artifacts/get",
+      {
+        botId: archived.id,
+        artifactId: latest.id,
+      },
+      shared.id,
+    );
+    expect(content.version).toBe(2);
+    expect(Buffer.from(content.contentBase64, "base64").toString()).toBe("latest version");
+    expect(
+      await rpc(app, ownerCookie, "artifacts/listVersions", { familyId: original.id }, shared.id),
+    ).toEqual([
+      expect.objectContaining({ id: latest.id, version: 2 }),
+      expect.objectContaining({ id: original.id, version: 1 }),
+    ]);
+    const wrongCursor = await raw(
+      app,
+      ownerCookie,
+      "artifacts/listSpace",
+      { botId: other.id, cursor: first.nextCursor },
+      shared.id,
+    );
+    expect(wrongCursor.status).toBe(400);
+    for (const [cookie, botId, spaceId] of [
+      [memberCookie, archived.id, shared.id],
+      [ownerCookie, foreign.id, shared.id],
+      [ownerCookie, outside.id, shared.id],
+      [ownerCookie, archived.id, owner.spaceId],
+    ]) {
+      await expectDenied(app, cookie!, "routines/list", { botId }, spaceId);
+      await expectDenied(app, cookie!, "artifacts/listSpace", { botId }, spaceId);
+    }
+    for (const artifact of [otherArtifact, foreignArtifact, outsideArtifact]) {
+      await expectDenied(
+        app,
+        ownerCookie,
+        "artifacts/get",
+        { botId: archived.id, artifactId: artifact.id },
+        shared.id,
+      );
+    }
+    const before = await handles.prisma.bot.findUniqueOrThrow({ where: { id: archived.id } });
+    const runs = await handles.prisma.run.count({ where: { botId: archived.id } });
+    const tasks = await handles.prisma.task.count({ where: { botId: archived.id } });
+    for (const [procedure, input] of [
+      ["bots/update", { botId: archived.id, notifyOnFinish: true }],
+      ["routines/create", routineInput(archived.id)],
+      ["routines/update", { routineId: routine.id, name: "Cannot edit" }],
+      ["routines/testRun", { routineId: routine.id }],
+      ["computer/boot", { botId: archived.id }],
+      ["computer/takeover", { botId: archived.id }],
+      ["computer/input", { botId: archived.id, kind: "key", payload: { key: "A" } }],
+    ] as const)
+      await expectDenied(app, ownerCookie, procedure, input, shared.id);
+    expect(await handles.prisma.bot.findUniqueOrThrow({ where: { id: archived.id } })).toEqual(
+      before,
+    );
+    expect(await handles.prisma.run.count({ where: { botId: archived.id } })).toBe(runs);
+    expect(await handles.prisma.task.count({ where: { botId: archived.id } })).toBe(tasks);
   });
 
   it("rotates an existing catalog-provider connection without creating a duplicate", async () => {

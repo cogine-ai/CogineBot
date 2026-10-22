@@ -216,7 +216,7 @@ export function BotSettings({
     instructions?: string;
     color?: string;
     notifyOnFinish?: boolean;
-    computerMode: ComputerMode;
+    computerMode?: ComputerMode;
     memoryScope?: "isolated" | "shared" | null;
     autoSpeak?: boolean;
     voiceId?: string | null;
@@ -243,6 +243,27 @@ export function BotSettings({
   const savedDescriptionRef = useRef(bot.description ?? "");
   const [color, setColor] = useState(bot.color);
   const [notifyOnFinish, setNotifyOnFinish] = useState(bot.notifyOnFinish ?? true);
+  const [notificationPending, setNotificationPending] = useState(false);
+  const spaceGeneration = currentSpaceSelectionGeneration();
+  const notificationOwnerRef = useRef({ botId: bot.id, spaceId: bot.spaceId, spaceGeneration });
+  if (
+    notificationOwnerRef.current.botId !== bot.id ||
+    notificationOwnerRef.current.spaceId !== bot.spaceId ||
+    notificationOwnerRef.current.spaceGeneration !== spaceGeneration
+  )
+    notificationOwnerRef.current = { botId: bot.id, spaceId: bot.spaceId, spaceGeneration };
+  const pendingNotificationRef = useRef<{ owner: typeof notificationOwnerRef.current } | null>(
+    null,
+  );
+  const serverNotificationRef = useRef(bot.notifyOnFinish ?? true);
+  useEffect(() => {
+    serverNotificationRef.current = bot.notifyOnFinish ?? true;
+    if (pendingNotificationRef.current?.owner !== notificationOwnerRef.current) {
+      pendingNotificationRef.current = null;
+      setNotificationPending(false);
+      setNotifyOnFinish(serverNotificationRef.current);
+    }
+  }, [bot, spaceGeneration]);
   const [computerMode, setComputerMode] = useState(bot.computerMode);
   const [memoryScope, setMemoryScope] = useState(bot.memoryScope);
   const [autoSpeak, setAutoSpeak] = useState(bot.autoSpeak);
@@ -290,7 +311,6 @@ export function BotSettings({
       title?: string;
       description?: string;
       color?: string;
-      notifyOnFinish?: boolean;
       disabledBuiltinTools?: string[];
       baseDisabledBuiltinTools?: string[];
     }) => Promise<void>
@@ -390,7 +410,6 @@ export function BotSettings({
     title?: string;
     description?: string;
     color?: string;
-    notifyOnFinish?: boolean;
     disabledBuiltinTools?: string[];
     baseDisabledBuiltinTools?: string[];
   }) {
@@ -408,8 +427,6 @@ export function BotSettings({
       patchOverrides?.description !== undefined ? patchOverrides.description : description
     ).trim();
     const nextColor = patchOverrides?.color !== undefined ? patchOverrides.color : color;
-    const nextNotify =
-      patchOverrides?.notifyOnFinish !== undefined ? patchOverrides.notifyOnFinish : notifyOnFinish;
 
     if (nextName) setName(nextName);
     setTitle(nextTitle);
@@ -429,7 +446,6 @@ export function BotSettings({
         ...botProfilePatch(savedDescriptionRef.current, nextDescription),
         // Unchanged color stays off the wire so a legacy named value cannot fail a name save.
         ...(nextColor !== bot.color ? { color: nextColor } : {}),
-        notifyOnFinish: nextNotify,
         computerMode,
         memoryScope,
         autoSpeak,
@@ -518,7 +534,6 @@ export function BotSettings({
     title?: string;
     description?: string;
     color?: string;
-    notifyOnFinish?: boolean;
     disabledBuiltinTools?: string[];
   }) {
     // Serialize full-object auto-saves so an older in-flight request cannot
@@ -536,6 +551,37 @@ export function BotSettings({
       .catch(() => undefined)
       .then(() => executeSaveRef.current(queuedPatch));
     return saveQueueRef.current;
+  }
+
+  function saveNotification(checked: boolean) {
+    if (pendingNotificationRef.current?.owner === notificationOwnerRef.current) return;
+    const owner = notificationOwnerRef.current;
+    const pending = { owner };
+    pendingNotificationRef.current = pending;
+    setNotificationPending(true);
+    setNotifyOnFinish(checked);
+    setError(null);
+    const current = () =>
+      mountedRef.current &&
+      owner === notificationOwnerRef.current &&
+      owner.spaceGeneration === currentSpaceSelectionGeneration();
+    saveQueueRef.current = saveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (!current()) return;
+        try {
+          await onSave({ notifyOnFinish: checked });
+        } catch (err) {
+          if (!current()) return;
+          setNotifyOnFinish(serverNotificationRef.current);
+          setError(errorText(err, t`Could not save`));
+        } finally {
+          if (current() && pendingNotificationRef.current === pending) {
+            pendingNotificationRef.current = null;
+            setNotificationPending(false);
+          }
+        }
+      });
   }
 
   return (
@@ -602,12 +648,10 @@ export function BotSettings({
         <Switch
           id={`${ids}-notify-finish`}
           checked={notifyOnFinish}
+          disabled={notificationPending}
           aria-labelledby={`${ids}-notify-finish-label`}
           aria-describedby={`${ids}-notify-finish-desc`}
-          onCheckedChange={(checked) => {
-            setNotifyOnFinish(checked);
-            void enqueueSave({ notifyOnFinish: checked });
-          }}
+          onCheckedChange={saveNotification}
         />
       </div>
       <details
@@ -842,14 +886,13 @@ export function BotSettings({
       ) : null}
       <div className="mt-5 flex flex-col items-start gap-3">
         <Button
-          disabled={saving}
+          disabled={saving || notificationPending}
           onClick={() => {
             void enqueueSave({
               name,
               title,
               description,
               color,
-              notifyOnFinish,
             });
           }}
         >
