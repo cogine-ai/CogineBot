@@ -867,6 +867,7 @@ export async function rpc<T>(
   } = {},
 ): Promise<T> {
   const requestSpaceGeneration = spaceSelectionGeneration;
+  const requestApiGeneration = currentApiBaseGeneration();
   const requestSessionGeneration = currentSessionGeneration();
   const requestApiBase = options.requestContext?.apiBase ?? currentApiBase();
   const uses = aiDataUsesForProcedure(proc, body);
@@ -1049,17 +1050,29 @@ export async function rpc<T>(
       });
     }
     const verifiedUser = parsed.json as { userId?: unknown; spaceId?: unknown } | null;
+    const identityCurrent = () =>
+      requestApiBase === currentApiBase() &&
+      requestApiGeneration === currentApiBaseGeneration() &&
+      requestSessionGeneration === currentSessionGeneration() &&
+      requestSpaceGeneration === spaceSelectionGeneration &&
+      (requestSpaceId ?? null) === selectedSpaceId();
     if (
       proc === "me" &&
       typeof verifiedUser?.userId === "string" &&
-      typeof verifiedUser.spaceId === "string"
+      typeof verifiedUser.spaceId === "string" &&
+      (!requestSpaceId || verifiedUser.spaceId === requestSpaceId) &&
+      identityCurrent()
     ) {
-      await saveVerifiedIntegrationsScope(requestSessionGeneration, {
-        apiBase: requestApiBase,
-        userId: verifiedUser.userId,
-        spaceId: requestSpaceId || verifiedUser.spaceId,
-        selectionId: requestSpaceId ?? null,
-      });
+      await saveVerifiedIntegrationsScope(
+        requestSessionGeneration,
+        {
+          apiBase: requestApiBase,
+          userId: verifiedUser.userId,
+          spaceId: verifiedUser.spaceId,
+          selectionId: requestSpaceId ?? null,
+        },
+        identityCurrent,
+      );
     }
     return parsed.json as T;
   } catch (error) {

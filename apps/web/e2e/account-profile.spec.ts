@@ -96,14 +96,18 @@ test("bot description and raw rules save independently, with a visible stale-edi
   const draft = "  My unsaved rules\n\n";
   await instructions.fill(draft);
   await instructions.press("Tab");
-  await expect(
-    settings.getByRole("button", { name: "Save other settings", exact: true }),
-  ).toBeVisible();
+  const saveOtherSettings = settings.getByRole("button", {
+    name: "Save other settings",
+    exact: true,
+  });
+  await expect(saveOtherSettings).toBeVisible();
   await expect(instructions).toHaveValue(draft);
   expect((await rpc<Bot>(page, "bots/get", { botId })).instructions).toBe("Collaborator rules");
+  await saveOtherSettings.scrollIntoViewIfNeeded();
+  await expect(saveOtherSettings).toBeInViewport({ ratio: 1 });
   await captureScreenshot(page, testInfo, "a5-instructions-conflict");
   await description.fill("Safe other settings");
-  await settings.getByRole("button", { name: "Save other settings", exact: true }).click();
+  await saveOtherSettings.click();
   await expect
     .poll(async () => (await rpc<Bot>(page, "bots/get", { botId })).description)
     .toBe("Safe other settings");

@@ -320,7 +320,7 @@ export function createRuntimeContextPolicy(
             fixed +
               estimateContextTokens(required, options.imageTokens) +
               estimateContextTokens(catalogMessage) <
-            contextWindow - outputReserve
+            contextWindow - budget.outputReserve
           ) {
             const insertIndex = messages[0]?.role === "system" ? 1 : 0;
             messages.splice(insertIndex, 0, catalogMessage);

@@ -126,6 +126,83 @@ describe("automated source context policy", () => {
     );
   });
 
+  it.each(["snapshots", "cache-aware"] as const)(
+    "omits optional navigation that exceeds the label-adjusted budget under %s",
+    (strategy) => {
+      const { request, context } = fixture(strategy);
+      request.threadId = `tight-navigation-${strategy}`;
+      request.history = Array.from({ length: 12 }, (_, index) => ({
+        id: `history-${index}`,
+        role: "user" as const,
+        content: `Earlier discussion ${index}: ${"evidence ".repeat(150)}`,
+      }));
+      context.messages.unshift(
+        ...request.history.map((message) => ({
+          role: "user" as const,
+          content: message.content,
+          timestamp: 0,
+          rakazoHistory: true,
+          rakazoMessageId: message.id,
+        })),
+      );
+      request.prompt = `Current objective: ${"x".repeat(3180)}`;
+      const current = context.messages.splice(12, 1)[0]!;
+      (current as Extract<Message, { role: "user" }>).content = request.prompt;
+      context.messages.push(current);
+      const raw = structuredClone(context);
+      const policy = createRuntimeContextPolicy(request, undefined, { imageTokens: 10 });
+      const prepared = policy.prepareContext(context, { ...model, contextWindow: 5000 });
+
+      expect(prepared.messages.at(-1)).toEqual(current);
+      expect(
+        texts(prepared.messages.find((message) => message.role === "toolResult"))[0],
+      ).toContain(label);
+      expect(JSON.stringify(prepared)).not.toContain("Historical navigation snapshots");
+      expect(
+        estimateContextTokens(
+          providerContextPrefix(prepared.systemPrompt!, prepared.tools!, prepared.messages),
+          10,
+        ),
+      ).toBeLessThanOrEqual(4488);
+      expect(context).toEqual(raw);
+
+      const unlabelled = structuredClone(context);
+      const result = unlabelled.messages.find(
+        (message) => message.role === "toolResult",
+      )! as Extract<Message, { role: "toolResult" }>;
+      result.content = [{ type: "text", text: "Captured" }];
+      const withoutReserve = createRuntimeContextPolicy(
+        { ...request, threadId: `${request.threadId}-no-images` },
+        undefined,
+        { imageTokens: 10 },
+      ).prepareContext(unlabelled, { ...model, contextWindow: 5000 });
+      expect(JSON.stringify(withoutReserve)).toContain("Historical navigation snapshots");
+      expect(
+        estimateContextTokens(
+          providerContextPrefix(
+            withoutReserve.systemPrompt!,
+            withoutReserve.tools!,
+            withoutReserve.messages,
+          ),
+          10,
+        ),
+      ).toBeLessThanOrEqual(4488);
+
+      const roomy = createRuntimeContextPolicy(
+        { ...request, threadId: `${request.threadId}-more-room` },
+        undefined,
+        { imageTokens: 10 },
+      ).prepareContext(context, { ...model, contextWindow: 5200 });
+      expect(JSON.stringify(roomy)).toContain("Historical navigation snapshots");
+      expect(
+        estimateContextTokens(
+          providerContextPrefix(roomy.systemPrompt!, roomy.tools!, roomy.messages),
+          10,
+        ),
+      ).toBeLessThanOrEqual(4688);
+    },
+  );
+
   it("labels helper results without claiming images after the actual image block is removed", () => {
     const { request, context } = fixture();
     const result = context.messages.at(-1)! as Extract<Message, { role: "toolResult" }>;
