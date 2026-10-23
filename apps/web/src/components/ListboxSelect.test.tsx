@@ -18,7 +18,7 @@ async function setup() {
   document.body.append(container);
   const root = createRoot(container);
   const changed = vi.fn();
-  const render = async (disabled = false) => {
+  const render = async (disabled = false, value = "a") => {
     await act(async () =>
       root.render(
         <>
@@ -27,7 +27,7 @@ async function setup() {
               { value: "a", label: "Alpha" },
               { value: "b", label: "Beta" },
             ]}
-            value="a"
+            value={value}
             label="Space"
             testId="target-space"
             disabled={disabled}
@@ -53,6 +53,36 @@ async function setup() {
     },
   };
 }
+it.each([false, true])(
+  "closes on trigger Tab before the queued popup focus, shift=%s",
+  async (shiftKey) => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    const h = await setup();
+    try {
+      await act(async () => {
+        h.trigger.focus();
+        h.trigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+        );
+      });
+      expect(h.trigger.getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelector('[role="listbox"]')).not.toBeNull();
+      expect(document.activeElement).toBe(h.trigger);
+      const tab = new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      await act(async () => h.trigger.dispatchEvent(tab));
+      expect(tab.defaultPrevented).toBe(false);
+      expect(h.trigger.getAttribute("aria-expanded")).toBe("false");
+      expect(h.changed).not.toHaveBeenCalled();
+    } finally {
+      await h.close();
+    }
+  },
+);
 it("closes the Space chooser when Tab moves to the next settings control", async () => {
   const h = await setup();
   try {
@@ -124,6 +154,21 @@ it("keeps a chooser that was already open from changing a busy target", async ()
         beta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
       });
     expect(h.trigger.disabled).toBe(true);
+    expect(h.changed).not.toHaveBeenCalled();
+  } finally {
+    await h.close();
+  }
+});
+
+it("renders a controlled value change without committing another option", async () => {
+  const h = await setup();
+  try {
+    await act(async () => h.trigger.click());
+    await h.render(false, "b");
+    expect(h.trigger.textContent).toContain("Beta");
+    expect(document.querySelector('[role="option"][aria-selected="true"]')?.textContent).toBe(
+      "Beta",
+    );
     expect(h.changed).not.toHaveBeenCalled();
   } finally {
     await h.close();

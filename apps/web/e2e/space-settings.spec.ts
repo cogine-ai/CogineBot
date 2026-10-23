@@ -51,15 +51,40 @@ test("editing another Space saves its models and confirmations without moving th
 }, testInfo) => {
   const { personal, support, chatUrl, settings, composer } = await fixture(page);
   const spacePicker = settings.getByTestId("settings-space");
-  await spacePicker.focus();
+  for (let cycle = 0; cycle < 5; cycle += 1) {
+    await spacePicker.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("listbox")).toBeVisible();
+    await page.keyboard.press("Tab");
+    await expect(spacePicker).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByRole("listbox")).toHaveCount(0);
+    await expect(
+      settings.getByRole("button", { name: "Close model settings", exact: true }),
+    ).toBeFocused();
+    await spacePicker.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("option", { name: "Personal", exact: true })).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(spacePicker).toHaveAttribute("aria-expanded", "false");
+    await expect(spacePicker).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("option", { name: "Personal", exact: true })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(spacePicker).toHaveAttribute("aria-expanded", "false");
+    await expect(spacePicker).toBeFocused();
+  }
   await page.keyboard.press("ArrowDown");
-  await expect(page.getByRole("listbox")).toBeVisible();
-  await page.keyboard.press("Tab");
+  await expect(page.getByRole("option", { name: "Personal", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(spacePicker).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByRole("listbox")).toHaveCount(0);
-  await expect(
-    settings.getByRole("button", { name: "Close model settings", exact: true }),
-  ).toBeFocused();
+  await expect(spacePicker).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("option", { name: "Personal", exact: true })).toBeFocused();
+  const searchProviders = settings.getByPlaceholder("Search providers");
+  await searchProviders.click();
+  await expect(spacePicker).toHaveAttribute("aria-expanded", "false");
+  await expect(searchProviders).toBeFocused();
+  await expect(spacePicker.locator('[data-slot="select-value"]')).toHaveText("Personal");
   const originalModels = await inSpace<ModelCredential[]>(page, support.id, "models/credentials");
   const originalMe = await inSpace<Me>(page, support.id, "me");
   const originalRules = await inSpace<ActionApprovalRule[]>(page, support.id, "approvalRules/list");
