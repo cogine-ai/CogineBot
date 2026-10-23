@@ -402,3 +402,166 @@ test("a shared Space member can open settings without owner actions or a chat sw
     await memberContext.close();
   }
 });
+
+for (const role of ["owner", "member"] as const) {
+  test(`an empty sole Space ${role} can open its context menu from the existing switcher`, async ({
+    page,
+  }, testInfo) => {
+    await signup(
+      page,
+      `sole-space-${role}-${Date.now()}@coginebot.test`,
+      "password12",
+      "Space User",
+    );
+    await completeOnboarding(page);
+    const actor = await rpc<Me>(page, "me", {});
+    const [chief] = await rpc<Array<{ id: string }>>(page, "bots/list", {});
+    expect(chief).toBeDefined();
+    await rpc(page, "bots/archive", { botId: chief!.id });
+    if (role === "member") {
+      expect(process.env.DATABASE_URL).toBeTruthy();
+      const { createDb } = await import("../../../packages/db/src/client");
+      const db = createDb(process.env.DATABASE_URL!, {
+        poolMax: 2,
+        applicationName: "sole-space-member-fixture",
+      });
+      try {
+        const membership = await db.prisma.spaceMember.update({
+          where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
+          data: { role: "member" },
+        });
+        expect(membership.role).toBe("member");
+      } finally {
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    }
+    await page.reload();
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    const navigation = await inSpace<SpaceNavigation>(page, actor.spaceId, "spaces/list");
+    expect(navigation.spaces).toHaveLength(1);
+    expect(navigation.spaces[0]).toMatchObject({
+      id: actor.spaceId,
+      canRename: role === "owner",
+      canDelete: false,
+      bots: [],
+      groups: [],
+      botSections: [],
+    });
+    const sidebar = page.locator("aside").first();
+    await expect(sidebar.locator("[data-sidebar-section-header]")).toHaveCount(0);
+    const currentUrl = page.url();
+    const selectedSpace = await page.evaluate(() => localStorage.getItem("rakazo:space-id"));
+
+    // The account entry still reaches the current Space; the direct context shortcut is separate.
+    await page.getByTestId("user-menu-trigger").click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    const settings = page.getByTestId("user-settings");
+    await settings.getByTestId("settings-nav-models").click();
+    await expect(
+      settings.getByTestId("settings-space").locator('[data-slot="select-value"]'),
+    ).toHaveText("Personal");
+    await settings.getByRole("button", { name: "Close model settings", exact: true }).click();
+    await expect(settings).toHaveCount(0);
+
+    const switcher = page.getByTestId("space-menu-trigger");
+    for (const activation of ["click", "Enter", "Space"]) {
+      await switcher.focus();
+      if (activation === "click") await switcher.click();
+      else await page.keyboard.press(activation);
+      await expect(page.getByTestId("create-new-space")).toBeVisible();
+      await expect(page.getByRole("menuitem", { name: "Settings", exact: true })).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("create-new-space")).toHaveCount(0);
+      await expect(switcher).toBeFocused();
+    }
+    for (const [activation, contextGesture] of [
+      ["click", "pointer"],
+      ["Enter", "ContextMenu"],
+      ["Space", "Shift+F10"],
+    ] as const) {
+      await switcher.focus();
+      if (activation === "click") await switcher.click();
+      else await page.keyboard.press(activation);
+      await expect(page.getByTestId("create-new-space")).toBeVisible();
+      if (contextGesture === "pointer") await switcher.click({ button: "right" });
+      else {
+        await switcher.focus();
+        await page.keyboard.press(contextGesture);
+      }
+      await expect(page.getByTestId("create-new-space")).toHaveCount(0);
+      const settingsAction = page.getByRole("menuitem", { name: "Settings", exact: true });
+      await expect(settingsAction).toBeVisible();
+      await expect(page.getByRole("menu", { name: "Actions for space" })).toBeFocused();
+      await page.keyboard.press("ArrowDown");
+      await expect(settingsAction).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(settingsAction).toHaveCount(0);
+      await expect(switcher).toBeFocused();
+    }
+    for (const activation of ["pointer", "ContextMenu", "Shift+F10"]) {
+      await switcher.focus();
+      if (activation === "pointer") await switcher.click({ button: "right" });
+      else await page.keyboard.press(activation);
+      const settingsAction = page.getByRole("menuitem", { name: "Settings", exact: true });
+      await expect(settingsAction).toBeVisible();
+      await expect(page.getByRole("menu", { name: "Actions for space" })).toBeFocused();
+      await page.keyboard.press("ArrowDown");
+      await expect(settingsAction).toBeFocused();
+      await expect(page.getByRole("menuitem", { name: "Rename space", exact: true })).toHaveCount(
+        role === "owner" ? 1 : 0,
+      );
+      await expect(page.getByRole("menuitem", { name: "Delete space", exact: true })).toHaveCount(
+        0,
+      );
+      if (activation === "pointer")
+        await captureScreenshot(page, testInfo, `space-sole-${role}-context-menu`);
+      if (activation !== "Shift+F10") {
+        await page.keyboard.press("Escape");
+        await expect(switcher).toBeFocused();
+      }
+    }
+    const targetRead = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/rpc/me") &&
+        request.headers()["x-rakazo-space-id"] === actor.spaceId,
+    );
+    await page.keyboard.press("Enter");
+    await targetRead;
+    await expect(settings).toHaveAttribute("data-settings-section", "models");
+    await expect(
+      settings.getByTestId("settings-space").locator('[data-slot="select-value"]'),
+    ).toHaveText("Personal");
+    if (role === "member") {
+      for (const [procedure, input] of [
+        ["spaces/rename", { spaceId: actor.spaceId, name: "Forbidden rename" }],
+        ["spaces/remove", { spaceId: actor.spaceId }],
+        ["memory/disconnectProvider", {}],
+      ] as const) {
+        const denied = await page.request.post(`/rpc/${procedure}`, {
+          headers: { "x-rakazo-space-id": actor.spaceId },
+          data: { json: input },
+        });
+        expect(denied.status()).toBe(403);
+      }
+    }
+    await captureScreenshot(page, testInfo, `space-sole-${role}-settings`);
+    await settings.getByRole("button", { name: "Close model settings", exact: true }).click();
+    await expect(settings).toHaveCount(0);
+    expect(page.url()).toBe(currentUrl);
+    expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(selectedSpace);
+    await expect(sidebar.locator("[data-sidebar-section-header]")).toHaveCount(0);
+    await page.getByTestId("minimize-bots-sidebar").click();
+    await expect(sidebar).toHaveAttribute("data-collapsed", "true");
+    await switcher.focus();
+    await page.keyboard.press("ContextMenu");
+    await expect(page.getByRole("menu", { name: "Actions for space" })).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("menuitem", { name: "Settings", exact: true })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(switcher).toBeFocused();
+    await page.getByTestId("restore-bots-sidebar").click();
+    expect(page.url()).toBe(currentUrl);
+    expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(selectedSpace);
+  });
+}

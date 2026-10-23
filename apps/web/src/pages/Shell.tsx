@@ -3824,6 +3824,32 @@ export function ShellPage() {
               aria-label={t`Switch space`}
               title={currentSpaceName}
               className={`flex w-full items-center rounded-lg text-[12px] text-foreground hover:bg-sidebar-accent ${compactSidebar ? "h-9 justify-center" : "gap-3 px-2 py-2"}`}
+              onContextMenu={(event) => {
+                if (spaces.length !== 1 || !currentSpace) return;
+                event.preventDefault();
+                setSpacePickerOpen(false);
+                spaceMenuAnchor.current = event.currentTarget;
+                setSpaceMenu({
+                  id: currentSpace.id,
+                  position: { x: event.clientX, y: event.clientY },
+                });
+              }}
+              onKeyDown={(event) => {
+                if (
+                  spaces.length !== 1 ||
+                  !currentSpace ||
+                  !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+                )
+                  return;
+                event.preventDefault();
+                setSpacePickerOpen(false);
+                const rect = event.currentTarget.getBoundingClientRect();
+                spaceMenuAnchor.current = event.currentTarget;
+                setSpaceMenu({
+                  id: currentSpace.id,
+                  position: { x: rect.left, y: rect.bottom },
+                });
+              }}
             >
               <Layers size={17} strokeWidth={1.6} className="shrink-0 text-muted-foreground" />
               {!compactSidebar ? (
