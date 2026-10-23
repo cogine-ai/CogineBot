@@ -143,7 +143,7 @@ function AccountSettings() {
     let active = true;
     const owner = captureMobileScope();
     void (async () => {
-      const requestContext = await captureApiRequestContext();
+      const requestContext = await captureApiRequestContext(null);
       if (!active || !isMobileScopeCurrent(owner)) return;
       const next = await rpc<MobileMe>("me", {}, { requestContext });
       if (active && isMobileScopeCurrent(owner)) setMe(next);

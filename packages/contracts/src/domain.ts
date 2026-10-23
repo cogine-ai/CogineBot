@@ -433,6 +433,22 @@ export function validateModelPinInput(
   }
 }
 
+export const BOT_INSTRUCTIONS_CONFLICT_REASON = "instructions_changed";
+
+export function isBotInstructionsConflict(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "CONFLICT" &&
+    "data" in error &&
+    typeof error.data === "object" &&
+    error.data !== null &&
+    "reason" in error.data &&
+    error.data.reason === BOT_INSTRUCTIONS_CONFLICT_REASON
+  );
+}
+
 export const UpdateBotInput = z
   .object({
     botId: Id,

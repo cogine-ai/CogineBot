@@ -44,7 +44,7 @@ export async function adoptDeviceTimezone(
   if (!timezone) return undefined;
   const owner = captureMobileScope();
   try {
-    const requestContext = await captureApiRequestContext();
+    const requestContext = await captureApiRequestContext(null);
     if (!isCurrent() || !isMobileScopeCurrent(owner)) return undefined;
     const next = await rpc<MobileMe>("preferences/adoptTimezone", { timezone }, { requestContext });
     if (!isCurrent() || !isMobileScopeCurrent(owner) || next.userId !== me.userId) return undefined;

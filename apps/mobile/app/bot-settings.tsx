@@ -4,6 +4,7 @@ import {
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
+  isBotInstructionsConflict,
   normalizeCreateBotProfile,
   parseBotAvatarValue,
 } from "@rakazo/contracts";
@@ -17,7 +18,7 @@ import {
 } from "@rakazo/core";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import type { Voice } from "expo-speech";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { BotAvatar } from "../components/bot-avatar";
 import { ComputerModePicker } from "../components/computer-mode-picker";
@@ -68,6 +69,7 @@ export default function BotSettingsScreen() {
   const [modelMetaReady, setModelMetaReady] = useState(false);
   const [modelMetaError, setModelMetaError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [instructionsConflict, setInstructionsConflict] = useState(false);
   const [deviceVoiceEnabled, setDeviceVoiceEnabled] = useState(false);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = useState<string | undefined>();
@@ -75,11 +77,21 @@ export default function BotSettingsScreen() {
   const voiceChoice = useRef(0);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const botLifetime = useRef(0);
+  useLayoutEffect(() => {
+    botLifetime.current += 1;
+    return () => {
+      botLifetime.current += 1;
+    };
+  }, [botId]);
 
   useEffect(() => {
     if (!botId) return;
     let cancelled = false;
     setBot(null);
+    setPending(false);
+    setError(null);
+    setInstructionsConflict(false);
     void rpc<BotSettingsRecord>("bots/get", { botId })
       .then((next) => {
         if (cancelled) return;
@@ -89,6 +101,7 @@ export default function BotSettingsScreen() {
         setTitle(next.title);
         setDescription(next.description ?? "");
         setInstructions(next.instructions ?? "");
+        setInstructionsConflict(false);
         setColor(next.color);
         setComputerMode(next.computerMode);
         setModelKey(
@@ -294,7 +307,7 @@ export default function BotSettingsScreen() {
 
   async function save() {
     if (!botId || !bot || bot.id !== botId || pending) return;
-    if (instructions.length > BOT_INSTRUCTIONS_MAX_LENGTH) {
+    if (!instructionsConflict && instructions.length > BOT_INSTRUCTIONS_MAX_LENGTH) {
       setError(
         t("Instructions must be at most {count} characters", {
           count: BOT_INSTRUCTIONS_MAX_LENGTH,
@@ -302,6 +315,8 @@ export default function BotSettingsScreen() {
       );
       return;
     }
+    const lifetime = botLifetime.current;
+    const current = () => lifetime === botLifetime.current;
     setPending(true);
     setError(null);
     try {
@@ -327,7 +342,7 @@ export default function BotSettingsScreen() {
       if (profile.description !== (bot.description ?? "")) {
         input.description = profile.description;
       }
-      if (instructions !== (bot.instructions ?? "")) {
+      if (!instructionsConflict && instructions !== (bot.instructions ?? "")) {
         input.instructions = instructions;
         input.expectedInstructions = bot.instructions ?? "";
       }
@@ -355,16 +370,31 @@ export default function BotSettingsScreen() {
           { botId, mode: computerMode },
           { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS },
         );
+        if (!current()) return;
+        setBot((accepted) =>
+          current() && accepted?.id === botId ? { ...accepted, computerMode } : accepted,
+        );
       }
       // Use key presence so clearing title/description to "" still persists.
       if (Object.keys(input).length > 1) {
-        await rpc("bots/update", input);
+        const saved = await rpc<BotSettingsRecord>("bots/update", input);
+        if (!current()) return;
+        if (instructionsConflict && saved?.id === botId) {
+          setBot((current) =>
+            current?.id === botId && lifetime === botLifetime.current
+              ? { ...saved, instructions: current.instructions }
+              : current,
+          );
+        }
       }
-      router.back();
+      // A successful partial save must leave the unresolved rule draft available.
+      if (current() && !instructionsConflict) router.back();
     } catch (err) {
+      if (!current()) return;
       setError(errorText(err, t("Could not save bot")));
+      if (isBotInstructionsConflict(err)) setInstructionsConflict(true);
     } finally {
-      setPending(false);
+      if (current()) setPending(false);
     }
   }
 
@@ -622,7 +652,9 @@ export default function BotSettingsScreen() {
         {error ? <Text style={{ color: tokens.destructive, marginTop: 16 }}>{error}</Text> : null}
         <NativeActionButton
           disabled={!name.trim() || pending || !bot}
-          label={pending ? t("Saving…") : t("Save")}
+          label={
+            pending ? t("Saving…") : instructionsConflict ? t("Save other settings") : t("Save")
+          }
           onPress={() => void save()}
           style={{ marginTop: 24 }}
         />

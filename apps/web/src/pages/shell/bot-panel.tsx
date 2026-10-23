@@ -14,6 +14,7 @@ import {
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
+  isBotInstructionsConflict,
   isBuiltinToolName,
 } from "@rakazo/contracts";
 import {
@@ -549,15 +550,17 @@ export function BotSettings({
     } catch (err) {
       if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
       setError(errorText(err, t`Could not save`));
+      const rulesConflict = isBotInstructionsConflict(err);
+      if (nextInstructions !== savedProfileRef.current.instructions && rulesConflict)
+        setInstructionsConflict(true);
       if (
-        nextInstructions !== savedProfileRef.current.instructions &&
+        saveModel &&
+        !rulesConflict &&
         err &&
         typeof err === "object" &&
         "code" in err &&
         err.code === "CONFLICT"
       )
-        setInstructionsConflict(true);
-      if (saveModel && err && typeof err === "object" && "code" in err && err.code === "CONFLICT")
         await refreshConflictedConnection(selectionRevision, spaceGeneration);
     } finally {
       pendingSavesRef.current -= 1;

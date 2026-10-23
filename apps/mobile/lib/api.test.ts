@@ -272,6 +272,67 @@ describe("mobile API authentication", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each(["preferences/update", "preferences/adoptTimezone", "me"])(
+    "captures %s without a revoked selected Space while preserving default callers",
+    async (procedure) => {
+      await saveSessionToken("fake-account-session");
+      vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) =>
+        key === "rakazo.session_token" ? "fake-account-session" : null,
+      );
+      await selectSpace("revoked-space");
+      const account = await captureApiRequestContext(null);
+      const space = await captureApiRequestContext();
+      expect(account.headers).toEqual({ authorization: "Bearer fake-account-session" });
+      expect(space.headers["x-rakazo-space-id"]).toBe("revoked-space");
+      const fetchMock = vi.fn(async (_url: string, options: RequestInit) =>
+        new Headers(options.headers).has("x-rakazo-space-id")
+          ? rpcErrorResponse(401, "UNAUTHORIZED", "Space access revoked")
+          : jsonResponse({ json: { userId: "user-a", spaceId: "default-space", timezone: "UTC" } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        rpc(procedure, { timezone: "UTC" }, { requestContext: account }),
+      ).resolves.toEqual({ userId: "user-a", spaceId: "default-space", timezone: "UTC" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(selectedSpaceId()).toBe("revoked-space");
+      await expect(snapshotSessionToken()).resolves.toMatchObject({
+        ok: true,
+        value: "fake-account-session",
+      });
+      await saveSessionToken("replacement-session");
+      await expect(
+        rpc(procedure, { timezone: "UTC" }, { requestContext: account }),
+      ).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retains structured RPC conflict data for native recovery classification", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            json: {
+              code: "CONFLICT",
+              status: 409,
+              message: "Instructions changed",
+              data: { reason: "instructions_changed" },
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    await expect(
+      rpc("bots/update", { botId: "bot-a", instructions: "new", expectedInstructions: "old" }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      status: 409,
+      data: { reason: "instructions_changed" },
+    });
+  });
+
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.mocked(SecureStore.getItemAsync).mockReset();

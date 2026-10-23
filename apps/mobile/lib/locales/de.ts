@@ -989,4 +989,5 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not save timezone": "Zeitzone konnte nicht gespeichert werden",
   "Instructions must be at most {count} characters":
     "Anweisungen dürfen höchstens {count} Zeichen lang sein",
+  "Save other settings": "Andere Einstellungen speichern",
 };

@@ -144,6 +144,7 @@ import type {
 import {
   ATTACHMENT_MAX_BYTES,
   appContract,
+  BOT_INSTRUCTIONS_CONFLICT_REASON,
   BotSecretAuth,
   ComputerCommandSchema,
   foldComputerCommands,
@@ -1857,6 +1858,7 @@ export function createRouter(deps: RouterDeps) {
           if (error instanceof BotInstructionsConflictError)
             throw new ORPCError("CONFLICT", {
               message: "Instructions changed. Refresh and try again.",
+              data: { reason: BOT_INSTRUCTIONS_CONFLICT_REASON },
             });
           throw error;
         });

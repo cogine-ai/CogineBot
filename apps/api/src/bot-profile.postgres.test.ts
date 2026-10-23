@@ -201,6 +201,12 @@ describePostgres("independent bot profile HTTP acceptance", () => {
       expectedInstructions: "Original rules",
     });
     expect(losing.status).toBe(409);
+    const conflict = await losing.json();
+    expect(conflict).toMatchObject({
+      json: { code: "CONFLICT", data: { reason: "instructions_changed" } },
+    });
+    expect(JSON.stringify(conflict)).not.toContain("Winner rules");
+    expect(JSON.stringify(conflict)).not.toContain("Original rules");
     expect(await row(target.id)).toMatchObject({
       name: "Profile bot",
       description: "Public role",
@@ -319,6 +325,39 @@ describePostgres("independent bot profile HTTP acceptance", () => {
       expectedRevision: 1,
     });
     expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(await row(target.id)).toMatchObject({
+      name: "Profile bot",
+      instructions: "Original rules",
+      modelCredentialId: null,
+    });
+    expect(await profileEvents(target.id)).toHaveLength(count);
+  });
+
+  it("keeps stale model conflicts distinct from a rules conflict in a mixed save", async () => {
+    const { cookie } = await account();
+    const target = await bot(cookie);
+    const credential = await rpc<ModelCredential>(cookie, "models/connect", {
+      provider: "openai-compatible",
+      baseUrl: "http://127.0.0.1:11434/v1",
+      modelId: "offline-model",
+      enabledModelIds: ["offline-model"],
+      apiKey: "fake-model-key",
+    });
+    const count = (await profileEvents(target.id)).length;
+    const response = await raw(cookie, "bots/update", {
+      botId: target.id,
+      name: "Stale binding",
+      instructions: "Pending rules",
+      expectedInstructions: "Original rules",
+      modelProvider: credential.provider,
+      modelId: "offline-model",
+      modelCredentialId: credential.id,
+      expectedRevision: credential.connectionRevision! + 1,
+    });
+    expect(response.status).toBe(409);
+    const conflict = (await response.json()) as { json: { code: string; data?: unknown } };
+    expect(conflict.json.code).toBe("CONFLICT");
+    expect(conflict.json.data).toBeUndefined();
     expect(await row(target.id)).toMatchObject({
       name: "Profile bot",
       instructions: "Original rules",

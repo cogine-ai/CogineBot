@@ -101,7 +101,20 @@ vi.mock("./i18n", () => {
   return { t, useI18n: () => ({ t }) };
 });
 vi.mock("../components/bot-avatar", () => ({ BotAvatar: () => null }));
-vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
+vi.mock("../components/computer-mode-picker", () => ({
+  ComputerModePicker: ({ value, onChange }: { value: string; onChange: (value: string) => void }) =>
+    createElement(
+      "select",
+      {
+        "aria-label": "Computer mode",
+        value,
+        onChange: (event: { target: { value: string } }) => onChange(event.target.value),
+      },
+      ...["team", "dedicated"].map((mode) =>
+        createElement("option", { key: mode, value: mode }, mode),
+      ),
+    ),
+}));
 vi.mock("../components/native-action-button", () => ({
   NativeActionButton: ({
     label,
@@ -186,6 +199,7 @@ describe("native profile fields", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.botId = "bot-fixture";
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     mocks.rpc.mockImplementation(async (procedure: string) => {
       if (procedure === "bots/get") return acceptedBot;
@@ -291,6 +305,157 @@ describe("native profile fields", () => {
         instructions: "  My replacement\n",
         expectedInstructions: acceptedInstructions,
       });
+  });
+
+  it("saves other settings after a classified rule conflict while retaining the raw rule draft", async () => {
+    let saves = 0;
+    mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === "bots/get") return acceptedBot;
+      if (procedure === "bots/update") {
+        saves++;
+        if (saves === 1)
+          throw Object.assign(new Error("Instructions changed"), {
+            code: "CONFLICT",
+            status: 409,
+            data: { reason: "instructions_changed" },
+          });
+        return { ...acceptedBot, ...input, instructions: "A concurrent writer's accepted rules" };
+      }
+      if (procedure === "me") return {};
+      return [];
+    });
+    await act(async () => root.render(<BotSettingsScreen />));
+    const rawDraft = "  Preserve this draft\n\n";
+    await change(field("Instructions"), rawDraft);
+    await change(field("What this bot is for"), "A new public role");
+    await submit();
+    expect(mocks.back).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Save other settings");
+    await submit("Save other settings");
+    const updates = mocks.rpc.mock.calls.filter(([proc]) => proc === "bots/update");
+    expect(updates.map(([, input]) => input)).toEqual([
+      {
+        botId: "bot-fixture",
+        description: "A new public role",
+        instructions: rawDraft,
+        expectedInstructions: acceptedInstructions,
+      },
+      { botId: "bot-fixture", description: "A new public role" },
+    ]);
+    expect(mocks.back).not.toHaveBeenCalled();
+    expect(field("Instructions").value).toBe(rawDraft);
+    await change(field("What this bot is for"), "One more public role");
+    await submit("Save other settings");
+    expect(mocks.rpc.mock.calls.filter(([proc]) => proc === "bots/update")[2]![1]).toEqual({
+      botId: "bot-fixture",
+      description: "One more public role",
+    });
+    expect(field("Instructions").value).toBe(rawDraft);
+  });
+
+  it.each([
+    { code: "CONFLICT", status: 409 },
+    { code: "CONFLICT", status: 409, data: { reason: "model_changed" } },
+    { status: 409, message: "Instructions changed" },
+  ])("does not classify an unrelated model conflict as a rule conflict: %j", async (details) => {
+    await act(async () => root.render(<BotSettingsScreen />));
+    mocks.rpc.mockImplementation(async (procedure: string) => {
+      if (procedure === "bots/update")
+        throw Object.assign(new Error("Instructions changed"), details);
+      return [];
+    });
+    await change(field("Instructions"), "Unaccepted rules");
+    await submit();
+    expect(container.textContent).not.toContain("Save other settings");
+    expect(field("Instructions").value).toBe("Unaccepted rules");
+    expect(mocks.back).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "ignores a late rule conflict across changed route ownership (ABA: %s)",
+    async (aba) => {
+      let rejectOld!: (error: Error) => void;
+      let reads = 0;
+      mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+        if (procedure === "bots/get")
+          return { ...acceptedBot, id: input.botId, instructions: `Accepted rules ${++reads}` };
+        if (procedure === "bots/update" && input.instructions === "Old route draft")
+          return new Promise((_resolve, reject) => {
+            rejectOld = reject;
+          });
+        if (procedure === "bots/update") return { ...acceptedBot, ...input };
+        if (procedure === "me") return {};
+        return [];
+      });
+      await act(async () => root.render(<BotSettingsScreen />));
+      await change(field("Instructions"), "Old route draft");
+      await submit();
+      expect(rejectOld).toBeTypeOf("function");
+      mocks.botId = "bot-b";
+      await act(async () => root.render(<BotSettingsScreen />));
+      if (aba) {
+        mocks.botId = "bot-fixture";
+        await act(async () => root.render(<BotSettingsScreen />));
+      }
+      const accepted = field("Instructions").value;
+      await act(async () =>
+        rejectOld(
+          Object.assign(new Error("Old rules changed"), {
+            code: "CONFLICT",
+            data: { reason: "instructions_changed" },
+          }),
+        ),
+      );
+      expect(container.textContent).not.toContain("Save other settings");
+      expect(container.textContent).not.toContain("Old rules changed");
+      await change(field("Instructions"), "Current route draft");
+      await submit();
+      expect(mocks.rpc).toHaveBeenLastCalledWith("bots/update", {
+        botId: mocks.botId,
+        instructions: "Current route draft",
+        expectedInstructions: accepted,
+      });
+    },
+  );
+
+  it("records a successful computer change before a rule conflict so recovery does not repeat it", async () => {
+    let serverMode = "team";
+    let conflict = true;
+    mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === "bots/get") return acceptedBot;
+      if (procedure === "bots/setComputer") {
+        serverMode = String(input.mode);
+        return {};
+      }
+      if (procedure === "bots/update") {
+        if (conflict) {
+          conflict = false;
+          throw Object.assign(new Error("Instructions changed"), {
+            code: "CONFLICT",
+            data: { reason: "instructions_changed" },
+          });
+        }
+        return { ...acceptedBot, ...input, computerMode: serverMode };
+      }
+      if (procedure === "me") return {};
+      return [];
+    });
+    await act(async () => root.render(<BotSettingsScreen />));
+    await act(async () => {
+      const select = container.querySelector<HTMLSelectElement>(
+        'select[aria-label="Computer mode"]',
+      )!;
+      select.value = "dedicated";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await change(field("Instructions"), "Rules still unresolved");
+    await submit();
+    await submit("Save other settings");
+    await change(field("What this bot is for"), "Another public role");
+    await submit("Save other settings");
+    expect(mocks.rpc.mock.calls.filter(([proc]) => proc === "bots/setComputer")).toHaveLength(1);
+    expect(field("Instructions").value).toBe("Rules still unresolved");
+    expect(mocks.back).not.toHaveBeenCalled();
   });
 
   it("sends an explicit empty rule field for new bots instead of copying description", async () => {

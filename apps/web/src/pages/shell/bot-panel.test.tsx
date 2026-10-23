@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { Bot } from "@rakazo/contracts";
+import { BOT_INSTRUCTIONS_CONFLICT_REASON } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
 import { act, Suspense, startTransition } from "react";
@@ -926,7 +927,10 @@ describe("independent execution rules", () => {
   });
   it("preserves failed rule draft and baseline while another setting remains saveable", async () => {
     onSave.mockRejectedValueOnce(
-      Object.assign(new Error("Changed elsewhere"), { code: "CONFLICT" }),
+      Object.assign(new Error("Changed elsewhere"), {
+        code: "CONFLICT",
+        data: { reason: BOT_INSTRUCTIONS_CONFLICT_REASON },
+      }),
     );
     await render();
     await setInstructions("");
@@ -1047,5 +1051,77 @@ describe("full instruction draft limits", () => {
       expectedRevision: 3,
       description: "New public role",
     });
+  });
+});
+
+describe("independent conflict reasons", () => {
+  it("preserves changed rules through a model-only conflict and retries both after explicit connection acceptance", async () => {
+    vi.mocked(rpc.models.credentials)
+      .mockResolvedValueOnce([pinnedCredential("connection-a", 7)])
+      .mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
+    onSave.mockRejectedValueOnce(
+      Object.assign(new Error("Connection changed"), { code: "CONFLICT" }),
+    );
+    await render();
+    const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+    await chooseModel(key);
+    const rules = " \nPreserve my execution draft\n\n";
+    await setInstructions(rules);
+    await clickSave();
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+      instructions: rules,
+      expectedInstructions: longInstructions,
+      expectedRevision: 7,
+    });
+    expect(rpc.models.credentials).toHaveBeenCalledTimes(2);
+    expect(instructionsField().value).toBe(rules);
+    const accept = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Use updated connection",
+    );
+    expect(accept).toBeDefined();
+    await act(async () => accept?.click());
+    await clickSave();
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      instructions: rules,
+      expectedInstructions: longInstructions,
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    });
+    expect(instructionsField().value).toBe(rules);
+    expect(saveButton().textContent).toBe("Save");
+  });
+  it("blocks only the changed rules for a tagged rule conflict and does not refresh a valid model draft", async () => {
+    vi.mocked(rpc.models.credentials)
+      .mockResolvedValueOnce([pinnedCredential("connection-a", 7)])
+      .mockResolvedValueOnce([pinnedCredential("connection-a", 9)]);
+    onSave.mockRejectedValueOnce(
+      Object.assign(new Error("Rules changed elsewhere"), {
+        code: "CONFLICT",
+        data: { reason: BOT_INSTRUCTIONS_CONFLICT_REASON },
+      }),
+    );
+    await render();
+    const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+    await chooseModel(key);
+    const rules = "My unsaved rules";
+    await setInstructions(rules);
+    await clickSave();
+    expect(saveButton().textContent).toBe("Save other settings");
+    await setDescription("Public role during rule conflict");
+    await clickSave();
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      description: "Public role during rule conflict",
+      modelCredentialId: "connection-a",
+      expectedRevision: 7,
+    });
+    expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty("instructions");
+    expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty("expectedInstructions");
+    expect(rpc.models.credentials).toHaveBeenCalledTimes(1);
+    expect(instructionsField().value).toBe(rules);
+    expect(
+      [...container.querySelectorAll("button")].some(
+        (button) => button.textContent === "Use updated connection",
+      ),
+    ).toBe(false);
   });
 });

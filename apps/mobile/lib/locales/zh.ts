@@ -956,4 +956,5 @@ export const ZH_MESSAGES: Record<string, string> = {
   Timezone: "时区",
   "Could not save timezone": "无法保存时区",
   "Instructions must be at most {count} characters": "指令最多可包含 {count} 个字符",
+  "Save other settings": "保存其他设置",
 };

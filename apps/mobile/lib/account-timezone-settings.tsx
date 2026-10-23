@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { MenuPicker } from "../components/menu-picker";
 import { SettingsGroup } from "../components/settings-group";
@@ -25,7 +25,9 @@ export function AccountTimezone({
   const busy = useRef(false);
   const lifetime = useRef(true);
   const userId = useRef(me?.userId);
-  userId.current = me?.userId;
+  useLayoutEffect(() => {
+    userId.current = me?.userId;
+  }, [me?.userId]);
   useEffect(() => {
     lifetime.current = true;
     return () => {
@@ -45,7 +47,7 @@ export function AccountTimezone({
     const current = () =>
       lifetime.current && userId.current === ownerId && isMobileScopeCurrent(owner);
     try {
-      const requestContext = await captureApiRequestContext();
+      const requestContext = await captureApiRequestContext(null);
       if (!current()) return;
       const next = await rpc<MobileMe>(
         "preferences/update",

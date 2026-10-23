@@ -991,4 +991,5 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not save timezone": "Не удалось сохранить часовой пояс",
   "Instructions must be at most {count} characters":
     "Инструкции должны содержать не более {count} символов",
+  "Save other settings": "Сохранить остальные настройки",
 };

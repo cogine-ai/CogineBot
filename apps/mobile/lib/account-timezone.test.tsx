@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
-import { act, createElement } from "react";
+import { act, createElement, Suspense, startTransition } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +26,20 @@ vi.mock("./mobile-scope", () => ({
   isMobileScopeCurrent: (owner: { apiGeneration: number }) => owner.apiGeneration === mocks.owner,
 }));
 vi.mock("react-native", () => ({
-  View: ({ children }: { children?: ReactNode }) => createElement("div", null, children),
+  View: ({
+    children,
+    pointerEvents,
+    accessibilityState,
+  }: {
+    children?: ReactNode;
+    pointerEvents?: string;
+    accessibilityState?: { busy?: boolean };
+  }) =>
+    createElement(
+      "div",
+      { "data-pointer-events": pointerEvents, "aria-busy": accessibilityState?.busy },
+      children,
+    ),
   Text: ({ children }: { children?: ReactNode }) => createElement("span", null, children),
 }));
 vi.mock("../components/settings-group", () => ({
@@ -114,6 +127,7 @@ describe("native account timezone", () => {
       }),
     );
     expect(spy).toHaveBeenCalled();
+    expect(mocks.capture).toHaveBeenCalledWith(null);
   });
   it.each(["UTC", "America/New_York", undefined])(
     "never adopts over a saved choice or a legacy response: %s",
@@ -185,6 +199,7 @@ describe("native account timezone", () => {
       expect.objectContaining({ requestContext: expect.any(Object) }),
     );
     expect(mocks.change.mock.calls).toEqual([["America/New_York"]]);
+    expect(mocks.capture).toHaveBeenCalledWith(null);
   });
 
   it.each(["unmount", "session ABA", "different user"])(
@@ -231,6 +246,48 @@ describe("native account timezone", () => {
     expect(mocks.change).not.toHaveBeenCalled();
     await act(async () => choose());
     expect(mocks.change).toHaveBeenCalledWith("Asia/Taipei");
+  });
+
+  it("keeps the committed picker usable after a different user's suspended render is discarded", async () => {
+    const request = pending<MobileMe>();
+    const never = pending<void>();
+    const suspended = vi.fn();
+    mocks.rpc.mockReturnValueOnce(request.promise);
+    function SuspendAfter({ suspend }: { suspend: boolean }) {
+      if (suspend) {
+        suspended();
+        throw never.promise;
+      }
+      return null;
+    }
+    const screen = (userId: string, suspend = false) => (
+      <Suspense fallback={<span>Loading</span>}>
+        <AccountTimezone me={{ ...me, userId, timezone: "UTC" }} onChange={mocks.change} />
+        <SuspendAfter suspend={suspend} />
+      </Suspense>
+    );
+    await act(async () => root.render(screen("user-a")));
+    await act(async () => {
+      const select = container.querySelector("select")!;
+      select.value = "America/New_York";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-pointer-events="none"]')).not.toBeNull();
+    await act(async () => startTransition(() => root.render(screen("user-b", true))));
+    expect(suspended).toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Loading");
+    expect(container.querySelector("select")).not.toBeNull();
+    await act(async () => request.resolve({ ...me, timezone: "America/New_York" }));
+    expect(mocks.change).toHaveBeenCalledExactlyOnceWith("America/New_York");
+    expect(container.querySelector('[data-pointer-events="auto"]')).not.toBeNull();
+    // Discard that uncommitted transition, then use the still-committed account again.
+    await act(async () => root.render(screen("user-a")));
+    await act(async () => {
+      const select = container.querySelector("select")!;
+      select.value = "Asia/Taipei";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(mocks.rpc).toHaveBeenCalledTimes(2);
   });
 
   it("hides editing when an older server omits the preference", async () => {
