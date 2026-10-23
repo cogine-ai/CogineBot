@@ -986,4 +986,9 @@ export const RU_MESSAGES: Record<string, string> = {
     "Выберите другую модель для этих элементов перед отключением.",
   "Bot model": "Модель бота",
   "Save model": "Сохранить модель",
+  Instructions: "Инструкции",
+  Timezone: "Часовой пояс",
+  "Could not save timezone": "Не удалось сохранить часовой пояс",
+  "Instructions must be at most {count} characters":
+    "Инструкции должны содержать не более {count} символов",
 };

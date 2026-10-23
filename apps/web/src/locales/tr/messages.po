@@ -6055,3 +6055,19 @@ msgstr "Onaylar"
 #: src/pages/SettingsOverlay.tsx
 msgid "Space"
 msgstr "Alan"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions"
+msgstr "Talimatlar"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Timezone"
+msgstr "Saat dilimi"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Couldn't update your timezone"
+msgstr "Saat diliminiz güncellenemedi"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions must be at most {count} characters"
+msgstr "Talimatlar en fazla {count} karakter olmalıdır"

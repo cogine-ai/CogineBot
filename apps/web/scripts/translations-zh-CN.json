@@ -811,5 +811,9 @@
   "No bots match": "没有匹配的机器人",
   "No members yet": "暂无成员",
   "Confirmations": "操作确认",
-  "Space": "空间"
+  "Space": "空间",
+  "Instructions": "指令",
+  "Timezone": "时区",
+  "Couldn't update your timezone": "无法更新你的时区",
+  "Instructions must be at most {count} characters": "指令最多可包含 {count} 个字符"
 }

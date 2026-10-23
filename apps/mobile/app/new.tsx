@@ -1,6 +1,7 @@
 import type { ComputerMode } from "@rakazo/contracts";
 import {
   BOT_DESCRIPTION_MAX_LENGTH,
+  BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   normalizeCreateBotProfile,
@@ -25,6 +26,7 @@ export default function NewBot() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [instructions, setInstructions] = useState("");
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -43,6 +45,14 @@ export default function NewBot() {
 
   async function create() {
     if (!name.trim() || pending) return;
+    if (instructions.length > BOT_INSTRUCTIONS_MAX_LENGTH) {
+      setError(
+        t("Instructions must be at most {count} characters", {
+          count: BOT_INSTRUCTIONS_MAX_LENGTH,
+        }),
+      );
+      return;
+    }
     setPending(true);
     setError(null);
     try {
@@ -50,7 +60,7 @@ export default function NewBot() {
       const existing = await rpc<MobileBot[]>("bots/list").catch(() => null);
       const isFirstBot = existing !== null && existing.length === 0;
       const bot = await rpc<MobileBot>("bots/create", {
-        ...normalizeCreateBotProfile({ name, title, description }),
+        ...normalizeCreateBotProfile({ name, title, description, instructions }),
         notifyOnFinish: true,
         computerMode,
       });
@@ -120,6 +130,25 @@ export default function NewBot() {
           maxLength={BOT_DESCRIPTION_MAX_LENGTH}
           onChangeText={setDescription}
           placeholder={t("What this bot is for")}
+          placeholderTextColor={tokens.mutedForeground}
+          multiline
+          style={{
+            marginTop: 8,
+            backgroundColor: native.fill,
+            borderRadius: 11,
+            padding: 16,
+            color: tokens.foreground,
+            minHeight: 120,
+            textAlignVertical: "top",
+          }}
+        />
+        <Text style={{ color: tokens.mutedForeground, marginTop: 16, fontSize: 14 }}>
+          {t("Instructions")}
+        </Text>
+        <TextInput
+          accessibilityLabel={t("Instructions")}
+          value={instructions}
+          onChangeText={setInstructions}
           placeholderTextColor={tokens.mutedForeground}
           multiline
           style={{

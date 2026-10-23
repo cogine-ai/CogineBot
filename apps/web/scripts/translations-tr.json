@@ -659,5 +659,9 @@
   "No bots match": "Eşleşen bot yok",
   "No members yet": "Henüz üye yok",
   "Confirmations": "Onaylar",
-  "Space": "Alan"
+  "Space": "Alan",
+  "Instructions": "Talimatlar",
+  "Timezone": "Saat dilimi",
+  "Couldn't update your timezone": "Saat diliminiz güncellenemedi",
+  "Instructions must be at most {count} characters": "Talimatlar en fazla {count} karakter olmalıdır"
 }

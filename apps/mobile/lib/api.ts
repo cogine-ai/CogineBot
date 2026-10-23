@@ -1107,6 +1107,7 @@ export type MobileMe = Pick<
   | "needsModel"
   | "avatarStyle"
   | "isDeploymentOwner"
+  | "timezone"
 >;
 
 export type MobileModel = ModelCatalogEntry;

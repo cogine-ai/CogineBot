@@ -81,7 +81,7 @@ vi.mock("../ScratchpadSection", () => ({ ScratchpadSection: () => null }));
 vi.mock("../KnowledgeSection", () => ({ KnowledgeSection: () => null }));
 
 import { rpc } from "../../lib/rpc";
-import { BotSettings } from "./bot-panel";
+import { BotSettings, CreateBotForm } from "./bot-panel";
 
 const longInstructions = "I".repeat(4_000);
 
@@ -165,7 +165,17 @@ function saveButton(): HTMLButtonElement {
 }
 
 async function setDescription(value: string) {
-  const textarea = descriptionField();
+  await setTextarea(descriptionField(), value);
+}
+function instructionsField(): HTMLTextAreaElement {
+  const field = container.querySelector<HTMLTextAreaElement>('[id$="-instructions"]');
+  if (!field) throw new Error("Missing instructions field");
+  return field;
+}
+async function setInstructions(value: string) {
+  await setTextarea(instructionsField(), value);
+}
+async function setTextarea(textarea: HTMLTextAreaElement, value: string) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
       textarea,
@@ -223,7 +233,6 @@ describe("BotSettings shared notifications", () => {
     await clickSave();
     expect(onSave.mock.calls[1]?.[0]).toMatchObject({
       description: "Unsaved instructions",
-      instructions: "Unsaved instructions",
     });
     expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty("notifyOnFinish");
   });
@@ -413,7 +422,7 @@ describe("BotSettings model choices", () => {
   });
 });
 
-describe("BotSettings description saves", () => {
+describe("BotSettings independent profile saves", () => {
   it("leaves instructions off a save that does not edit the description", async () => {
     await render();
     await clickSave();
@@ -427,7 +436,6 @@ describe("BotSettings description saves", () => {
     await clickSave();
     expect(onSave.mock.calls[0]?.[0]).toMatchObject({
       description: "Invoices",
-      instructions: "Invoices",
     });
 
     // The parent still passes the description from when the panel opened.
@@ -447,7 +455,6 @@ describe("BotSettings description saves", () => {
     await clickSave();
     expect(onSave.mock.calls[1]?.[0]).toMatchObject({
       description: "Billing",
-      instructions: "Billing",
     });
   });
 
@@ -459,7 +466,6 @@ describe("BotSettings description saves", () => {
     await clickSave();
     expect(onSave.mock.calls[1]?.[0]).toMatchObject({
       description: "Invoices",
-      instructions: "Invoices",
     });
   });
 });
@@ -862,4 +868,184 @@ it("ignores a conflict refresh after the Space epoch changes and returns", async
   ).toBe(false);
   expect(container.textContent).not.toContain("Use updated connection");
   expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+describe("independent execution rules", () => {
+  it("retains raw rules on create separately from public description", async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    await act(async () =>
+      root.render(<CreateBotForm onCreate={create} onCancel={() => undefined} />),
+    );
+    const name = container.querySelector<HTMLInputElement>('[id$="-name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(name, "Ada");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await setDescription("Public role");
+    await setInstructions(" \nExact private rules\n\n");
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Create")!
+        .click(),
+    );
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      name: "Ada",
+      title: "",
+      description: "Public role",
+      instructions: " \nExact private rules\n\n",
+      computerMode: "team",
+    });
+  });
+  it("description-only edits never send execution rules or their CAS", async () => {
+    await render();
+    await setDescription("Invoices");
+    await clickSave();
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({ description: "Invoices" });
+    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("instructions");
+    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("expectedInstructions");
+  });
+  it("uses accepted raw instructions for CAS and keeps a newer in-flight draft", async () => {
+    const pending = deferred<void>();
+    onSave.mockReturnValueOnce(pending.promise);
+    await render();
+    await setInstructions(" \nFirst\n");
+    await clickSave();
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+      instructions: " \nFirst\n",
+      expectedInstructions: longInstructions,
+    });
+    await setInstructions(" \nSecond\n");
+    await act(async () => pending.resolve());
+    expect(instructionsField().value).toBe(" \nSecond\n");
+    await render();
+    await clickSave();
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      instructions: " \nSecond\n",
+      expectedInstructions: " \nFirst\n",
+    });
+  });
+  it("preserves failed rule draft and baseline while another setting remains saveable", async () => {
+    onSave.mockRejectedValueOnce(
+      Object.assign(new Error("Changed elsewhere"), { code: "CONFLICT" }),
+    );
+    await render();
+    await setInstructions("");
+    await clickSave();
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+      instructions: "",
+      expectedInstructions: longInstructions,
+    });
+    expect(instructionsField().value).toBe("");
+    await setDescription("New public role");
+    await clickSave();
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({ description: "New public role" });
+    expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty("instructions");
+    expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty("expectedInstructions");
+    expect(instructionsField().value).toBe("");
+  });
+  it("retains the old accepted rule baseline after offline failure", async () => {
+    onSave.mockRejectedValueOnce(new Error("offline"));
+    await render();
+    await setInstructions("  Rules\n");
+    await clickSave();
+    await clickSave();
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      instructions: "  Rules\n",
+      expectedInstructions: longInstructions,
+    });
+  });
+});
+
+it("does not submit an unaccepted rule draft while a separate profile field blurs", async () => {
+  await render();
+  await setInstructions("Unaccepted rules");
+  await setDescription("Public description");
+  await act(async () =>
+    descriptionField().dispatchEvent(new FocusEvent("focusout", { bubbles: true })),
+  );
+  expect(onSave.mock.calls[0]?.[0]).toMatchObject({ description: "Public description" });
+  expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("instructions");
+  expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("expectedInstructions");
+  expect(instructionsField().value).toBe("Unaccepted rules");
+});
+
+describe("full instruction draft limits", () => {
+  it("retains oversized create rules and rejects before onCreate", async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    await act(async () =>
+      root.render(<CreateBotForm onCreate={create} onCancel={() => undefined} />),
+    );
+    const name = container.querySelector<HTMLInputElement>('[id$="-name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(name, "Ada");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const rules = ` \n${"R".repeat(20_000)}`;
+    await setInstructions(rules);
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Create")!
+        .click(),
+    );
+    expect(create).not.toHaveBeenCalled();
+    expect(instructionsField().value).toBe(rules);
+    expect(instructionsField().maxLength).toBe(-1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Instructions must be at most 20000 characters",
+    );
+    await setInstructions("R".repeat(20_000));
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Create")!
+        .click(),
+    );
+    expect(create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ instructions: "R".repeat(20_000) }),
+    );
+  });
+  it("rejects an oversized rule blur before sending a save and preserves the complete draft", async () => {
+    vi.mocked(rpc.models.credentials).mockResolvedValueOnce([pinnedCredential("connection-a", 3)]);
+    await render();
+    await chooseModel(modelOptionKey("openai-compatible", "shared-model", "connection-a"));
+    const rules = "R".repeat(20_001);
+    await setInstructions(rules);
+    await act(async () =>
+      instructionsField().dispatchEvent(new FocusEvent("focusout", { bubbles: true })),
+    );
+    expect(onSave).not.toHaveBeenCalled();
+    expect(instructionsField().value).toBe(rules);
+    expect(instructionsField().maxLength).toBe(-1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Instructions must be at most 20000 characters",
+    );
+    expect(saveButton().disabled).toBe(false);
+  });
+  it("rejects an oversized mixed rule and model save before any mutation", async () => {
+    vi.mocked(rpc.models.credentials).mockResolvedValueOnce([pinnedCredential("connection-a", 3)]);
+    await render();
+    const key = modelOptionKey("openai-compatible", "shared-model", "connection-a");
+    await chooseModel(key);
+    const rules = "R".repeat(20_001);
+    await setInstructions(rules);
+    await setDescription("New public role");
+    await act(async () => {
+      saveButton().click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onSave).not.toHaveBeenCalled();
+    expect(instructionsField().value).toBe(rules);
+    expect(descriptionField().value).toBe("New public role");
+    expect(container.querySelector("select")?.value).toBe(key);
+    expect(saveButton().disabled).toBe(false);
+    await setInstructions("R".repeat(20_000));
+    await clickSave();
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+      instructions: "R".repeat(20_000),
+      expectedInstructions: longInstructions,
+      modelCredentialId: "connection-a",
+      expectedRevision: 3,
+      description: "New public role",
+    });
+  });
 });

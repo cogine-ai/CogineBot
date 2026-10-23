@@ -22,6 +22,24 @@ export type MemoryScopeValue = z.infer<typeof MemoryScopeSchema>;
 export const AvatarStyleSchema = z.enum(["robot", "organic"]);
 export type AvatarStyle = z.infer<typeof AvatarStyleSchema>;
 
+/** True for an IANA timezone this runtime can format in, such as "Pacific/Auckland". */
+export function isValidTimeZone(value: string): boolean {
+  // Intl also accepts fixed offsets, which are not IANA timezone names.
+  if (/^[+-]/.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const TimeZoneSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine(isValidTimeZone, { message: "Unknown timezone" });
+
 export const ThinkingLevelSchema = z.enum([
   "off",
   "minimal",
@@ -359,7 +377,7 @@ export const CreateBotInput = z.object({
   name: z.string().trim().min(1).max(BOT_NAME_MAX_LENGTH),
   title: z.string().max(BOT_TITLE_MAX_LENGTH).default(""),
   description: z.string().max(BOT_DESCRIPTION_MAX_LENGTH).default(""),
-  instructions: z.string().max(BOT_INSTRUCTIONS_MAX_LENGTH).default(""),
+  instructions: z.string().max(BOT_INSTRUCTIONS_MAX_LENGTH).optional(),
   notifyOnFinish: z.boolean().default(true),
   color: BotAvatarValueSchema.optional(),
   computerMode: ComputerModeSchema.default("team"),
@@ -369,14 +387,14 @@ export const CreateBotInput = z.object({
 export type CreateBotInput = z.infer<typeof CreateBotInput>;
 
 export function normalizeCreateBotProfile(
-  input: Pick<CreateBotInput, "name" | "title" | "description">,
+  input: Pick<CreateBotInput, "name" | "title" | "description" | "instructions">,
 ) {
   const description = input.description.trim();
   return {
     name: input.name.trim().slice(0, BOT_NAME_MAX_LENGTH),
     title: input.title.trim().slice(0, BOT_TITLE_MAX_LENGTH),
     description: description.slice(0, BOT_DESCRIPTION_MAX_LENGTH),
-    instructions: description.slice(0, BOT_INSTRUCTIONS_MAX_LENGTH),
+    instructions: input.instructions ?? description.slice(0, BOT_INSTRUCTIONS_MAX_LENGTH),
   };
 }
 
@@ -421,7 +439,8 @@ export const UpdateBotInput = z
     name: z.string().trim().min(1).max(BOT_NAME_MAX_LENGTH).optional(),
     title: z.string().trim().max(BOT_TITLE_MAX_LENGTH).optional(),
     description: z.string().trim().max(BOT_DESCRIPTION_MAX_LENGTH).optional(),
-    instructions: z.string().trim().max(BOT_INSTRUCTIONS_MAX_LENGTH).optional(),
+    instructions: z.string().max(BOT_INSTRUCTIONS_MAX_LENGTH).optional(),
+    expectedInstructions: z.string().max(BOT_INSTRUCTIONS_MAX_LENGTH).optional(),
     notifyOnFinish: z.boolean().optional(),
     color: BotAvatarValueSchema.optional(),
     pinned: z.boolean().optional(),
@@ -1472,6 +1491,7 @@ export const MeSchema = z.object({
   canChooseHostComputer: z.boolean(),
   sandboxProvider: z.string(),
   avatarStyle: AvatarStyleSchema,
+  timezone: z.string().nullable().optional(),
   /** True when this deployment bills and the user is not the deployment owner. */
   billingEnabled: z.boolean(),
 });

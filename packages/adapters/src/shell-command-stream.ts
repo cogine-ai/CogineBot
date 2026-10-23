@@ -1,6 +1,7 @@
 import type { ProcessEvent } from "@rakazo/adapter-kit";
 import { redactSecrets } from "@rakazo/core";
 import { redactShellStreams } from "./agent-environment.js";
+import { automated } from "./automated-messages.js";
 import { clipToolResultText } from "./pi-runtime-limits.js";
 
 /**
@@ -39,7 +40,7 @@ export function isRunningShellCommand(result: unknown): result is RunningShellCo
 }
 
 export function formatFinishedShellCommand(result: FinishedShellCommand): string {
-  const parts = ["Shell command finished.", `exit code: ${result.code}`];
+  const parts = [automated("Shell command finished."), `exit code: ${result.code}`];
   if (result.stdout) parts.push(`stdout:\n${clipToolResultText(result.stdout)}`);
   if (result.stderr) parts.push(`stderr:\n${clipToolResultText(result.stderr)}`);
   return parts.join("\n");

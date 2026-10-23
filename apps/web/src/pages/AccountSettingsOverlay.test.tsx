@@ -23,6 +23,8 @@ vi.mock("@rakazo/ui-web", () => ({
     <label htmlFor={htmlFor}>{children}</label>
   ),
   Input: (props: React.ComponentProps<"input">) => <input {...props} />,
+  NativeSelect: (props: React.ComponentProps<"select">) => <select {...props} />,
+  NativeSelectOption: (props: React.ComponentProps<"option">) => <option {...props} />,
   Label: ({ children, htmlFor }: { children?: ReactNode; htmlFor?: string }) => (
     <label htmlFor={htmlFor}>{children}</label>
   ),
@@ -190,6 +192,43 @@ it.each([undefined, true, false])("respects the password-change policy (%s)", as
   } finally {
     await act(async () => root.unmount());
     accountPolicy.passwordChangeEnabled = undefined;
+    vi.unstubAllGlobals();
+  }
+});
+
+it("keeps an explicit UTC preference, locks pending edits, and preserves it on failure", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  let reject!: (error: Error) => void;
+  const save = vi.fn(
+    () =>
+      new Promise<void>((_resolve, fail) => {
+        reject = fail;
+      }),
+  );
+  try {
+    await act(async () =>
+      root.render(<GeneralSettingsPanels name="Jamie" timezone="UTC" onTimezoneChange={save} />),
+    );
+    const select = container.querySelector<HTMLSelectElement>('[data-testid="timezone-select"]')!;
+    expect(select.value).toBe("UTC");
+    await act(async () => {
+      select.value = "Asia/Tokyo";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(save).toHaveBeenCalledExactlyOnceWith("Asia/Tokyo");
+    expect(select.disabled).toBe(true);
+    await act(async () => reject(new Error("offline")));
+    expect(select.disabled).toBe(false);
+    expect(select.value).toBe("UTC");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't update your timezone",
+    );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
     vi.unstubAllGlobals();
   }
 });

@@ -1,9 +1,19 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { AccountSecurity } from "@rakazo/contracts";
-import { Button, Field, FieldLabel, Input, Label, Switch, Toggle } from "@rakazo/ui-web";
+import {
+  Button,
+  Field,
+  FieldLabel,
+  Input,
+  Label,
+  NativeSelect,
+  NativeSelectOption,
+  Switch,
+  Toggle,
+} from "@rakazo/ui-web";
 import { ChevronDown } from "lucide-react";
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountAccess } from "../components/AccountAccess";
 import { SuccessPop } from "../components/ai/primitives";
@@ -12,6 +22,7 @@ import { DesktopUpdateSection } from "../components/DesktopUpdates";
 import { SoftwareUpdateSection } from "../components/SoftwareUpdateSection";
 import { authClient } from "../lib/auth";
 import { getActiveUiLocale, setUiLocale } from "../lib/i18n";
+import { localTimezone, timezoneOptions } from "../lib/local-timezone";
 import {
   getRemoteImagesPreference,
   setRemoteImagesPreference,
@@ -33,6 +44,8 @@ import { authErrorText } from "../lib/user-error";
 export type SettingsGeneralProps = {
   email?: string | null;
   name: string;
+  timezone?: string | null;
+  onTimezoneChange?: (timezone: string) => Promise<void>;
   messagingEnabled?: boolean;
   onOpenMessaging?: () => void;
   isDeploymentOwner?: boolean;
@@ -41,10 +54,37 @@ export type SettingsGeneralProps = {
 export function GeneralSettingsPanels({
   email,
   name,
+  timezone,
+  onTimezoneChange,
   messagingEnabled = false,
   onOpenMessaging,
   isDeploymentOwner = false,
 }: SettingsGeneralProps) {
+  const { t } = useLingui();
+  const timezoneId = useId();
+  const [timezonePending, setTimezonePending] = useState(false);
+  const [timezoneError, setTimezoneError] = useState<string | null>(null);
+  const timezoneRequest = useRef(0);
+  useLayoutEffect(
+    () => () => {
+      timezoneRequest.current++;
+    },
+    [],
+  );
+  async function chooseTimezone(next: string) {
+    if (!onTimezoneChange || timezonePending || next === timezone) return;
+    const request = ++timezoneRequest.current;
+    setTimezonePending(true);
+    setTimezoneError(null);
+    try {
+      await onTimezoneChange(next);
+    } catch {
+      if (request === timezoneRequest.current) setTimezoneError(t`Couldn't update your timezone`);
+    } finally {
+      if (request === timezoneRequest.current) setTimezonePending(false);
+    }
+  }
+  const displayTimezone = timezone ?? localTimezone();
   const [accountSecurity, setAccountSecurity] = useState<AccountSecurity | null>(null);
   const [locale, setLocale] = useState<UiLocale>(() => getActiveUiLocale());
   const localeRequestRef = useRef(0);
@@ -121,6 +161,36 @@ export function GeneralSettingsPanels({
         </h3>
         <UiLocalePicker value={locale} onChange={chooseLocale} />
       </section>
+
+      {onTimezoneChange ? (
+        <section
+          className="rounded-xl border border-border px-4 py-4"
+          data-testid="timezone-settings"
+        >
+          <h3 id={timezoneId} className="text-[15px] font-medium text-foreground">
+            <Trans>Timezone</Trans>
+          </h3>
+          <NativeSelect
+            aria-labelledby={timezoneId}
+            data-testid="timezone-select"
+            value={displayTimezone}
+            disabled={timezonePending}
+            onChange={(event) => void chooseTimezone(event.target.value)}
+            className="mt-3 w-full"
+          >
+            {timezoneOptions(displayTimezone).map((zone) => (
+              <NativeSelectOption key={zone} value={zone}>
+                {zone.replaceAll("_", " ")}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          {timezoneError ? (
+            <p role="alert" className="mt-3 text-[12.5px] text-destructive">
+              {timezoneError}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       {isDeploymentOwner ? (
         <Button variant="outline" render={<Link to="/integrations/setup" />}>

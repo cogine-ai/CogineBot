@@ -6055,3 +6055,19 @@ msgstr "पुष्टियाँ"
 #: src/pages/SettingsOverlay.tsx
 msgid "Space"
 msgstr "स्पेस"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions"
+msgstr "निर्देश"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Timezone"
+msgstr "समय क्षेत्र"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Couldn't update your timezone"
+msgstr "आपका समय क्षेत्र अपडेट नहीं किया जा सका"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions must be at most {count} characters"
+msgstr "निर्देश अधिकतम {count} वर्णों के होने चाहिए"

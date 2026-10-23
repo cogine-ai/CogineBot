@@ -1,6 +1,7 @@
 import type { ComputerMode, ThinkingLevel } from "@rakazo/contracts";
 import {
   BOT_DESCRIPTION_MAX_LENGTH,
+  BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   normalizeCreateBotProfile,
@@ -40,6 +41,7 @@ import { stopVoicePlayback } from "../lib/voice";
 
 type BotSettingsRecord = MobileBot & {
   description?: string;
+  instructions?: string;
 };
 
 export default function BotSettingsScreen() {
@@ -51,6 +53,7 @@ export default function BotSettingsScreen() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [instructions, setInstructions] = useState("");
   const [color, setColor] = useState<string>(GAZE_BOT_COLORS[0]);
   const parsedColor = parseBotAvatarValue(color);
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
@@ -76,6 +79,7 @@ export default function BotSettingsScreen() {
   useEffect(() => {
     if (!botId) return;
     let cancelled = false;
+    setBot(null);
     void rpc<BotSettingsRecord>("bots/get", { botId })
       .then((next) => {
         if (cancelled) return;
@@ -84,6 +88,7 @@ export default function BotSettingsScreen() {
         setName(next.name);
         setTitle(next.title);
         setDescription(next.description ?? "");
+        setInstructions(next.instructions ?? "");
         setColor(next.color);
         setComputerMode(next.computerMode);
         setModelKey(
@@ -288,7 +293,15 @@ export default function BotSettingsScreen() {
   }
 
   async function save() {
-    if (!botId || !bot || pending) return;
+    if (!botId || !bot || bot.id !== botId || pending) return;
+    if (instructions.length > BOT_INSTRUCTIONS_MAX_LENGTH) {
+      setError(
+        t("Instructions must be at most {count} characters", {
+          count: BOT_INSTRUCTIONS_MAX_LENGTH,
+        }),
+      );
+      return;
+    }
     setPending(true);
     setError(null);
     try {
@@ -300,6 +313,7 @@ export default function BotSettingsScreen() {
         title?: string;
         description?: string;
         instructions?: string;
+        expectedInstructions?: string;
         color?: string;
         modelProvider?: string | null;
         modelId?: string | null;
@@ -312,8 +326,10 @@ export default function BotSettingsScreen() {
       if (profile.title !== bot.title) input.title = profile.title;
       if (profile.description !== (bot.description ?? "")) {
         input.description = profile.description;
-        // Keep instructions in sync with description (same as web BotSettings).
-        input.instructions = profile.instructions;
+      }
+      if (instructions !== (bot.instructions ?? "")) {
+        input.instructions = instructions;
+        input.expectedInstructions = bot.instructions ?? "";
       }
       if (color !== bot.color) input.color = color;
       const modelChanged =
@@ -453,6 +469,25 @@ export default function BotSettingsScreen() {
           maxLength={BOT_DESCRIPTION_MAX_LENGTH}
           onChangeText={setDescription}
           placeholder={t("What this bot is for")}
+          placeholderTextColor={tokens.mutedForeground}
+          multiline
+          style={{
+            marginTop: 8,
+            backgroundColor: native.fill,
+            borderRadius: 11,
+            padding: 16,
+            color: tokens.foreground,
+            minHeight: 120,
+            textAlignVertical: "top",
+          }}
+        />
+        <Text style={{ color: tokens.mutedForeground, marginTop: 16, fontSize: 14 }}>
+          {t("Instructions")}
+        </Text>
+        <TextInput
+          accessibilityLabel={t("Instructions")}
+          value={instructions}
+          onChangeText={setInstructions}
           placeholderTextColor={tokens.mutedForeground}
           multiline
           style={{

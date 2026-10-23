@@ -34,6 +34,7 @@ import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
 import { SectionNamePrompt } from "../components/section-name-prompt";
 import { WorkingIndicator } from "../components/WorkingIndicator";
+import { adoptDeviceTimezone } from "../lib/account-timezone";
 import {
   activityStatusLabel,
   fetchSpaceActivity,
@@ -365,6 +366,7 @@ function Home() {
       setGroups((current) => retainInboxValue(current, navigation.current.groups));
       setSpaces((current) => retainInboxValue(current, navigation.spaces));
       setMe((current) => retainInboxValue(current, nextMe));
+      void adoptDeviceTimezone(nextMe, current);
       saveInbox(
         {
           apiBase: owner.apiBase,

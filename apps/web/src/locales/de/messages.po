@@ -6055,3 +6055,19 @@ msgstr "Bestätigungen"
 #: src/pages/SettingsOverlay.tsx
 msgid "Space"
 msgstr "Bereich"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions"
+msgstr "Anweisungen"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Timezone"
+msgstr "Zeitzone"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Couldn't update your timezone"
+msgstr "Deine Zeitzone konnte nicht aktualisiert werden"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions must be at most {count} characters"
+msgstr "Anweisungen dürfen höchstens {count} Zeichen lang sein"

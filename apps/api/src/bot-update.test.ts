@@ -241,3 +241,91 @@ describe("commitBotUpdate", () => {
     expect(update).toHaveBeenCalledOnce();
   });
 });
+
+describe("instruction update boundary", () => {
+  const updated = { id: "bot-1", name: "Chief", title: "", description: "Public role" };
+  function options(update = vi.fn().mockResolvedValue(updated)) {
+    const tx = { bot: { update } };
+    return {
+      tx,
+      value: {
+        prisma: {
+          bot: { update },
+          $transaction: vi.fn(async (run: (client: typeof tx) => Promise<unknown>) => run(tx)),
+        } as never,
+        notify: vi.fn().mockResolvedValue(undefined),
+        spaceId: "space-1",
+        threadId: "thread-1",
+        botId: "bot-1",
+        data: { instructions: " \nNew rules\n" },
+        emitBotUpdated: false,
+        expectedInstructions: " \nAccepted rules\n\n",
+      },
+    };
+  }
+  it("publishes an invalidation for an instruction-only edit, including explicit clear", () => {
+    expect(botProfileChanged({ instructions: "" })).toBe(true);
+    expect(botProfileChanged({ instructions: undefined })).toBe(false);
+  });
+  it("compares the exact accepted raw rules in the same target-scoped update", async () => {
+    const { tx, value } = options();
+    await commitBotUpdate(value);
+    expect(tx.bot.update).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "bot-1", spaceId: "space-1", instructions: " \nAccepted rules\n\n" },
+      data: value.data,
+      select: { id: true, name: true, title: true, description: true },
+    });
+  });
+  it("treats an empty expected value as a real guard", async () => {
+    const { tx, value } = options();
+    value.expectedInstructions = "";
+    await commitBotUpdate(value);
+    expect(tx.bot.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "bot-1", spaceId: "space-1", instructions: "" } }),
+    );
+  });
+  it("classifies only a guarded row-update miss as a rule conflict", async () => {
+    const failure = Object.assign(new Error("missing"), { code: "P2025" });
+    const { value } = options(vi.fn().mockRejectedValue(failure));
+    await expect(commitBotUpdate(value)).rejects.toMatchObject({
+      name: "BotInstructionsConflictError",
+    });
+    expect(value.notify).not.toHaveBeenCalled();
+    const legacy = { ...value, expectedInstructions: undefined };
+    await expect(commitBotUpdate(legacy)).rejects.toBe(failure);
+  });
+  it("leaves a model-validation P2025 unchanged and does not write rules", async () => {
+    const failure = Object.assign(new Error("connection missing"), { code: "P2025" });
+    const { tx, value } = options();
+    await expect(
+      commitBotUpdate({
+        ...value,
+        validate: async () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(tx.bot.update).not.toHaveBeenCalled();
+  });
+  it("does not misclassify an event append P2025 or notify a rolled-back edit", async () => {
+    const failure = Object.assign(new Error("event thread missing"), { code: "P2025" });
+    const { value } = options();
+    await expect(
+      commitBotUpdate({ ...value, emitBotUpdated: true }, vi.fn().mockRejectedValue(failure)),
+    ).rejects.toBe(failure);
+    expect(value.notify).not.toHaveBeenCalled();
+  });
+  it("keeps the rule text out of the durable public profile event", async () => {
+    const { tx, value } = options();
+    const append = vi.fn().mockResolvedValue({ seq: 4 });
+    await commitBotUpdate({ ...value, emitBotUpdated: true }, append);
+    expect(append).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        type: "bot.updated",
+        payload: { botId: "bot-1", name: "Chief", title: "", description: "Public role" },
+      }),
+    );
+    expect(JSON.stringify(append.mock.calls)).not.toContain("New rules");
+  });
+});

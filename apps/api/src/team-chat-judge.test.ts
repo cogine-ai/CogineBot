@@ -47,6 +47,47 @@ describe("team chat engagement judge", () => {
     expect(parseTeamChatEngagementDecision("not json")).toEqual({ act: false });
   });
 
+  it.each(["Asia/Taipei", null, "Invalid/Zone", "read-failure"])(
+    "uses the bot owner's account clock (%s)",
+    async (timezone) => {
+      const requests: AgentRunRequest[] = [];
+      const findUnique = vi.fn(async () => {
+        if (timezone === "read-failure") throw new Error("Timezone unavailable");
+        return { timezone };
+      });
+      const judge = new ModelTeamChatEngagementJudge({
+        prisma: {
+          user: { findUnique },
+          deploymentSettings: { findUnique: async () => null },
+          spaceModelPreference: { findFirst: async () => null },
+        } as never,
+        runtime: {
+          run: async function* (request: AgentRunRequest) {
+            requests.push(request);
+            yield { type: "done", text: '{"act":false}' };
+          },
+        } as never,
+        secrets: {} as never,
+        deploymentProvider: "google",
+        deploymentModel: "gemini-3.8-flash",
+        deploymentModelKey: "test-key",
+      });
+      await expect(
+        judge.decide(judgeInput({ modelProvider: null, modelId: null, modelCredentialId: null })),
+      ).resolves.toEqual({ act: false });
+      expect(findUnique).toHaveBeenCalledExactlyOnceWith({
+        where: { id: "user-1" },
+        select: { timezone: true },
+      });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.history).toEqual([]);
+      expect(requests[0]!.tools).toEqual([]);
+      expect(requests[0]!.instructions).toContain(
+        timezone === "Asia/Taipei" ? "(Asia/Taipei)" : "(UTC)",
+      );
+    },
+  );
+
   it("persists cache-read and cache-write tokens from usage events", async () => {
     const create = vi.fn(async () => ({ id: "usage-1" }));
     const prisma = {

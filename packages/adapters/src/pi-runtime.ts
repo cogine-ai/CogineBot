@@ -33,10 +33,12 @@ import { usableModelId } from "@rakazo/contracts";
 import { abortableDelay } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
+import { automated } from "./automated-messages.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
 import { shortenToolResultText } from "./context-selection.js";
+import { formatCurrentTimeInstruction } from "./current-time.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { estimateModelContextTokens } from "./model-context.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
@@ -98,10 +100,12 @@ const MODEL_PROVIDER_RETRY_DELAYS_MS = [2_000, 8_000, 20_000] as const;
 // instead of taking another assistant turn. A bounded internal follow-up keeps
 // that provider quirk from making a long task look complete after one step.
 const MAX_SILENT_TOOL_CONTINUATIONS = 3;
-const SILENT_TOOL_CONTINUATION_PROMPT =
-  "Continue the original task from the latest tool result. Do not stop after a tool call; use any remaining tools needed, then give the user the final answer.";
-const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT =
-  "Continue the original task from the latest tool result. If you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply. Otherwise use any remaining tools needed, then give the user the final answer.";
+const SILENT_TOOL_CONTINUATION_PROMPT = automated(
+  "Continue the original task from the latest tool result. Do not stop after a tool call; use any remaining tools needed, then give the user the final answer.",
+);
+const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT = automated(
+  "Continue the original task from the latest tool result. If you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply. Otherwise use any remaining tools needed, then give the user the final answer.",
+);
 // Shown as a failed-run error, not an assistant message. Asking the user to
 // continue stores that sentence as the reply, and the next "continue" runs
 // tools and misses a final answer again.
@@ -1586,7 +1590,9 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     const onAbort = () => nested.abort();
     host.signal.addEventListener("abort", onAbort);
     try {
-      await nested.prompt(task || "Complete the delegated task.");
+      await nested.prompt(
+        `${automated(`Task from the parent bot (not from the user):\n${task || "Complete the delegated task."}`)}\n\n${formatCurrentTimeInstruction(new Date(), host.request.userTimezone)}`,
+      );
     } finally {
       try {
         await nested.waitForIdle();

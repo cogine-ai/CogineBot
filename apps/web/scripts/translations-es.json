@@ -806,5 +806,9 @@
   "No bots match": "Ningún bot coincide",
   "No members yet": "Aún no hay miembros",
   "Confirmations": "Confirmaciones",
-  "Space": "Espacio"
+  "Space": "Espacio",
+  "Instructions": "Instrucciones",
+  "Timezone": "Zona horaria",
+  "Couldn't update your timezone": "No se pudo actualizar tu zona horaria",
+  "Instructions must be at most {count} characters": "Las instrucciones deben tener como máximo {count} caracteres"
 }

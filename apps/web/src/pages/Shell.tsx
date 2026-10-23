@@ -262,6 +262,7 @@ import {
   transcriptMovedDown,
 } from "../lib/transcript-scroll";
 import { speaker } from "../lib/tts";
+import { useAccountTimezone } from "../lib/use-account-timezone";
 import { useComposerDraft } from "../lib/use-composer-draft";
 import { errorText } from "../lib/user-error";
 import { ActivityList } from "./ActivityList";
@@ -920,6 +921,16 @@ export function ShellPage() {
   const settingsSpace = spaces.find((entry) => entry.id === settingsTargetId) ?? null;
   const settingsOwnerKey = JSON.stringify([userId, session.data?.session.id]);
   const settingsOwner = useMemo(() => ({ key: settingsOwnerKey }), [settingsOwnerKey]);
+  const saveAccountTimezone = useAccountTimezone({
+    ownerKey: userId ? settingsOwnerKey : null,
+    userId: userId ?? null,
+    timezone: bootstrapMe?.userId === userId ? bootstrapMe?.timezone : undefined,
+    onTimezoneChanged: (timezone) => {
+      setBootstrapMe((current) =>
+        current && current.userId === userId ? { ...current, timezone } : current,
+      );
+    },
+  });
   const committedSettingsOwner = useRef<typeof settingsOwner | null>(null);
   useLayoutEffect(() => {
     committedSettingsOwner.current = settingsOwner;
@@ -3353,6 +3364,7 @@ export function ShellPage() {
     name: string;
     title: string;
     description: string;
+    instructions: string;
     computerMode: ComputerMode;
   }) {
     const bot = await rpc.bots.create({
@@ -5318,7 +5330,7 @@ export function ShellPage() {
                 draft={routineDraft}
                 onChange={setRoutineDraft}
                 editing={editingRoutine}
-                timezone={editingRoutine?.timezone ?? localTimezone()}
+                timezone={editingRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone()}
                 webhook={{
                   path:
                     typeof window !== "undefined"
@@ -5432,7 +5444,7 @@ export function ShellPage() {
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
-                        timezone: localTimezone(),
+                        timezone: bootstrapMe?.timezone ?? localTimezone(),
                         active: routineDraft.active,
                         notify: true,
                         webhookEnabled: routineDraft.webhookEnabled,
@@ -5934,6 +5946,8 @@ export function ShellPage() {
             onSpaceChange={setSettingsSpaceId}
             name={userName}
             email={session.data?.user.email}
+            timezone={bootstrapMe?.timezone}
+            onTimezoneChange={bootstrapMe?.timezone !== undefined ? saveAccountTimezone : undefined}
             usage={usage}
             onUsageOpen={refreshUsage}
             initialSection={settingsSection}

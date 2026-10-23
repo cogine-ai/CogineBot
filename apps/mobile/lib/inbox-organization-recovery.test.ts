@@ -125,6 +125,7 @@ function home() {
       } as InboxOrganizationState,
     },
     saveInbox: vi.fn(),
+    adoptDeviceTimezone: vi.fn(async () => undefined),
     errorText: (error: Error) => error.message,
     t: (text: string) => text,
     me,

@@ -115,6 +115,7 @@ function home(hasSession = true) {
     setSearchInbox: vi.fn(),
     setError: vi.fn(),
     saveInbox: vi.fn(),
+    adoptDeviceTimezone: vi.fn(async (_me: unknown, _current: () => boolean) => undefined),
     rpc: vi.fn(async (procedure: string) => (procedure === "me" ? server.me : navigation)),
     retainInboxValue: (_current: unknown, next: unknown) => next,
     selectInitialSpace: vi.fn(async () => true),
@@ -179,6 +180,29 @@ function home(hasSession = true) {
 }
 
 describe("Home cache and live inbox publication", () => {
+  it("starts device adoption only after publishing an authenticated current account", async () => {
+    const state = home();
+    await state.loadBots();
+    expect(state.adoptDeviceTimezone).toHaveBeenCalledExactlyOnceWith(
+      state.server.me,
+      expect.any(Function),
+    );
+    expect(state.setMe.mock.invocationCallOrder[0]).toBeLessThan(
+      state.adoptDeviceTimezone.mock.invocationCallOrder[0]!,
+    );
+    const current = state.adoptDeviceTimezone.mock.calls[0]![1] as () => boolean;
+    expect(current()).toBe(true);
+    state.live.sessionGeneration += 2;
+    expect(current()).toBe(false);
+  });
+
+  it("never adopts a timezone from the saved unauthenticated cache", async () => {
+    const state = home();
+    state.startCache();
+    await state.finishCache(0);
+    expect(state.adoptDeviceTimezone).not.toHaveBeenCalled();
+  });
+
   it("shows saved data first, then replaces it with the verified live roster", async () => {
     const state = home();
     const network = deferred<typeof state.navigation | typeof state.server.me>();

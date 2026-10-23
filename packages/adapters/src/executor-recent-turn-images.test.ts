@@ -1,6 +1,6 @@
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import type { ComputerMode, MessageBlock } from "@rakazo/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
 
@@ -66,6 +66,9 @@ async function runWithModel(
     block?: Extract<MessageBlock, { kind: "file" | "image" }>;
     computerMode?: ComputerMode;
     pinned?: boolean;
+    accountTimezone?: string | null;
+    timezoneReadFails?: boolean;
+    botOwnerId?: string;
   } = {},
 ) {
   const run = {
@@ -122,6 +125,7 @@ async function runWithModel(
     bot: {
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
+        userId: attachmentOptions.botOwnerId ?? "bot-owner",
         name: "Assistant",
         title: "Assistant",
         description: "Test assistant",
@@ -207,6 +211,12 @@ async function runWithModel(
         defaultModelProvider: "openrouter",
         defaultModelId: modelId,
       })),
+    },
+    user: {
+      findUnique: vi.fn(async () => {
+        if (attachmentOptions.timezoneReadFails) throw new Error("Account timezone unavailable");
+        return { timezone: attachmentOptions.accountTimezone };
+      }),
     },
     taughtSkill: { findMany: vi.fn(async () => []) },
     agentSecret: { findMany: vi.fn(async () => []) },
@@ -439,5 +449,86 @@ describe("recent turn images follow model vision", () => {
         modelCredentialId: "backup-credential",
       },
     });
+  });
+});
+
+describe("executor account timezone context", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("reads the bot owner's account zone and carries the same value to the runtime", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-15T16:42:34.000Z"));
+    const { request, prisma } = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, {
+      accountTimezone: "Asia/Taipei",
+      botOwnerId: "bot-owner",
+    });
+    expect(prisma.user.findUnique).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "bot-owner" },
+      select: { timezone: true },
+    });
+    expect(request.userTimezone).toBe("Asia/Taipei");
+    expect(request.prompt).toContain("Thursday, 2026-07-16 00:42 (UTC+08:00) (Asia/Taipei)");
+    expect(request.prompt).toContain("That is 2026-07-15T16:42:34Z (UTC)");
+    expect(request.prompt).toContain("Look again");
+    expect(request.instructions).not.toContain("2026-07-15");
+    expect(request.instructions).not.toContain("2026-07-16");
+  });
+  it.each([
+    ["America/New_York", "2026-07-15T16:42:34.000Z", "Wednesday, 2026-07-15 12:42 (UTC-04:00)"],
+    ["America/New_York", "2026-01-15T16:42:34.000Z", "Thursday, 2026-01-15 11:42 (UTC-05:00)"],
+    ["Asia/Kolkata", "2026-07-15T16:42:34.000Z", "Wednesday, 2026-07-15 22:12 (UTC+05:30)"],
+    ["UTC", "2026-07-15T16:42:34.000Z", "Wednesday, 2026-07-15 16:42 (UTC+00:00)"],
+  ])("uses the accepted %s zone for the main turn at %s", async (timezone, instant, local) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(instant!));
+    const { request } = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, {
+      accountTimezone: timezone,
+    });
+    expect(request.userTimezone).toBe(timezone);
+    expect(request.prompt).toContain(`${local} (${timezone})`);
+    expect(request.prompt).toContain(instant!.replace(".000Z", "Z"));
+    expect(request.instructions).not.toContain("Current date and time");
+  });
+
+  it.each([null, undefined, "Invalid/Zone"])(
+    "continues with exact UTC when the account zone is %s",
+    async (timezone) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-07-15T16:42:34.000Z"));
+      const { request } = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, {
+        accountTimezone: timezone,
+      });
+      expect(request.userTimezone).toBe(timezone);
+      expect(request.prompt).toContain(
+        "Current date and time: Wednesday, 2026-07-15T16:42:34Z (UTC)",
+      );
+      expect(request.prompt).not.toContain("Current date and time for the user");
+    },
+  );
+
+  it("degrades only the optional timezone read when the database lookup fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-15T16:42:34.000Z"));
+    const { request, prisma } = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, {
+      timezoneReadFails: true,
+    });
+    expect(prisma.user.findUnique).toHaveBeenCalledOnce();
+    expect(request.userTimezone).toBeUndefined();
+    expect(request.prompt).toContain("2026-07-15T16:42:34Z (UTC)");
+    expect(request.prompt).toContain("Look again");
+  });
+
+  it("keeps the same owner zone when an attempt changes its model connection", async () => {
+    const backup = {
+      provider: "openrouter",
+      modelId: VISION_MODEL,
+      modelCredentialId: "backup-credential",
+    };
+    const { request, run } = await runWithModel(TEXT_ONLY_MODEL, backup, false, false, {
+      accountTimezone: "Asia/Taipei",
+    });
+    expect(run.modelId).toBe(VISION_MODEL);
+    expect(request.userTimezone).toBe("Asia/Taipei");
+    expect(request.prompt).toContain("(Asia/Taipei)");
   });
 });

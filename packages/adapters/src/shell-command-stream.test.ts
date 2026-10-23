@@ -227,6 +227,14 @@ describe("observeShellCommand", () => {
 });
 
 describe("deliverFinishedShells", () => {
+  it("marks a completed background command as automated while retaining failure output", () => {
+    expect(
+      formatFinishedShellCommand({ stdout: "retained output", stderr: "failed safely", code: 2 }),
+    ).toBe(
+      "[Automated message from CogineBot, not from the user] Shell command finished.\nexit code: 2\nstdout:\nretained output\nstderr:\nfailed safely",
+    );
+  });
+
   it("waits until the command exits, then hands the bot the final output", async () => {
     let release: (result: { stdout: string; stderr: string; code: number }) => void = () =>
       undefined;

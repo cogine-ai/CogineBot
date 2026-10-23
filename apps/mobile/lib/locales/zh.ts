@@ -952,4 +952,8 @@ export const ZH_MESSAGES: Record<string, string> = {
     "请先为这些项目选择其他模型，再断开连接。",
   "Bot model": "机器人模型",
   "Save model": "保存模型",
+  Instructions: "指令",
+  Timezone: "时区",
+  "Could not save timezone": "无法保存时区",
+  "Instructions must be at most {count} characters": "指令最多可包含 {count} 个字符",
 };

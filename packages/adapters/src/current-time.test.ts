@@ -14,6 +14,37 @@ describe("formatCurrentTimeInstruction", () => {
     expect(line).toContain("write absolute dates");
   });
 
+  it("anchors the user's local wall clock and the same UTC instant", () => {
+    const line = formatCurrentTimeInstruction(new Date("2026-10-20T00:00:00Z"), "Asia/Taipei");
+    expect(line).toContain("Tuesday, 2026-10-20 08:00 (UTC+08:00) (Asia/Taipei)");
+    expect(line).toContain("2026-10-20T00:00:00Z (UTC)");
+  });
+
+  it("uses the offset at the actual instant across a daylight-saving transition", () => {
+    const before = formatCurrentTimeInstruction(
+      new Date("2026-11-01T05:30:00Z"),
+      "America/New_York",
+    );
+    const after = formatCurrentTimeInstruction(
+      new Date("2026-11-01T06:30:00Z"),
+      "America/New_York",
+    );
+    expect(before).toContain("2026-11-01 01:30 (UTC-04:00)");
+    expect(after).toContain("2026-11-01 01:30 (UTC-05:00)");
+    expect(after).toContain("2026-11-01T06:30:00Z (UTC)");
+  });
+
+  it("formats non-hour offsets and falls back safely for missing or invalid zones", () => {
+    const now = new Date("2026-10-20T00:00:00Z");
+    expect(formatCurrentTimeInstruction(now, "Asia/Kolkata")).toContain(
+      "2026-10-20 05:30 (UTC+05:30)",
+    );
+    const utc = formatCurrentTimeInstruction(now);
+    expect(formatCurrentTimeInstruction(now, null)).toBe(utc);
+    expect(formatCurrentTimeInstruction(now, "Invalid/Zone")).toBe(utc);
+    expect(formatCurrentTimeInstruction(now, "UTC")).toContain("2026-10-20 00:00 (UTC+00:00)");
+  });
+
   it("defaults to the real clock", () => {
     const before = Date.now();
     const line = formatCurrentTimeInstruction();
