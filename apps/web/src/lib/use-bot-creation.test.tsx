@@ -165,3 +165,119 @@ it("does not dispatch while selected Space is not the verified bootstrap Space",
   await expect(editor!.creation.submit(submission)).rejects.toMatchObject({ code: "closed" });
   expect(fetch).not.toHaveBeenCalled();
 });
+
+it("accepts a corrected draft after the server explicitly rolls back a quota refusal", async () => {
+  const writes: Record<string, unknown>[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      if (!new URL(request.url).pathname.endsWith("/create")) return Response.json({ json: [] });
+      const input = (await request.json()).json;
+      writes.push(input);
+      return writes.length === 1
+        ? Response.json(
+            {
+              json: {
+                defined: false,
+                code: "BAD_REQUEST",
+                status: 400,
+                message: "Computer limit reached",
+                data: { reason: "bot_create_not_written" },
+              },
+            },
+            { status: 400 },
+          )
+        : Response.json({ json: { ...fixture, ...input } });
+    }),
+  );
+  await render();
+  await expect(editor!.creation.submit(submission)).rejects.toMatchObject({ status: 400 });
+  expect(editor!.creation.status()).toBe("idle");
+  const corrected = {
+    ...submission,
+    draftVersion: 1,
+    draft: { ...submission.draft, name: "Corrected name" },
+  };
+  const receipt = await editor!.creation.submit(corrected);
+  expect(receipt.submitted.draft.name).toBe("Corrected name");
+  expect(writes).toHaveLength(2);
+  expect(writes[1]!.name).toBe("Corrected name");
+  expect(writes[1]!.spawnKey).not.toBe(writes[0]!.spawnKey);
+});
+
+it.each([400, 408, 409, 429, "malformed 400"])(
+  "preserves the original intent after an unmarked %s response",
+  async (status) => {
+    const writes: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) => {
+        if (!new URL(request.url).pathname.endsWith("/create")) return Response.json({ json: [] });
+        const input = (await request.json()).json;
+        writes.push(input);
+        if (writes.length > 1) return Response.json({ json: { ...fixture, ...input } });
+        return typeof status === "string"
+          ? new Response("Gateway rejected response", { status: 400 })
+          : Response.json(
+              {
+                json: {
+                  defined: false,
+                  code: status === 409 ? "CONFLICT" : "BAD_REQUEST",
+                  status,
+                  message: "Rejected response",
+                },
+              },
+              { status },
+            );
+      }),
+    );
+    await render();
+    await expect(editor!.creation.submit(submission)).rejects.toMatchObject({ code: "unknown" });
+    const receipt = await editor!.creation.submit({
+      ...submission,
+      draftVersion: 1,
+      draft: { ...submission.draft, name: "New live edit" },
+    });
+    expect(receipt.submitted.draftVersion).toBe(0);
+    expect(writes).toEqual([writes[0], writes[0]]);
+  },
+);
+
+it("does not discard an earlier uncertain write after a later explicit quota refusal", async () => {
+  const writes: Record<string, unknown>[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      if (!new URL(request.url).pathname.endsWith("/create")) return Response.json({ json: [] });
+      const input = (await request.json()).json;
+      writes.push(input);
+      if (writes.length === 1) throw new TypeError("Reply lost");
+      if (writes.length === 2)
+        return Response.json(
+          {
+            json: {
+              defined: false,
+              code: "BAD_REQUEST",
+              status: 400,
+              message: "Computer limit reached",
+              data: { reason: "bot_create_not_written" },
+            },
+          },
+          { status: 400 },
+        );
+      return Response.json({ json: { ...fixture, ...input } });
+    }),
+  );
+  await render();
+  await expect(editor!.creation.submit(submission)).rejects.toMatchObject({ code: "unknown" });
+  const edited = {
+    ...submission,
+    draftVersion: 1,
+    draft: { ...submission.draft, name: "New live edit" },
+  };
+  await expect(editor!.creation.submit(edited)).rejects.toMatchObject({ code: "unknown" });
+  expect(editor!.creation.status()).toBe("unknown");
+  const receipt = await editor!.creation.submit(edited);
+  expect(receipt.submitted.draftVersion).toBe(0);
+  expect(writes).toEqual([writes[0], writes[0], writes[0]]);
+});

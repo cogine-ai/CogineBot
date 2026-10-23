@@ -318,9 +318,15 @@ describe("spawned bot archival", () => {
       $transaction: vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
         callback({
           ...noGroupMemberships(),
-          run: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+          run: {
+            findMany: vi.fn().mockResolvedValue([]),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
           task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-          routine: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+          routine: {
+            findMany: vi.fn().mockResolvedValue([]),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
           computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           bot: { update: vi.fn().mockResolvedValue({}) },
@@ -1708,9 +1714,12 @@ describe("archiveBot", () => {
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
         ...groupCleanup,
-        run: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        run: {
+          findMany: vi.fn().mockResolvedValue([{ id: "run-1" }]),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-        routine: { updateMany: disableRoutines },
+        routine: { findMany: vi.fn().mockResolvedValue([]), updateMany: disableRoutines },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         bot: { update: updateBot },
@@ -1750,7 +1759,9 @@ describe("archiveBot", () => {
       where: { id: "bot-1" },
       data: { archivedAt: expect.any(Date), pinned: false },
     });
-    expect(groupCleanup.$queryRaw).not.toHaveBeenCalled();
+    expect(groupCleanup.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.run.findMany).not.toHaveBeenCalled();
+    expect(prisma.routine.findMany).not.toHaveBeenCalled();
     expect(groupCleanup.chatGroup.deleteMany).not.toHaveBeenCalled();
     expect(groupCleanup.chatGroupMember.deleteMany).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledWith("run:run-1");
@@ -1762,9 +1773,15 @@ describe("archiveBot", () => {
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
         ...noGroupMemberships(),
-        run: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        run: {
+          findMany: vi.fn().mockResolvedValue([]),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
         task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        routine: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        routine: {
+          findMany: vi.fn().mockResolvedValue([]),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         bot: { update: vi.fn().mockResolvedValue({}) },
@@ -1827,9 +1844,15 @@ describe("archiveBot", () => {
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
         ...noGroupMemberships(),
-        run: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        run: {
+          findMany: vi.fn().mockResolvedValue([]),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
         task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        routine: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        routine: {
+          findMany: vi.fn().mockResolvedValue([]),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         bot: { update: vi.fn().mockResolvedValue({}) },
@@ -1889,9 +1912,15 @@ describe("archiveBot", () => {
       const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
         callback({
           ...noGroupMemberships(),
-          run: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+          run: {
+            findMany: vi.fn().mockResolvedValue([]),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
           task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-          routine: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+          routine: {
+            findMany: vi.fn().mockResolvedValue([]),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
           computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           bot: { update: vi.fn().mockResolvedValue({}) },

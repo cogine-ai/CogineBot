@@ -778,6 +778,64 @@ describe("native profile fields", () => {
     expect(options.requestContext.headers["x-rakazo-space-id"]).toBe("space-1");
   });
 
+  it("keeps the preview editable after an explicit server quota rollback", async () => {
+    const original = mocks.rpc.getMockImplementation()!;
+    let writes = 0;
+    mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === "bots/create" && ++writes === 1) {
+        throw Object.assign(new Error("Computer limit reached"), {
+          code: "BAD_REQUEST",
+          status: 400,
+          data: { reason: "bot_create_not_written" },
+        });
+      }
+      return original(procedure, input);
+    });
+    await act(async () => root.render(<NewBot />));
+    await submit("资料研究");
+    await submit("Create");
+    expect(mocks.replace).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Retry");
+    expect(mocks.rpc.mock.calls.some(([procedure]) => procedure === "bots/list")).toBe(false);
+    await change(field("Name this bot"), "Corrected name");
+    await submit("Create");
+    const inputs = mocks.rpc.mock.calls
+      .filter(([procedure]) => procedure === "bots/create")
+      .map(([, input]) => input);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1].name).toBe("Corrected name");
+    expect(inputs[1].spawnKey).not.toBe(inputs[0].spawnKey);
+    expect(mocks.replace).toHaveBeenCalledOnce();
+  });
+
+  it.each([400, 408, 409, 429])(
+    "keeps an unmarked %s response bound to its original draft",
+    async (status) => {
+      const original = mocks.rpc.getMockImplementation()!;
+      let writes = 0;
+      mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+        if (procedure === "bots/create" && ++writes === 1) {
+          throw Object.assign(new Error("Rejected response"), {
+            status,
+            code: status === 409 ? "CONFLICT" : "BAD_REQUEST",
+          });
+        }
+        return original(procedure, input);
+      });
+      await act(async () => root.render(<NewBot />));
+      await submit("资料研究");
+      await submit("Create");
+      await change(field("Name this bot"), "Retained new edit");
+      await submit("Retry");
+      const inputs = mocks.rpc.mock.calls
+        .filter(([procedure]) => procedure === "bots/create")
+        .map(([, input]) => input);
+      expect(inputs).toEqual([inputs[0], inputs[0]]);
+      expect(field("Name this bot").value).toBe("Retained new edit");
+      expect(mocks.replace).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not dispatch through a mismatched verified account Space", async () => {
     mocks.rpc.mockResolvedValue({ userId: "user-1", spaceId: "foreign-space" });
     await act(async () => root.render(<NewBot />));

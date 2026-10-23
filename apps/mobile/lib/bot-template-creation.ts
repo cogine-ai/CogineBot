@@ -1,4 +1,5 @@
 import type { Bot } from "@rakazo/contracts";
+import { isBotCreationNotWritten } from "@rakazo/contracts";
 import { BotCreationError, createBotCreation } from "@rakazo/core";
 import type { MobileMe } from "./api";
 import { captureApiRequestContext, rpc } from "./api";
@@ -61,8 +62,7 @@ export async function mobileBotCreation(scope: MobileScope, isMounted: () => boo
         globalThis.crypto?.randomUUID?.() ??
         `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`,
       isCurrent,
-      // RPC errors can follow a committed write; only the shared local schema proves prewrite refusal.
-      isAmbiguous: () => true,
+      isAmbiguous: (error) => !isBotCreationNotWritten(error),
     }),
   };
 }

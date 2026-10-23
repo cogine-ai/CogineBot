@@ -1,3 +1,4 @@
+import { isBotCreationNotWritten } from "@rakazo/contracts";
 import { createBotCreation, createBotTemplateExamples } from "@rakazo/core";
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { newClientId } from "./client-id";
@@ -70,8 +71,7 @@ export function useBotCreationEditor(input: {
       },
       makeNonce: () => newClientId(),
       isCurrent,
-      // RPC failure alone cannot prove that a server write never happened.
-      isAmbiguous: () => true,
+      isAmbiguous: (error) => !isBotCreationNotWritten(error),
     });
     return { creation, isCurrent };
   }, [binding]);

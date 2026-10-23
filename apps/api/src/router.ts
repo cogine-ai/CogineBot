@@ -144,6 +144,7 @@ import type {
 import {
   ATTACHMENT_MAX_BYTES,
   appContract,
+  BOT_CREATION_NOT_WRITTEN_REASON,
   BOT_INSTRUCTIONS_CONFLICT_REASON,
   BotSecretAuth,
   ComputerCommandSchema,
@@ -203,6 +204,7 @@ import {
   listBoards,
   listSpaceBackupModels,
   listTicketComments,
+  lockBotCreationIntro,
   lockOwnedGroup,
   newestModelCredentialOrder,
   newestVoiceCredentialOrder,
@@ -817,6 +819,9 @@ export async function enqueueBotIntroRun(deps: RouterDeps, actor: Actor, bot: Bo
   try {
     run = await deps.prisma.$transaction(async (tx) => {
       if (where) {
+        // Serialize this intent with archive without adding a Bot row lock
+        // ahead of the Computer/Run locks used by other lifecycle operations.
+        await lockBotCreationIntro(tx, bot.id);
         const current = await tx.bot.findFirst({
           where: {
             id: bot.id,
@@ -1714,6 +1719,11 @@ export function createRouter(deps: RouterDeps) {
             ...normalizeCreateBotProfile(input),
           });
         } catch (error) {
+          if (error instanceof ComputerLimitError && isBotCreationSpawnKey(input.spawnKey))
+            throw new ORPCError("BAD_REQUEST", {
+              message: error.message,
+              data: { reason: BOT_CREATION_NOT_WRITTEN_REASON },
+            });
           throw mapSpaceLifecycleError(error);
         }
         await enqueueBotIntroRun(deps, context.actor, bot).catch((error) => {

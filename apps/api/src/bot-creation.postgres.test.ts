@@ -1,9 +1,14 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Bot, ModelCredential, Space } from "@rakazo/contracts";
-import { BOT_TEMPLATES, botTemplateDraft } from "@rakazo/contracts";
+import {
+  BOT_CREATION_NOT_WRITTEN_REASON,
+  BOT_TEMPLATES,
+  botTemplateDraft,
+} from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -27,6 +32,13 @@ describePostgres("bot creation intent HTTP acceptance", () => {
   const enqueue = vi.fn(async (_job: { name: string; payload: unknown }) => undefined);
   let failRunCreate = false;
   const runErrors: Array<{ code?: unknown; meta?: unknown }> = [];
+  const lifecycleQueryErrors: Array<{ code?: unknown; meta?: unknown }> = [];
+  const requestKind = new AsyncLocalStorage<"intro" | "archive" | "switch">();
+  let afterIntroRead: (() => Promise<void>) | undefined;
+  let afterArchiveSnapshot: (() => Promise<void>) | undefined;
+  let beforeIntentLock: ((kind: "intro" | "archive") => void) | undefined;
+  let afterSwitchComputerLock: (() => Promise<void>) | undefined;
+  let afterArchiveIntentLock: (() => void) | undefined;
 
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "bot-creation-acceptance-"));
@@ -34,7 +46,45 @@ describePostgres("bot creation intent HTTP acceptance", () => {
     database = createDb(process.env.DATABASE_URL!);
     const instrumented = database.prisma.$extends({
       query: {
+        async $allOperations({ model, operation, args, query }) {
+          const kind = requestKind.getStore();
+          const sql = args as { sql?: string; strings?: readonly string[] };
+          const text = sql.sql ?? sql.strings?.join("") ?? "";
+          const intentLock = /pg_advisory_xact_lock\(hashtextextended\([\s\S]*, 2\)\)/.test(text);
+          if (
+            !model &&
+            operation === "$queryRaw" &&
+            (kind === "intro" || kind === "archive") &&
+            intentLock
+          )
+            beforeIntentLock?.(kind);
+          const result = await query(args).catch((error: { code?: unknown; meta?: unknown }) => {
+            if (kind === "archive" || kind === "switch")
+              lifecycleQueryErrors.push({ code: error.code, meta: error.meta });
+            throw error;
+          });
+          if (!model && operation === "$queryRaw") {
+            if (kind === "archive" && intentLock) afterArchiveIntentLock?.();
+            if (kind === "switch" && /FROM computers[\s\S]*FOR UPDATE/.test(text))
+              await afterSwitchComputerLock?.();
+          }
+          return result;
+        },
+        bot: {
+          async findFirst({ args, query }) {
+            const result = await query(args);
+            if (requestKind.getStore() === "intro" && args.where?.spawnKey)
+              await afterIntroRead?.();
+            return result;
+          },
+        },
         run: {
+          async findMany({ args, query }) {
+            const result = await query(args);
+            if (requestKind.getStore() === "archive" && args.where?.botId)
+              await afterArchiveSnapshot?.();
+            return result;
+          },
           async create({ args, query }) {
             if (failRunCreate) throw new Error("Synthetic Run persistence unavailable");
             try {
@@ -139,6 +189,265 @@ describePostgres("bot creation intent HTTP acceptance", () => {
   function runs(botId: string) {
     return database.prisma.run.findMany({ where: { botId, trigger: "created" } });
   }
+  function signal() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+  async function botWithoutIntro(
+    draft: Omit<ReturnType<typeof input>, "computerMode"> & { computerMode: "team" | "dedicated" },
+  ) {
+    failRunCreate = true;
+    try {
+      return await rpc<Bot>(cookie, "bots/create", draft);
+    } finally {
+      failRunCreate = false;
+    }
+  }
+  async function expectArchivedWithCancelledIntro(botId: string) {
+    const archived = await database.prisma.bot.findUniqueOrThrow({ where: { id: botId } });
+    expect(archived.archivedAt).not.toBeNull();
+    const intro = await runs(botId);
+    expect(intro).toEqual([expect.objectContaining({ status: "cancelled" })]);
+    expect(intro[0]!.completedAt!.getTime()).toBeGreaterThanOrEqual(intro[0]!.createdAt.getTime());
+    const task = await database.prisma.task.findUniqueOrThrow({ where: { id: intro[0]!.taskId! } });
+    expect(task).toMatchObject({ status: "cancelled" });
+    const requestCount = model.requests.length;
+    await handles.executor.continueRun(intro[0]!.id, "offline-late-worker");
+    expect(await database.prisma.attempt.count({ where: { runId: intro[0]!.id } })).toBe(0);
+    expect(model.requests).toHaveLength(requestCount);
+    expect(await runs(botId)).toEqual(intro);
+    expect(await database.prisma.task.findUniqueOrThrow({ where: { id: task.id } })).toEqual(task);
+    expect(await database.prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toEqual(archived);
+  }
+
+  it("cancels the intro when its active read precedes archival", async () => {
+    const draft = input();
+    const bot = await botWithoutIntro(draft);
+    const read = signal();
+    const releaseRead = signal();
+    const archiveLock = signal();
+    afterIntroRead = async () => {
+      read.resolve();
+      await releaseRead.promise;
+    };
+    beforeIntentLock = (kind) => {
+      if (kind === "archive") archiveLock.resolve();
+    };
+    const replay = requestKind.run("intro", () => rpc<Bot>(cookie, "bots/create", draft));
+    let archive: Promise<unknown> | undefined;
+    try {
+      await read.promise;
+      archive = requestKind.run("archive", () => rpc(cookie, "bots/archive", { botId: bot.id }));
+      // A cooperating archiver waits for the intro's creation mutex. Without that
+      // protocol it commits first, exposing the stale active read deterministically.
+      await Promise.race([archive, archiveLock.promise]);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      releaseRead.resolve();
+      await Promise.all([replay, archive]);
+      await expectArchivedWithCancelledIntro(bot.id);
+    } finally {
+      releaseRead.resolve();
+      afterIntroRead = undefined;
+      beforeIntentLock = undefined;
+      await Promise.allSettled([replay, ...(archive ? [archive] : [])]);
+    }
+  });
+
+  it("takes the archive snapshot before allowing a competing intro", async () => {
+    const draft = input();
+    const bot = await botWithoutIntro(draft);
+    const snapshot = signal();
+    const releaseSnapshot = signal();
+    const introLock = signal();
+    afterArchiveSnapshot = async () => {
+      snapshot.resolve();
+      await releaseSnapshot.promise;
+    };
+    beforeIntentLock = (kind) => {
+      if (kind === "intro") introLock.resolve();
+    };
+    const archive = requestKind.run("archive", () =>
+      rpc(cookie, "bots/archive", { botId: bot.id }),
+    );
+    let replay: Promise<Bot> | undefined;
+    try {
+      await snapshot.promise;
+      replay = requestKind.run("intro", () => rpc<Bot>(cookie, "bots/create", draft));
+      // Before serialization, the intro commits after the now-stale snapshot.
+      // With serialization it must wait for the archiver that owns the creation mutex.
+      await Promise.race([replay, introLock.promise]);
+      releaseSnapshot.resolve();
+      await Promise.all([archive, replay]);
+      expect(
+        (await database.prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).archivedAt,
+      ).not.toBeNull();
+      expect(await runs(bot.id)).toEqual([]);
+      expect(await database.prisma.task.count({ where: { botId: bot.id } })).toBe(0);
+    } finally {
+      releaseSnapshot.resolve();
+      afterArchiveSnapshot = undefined;
+      beforeIntentLock = undefined;
+      await Promise.allSettled([archive, ...(replay ? [replay] : [])]);
+    }
+  });
+
+  it("archives while an existing Task creation holds the Bot foreign-key lock", async () => {
+    const bot = await rpc<Bot>(cookie, "bots/create", input());
+    const inserted = signal();
+    const release = signal();
+    const task = database.prisma.$transaction(async (tx) => {
+      await tx.task.create({
+        data: {
+          ...actor,
+          botId: bot.id,
+          threadId: bot.threadId,
+          prompt: "Foreign-key lock compatibility probe",
+          status: "queued",
+        },
+      });
+      inserted.resolve();
+      await release.promise;
+    });
+    try {
+      await inserted.promise;
+      await rpc(cookie, "bots/archive", { botId: bot.id });
+      await expectArchivedWithCancelledIntro(bot.id);
+    } finally {
+      release.resolve();
+      await task;
+    }
+  });
+
+  it("archives a stopped private computer while its mode switch holds the Computer lock", async () => {
+    const bot = await botWithoutIntro({ ...input(), computerMode: "dedicated" });
+    const stored = await database.prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      include: { computer: true },
+    });
+    expect(stored.computer).toMatchObject({
+      scope: "dedicated",
+      state: "stopped",
+      maintenanceId: null,
+    });
+    expect(stored.computerSwitching).toBe(false);
+    const computerLocked = signal();
+    const releaseComputer = signal();
+    const archiveLocked = signal();
+    const errorsBefore = lifecycleQueryErrors.length;
+    afterSwitchComputerLock = async () => {
+      computerLocked.resolve();
+      await releaseComputer.promise;
+    };
+    afterArchiveIntentLock = () => archiveLocked.resolve();
+    const switching = requestKind.run("switch", () =>
+      raw(cookie, "bots/setComputer", { botId: bot.id, mode: "team" }),
+    );
+    let archive: Promise<Response> | undefined;
+    try {
+      await computerLocked.promise;
+      archive = requestKind.run("archive", () => raw(cookie, "bots/archive", { botId: bot.id }));
+      await archiveLocked.promise;
+      releaseComputer.resolve();
+      const [switched, archived] = await Promise.all([switching, archive]);
+      expect(lifecycleQueryErrors.slice(errorsBefore)).toEqual([]);
+      expect({ switch: switched.status, archive: archived.status }).toEqual({
+        switch: 200,
+        archive: 200,
+      });
+      const current = await database.prisma.bot.findUniqueOrThrow({
+        where: { id: bot.id },
+        include: { computer: true },
+      });
+      expect(current).toMatchObject({ computerSwitching: false, computer: { scope: "team" } });
+      expect(current.archivedAt).not.toBeNull();
+      expect(await runs(bot.id)).toEqual([]);
+    } finally {
+      releaseComputer.resolve();
+      afterSwitchComputerLock = undefined;
+      afterArchiveIntentLock = undefined;
+      await Promise.allSettled([switching, ...(archive ? [archive] : [])]);
+    }
+  });
+
+  it.each(["creation-intent", "legacy"] as const)(
+    "preserves the %s quota-rejected creation error and rollback contract",
+    async (kind) => {
+      await rpc<Bot>(cookie, "bots/create", input());
+      const draft = {
+        ...input(kind === "legacy" ? `legacy-quota:${randomUUID()}` : undefined),
+        computerMode: "dedicated",
+      };
+      const counts = () =>
+        Promise.all([
+          database.prisma.bot.count({ where: actor }),
+          database.prisma.thread.count({ where: actor }),
+          database.prisma.task.count({ where: actor }),
+          database.prisma.run.count({ where: actor }),
+          database.prisma.computer.count({ where: actor }),
+          database.prisma.browserProfile.count({ where: actor }),
+          database.prisma.memoryDocument.count({ where: actor }),
+        ]);
+      const before = await counts();
+      const calls = enqueue.mock.calls.length;
+      const limit = process.env.SANDBOX_MAX_COMPUTERS_PER_USER;
+      process.env.SANDBOX_MAX_COMPUTERS_PER_USER = "1";
+      try {
+        const response = await raw(cookie, "bots/create", draft);
+        expect(response.status).toBe(400);
+        const error = (await response.json()) as {
+          json: { code: string; data?: { reason?: string } };
+        };
+        expect(error.json.code).toBe("BAD_REQUEST");
+        if (kind === "creation-intent")
+          expect(error.json.data?.reason).toBe(BOT_CREATION_NOT_WRITTEN_REASON);
+        else expect(error.json.data?.reason).toBeUndefined();
+        expect(await counts()).toEqual(before);
+        expect(
+          await database.prisma.bot.findUnique({
+            where: { spaceId_spawnKey: { spaceId: actor.spaceId, spawnKey: draft.spawnKey } },
+          }),
+        ).toBeNull();
+        expect(enqueue.mock.calls).toHaveLength(calls);
+      } finally {
+        if (limit === undefined) delete process.env.SANDBOX_MAX_COMPUTERS_PER_USER;
+        else process.env.SANDBOX_MAX_COMPUTERS_PER_USER = limit;
+      }
+    },
+  );
+
+  it("recovers an existing creation receipt when quota blocks its missing team Computer", async () => {
+    const space = await rpc<Space>(cookie, "spaces/create", { name: "Quota receipt recovery" });
+    const draft = { ...input(), computerMode: "dedicated" };
+    const original = await rpc<Bot>(cookie, "bots/create", draft, space.id);
+    const intro = await runs(original.id);
+    expect(intro).toHaveLength(1);
+    const teamKey = `team:${space.id}`;
+    const team = await database.prisma.computer.findUniqueOrThrow({ where: { scopeKey: teamKey } });
+    expect(await database.prisma.bot.count({ where: { computerId: team.id } })).toBe(0);
+    await database.prisma.computer.delete({ where: { id: team.id } });
+    const calls = enqueue.mock.calls.length;
+    const limit = process.env.SANDBOX_MAX_COMPUTERS_PER_USER;
+    process.env.SANDBOX_MAX_COMPUTERS_PER_USER = "1";
+    try {
+      const recovered = await rpc<Bot>(cookie, "bots/create", draft, space.id);
+      expect(recovered.id).toBe(original.id);
+      expect(recovered.archivedAt).toBeNull();
+      expect(await runs(original.id)).toEqual(intro);
+      expect(await database.prisma.task.count({ where: { botId: original.id } })).toBe(1);
+      expect(
+        await database.prisma.computer.findUnique({ where: { scopeKey: teamKey } }),
+      ).toBeNull();
+      expect(enqueue.mock.calls.slice(calls)).toContainEqual([
+        expect.objectContaining({ payload: { runId: intro[0]!.id } }),
+      ]);
+    } finally {
+      if (limit === undefined) delete process.env.SANDBOX_MAX_COMPUTERS_PER_USER;
+      else process.env.SANDBOX_MAX_COMPUTERS_PER_USER = limit;
+    }
+  });
 
   it("uses the real Run nonce constraint and rolls back its failed Task", async () => {
     const bot = await rpc<Bot>(cookie, "bots/create", input());

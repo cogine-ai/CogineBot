@@ -373,6 +373,25 @@ export const BOT_TITLE_MAX_LENGTH = 500;
 export const BOT_DESCRIPTION_MAX_LENGTH = 4000;
 export const BOT_INSTRUCTIONS_MAX_LENGTH = 20000;
 
+export const BOT_CREATION_NOT_WRITTEN_REASON = "bot_create_not_written";
+
+/** The server rolled back this creation call; earlier uncertain calls may still have written. */
+export function isBotCreationNotWritten(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    error.status === 400 &&
+    "code" in error &&
+    error.code === "BAD_REQUEST" &&
+    "data" in error &&
+    typeof error.data === "object" &&
+    error.data !== null &&
+    "reason" in error.data &&
+    error.data.reason === BOT_CREATION_NOT_WRITTEN_REASON
+  );
+}
+
 export const CreateBotInput = z.object({
   name: z.string().trim().min(1).max(BOT_NAME_MAX_LENGTH),
   title: z.string().max(BOT_TITLE_MAX_LENGTH).default(""),
