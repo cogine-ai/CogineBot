@@ -8,7 +8,12 @@ type GroupRow = {
   threadId: string;
   members: Array<{ botId: string; name: string }>;
 };
-type UpdatePayload = { groupId: string; name?: string; botIds?: string[] };
+type UpdatePayload = {
+  groupId: string;
+  name?: string;
+  botIds?: string[];
+  expectedBotIds?: string[];
+};
 type BrowserError = { kind: string; message: string; url?: string; expected: boolean };
 
 const memberNames = [
@@ -19,6 +24,10 @@ const memberNames = [
   "Member Epsilon",
   "Member Zeta",
   "Member Eta with a longer English name for a familiar and thoughtful companion",
+  "Member Theta",
+  "Member Iota",
+  "Member Kappa",
+  "Member Lambda",
 ];
 const draftText = "Keep this thought.\n安排慢一点。";
 const draftFile = "成员管理草稿 Mixed notes.txt";
@@ -102,7 +111,7 @@ async function fixture(page: Page, label: string, distinctPortraits = false) {
       : undefined;
     const bot = await rpc<{ id: string }>(page, "bots/create", {
       name,
-      title: "",
+      title: index === 2 ? "Travel coordinator" : "",
       description: "",
       notifyOnFinish: true,
       color,
@@ -139,7 +148,10 @@ async function openSettings(page: Page) {
 }
 
 async function toggleMember(page: Page, index: number) {
-  await settings(page).getByRole("button", { name: memberNames[index], exact: true }).click();
+  const member = settings(page).getByRole("button", { name: memberNames[index], exact: true });
+  if (!(await member.isVisible()))
+    await settings(page).getByRole("button", { name: "Show all", exact: true }).click();
+  await member.click();
 }
 
 async function expectSelected(page: Page, indexes: number[]) {
@@ -282,9 +294,12 @@ test("member changes refresh portraits in order and preserve the Space-wide ment
   await expectDraft(page);
   // Group member updates must not change the existing Space-wide @ chooser.
   await composer(page).fill("@Member ");
-  for (const name of memberNames) {
+  await expect(page.getByRole("option")).toHaveCount(10);
+  for (const name of memberNames.slice(0, 10)) {
     await expect(page.getByRole("option", { name: `@${name}`, exact: true })).toBeVisible();
   }
+  await composer(page).fill("@Member Lambda");
+  await expect(page.getByRole("option", { name: "@Member Lambda", exact: true })).toBeVisible();
   await composer(page).fill(draftText);
   await expectDraft(page);
   await captureScreenshot(page, testInfo, "members-alpha-gamma-and-draft");
@@ -343,62 +358,84 @@ test("group member bounds and repeated unchanged saves keep distinct members", a
   await toggleMember(page, 1);
   await expect(settings(page).getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await toggleMember(page, 1);
-  for (const index of [2, 3, 4, 5]) await toggleMember(page, index);
-  await toggleMember(page, 6);
-  await expectSelected(page, [0, 1, 2, 3, 4, 5]);
+  for (const index of [2, 3, 4, 5, 6, 7, 8, 9]) await toggleMember(page, index);
+  await expect(
+    settings(page).getByRole("button", { name: memberNames[10], exact: true }),
+  ).toBeDisabled();
+  await expectSelected(page, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const name = settings(page).getByRole("textbox", { name: "Name", exact: true });
   await name.fill("");
   await expect(settings(page).getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await name.fill(group.name);
   await saveSettings(page);
-  await expectServerMembers(page, group.id, ids.slice(0, 6));
-  await expectAvatars(page, group.id, 6);
+  await expectServerMembers(page, group.id, ids.slice(0, 10));
+  await expectAvatars(page, group.id, 10);
   await openSettings(page);
   const request = page.waitForRequest((request) => request.url().endsWith("/rpc/groups/update"));
   await saveSettings(page);
   expect((await request).postDataJSON()).toEqual({ json: { groupId: group.id } });
-  await expectServerMembers(page, group.id, ids.slice(0, 6));
+  await expectServerMembers(page, group.id, ids.slice(0, 10));
   await expectDraft(page);
 });
 
 for (const fault of ["rejected", "response-lost"] as const) {
-  test(`member save ${fault} retains edits and draft for a retry without duplicate members`, async ({
-    page,
-  }, testInfo) => {
-    const { ids, group } = await fixture(page, fault);
-    await addDraft(page);
-    await openSettings(page);
-    await toggleMember(page, 2);
-    expectedFaultByPage.set(page, new URL("/rpc/groups/update", page.url()).toString());
-    await page.route("**/rpc/groups/update", async (route) => {
-      if (fault === "rejected") {
-        await route.fulfill({
-          status: 500,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: { code: "INTERNAL_SERVER_ERROR", message: "Injected test rejection" },
-          }),
+  test(
+    fault === "response-lost"
+      ? "a lost member receipt is confirmed without another member write"
+      : "a rejected member save retains edits and draft for retry",
+    async ({ page }, testInfo) => {
+      const { ids, group } = await fixture(page, fault);
+      await addDraft(page);
+      await openSettings(page);
+      await toggleMember(page, 2);
+      expectedFaultByPage.set(page, new URL("/rpc/groups/update", page.url()).toString());
+      const updates: UpdatePayload[] = [];
+      await page.route("**/rpc/groups/update", async (route) => {
+        updates.push((route.request().postDataJSON() as { json: UpdatePayload }).json);
+        if (fault === "rejected") {
+          await route.fulfill({
+            status: 500,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "INTERNAL_SERVER_ERROR", message: "Injected test rejection" },
+            }),
+          });
+        } else {
+          const response = await route.fetch();
+          expect(response.status()).toBe(200);
+          await route.abort("failed");
+        }
+      });
+      await settings(page).getByRole("button", { name: "Save", exact: true }).click();
+      if (fault === "response-lost") {
+        await expect(settings(page)).toHaveAttribute("data-panel", "closed");
+        await expectServerMembers(page, group.id, ids.slice(0, 3));
+        await expectAvatars(page, group.id, 3);
+        expect(updates).toHaveLength(1);
+        expect(updates[0]).toMatchObject({
+          botIds: ids.slice(0, 3),
+          expectedBotIds: ids.slice(0, 2),
         });
-      } else {
-        const response = await route.fetch();
-        expect(response.status()).toBe(200);
-        await route.abort("failed");
+        await expectDraft(page);
+        await captureScreenshot(page, testInfo, "a4-lost-member-receipt-confirmed");
+        await page.unroute("**/rpc/groups/update");
+        expectedFaultByPage.delete(page);
+        return;
       }
-    });
-    await settings(page).getByRole("button", { name: "Save", exact: true }).click();
-    await expect(settings(page).getByRole("alert")).toBeVisible();
-    await expect(settings(page).getByRole("button", { name: "Save", exact: true })).toBeEnabled();
-    await expectSelected(page, [0, 1, 2]);
-    await expectDraft(page);
-    await expectServerMembers(page, group.id, ids.slice(0, fault === "rejected" ? 2 : 3));
-    await captureScreenshot(page, testInfo, `member-save-${fault}-retained`);
-    await page.unroute("**/rpc/groups/update");
-    expectedFaultByPage.delete(page);
-    await saveSettings(page);
-    await expectServerMembers(page, group.id, ids.slice(0, 3));
-    await expectAvatars(page, group.id, 3);
-    await expectDraft(page);
-  });
+      await expect(settings(page).getByRole("alert")).toBeVisible();
+      await expect(settings(page).getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+      await expectSelected(page, [0, 1, 2]);
+      await expectDraft(page);
+      await expectServerMembers(page, group.id, ids.slice(0, fault === "rejected" ? 2 : 3));
+      await captureScreenshot(page, testInfo, `member-save-${fault}-retained`);
+      await page.unroute("**/rpc/groups/update");
+      expectedFaultByPage.delete(page);
+      await saveSettings(page);
+      await expectServerMembers(page, group.id, ids.slice(0, 3));
+      await expectAvatars(page, group.id, 3);
+      await expectDraft(page);
+    },
+  );
 }
 
 test("pending member save disables edits and rejects duplicate save requests", async ({ page }) => {
@@ -643,5 +680,179 @@ test("a delayed inline rename response cannot restore members replaced by a newe
   } finally {
     release();
     await page.unroute("**/rpc/groups/update", handler);
+  }
+});
+
+test("member filters match titles and keep deselections available when collapsed", async ({
+  page,
+}, testInfo) => {
+  await fixture(page, "filter");
+  await openSettings(page);
+  await expect(
+    settings(page).getByRole("button", { name: memberNames[2], exact: true }),
+  ).toHaveCount(0);
+  await settings(page).getByRole("button", { name: "Show all", exact: true }).click();
+  const filter = settings(page).getByRole("textbox", { name: "Filter bots", exact: true });
+  await filter.fill(" COORDINATOR ");
+  await expect(
+    settings(page).getByRole("button", { name: memberNames[2], exact: true }),
+  ).toBeVisible();
+  await expect(
+    settings(page).getByRole("button", { name: memberNames[0], exact: true }),
+  ).toHaveCount(0);
+  await toggleMember(page, 2);
+  await filter.fill("member BETA");
+  await toggleMember(page, 1);
+  await filter.fill("no matching member");
+  await expect(settings(page)).toContainText("No bots match");
+  await settings(page).getByRole("button", { name: "Show selected", exact: true }).click();
+  await expect(filter).toHaveCount(0);
+  await expect(
+    settings(page).getByRole("button", { name: memberNames[1], exact: true }),
+  ).toBeVisible();
+  await toggleMember(page, 1);
+  await expectSelected(page, [0, 1, 2]);
+  await captureScreenshot(page, testInfo, "a4-selected-members-after-filter");
+});
+
+test("a stale member editor keeps its draft and cannot overwrite another confirmed roster", async ({
+  page,
+}, testInfo) => {
+  const { ids, group } = await fixture(page, "conflict");
+  await addDraft(page);
+  await openSettings(page);
+  await toggleMember(page, 2);
+  await rpc(page, "groups/update", {
+    groupId: group.id,
+    botIds: [ids[0], ids[3]],
+    expectedBotIds: ids.slice(0, 2),
+  });
+  expectedFaultByPage.set(page, new URL("/rpc/groups/update", page.url()).toString());
+  await settings(page).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(settings(page).getByRole("alert")).toContainText("Group members changed");
+  await expectSelected(page, [0, 1, 2]);
+  const saved = await expectServerMembers(page, group.id, [ids[0]!, ids[3]!]);
+  expect(saved.members.map((member) => member.botId)).toEqual([ids[0], ids[3]]);
+  await expectDraft(page);
+  await captureScreenshot(page, testInfo, "a4-conflicting-member-edit-retained");
+  expectedFaultByPage.delete(page);
+});
+
+test("a failed receipt read can be retried without replaying the committed member change", async ({
+  page,
+}) => {
+  const { ids, group } = await fixture(page, "receipt-read-retry");
+  await addDraft(page);
+  await openSettings(page);
+  await toggleMember(page, 2);
+  let updates = 0;
+  let reads = 0;
+  expectedFaultByPage.set(page, new URL("/rpc/groups/update", page.url()).toString());
+  await page.route("**/rpc/groups/update", async (route) => {
+    updates += 1;
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    await route.abort("failed");
+  });
+  await page.route("**/rpc/groups/get", async (route) => {
+    reads += 1;
+    if (reads === 1)
+      await route.fulfill({ status: 200, contentType: "application/json", body: "" });
+    else await route.continue();
+  });
+  await settings(page).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(settings(page).getByRole("alert")).toBeVisible();
+  await expectSelected(page, [0, 1, 2]);
+  await expectDraft(page);
+  await saveSettings(page);
+  expect(updates).toBe(1);
+  expect(reads).toBeGreaterThanOrEqual(2);
+  const saved = await expectServerMembers(page, group.id, ids.slice(0, 3));
+  expect(saved.members.map((member) => member.botId)).toEqual(ids.slice(0, 3));
+  await expectDraft(page);
+  await page.unroute("**/rpc/groups/update");
+  await page.unroute("**/rpc/groups/get");
+  expectedFaultByPage.delete(page);
+});
+
+test("receipt recovery refuses a different authoritative roster without rebasing the editor", async ({
+  page,
+}) => {
+  const { ids, group } = await fixture(page, "receipt-read-conflict");
+  await addDraft(page);
+  await openSettings(page);
+  await toggleMember(page, 2);
+  let updates = 0;
+  expectedFaultByPage.set(page, new URL("/rpc/groups/update", page.url()).toString());
+  await page.route("**/rpc/groups/update", async (route) => {
+    updates += 1;
+    expect((await route.fetch()).status()).toBe(200);
+    expect(
+      (
+        await route.fetch({
+          postData: JSON.stringify({ json: { groupId: group.id, botIds: [ids[0], ids[3]] } }),
+        })
+      ).status(),
+    ).toBe(200);
+    await route.abort("failed");
+  });
+  await settings(page).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(settings(page).getByRole("alert")).toBeVisible();
+  await expectSelected(page, [0, 1, 2]);
+  await settings(page).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(settings(page).getByRole("alert")).toBeVisible();
+  expect(updates).toBe(1);
+  await expectServerMembers(page, group.id, [ids[0]!, ids[3]!]);
+  await expectDraft(page);
+  await page.unroute("**/rpc/groups/update");
+  expectedFaultByPage.delete(page);
+});
+
+test("a receipt read completing after reopening cannot close the new editing session", async ({
+  page,
+}) => {
+  await fixture(page, "receipt-new-session");
+  await addDraft(page);
+  await openSettings(page);
+  await toggleMember(page, 2);
+  let release!: () => void;
+  let arrived!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const readArrived = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  expectedFaultByPage.set(page, new URL("/rpc/groups/update", page.url()).toString());
+  await page.route("**/rpc/groups/update", async (route) => {
+    expect((await route.fetch()).status()).toBe(200);
+    await route.abort("failed");
+  });
+  await page.route("**/rpc/groups/get", async (route) => {
+    const response = await route.fetch();
+    arrived();
+    await gate;
+    await route.fulfill({ response });
+  });
+  try {
+    await settings(page).getByRole("button", { name: "Save", exact: true }).click();
+    await readArrived;
+    await settings(page).getByRole("button", { name: "Close panel", exact: true }).click();
+    await openSettings(page);
+    const name = settings(page).getByRole("textbox", { name: "Name", exact: true });
+    await name.fill("New editing session");
+    const delivered = page.waitForResponse((response) =>
+      response.url().endsWith("/rpc/groups/get"),
+    );
+    release();
+    await delivered;
+    await expect(settings(page)).toHaveAttribute("data-panel", "group-settings");
+    await expect(name).toHaveValue("New editing session");
+    await expectDraft(page);
+  } finally {
+    release();
+    await page.unroute("**/rpc/groups/update");
+    await page.unroute("**/rpc/groups/get");
+    expectedFaultByPage.delete(page);
   }
 });

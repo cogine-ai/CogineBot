@@ -3531,6 +3531,7 @@ msgstr "No bot activity yet."
 msgid "No bots"
 msgstr "No bots"
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-picker.tsx
 msgid "No bots match"
 msgstr "No bots match"
@@ -6021,3 +6022,36 @@ msgstr "Bot model"
 #: src/pages/shell/bot-panel.tsx
 msgid "Use updated connection"
 msgstr "Use updated connection"
+
+#. placeholder {0}: selected.length
+#: src/pages/GroupPanel.tsx
+msgid "Members ({0})"
+msgstr "Members ({0})"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show selected"
+msgstr "Show selected"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show all"
+msgstr "Show all"
+
+#: src/pages/GroupPanel.tsx
+msgid "Filter bots"
+msgstr "Filter bots"
+
+#: src/pages/GroupPanel.tsx
+msgid "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}"
+msgstr "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}"
+
+#: src/pages/GroupPanel.tsx
+msgid "No members yet"
+msgstr "No members yet"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Confirmations"
+msgstr "Confirmations"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Space"
+msgstr "Space"

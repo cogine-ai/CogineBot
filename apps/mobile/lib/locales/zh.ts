@@ -1,4 +1,10 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Members ({count})": "成员（{count}）",
+  "Show selected": "仅显示已选",
+  "Show all": "显示全部",
+  "Filter bots": "筛选机器人",
+  "Pick {min}–{max}": "选择 {min}–{max} 位成员",
+  "No members yet": "暂无成员",
   Routines: "例行任务",
   Profile: "资料",
   "Could not load routines": "无法加载例行任务",

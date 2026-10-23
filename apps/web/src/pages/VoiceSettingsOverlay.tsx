@@ -13,20 +13,35 @@ import {
   NativeSelectOption,
 } from "@rakazo/ui-web";
 import { XIcon } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { rpc } from "../lib/rpc";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
 
-export function VoiceSettingsOverlay({
-  onClose,
-  embedded = false,
-  onBusyChange,
-}: {
+type VoiceSettingsProps = {
   onClose: () => void;
   /** Render panel body only for the shared Settings shell. */
   embedded?: boolean;
   onBusyChange?: (busy: boolean) => void;
-}) {
+};
+
+export function VoiceSettingsOverlay(props: VoiceSettingsProps) {
+  const spaceId = useBoundSpaceId();
+  return <VoiceSettingsForm key={spaceId ?? "selected"} {...props} />;
+}
+
+function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSettingsProps) {
+  const rpc = useSpaceRpc();
+  const spaceId = useBoundSpaceId();
+  const scopeCurrent = useSpaceRpcCurrent();
+  const binding = useMemo(() => ({ controller: new AbortController() }), [rpc, scopeCurrent]);
+  const committed = useRef<typeof binding | null>(null);
+  const pendingRef = useRef<string | null>(null);
+  const refreshGeneration = useRef(0);
+  const onBusyChangeRef = useRef(onBusyChange);
+  onBusyChangeRef.current = onBusyChange;
+  const current = () =>
+    committed.current === binding && scopeCurrent() && !binding.controller.signal.aborted;
+  const requestOptions = () => ({ signal: binding.controller.signal });
   const { t } = useLingui();
   const apiKeyId = useId();
   const voiceSelectId = useId();
@@ -44,47 +59,79 @@ export function VoiceSettingsOverlay({
   const [pending, setPending] = useState<"connect" | "disconnect" | "voice" | "test" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const busy = pending !== null;
 
-  useEffect(() => {
-    return () => onBusyChange?.(false);
-  }, [onBusyChange]);
+  useLayoutEffect(() => {
+    if (binding.controller.signal.aborted) binding.controller = new AbortController();
+    committed.current = binding;
+    return () => {
+      if (committed.current === binding) committed.current = null;
+      refreshGeneration.current += 1;
+      binding.controller.abort();
+      onBusyChangeRef.current?.(false);
+    };
+  }, [binding]);
 
   function markPending(next: "connect" | "disconnect" | "voice" | "test" | null) {
+    if (!current()) return;
+    pendingRef.current = next;
     setPending(next);
-    onBusyChange?.(next !== null);
+    onBusyChangeRef.current?.(next !== null);
   }
 
-  async function refresh(nextProvider?: string) {
-    const [nextCatalog, nextCredentials, nextStatus] = await Promise.all([
-      rpc.voice.catalog(),
-      rpc.voice.credentials(),
-      rpc.voice.status(),
-    ]);
-    const selected = nextProvider || provider || nextStatus.provider || nextCatalog[0]?.id || "";
-    setCatalog(nextCatalog);
-    setCredentials(nextCredentials);
-    setStatus(nextStatus);
-    setProvider(selected);
-    const cred = nextCredentials.find((entry) => entry.provider === selected);
-    const activeVoice = cred?.voiceId ?? "";
-    setVoiceId(activeVoice);
-    setSpeechModel(cred?.speechModel ?? "");
-    if (cred) {
-      const listed = await rpc.voice.voices({ provider: selected });
+  async function refresh(nextProvider?: string): Promise<boolean> {
+    const generation = ++refreshGeneration.current;
+    const live = () => current() && generation === refreshGeneration.current;
+    try {
+      const [nextCatalog, nextCredentials, nextStatus] = await Promise.all([
+        rpc.voice.catalog({}, requestOptions()),
+        rpc.voice.credentials({}, requestOptions()),
+        rpc.voice.status({}, requestOptions()),
+      ]);
+      if (!live()) return false;
+      const selected = nextProvider || provider || nextStatus.provider || nextCatalog[0]?.id || "";
+      const cred = nextCredentials.find((entry) => entry.provider === selected);
+      const listed = cred ? await rpc.voice.voices({ provider: selected }, requestOptions()) : [];
+      if (!live()) return false;
+      setCatalog(nextCatalog);
+      setCredentials(nextCredentials);
+      setStatus(nextStatus);
+      setProvider(selected);
+      setVoiceId(cred?.voiceId || listed[0]?.id || "");
+      setSpeechModel(cred?.speechModel ?? "");
       setVoices(listed);
-      if (!activeVoice && listed[0]) setVoiceId(listed[0].id);
-    } else {
-      setVoices([]);
+      setLoadFailed(false);
+      return true;
+    } catch (error) {
+      if (live()) {
+        setError(errorText(error, t`Could not load voice settings`));
+        setLoadFailed(true);
+      }
+      return false;
     }
   }
 
   useEffect(() => {
-    void refresh()
-      .catch((err: unknown) => setError(errorText(err, t`Could not load voice settings`)))
-      .finally(() => setLoading(false));
-  }, []);
+    setLoading(true);
+    void refresh().finally(() => {
+      if (current()) setLoading(false);
+    });
+  }, [binding]);
+
+  async function retryLoad(nextProvider?: string) {
+    if (!current() || pendingRef.current !== null) return;
+    setError(null);
+    setNotice(null);
+    setApiKey("");
+    markPending("voice");
+    try {
+      await refresh(nextProvider);
+    } finally {
+      markPending(null);
+    }
+  }
 
   const selected = catalog.find((entry) => entry.id === provider) ?? catalog[0];
   const credential = credentials.find((entry) => entry.provider === provider);
@@ -94,21 +141,26 @@ export function VoiceSettingsOverlay({
   );
 
   async function connectKey() {
-    if (!selected || !apiKey.trim()) return;
+    if (!current() || pendingRef.current !== null || !selected || !apiKey.trim()) return;
     setError(null);
     setNotice(null);
     markPending("connect");
     try {
-      await rpc.voice.connect({
-        provider: selected.id,
-        apiKey: apiKey.trim(),
-        voiceId: voiceId || undefined,
-        ...(selected.id === "fish-audio" ? { speechModel: speechModel.trim() } : {}),
-      });
+      await rpc.voice.connect(
+        {
+          provider: selected.id,
+          apiKey: apiKey.trim(),
+          voiceId: voiceId || undefined,
+          ...(selected.id === "fish-audio" ? { speechModel: speechModel.trim() } : {}),
+        },
+        requestOptions(),
+      );
+      if (!current()) return;
       setApiKey("");
-      await refresh(selected.id);
+      if (!(await refresh(selected.id)) || !current()) return;
       setNotice(t`Connected ${selected.name}.`);
     } catch (err) {
+      if (!current()) return;
       setError(errorText(err, t`Could not connect this voice provider`));
     } finally {
       markPending(null);
@@ -116,15 +168,17 @@ export function VoiceSettingsOverlay({
   }
 
   async function disconnectProvider() {
-    if (!credential) return;
+    if (!current() || pendingRef.current !== null || !credential) return;
     setError(null);
     setNotice(null);
     markPending("disconnect");
     try {
-      await rpc.voice.disconnect({ provider: credential.provider });
+      await rpc.voice.disconnect({ provider: credential.provider }, requestOptions());
+      if (!current()) return;
       setApiKey("");
       await refresh(credential.provider);
     } catch (err) {
+      if (!current()) return;
       setError(errorText(err, t`Could not disconnect this voice provider`));
     } finally {
       markPending(null);
@@ -132,14 +186,17 @@ export function VoiceSettingsOverlay({
   }
 
   async function chooseVoice(nextVoiceId: string) {
+    if (!current() || pendingRef.current !== null) return;
     setVoiceId(nextVoiceId);
     if (!credential) return;
     markPending("voice");
     setError(null);
     try {
-      await rpc.voice.setVoice({ voiceId: nextVoiceId, provider: selected?.id });
+      await rpc.voice.setVoice({ voiceId: nextVoiceId, provider: selected?.id }, requestOptions());
+      if (!current()) return;
       await refresh(selected?.id);
     } catch (err) {
+      if (!current()) return;
       setError(errorText(err, t`Could not save that voice`));
     } finally {
       markPending(null);
@@ -147,7 +204,8 @@ export function VoiceSettingsOverlay({
   }
 
   async function saveSpeechModel() {
-    if (!credential || selected?.id !== "fish-audio") return;
+    if (!current() || pendingRef.current !== null || !credential || selected?.id !== "fish-audio")
+      return;
     const next = speechModel.trim();
     if (next === credential.speechModel) return;
     if (speechModelSave.current === next) return;
@@ -155,10 +213,15 @@ export function VoiceSettingsOverlay({
     setError(null);
     markPending("voice");
     try {
-      const saved = await rpc.voice.setSpeechModel({ provider: selected.id, speechModel: next });
+      const saved = await rpc.voice.setSpeechModel(
+        { provider: selected.id, speechModel: next },
+        requestOptions(),
+      );
+      if (!current()) return;
       setSpeechModel(saved.speechModel);
       setCredentials((current) => current.map((entry) => (entry.id === saved.id ? saved : entry)));
     } catch (err) {
+      if (!current()) return;
       setError(errorText(err, t`Could not save that speech model`));
     } finally {
       speechModelSave.current = null;
@@ -167,18 +230,26 @@ export function VoiceSettingsOverlay({
   }
 
   async function testVoice() {
+    if (!current() || pendingRef.current !== null) return;
     setError(null);
     setNotice(null);
     markPending("test");
     try {
       const { speaker } = await import("../lib/tts.js");
-      await speaker.speak(t`Hi, this is how I'll sound when I read replies out loud.`);
+      if (!current()) return;
+      await speaker.speak(t`Hi, this is how I'll sound when I read replies out loud.`, {
+        spaceId,
+        signal: binding.controller.signal,
+        isCurrent: current,
+      });
+      if (!current()) return;
       if (speaker.state.error) {
         setError(speaker.state.error);
         return;
       }
       setNotice(t`If you heard that, voice is ready.`);
     } catch (err) {
+      if (!current()) return;
       setError(errorText(err, t`Could not play a test clip`));
     } finally {
       markPending(null);
@@ -217,18 +288,7 @@ export function VoiceSettingsOverlay({
                   key={entry.id}
                   type="button"
                   disabled={busy}
-                  onClick={() => {
-                    setProvider(entry.id);
-                    setApiKey("");
-                    setError(null);
-                    setNotice(null);
-                    markPending("voice");
-                    void refresh(entry.id)
-                      .catch((err: unknown) =>
-                        setError(errorText(err, t`Could not load voice settings`)),
-                      )
-                      .finally(() => markPending(null));
-                  }}
+                  onClick={() => void retryLoad(entry.id)}
                   className={`flex w-full items-center gap-3 border-b border-border px-3.5 py-3 text-start transition-colors last:border-0 disabled:pointer-events-none disabled:opacity-50 ${
                     entry.id === provider ? "bg-muted" : "hover:bg-accent"
                   }`}
@@ -261,6 +321,16 @@ export function VoiceSettingsOverlay({
             </p>
           ) : null}
           {error ? <p className="mb-4 text-sm text-destructive">{error}</p> : null}
+          {loadFailed ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void retryLoad()}
+            >
+              <Trans>Retry</Trans>
+            </Button>
+          ) : null}
           {notice ? <p className="mb-4 text-sm text-success">{notice}</p> : null}
           {selected ? (
             <>

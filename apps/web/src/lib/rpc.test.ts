@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearSpaceSelection,
+  createSpaceRpc,
   currentSpaceSelectionGeneration,
+  rpc,
+  rpcForSpace,
   selectedSpaceId,
   selectSpace,
 } from "./rpc.js";
@@ -72,4 +75,58 @@ it("advances the selection generation across A to B to A and logout", () => {
   clearSpaceSelection();
   expect(selectedSpaceId()).toBeNull();
   expect(currentSpaceSelectionGeneration()).toBe(initial + 4);
+});
+
+describe("settings RPC target attribution", () => {
+  function setup() {
+    const stored = new Map([["rakazo:space-id", "space-a"]]);
+    const localStorage = {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    };
+    vi.stubGlobal("window", {
+      localStorage,
+      location: { origin: "https://example.test", pathname: "/app" },
+    });
+    const fetch = vi.fn(async (_request: Request, _init?: RequestInit) =>
+      Response.json({ json: {} }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    return {
+      stored,
+      localStorage,
+      fetch,
+      spaces: () =>
+        fetch.mock.calls.map((call) => new Headers(call[1]?.headers).get("x-rakazo-space-id")),
+    };
+  }
+  it("edits its explicit target without changing the selected conversation", async () => {
+    const h = setup();
+    await rpcForSpace("space-b").me();
+    await rpc.me();
+    expect(h.spaces()).toEqual(["space-b", "space-a"]);
+    expect(h.localStorage.setItem).not.toHaveBeenCalled();
+  });
+  it("keeps captured target, explicit override and abort signal through async followups", async () => {
+    const h = setup();
+    const controller = new AbortController();
+    const client = createSpaceRpc("space-b");
+    await client.me(undefined, { signal: controller.signal });
+    h.stored.set("rakazo:space-id", "space-c");
+    await client.me();
+    await client.me(undefined, { context: { spaceId: "space-d" } });
+    await client.me(undefined, { context: { spaceId: null } });
+    expect(h.spaces()).toEqual(["space-b", "space-b", "space-d", null]);
+    expect(h.fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+  });
+  it("does not dispatch a retained client after its settings owner expires", async () => {
+    const h = setup();
+    let current = true;
+    const client = createSpaceRpc("space-b", () => current);
+    await client.me();
+    current = false;
+    await expect(client.me()).rejects.toThrow();
+    expect(h.spaces()).toEqual(["space-b"]);
+  });
 });

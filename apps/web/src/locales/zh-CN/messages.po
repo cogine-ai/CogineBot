@@ -3531,9 +3531,10 @@ msgstr "还没有机器人活动。"
 msgid "No bots"
 msgstr ""
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-picker.tsx
 msgid "No bots match"
-msgstr ""
+msgstr "没有匹配的机器人"
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
@@ -6021,3 +6022,36 @@ msgstr "机器人模型"
 #: src/pages/shell/bot-panel.tsx
 msgid "Use updated connection"
 msgstr "使用更新后的连接"
+
+#. placeholder {0}: selected.length
+#: src/pages/GroupPanel.tsx
+msgid "Members ({0})"
+msgstr "成员（{0}）"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show selected"
+msgstr "仅显示已选"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show all"
+msgstr "显示全部"
+
+#: src/pages/GroupPanel.tsx
+msgid "Filter bots"
+msgstr "筛选机器人"
+
+#: src/pages/GroupPanel.tsx
+msgid "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}"
+msgstr "选择 {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} 位成员"
+
+#: src/pages/GroupPanel.tsx
+msgid "No members yet"
+msgstr "暂无成员"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Confirmations"
+msgstr "操作确认"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Space"
+msgstr "空间"

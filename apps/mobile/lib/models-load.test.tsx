@@ -2,14 +2,16 @@
 
 import { modelOptionKey } from "@rakazo/core";
 import type { ReactNode } from "react";
-import { act, useEffect } from "react";
+import { act, useEffect, useLayoutEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Models from "../app/(settings)/models";
+import SpaceSettings from "../app/(settings)/space-settings";
 import RoutineDetail from "../app/routine";
 import { resetI18nForTests } from "./i18n";
 import { presentMessageActionSheet } from "./message-action-sheet";
+import { useSpaceSettings } from "./space-settings";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -77,6 +79,19 @@ vi.mock("react-native-safe-area-context", () => ({
   SafeAreaView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../components/row-accessories", () => ({ Checkmark: () => null, Chevron: () => null }));
+vi.mock("../components/settings-group", () => ({
+  SettingsGroup: ({ children, label }: { children: ReactNode; label?: string }) => (
+    <div>
+      {label}
+      {children}
+    </div>
+  ),
+  SettingsRow: ({ title, onPress }: { title: string; onPress: () => void }) => (
+    <button type="button" onClick={onPress}>
+      {title}
+    </button>
+  ),
+}));
 vi.mock("../components/native-action-button", () => ({
   NativeActionButton: ({
     label,
@@ -957,6 +972,171 @@ it.each(["models/list", "models/credentials"])(
     });
   },
 );
+
+it("edits an explicit Space without changing the selected Space", async () => {
+  state.params = { spaceId: "space-2" };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(
+    async (
+      procedure: string,
+      input: unknown,
+      options: { requestContext?: { headers: Record<string, string> } },
+    ) => {
+      if (procedure === "me") return { ...(await normal(procedure, input)), spaceId: "space-2" };
+      return normal(procedure, input, options);
+    },
+  );
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Save").click());
+  expect(state.spaceId).toBe("space-1");
+  expect(
+    state.rpc.mock.calls.filter(([name]) => name.startsWith("models/")).length,
+  ).toBeGreaterThan(3);
+  for (const [name, , options] of state.rpc.mock.calls) {
+    if (name.startsWith("models/"))
+      expect(options?.requestContext?.headers["x-rakazo-space-id"]).toBe("space-2");
+  }
+  expect(state.rpc.mock.calls.some(([name]) => name === "models/connect")).toBe(true);
+});
+
+it("revokes the previous settings client before the new target's layout callbacks", async () => {
+  let oldClient: ReturnType<typeof useSpaceSettings> | undefined;
+  let rejected: Promise<unknown> | undefined;
+  function Probe({ target }: { target: string }) {
+    const client = useSpaceSettings(target);
+    useLayoutEffect(() => {
+      if (target === "space-2") oldClient = client;
+      else rejected = expect(oldClient!.rpc("models/connect")).rejects.toThrow();
+    }, [client, target]);
+    return null;
+  }
+  await act(async () => root.render(<Probe key="space-2" target="space-2" />));
+  await act(async () => root.render(<Probe key="space-3" target="space-3" />));
+  await rejected;
+  expect(state.rpc).not.toHaveBeenCalled();
+});
+
+it("opens existing settings from the verified target summary without selecting it", async () => {
+  state.params = { spaceId: "space-2", name: "Team space" };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (name: string, input: unknown) =>
+    name === "me" ? { ...(await normal(name, input)), spaceId: "space-2" } : normal(name, input),
+  );
+  await act(async () => root.render(<SpaceSettings />));
+  expect(container.textContent).toContain("Team space");
+  await act(async () => button("Models").click());
+  expect(state.push).toHaveBeenCalledWith({
+    pathname: "/models",
+    params: { spaceId: "space-2", name: "Team space" },
+  });
+  await act(async () => button("Voice").click());
+  expect(state.push).toHaveBeenCalledWith({
+    pathname: "/voice",
+    params: { spaceId: "space-2", name: "Team space" },
+  });
+  expect(state.spaceId).toBe("space-1");
+});
+
+it("does not expose settings when target membership is denied", async () => {
+  state.params = { spaceId: "space-2" };
+  state.rpc.mockRejectedValue(Object.assign(new Error("Unauthorized"), { status: 401 }));
+  await act(async () => root.render(<SpaceSettings />));
+  expect(container.textContent).toContain("Unauthorized");
+  expect(container.textContent).not.toContain("Models");
+  expect(container.textContent).not.toContain("Voice");
+  expect(state.rpc.mock.calls.every(([name]) => name === "me")).toBe(true);
+});
+
+it("clears model drafts and ignores metadata from a previous target", async () => {
+  const oldCredentials = deferred<Array<typeof credential>>();
+  const normal = state.rpc.getMockImplementation()!;
+  state.params = { spaceId: "space-2" };
+  state.rpc.mockImplementation(
+    async (
+      name: string,
+      input: unknown,
+      options: { requestContext?: { headers: Record<string, string> } },
+    ) => {
+      const target = options?.requestContext?.headers["x-rakazo-space-id"];
+      if (name === "me") return { ...(await normal(name, input)), spaceId: target };
+      if (name === "models/credentials" && target === "space-2") return oldCredentials.promise;
+      if (name === "models/credentials")
+        return [{ ...credential, baseUrl: "https://current.example.test/v1" }];
+      return normal(name, input);
+    },
+  );
+  await act(async () => root.render(<Models />));
+  state.params = { spaceId: "space-3" };
+  await act(async () => root.render(<Models />));
+  expect(baseUrl().value).toBe("https://current.example.test/v1");
+  await edit(baseUrl(), "https://draft.example.test/v1");
+  await act(async () =>
+    oldCredentials.resolve([{ ...credential, baseUrl: "https://old.example.test/v1" }]),
+  );
+  expect(baseUrl().value).toBe("https://draft.example.test/v1");
+  expect(container.textContent).not.toContain("Something went wrong");
+  expect(state.spaceId).toBe("space-1");
+});
+
+it("cancels a late model sign-in on the target that began it", async () => {
+  const late = deferred<{
+    loginId: string;
+    mode: string;
+    verificationUri: string;
+    userCode: string;
+    expiresInSeconds: number;
+  }>();
+  const normal = state.rpc.getMockImplementation()!;
+  state.params = { spaceId: "space-2" };
+  state.rpc.mockImplementation(
+    async (
+      name: string,
+      input: unknown,
+      options: { requestContext?: { headers: Record<string, string> } },
+    ) => {
+      if (name === "me")
+        return {
+          ...(await normal(name, input)),
+          spaceId: options?.requestContext?.headers["x-rakazo-space-id"],
+          defaultProvider: "subscription",
+          defaultModel: "model-a",
+        };
+      if (name === "models/list")
+        return [
+          {
+            provider: "subscription",
+            providerName: "Subscription",
+            id: "model-a",
+            label: "Model A",
+            billing: "",
+            auth: "oauth",
+            signIn: "device-code",
+          },
+        ];
+      if (name === "models/credentials") return [];
+      if (name === "models/beginOAuth") return late.promise;
+      if (name === "models/cancelOAuth") return undefined;
+      return normal(name, input);
+    },
+  );
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Sign in").click());
+  state.params = { spaceId: "space-3" };
+  await act(async () => root.render(<Models />));
+  await act(async () =>
+    late.resolve({
+      loginId: "old-b-login",
+      mode: "device-code",
+      verificationUri: "https://auth.example.test",
+      userCode: "CODE",
+      expiresInSeconds: 600,
+    }),
+  );
+  const canceled = state.rpc.mock.calls.find(([name]) => name === "models/cancelOAuth");
+  expect(canceled?.[1]).toEqual({ loginId: "old-b-login" });
+  expect(canceled?.[2].requestContext.headers["x-rakazo-space-id"]).toBe("space-2");
+  expect(state.rpc.mock.calls.some(([name]) => name === "models/finishOAuth")).toBe(false);
+});
 
 async function chooseRoutineModel(modelId: string) {
   const picker = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');

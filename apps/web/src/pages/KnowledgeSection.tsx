@@ -12,7 +12,7 @@ import {
 } from "@rakazo/ui-web";
 import { useEffect, useRef, useState } from "react";
 import { downloadArtifactBytes } from "../lib/artifact-open";
-import { rpc } from "../lib/rpc";
+import { useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 
 const fieldClass = "mt-2 w-full font-mono text-[13px] leading-relaxed";
 
@@ -32,6 +32,7 @@ export function KnowledgeSection({
   onSkillsChange: (skills: AgentSkillCatalogEntry[]) => void;
 }) {
   const { t } = useLingui();
+  const rpc = useSpaceRpc();
   return (
     <section className="mt-6" data-testid="bot-knowledge">
       <Tabs defaultValue="memory">
@@ -61,6 +62,7 @@ export function KnowledgeSection({
 
 /** The space's shared memory documents, mounted in the Memory settings overlay. */
 export function SpaceMemorySection() {
+  const rpc = useSpaceRpc();
   return (
     <div className="mt-6" data-testid="space-memory-documents">
       <div className="mb-2 text-[12.5px] uppercase tracking-[0.08em] text-muted-foreground">
@@ -85,6 +87,8 @@ function MemoryDocumentList({
   testId: string;
 }) {
   const { t } = useLingui();
+  const rpc = useSpaceRpc();
+  const scopeCurrent = useSpaceRpcCurrent();
   const [loading, setLoading] = useState(true);
   const [docs, setDocs] = useState<MemoryDocument[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -92,28 +96,30 @@ function MemoryDocumentList({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  const [reload, setReload] = useState(0);
   const loadRef = useRef(load);
   loadRef.current = load;
 
   useEffect(() => {
     const current = ++generation.current;
+    setLoading(true);
+    setError(null);
     void loadRef
       .current()
       .then((list) => {
-        if (current !== generation.current) return;
+        if (!scopeCurrent() || current !== generation.current) return;
         setDocs(list);
         setLoading(false);
       })
       .catch(() => {
-        if (current !== generation.current) return;
-        setDocs([]);
+        if (!scopeCurrent() || current !== generation.current) return;
         setLoading(false);
         setError(t`Could not load`);
       });
     return () => {
       generation.current += 1;
     };
-  }, [t]);
+  }, [t, reload]);
 
   function openDoc(doc: MemoryDocument) {
     setOpenId(doc.id);
@@ -122,42 +128,61 @@ function MemoryDocumentList({
   }
 
   async function save(doc: MemoryDocument) {
-    if (busy) return;
+    if (busy || !scopeCurrent()) return;
     setBusy(true);
     setError(null);
     try {
+      const current = generation.current;
       const updated = await rpc.memory.update({ documentId: doc.id, content: draft });
+      if (!scopeCurrent() || current !== generation.current) return;
       setDocs((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
       setOpenId(null);
     } catch {
+      if (!scopeCurrent()) return;
       setError(t`Could not save`);
     } finally {
-      setBusy(false);
+      if (scopeCurrent()) setBusy(false);
     }
   }
 
   async function exportMarkdown() {
-    if (busy) return;
+    if (busy || !scopeCurrent()) return;
     setBusy(true);
     setError(null);
     try {
       // Re-fetch through the section's own loader so the file is current,
       // then sync the list so the export matches what is displayed.
+      const current = generation.current;
       const fresh = await loadRef.current();
+      if (!scopeCurrent() || current !== generation.current) return;
       generation.current += 1;
       setDocs(fresh);
       const markdown = fresh.map((doc) => `# ${doc.path}\n\n${doc.content}`).join("\n\n");
       downloadArtifactBytes(exportFilename, "text/markdown", new TextEncoder().encode(markdown));
     } catch {
+      if (!scopeCurrent()) return;
       setError(t`Could not load`);
     } finally {
-      setBusy(false);
+      if (scopeCurrent()) setBusy(false);
     }
   }
 
   return (
     <div data-testid={testId}>
-      {error ? <div className="px-2.5 pb-2 text-[13px] text-destructive">{error}</div> : null}
+      {error ? (
+        <div className="px-2.5 pb-2 text-[13px] text-destructive">
+          {error}
+          <Button
+            variant="outline"
+            disabled={loading || busy}
+            onClick={() => {
+              if (scopeCurrent()) setReload((value) => value + 1);
+            }}
+          >
+            <Trans>Retry</Trans>
+          </Button>
+        </div>
+      ) : null}
       {loading ? <Skeleton className="h-10 w-full" /> : null}
       {!loading && docs.length === 0 && !error ? (
         <div className="px-2.5 py-1 text-[13.5px] text-muted-foreground">
@@ -258,6 +283,8 @@ function AgentSkills({
   onSkillsChange: (skills: AgentSkillCatalogEntry[]) => void;
 }) {
   const { t } = useLingui();
+  const rpc = useSpaceRpc();
+  const scopeCurrent = useSpaceRpcCurrent();
   const [loading, setLoading] = useState(true);
   const [skills, setSkills] = useState<AgentSkillCatalogEntry[]>([]);
   const [open, setOpen] = useState<AgentSkill | null>(null);
@@ -272,7 +299,7 @@ function AgentSkills({
   async function refresh() {
     const current = ++generation.current;
     const list = await rpc.agentSkills.list();
-    if (current !== generation.current) return;
+    if (!scopeCurrent() || current !== generation.current) return;
     setSkills(list);
     onSkillsChange(list);
   }
@@ -282,12 +309,12 @@ function AgentSkills({
     void rpc.agentSkills
       .list()
       .then((list) => {
-        if (current !== generation.current) return;
+        if (!scopeCurrent() || current !== generation.current) return;
         setSkills(list);
         setLoading(false);
       })
       .catch(() => {
-        if (current !== generation.current) return;
+        if (!scopeCurrent() || current !== generation.current) return;
         setSkills([]);
         setLoading(false);
         setError(t`Could not load`);
@@ -299,7 +326,7 @@ function AgentSkills({
   }, [t]);
 
   async function openSkill(entry: AgentSkillCatalogEntry) {
-    if (busy) return;
+    if (busy || !scopeCurrent()) return;
     const current = ++selection.current;
     setCreating(false);
     setConfirmingDelete(false);
@@ -307,17 +334,17 @@ function AgentSkills({
     try {
       const skill = await rpc.agentSkills.get({ skillId: entry.id });
       // A slower response must not clobber a newer selection or a fresh draft.
-      if (current !== selection.current) return;
+      if (!scopeCurrent() || current !== selection.current) return;
       setOpen(skill);
       setDraft(skill.content);
     } catch {
-      if (current !== selection.current) return;
+      if (!scopeCurrent() || current !== selection.current) return;
       setError(t`Could not load skill`);
     }
   }
 
   async function save() {
-    if (busy || !draft.trim()) return;
+    if (busy || !draft.trim() || !scopeCurrent()) return;
     setBusy(true);
     setError(null);
     try {
@@ -326,6 +353,7 @@ function AgentSkills({
       } else if (open) {
         await rpc.agentSkills.update({ skillId: open.id, content: draft });
       }
+      if (!scopeCurrent()) return;
       setOpen(null);
       setCreating(false);
       setConfirmingDelete(false);
@@ -335,14 +363,15 @@ function AgentSkills({
         setError(t`Could not load`);
       }
     } catch {
+      if (!scopeCurrent()) return;
       setError(t`Could not save skill`);
     } finally {
-      setBusy(false);
+      if (scopeCurrent()) setBusy(false);
     }
   }
 
   async function remove(skill: AgentSkill) {
-    if (busy) return;
+    if (busy || !scopeCurrent()) return;
     if (!confirmingDelete) {
       setConfirmingDelete(true);
       return;
@@ -352,6 +381,7 @@ function AgentSkills({
     setError(null);
     try {
       await rpc.agentSkills.remove({ skillId });
+      if (!scopeCurrent()) return;
       if (open?.id === skillId) {
         setOpen(null);
         setConfirmingDelete(false);
@@ -362,9 +392,10 @@ function AgentSkills({
         setError(t`Could not load`);
       }
     } catch {
+      if (!scopeCurrent()) return;
       setError(t`Could not delete skill`);
     } finally {
-      setBusy(false);
+      if (scopeCurrent()) setBusy(false);
     }
   }
 

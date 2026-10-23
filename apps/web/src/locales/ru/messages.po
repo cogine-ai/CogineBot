@@ -3531,6 +3531,7 @@ msgstr "Активности бота пока нет."
 msgid "No bots"
 msgstr "Нет ботов"
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-picker.tsx
 msgid "No bots match"
 msgstr "Ни один бот не подходит"
@@ -6021,3 +6022,36 @@ msgstr "Модель бота"
 #: src/pages/shell/bot-panel.tsx
 msgid "Use updated connection"
 msgstr "Использовать обновлённое подключение"
+
+#. placeholder {0}: selected.length
+#: src/pages/GroupPanel.tsx
+msgid "Members ({0})"
+msgstr "Участники ({0})"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show selected"
+msgstr "Показать выбранных"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show all"
+msgstr "Показать всех"
+
+#: src/pages/GroupPanel.tsx
+msgid "Filter bots"
+msgstr "Фильтр ботов"
+
+#: src/pages/GroupPanel.tsx
+msgid "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}"
+msgstr "Выберите от {GROUP_MEMBER_MIN} до {GROUP_MEMBER_MAX} участников"
+
+#: src/pages/GroupPanel.tsx
+msgid "No members yet"
+msgstr "Участников пока нет"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Confirmations"
+msgstr "Подтверждения"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Space"
+msgstr "Пространство"

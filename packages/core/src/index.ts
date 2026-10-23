@@ -28,6 +28,7 @@ export * from "./featured-connectors.js";
 export * from "./format-file-size.js";
 export * from "./gaze-avatar.js";
 export * from "./group-mentions.js";
+export * from "./group-settings-save.js";
 export * from "./http-response.js";
 export * from "./markdown-plain.js";
 export * from "./mcp.js";

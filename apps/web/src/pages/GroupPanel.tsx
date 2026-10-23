@@ -34,40 +34,100 @@ function MemberPicker({
   maxHeight: "max-h-[240px]" | "max-h-[280px]";
   disabled: boolean;
 }) {
+  const { t } = useLingui();
+  const listId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const [query, setQuery] = useState("");
+  // Keep deselected members available until this editing session closes.
+  const [everPicked, setEverPicked] = useState<ReadonlySet<string>>(() => new Set(selected));
   const selectable = useMemo(() => bots.filter((bot) => !bot.archivedAt), [bots]);
+  const needle = expanded ? query.trim().toLowerCase() : "";
+  const visible = useMemo(() => {
+    const base = expanded ? selectable : selectable.filter((bot) => everPicked.has(bot.id));
+    return needle
+      ? base.filter(
+          (bot) =>
+            bot.name.toLowerCase().includes(needle) || bot.title.toLowerCase().includes(needle),
+        )
+      : base;
+  }, [expanded, selectable, everPicked, needle]);
 
   function toggle(botId: string) {
     if (disabled) return;
     if (selected.includes(botId)) {
       onChange(selected.filter((id) => id !== botId));
     } else if (selected.length < GROUP_MEMBER_MAX) {
+      setEverPicked((current) => new Set(current).add(botId));
       onChange([...selected, botId]);
     }
   }
 
   return (
-    <div className={`mt-2 ${maxHeight} space-y-1 overflow-y-auto`}>
-      {selectable.map((bot) => {
-        const checked = selected.includes(bot.id);
-        return (
-          <button
-            key={bot.id}
-            type="button"
-            aria-pressed={checked}
+    <div className="mt-2">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">
+          <Trans>Members ({selected.length})</Trans>
+        </span>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={listId}
+          disabled={disabled}
+          onClick={() => {
+            if (!disabled) setExpanded((value) => !value);
+          }}
+          className="text-sm text-muted-foreground hover:text-foreground"
+        >
+          {expanded ? <Trans>Show selected</Trans> : <Trans>Show all</Trans>}
+        </button>
+      </div>
+      {expanded ? (
+        <>
+          <Input
+            value={query}
+            onChange={(event) => {
+              if (!disabled) setQuery(event.target.value);
+            }}
             disabled={disabled}
-            onClick={() => toggle(bot.id)}
-            className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-start ${
-              checked ? "bg-muted" : "hover:bg-accent"
-            }`}
-          >
-            <BotAvatar color={bot.color} identity={bot.id} size={32} status={bot.status} />
-            <span className="flex-1 text-[15px] text-foreground" dir="auto">
-              {bot.name}
-            </span>
-            {checked ? <Check size={14} className="text-muted-foreground" aria-hidden /> : null}
-          </button>
-        );
-      })}
+            placeholder={t`Filter bots`}
+            aria-label={t`Filter bots`}
+            className="mt-2"
+          />
+          <p className="mt-2 text-sm text-muted-foreground">
+            <Trans>
+              Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}
+            </Trans>
+          </p>
+        </>
+      ) : null}
+      <div id={listId} className={`mt-2 ${maxHeight} space-y-1 overflow-y-auto`}>
+        {visible.map((bot) => {
+          const checked = selected.includes(bot.id);
+          return (
+            <button
+              key={bot.id}
+              type="button"
+              aria-pressed={checked}
+              disabled={disabled || (!checked && selected.length >= GROUP_MEMBER_MAX)}
+              onClick={() => toggle(bot.id)}
+              className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-start ${
+                checked ? "bg-muted" : "hover:bg-accent"
+              }`}
+            >
+              <BotAvatar color={bot.color} identity={bot.id} size={32} status={bot.status} />
+              <span className="flex-1 text-[15px] text-foreground" dir="auto">
+                {bot.name}
+              </span>
+              {checked ? <Check size={14} className="text-muted-foreground" aria-hidden /> : null}
+            </button>
+          );
+        })}
+        {visible.length === 0 ? (
+          <p className="px-2.5 py-2.5 text-sm text-muted-foreground">
+            {expanded ? <Trans>No bots match</Trans> : <Trans>No members yet</Trans>}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -82,7 +142,7 @@ export function GroupSettings({
 }: {
   group: Group;
   bots: Bot[];
-  onSave: (input: { name?: string; botIds?: string[] }) => Promise<void>;
+  onSave: (input: { name?: string; botIds?: string[]; expectedBotIds?: string[] }) => Promise<void>;
   onRemove: () => Promise<void>;
   onClose: () => void;
   covered?: boolean;
@@ -91,8 +151,10 @@ export function GroupSettings({
   const nameId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
+  const mutationInFlight = useRef(false);
   const [name, setName] = useState(group.name);
-  const [selected, setSelected] = useState(group.members.map((member) => member.botId));
+  const [initialMembers] = useState(() => group.members.map((member) => member.botId));
+  const [selected, setSelected] = useState(initialMembers);
   const [pending, setPending] = useState<"save" | "remove" | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,7 +186,8 @@ export function GroupSettings({
   }, [onClose, covered, confirmingDelete]);
 
   async function mutate(kind: "save" | "remove", action: () => Promise<void>) {
-    if (pending) return;
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
     setPending(kind);
     setError(null);
     try {
@@ -137,6 +200,7 @@ export function GroupSettings({
         );
       }
     } finally {
+      mutationInFlight.current = false;
       if (mountedRef.current) setPending(null);
     }
   }
@@ -144,12 +208,8 @@ export function GroupSettings({
   function save() {
     return onSave({
       name: name.trim() !== group.name ? name.trim() : undefined,
-      botIds: sameMembers(
-        selected,
-        group.members.map((member) => member.botId),
-      )
-        ? undefined
-        : selected,
+      botIds: sameMembers(selected, initialMembers) ? undefined : selected,
+      expectedBotIds: sameMembers(selected, initialMembers) ? undefined : initialMembers,
     });
   }
 
@@ -174,15 +234,12 @@ export function GroupSettings({
           id={nameId}
           value={name}
           disabled={pending !== null}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => {
+            if (!mutationInFlight.current) setName(e.target.value);
+          }}
           className="mt-2"
         />
       </label>
-      <div className="mt-5 text-sm text-muted-foreground">
-        <Trans>
-          Members ({GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX})
-        </Trans>
-      </div>
       <MemberPicker
         bots={bots}
         selected={selected}

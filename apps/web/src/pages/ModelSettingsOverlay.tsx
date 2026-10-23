@@ -71,7 +71,8 @@ import {
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
-import { currentSpaceSelectionGeneration, rpc, selectedSpaceId } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
+import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 import type { ModelConnectionSave } from "./ModelBackupsSettings";
@@ -95,6 +96,9 @@ export function ModelSettingsOverlay({
   localOwner?: boolean;
 }) {
   const { t } = useLingui();
+  const rpc = useSpaceRpc();
+  const boundSpaceId = useBoundSpaceId();
+  const contextCurrent = useSpaceRpcCurrent();
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
   const [connectionSave, setConnectionSave] = useState<ModelConnectionSave | null>(null);
@@ -185,8 +189,17 @@ export function ModelSettingsOverlay({
           credential,
         });
       }
+      if (
+        !owner?.scope ||
+        !operationCurrent(owner.selectionRevision, owner.scope, owner.spaceGeneration)
+      )
+        return;
       await refresh(credential.id);
-      if (controller.signal.aborted) return;
+      if (
+        controller.signal.aborted ||
+        !operationCurrent(owner.selectionRevision, owner.scope, owner.spaceGeneration)
+      )
+        return;
       setNotice(t`Connected and using ${selectedLabelRef.current ?? "this model"}.`);
     },
   });
@@ -202,10 +215,12 @@ export function ModelSettingsOverlay({
     ]);
     if (
       !mountedRef.current ||
+      !contextCurrent() ||
       refreshRevision !== refreshRevisionRef.current ||
       spaceGeneration !== currentSpaceSelectionGeneration()
     )
       return;
+    if (boundSpaceId && nextMe.spaceId !== boundSpaceId) return;
     const nextProvider =
       provider && nextCatalog.some((entry) => entry.provider === provider)
         ? provider
@@ -274,8 +289,13 @@ export function ModelSettingsOverlay({
   useEffect(() => {
     mountedRef.current = true;
     void refresh()
-      .catch((err: unknown) => setError(errorText(err, t`Could not load model settings`)))
-      .finally(() => setLoading(false));
+      .catch((err: unknown) => {
+        if (mountedRef.current && contextCurrent())
+          setError(errorText(err, t`Could not load model settings`));
+      })
+      .finally(() => {
+        if (mountedRef.current && contextCurrent()) setLoading(false);
+      });
     return () => {
       mountedRef.current = false;
       refreshRevisionRef.current += 1;
@@ -425,7 +445,7 @@ export function ModelSettingsOverlay({
   }
 
   function preflightStillCurrent(revision: number): boolean {
-    return mountedRef.current && revision === preflightRevisionRef.current;
+    return contextCurrent() && mountedRef.current && revision === preflightRevisionRef.current;
   }
 
   function updateBaseUrl(nextBaseUrl: string) {
@@ -537,6 +557,7 @@ export function ModelSettingsOverlay({
       onSuccess: (models) => {
         if (
           !preflightStillCurrent(revision) ||
+          !contextCurrent() ||
           spaceGeneration !== currentSpaceSelectionGeneration()
         )
           return;
@@ -557,6 +578,7 @@ export function ModelSettingsOverlay({
       onError: (err) => {
         if (
           !preflightStillCurrent(revision) ||
+          !contextCurrent() ||
           spaceGeneration !== currentSpaceSelectionGeneration()
         )
           return;
@@ -584,7 +606,11 @@ export function ModelSettingsOverlay({
       catalogProbe: true,
       probeCatalog: rpc.models.probeCatalog,
     });
-    if (!preflightStillCurrent(revision) || spaceGeneration !== currentSpaceSelectionGeneration())
+    if (
+      !contextCurrent() ||
+      !preflightStillCurrent(revision) ||
+      spaceGeneration !== currentSpaceSelectionGeneration()
+    )
       return;
     setPreflightTesting(false);
     if (result.ok) {
@@ -609,14 +635,22 @@ export function ModelSettingsOverlay({
       () => rpc.models.credentials(),
       selected.id,
     );
-    if (!preflightStillCurrent(revision) || spaceGeneration !== currentSpaceSelectionGeneration())
+    if (
+      !contextCurrent() ||
+      !preflightStillCurrent(revision) ||
+      spaceGeneration !== currentSpaceSelectionGeneration()
+    )
       return;
     const result = await runModelConnectionPreflight({
       authKind: "oauth",
       provider: selected.provider,
       ...stored,
     });
-    if (!preflightStillCurrent(revision) || spaceGeneration !== currentSpaceSelectionGeneration())
+    if (
+      !contextCurrent() ||
+      !preflightStillCurrent(revision) ||
+      spaceGeneration !== currentSpaceSelectionGeneration()
+    )
       return;
     setPreflightTesting(false);
     if (result.ok) {
@@ -631,11 +665,13 @@ export function ModelSettingsOverlay({
     const selectedSpace = selectedSpaceId();
     return (
       mountedRef.current &&
+      contextCurrent() &&
       spaceGeneration === currentSpaceSelectionGeneration() &&
       revision === selectionRevisionRef.current &&
       current?.userId === scope?.userId &&
       current?.spaceId === scope?.spaceId &&
-      (!selectedSpace || selectedSpace === scope?.spaceId)
+      ((boundSpaceId ?? selectedSpace) === null ||
+        (boundSpaceId ?? selectedSpace) === scope?.spaceId)
     );
   }
 
@@ -644,7 +680,10 @@ export function ModelSettingsOverlay({
     let current = true;
     const spaceGeneration = currentSpaceSelectionGeneration();
     const isCurrent = () =>
-      current && mountedRef.current && spaceGeneration === currentSpaceSelectionGeneration();
+      current &&
+      contextCurrent() &&
+      mountedRef.current &&
+      spaceGeneration === currentSpaceSelectionGeneration();
     void rpc.models
       .references({}, { context: { spaceId: me.spaceId } })
       .then((result) => {
@@ -1432,9 +1471,33 @@ export function ModelSettingsOverlay({
 
         <div ref={detailScrollRef} className="rk-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
           {error ? (
-            <p className="mb-4 text-sm text-destructive" role="alert">
-              {error}
-            </p>
+            <div>
+              <p className="mb-4 text-sm text-destructive" role="alert">
+                {error}
+              </p>
+              {!loading && catalog.length === 0 ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (!contextCurrent()) return;
+                    setLoading(true);
+                    void refresh()
+                      .then(() => {
+                        if (contextCurrent()) setError(null);
+                      })
+                      .catch((error: unknown) => {
+                        if (contextCurrent())
+                          setError(errorText(error, t`Could not load model settings`));
+                      })
+                      .finally(() => {
+                        if (contextCurrent()) setLoading(false);
+                      });
+                  }}
+                >
+                  <Trans>Retry</Trans>
+                </Button>
+              ) : null}
+            </div>
           ) : null}
           {notice ? (
             <p className="mb-4 text-sm text-success" role="status">

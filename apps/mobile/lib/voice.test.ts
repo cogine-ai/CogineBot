@@ -128,6 +128,39 @@ describe("mobile speech", () => {
     }
   });
 
+  it("prepares and renders a settings sample using its explicit target context", async () => {
+    vi.mocked(captureApiRequestContext).mockClear();
+    vi.mocked(rpc).mockClear();
+    const requestContext = {
+      apiBase: "https://settings.example.test",
+      headers: { authorization: "Bearer fake-token", "x-rakazo-space-id": "space-b" },
+    };
+    await expect(speakText("Sample", { requestContext })).resolves.toBe(true);
+    expect(captureApiRequestContext).not.toHaveBeenCalled();
+    expect(vi.mocked(rpc).mock.calls[0]?.[2]?.requestContext).toEqual(requestContext);
+    for (const [url, options] of vi.mocked(fetch).mock.calls) {
+      expect(String(url)).toBe("https://settings.example.test/api/voice/speak");
+      expect(new Headers(options?.headers).get("x-rakazo-space-id")).toBe("space-b");
+    }
+  });
+
+  it("abandons an old settings sample before rendering after its owner changes", async () => {
+    vi.mocked(rpc).mockClear();
+    let resolve!: (result: { ready: boolean; utterances: string[] }) => void;
+    const prepared = new Promise<{ ready: boolean; utterances: string[] }>((done) => {
+      resolve = done;
+    });
+    vi.mocked(rpc).mockImplementation(async () => prepared as never);
+    let current = true;
+    const playing = speakText("Sample", { isCurrent: () => current });
+    await waitFor(() => vi.mocked(rpc).mock.calls.length === 1);
+    current = false;
+    resolve({ ready: true, utterances: ["Old sample"] });
+    await expect(playing).resolves.toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(getVoicePlaybackState().status).toBe("idle");
+  });
+
   it("listens for an HTML audio clip ending before playback starts", async () => {
     class ImmediateAudio {
       onended: (() => void) | null = null;
@@ -233,6 +266,48 @@ describe("hosted voice playback controls", () => {
     expect(() => pauseVoicePlayback()).not.toThrow();
     expect(() => stopVoicePlayback()).not.toThrow();
     expect(() => resumeVoicePlayback()).not.toThrow();
+  });
+
+  it("refuses an expired sample before it can interrupt current thread playback", async () => {
+    const thread = speakText("Current thread reply", { botId: "current-bot" });
+    await waitFor(() => ControllableAudio.instances.length === 1);
+    const audio = ControllableAudio.instances[0]!;
+    await waitFor(() => !audio.paused);
+    try {
+      await expect(speakText("Expired sample", { isCurrent: () => false })).resolves.toBe(false);
+      expect(audio.paused).toBe(false);
+      expect(getVoicePlaybackState()).toMatchObject({ status: "playing", botId: "current-bot" });
+    } finally {
+      stopVoicePlayback();
+      await thread;
+    }
+  });
+
+  it("stops a settings sample that is already playing when its lifetime ends", async () => {
+    const lifetime = new AbortController();
+    const sample = speakText("Sample", { signal: lifetime.signal });
+    await waitFor(() => ControllableAudio.instances.length === 1);
+    const audio = ControllableAudio.instances[0]!;
+    await waitFor(() => !audio.paused);
+    lifetime.abort();
+    await expect(sample).resolves.toBe(true);
+    expect(audio.paused).toBe(true);
+    expect(getVoicePlaybackState().status).toBe("idle");
+  });
+
+  it("does not stop newer thread playback when an old settings lifetime ends", async () => {
+    const lifetime = new AbortController();
+    const sample = speakText("Sample", { signal: lifetime.signal });
+    await waitFor(() => ControllableAudio.instances.length === 1);
+    const thread = speakText("Thread reply", { botId: "bot-new" });
+    await waitFor(() => ControllableAudio.instances.length === 2);
+    const current = ControllableAudio.instances[1]!;
+    await waitFor(() => !current.paused);
+    lifetime.abort();
+    expect(current.paused).toBe(false);
+    expect(getVoicePlaybackState()).toMatchObject({ status: "playing", botId: "bot-new" });
+    stopVoicePlayback();
+    await Promise.all([sample, thread]);
   });
 
   it("carries who is speaking through pause and resume, and not to another bot", async () => {

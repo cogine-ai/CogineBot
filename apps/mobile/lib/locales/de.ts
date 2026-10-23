@@ -1,4 +1,10 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Members ({count})": "Mitglieder ({count})",
+  "Show selected": "Ausgewählte anzeigen",
+  "Show all": "Alle anzeigen",
+  "Filter bots": "Bots filtern",
+  "Pick {min}–{max}": "{min}–{max} Mitglieder auswählen",
+  "No members yet": "Noch keine Mitglieder",
   Routines: "Routinen",
   Profile: "Profil",
   "Could not load routines": "Routinen konnten nicht geladen werden",

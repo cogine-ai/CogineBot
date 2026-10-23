@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { Group } from "@rakazo/contracts";
+import type { Bot, Group } from "@rakazo/contracts";
 import type { ComponentProps, ReactNode } from "react";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -70,7 +70,13 @@ let root: Root;
 
 async function render(
   options: {
-    onSave?: () => Promise<void>;
+    onSave?: (input: {
+      name?: string;
+      botIds?: string[];
+      expectedBotIds?: string[];
+    }) => Promise<void>;
+    bots?: Bot[];
+    group?: Group;
     onRemove?: () => Promise<void>;
     covered?: boolean;
     instance?: string;
@@ -82,8 +88,8 @@ async function render(
     root.render(
       <GroupSettings
         key={options.instance}
-        group={group}
-        bots={[]}
+        group={options.group ?? group}
+        bots={options.bots ?? []}
         onSave={options.onSave ?? (async () => undefined)}
         onRemove={onRemove}
         onClose={onClose}
@@ -131,7 +137,113 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+const pickerBots = [
+  { id: "bot-1", name: "Researcher", title: "Market analyst" },
+  { id: "bot-2", name: "Writer", title: "Editor" },
+  { id: "bot-3", name: "Planner", title: "Travel coordinator" },
+].map((bot) => ({ ...bot, color: "blue", status: "idle", archivedAt: null }) as Bot);
+
+async function fill(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 describe("GroupSettings", () => {
+  it("starts with selected members and filters expanded members by name or title", async () => {
+    await render({ bots: pickerBots });
+    expect(container.textContent).toContain("Researcher");
+    expect(container.textContent).not.toContain("Planner");
+    await click("Show all");
+    const filter = container.querySelector<HTMLInputElement>('input[aria-label="Filter bots"]');
+    expect(filter).not.toBeNull();
+    await fill(filter!, "  COORDINATOR  ");
+    expect(container.textContent).toContain("Planner");
+    expect(container.textContent).not.toContain("Researcher");
+    await fill(filter!, "rEsEaRcH");
+    expect(container.textContent).toContain("Researcher");
+    expect(container.textContent).not.toContain("Planner");
+  });
+
+  it("keeps deselected members recheckable after collapsing and resets on reopen", async () => {
+    await render({ bots: pickerBots });
+    await click("Show all");
+    await click("Planner");
+    await click("Writer");
+    const filter = container.querySelector<HTMLInputElement>('input[aria-label="Filter bots"]')!;
+    await fill(filter, "no match");
+    await click("Show selected");
+    expect(container.textContent).toContain("Writer");
+    expect(container.textContent).toContain("Planner");
+    await click("Writer");
+    expect(button("Writer").getAttribute("aria-pressed")).toBe("true");
+    await render({ bots: pickerBots, instance: "reopened" });
+    expect(container.textContent).not.toContain("Planner");
+    expect(container.querySelector('[aria-label="Filter bots"]')).toBeNull();
+  });
+
+  it("locks names, selection and filter controls while preserving close during save", async () => {
+    let finish!: () => void;
+    await render({
+      bots: pickerBots,
+      onSave: () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    });
+    await click("Show all");
+    await click("Save");
+    expect(container.querySelector<HTMLInputElement>("input:not([aria-label])")?.disabled).toBe(
+      true,
+    );
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="Filter bots"]')?.disabled,
+    ).toBe(true);
+    expect(button("Show selected").disabled).toBe(true);
+    expect(button("Researcher").disabled).toBe(true);
+    expect(button("Planner").disabled).toBe(true);
+    expect(button("Close panel").disabled).toBe(false);
+    await act(async () => finish());
+  });
+
+  it("sends the confirmed session roster when replacing members after a late group update", async () => {
+    const onSave = vi.fn(async () => undefined);
+    await render({ bots: pickerBots, onSave });
+    await click("Show all");
+    await click("Writer");
+    await click("Planner");
+    const changed = {
+      ...group,
+      members: [group.members[0]!, { botId: "foreign", name: "Newer", color: "blue" }],
+    };
+    await render({ bots: pickerBots, onSave, group: changed });
+    await click("Save");
+    expect(onSave).toHaveBeenCalledExactlyOnceWith({
+      name: undefined,
+      botIds: ["bot-1", "bot-3"],
+      expectedBotIds: ["bot-1", "bot-2"],
+    });
+  });
+
+  it("starts only one save for repeated activation before the pending render", async () => {
+    let finish!: () => void;
+    const onSave = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await render({ onSave });
+    const save = button("Save");
+    await act(async () => {
+      save.click();
+      save.click();
+    });
+    expect(onSave).toHaveBeenCalledOnce();
+    await act(async () => finish());
+  });
+
   it("closes from the header button", async () => {
     const { onClose } = await render();
     await click("Close panel");

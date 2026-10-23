@@ -75,6 +75,35 @@ describe("contracts", () => {
     ).toMatchObject({ name, expectedName: "Non assigne\u0301" });
   });
 
+  it("accepts two to ten distinct group members and rejects an eleventh", () => {
+    const ten = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+    expect(CreateGroupInput.parse({ name: "Team", botIds: ten }).botIds).toEqual(ten);
+    expect(UpdateGroupInput.parse({ groupId: "team", botIds: ten }).botIds).toEqual(ten);
+    expect(CreateGroupInput.safeParse({ name: "Team", botIds: [...ten, "eleven"] }).success).toBe(
+      false,
+    );
+    expect(UpdateGroupInput.safeParse({ groupId: "team", botIds: ["one"] }).success).toBe(false);
+  });
+
+  it("preserves optional expected group rosters and bounds their size", () => {
+    expect(
+      UpdateGroupInput.parse({
+        groupId: "team",
+        botIds: ["one", "three"],
+        expectedBotIds: ["two", "one"],
+      }).expectedBotIds,
+    ).toEqual(["two", "one"]);
+    expect(
+      UpdateGroupInput.safeParse({
+        groupId: "team",
+        expectedBotIds: Array.from({ length: 11 }, (_, index) => `bot-${index}`),
+      }).success,
+    ).toBe(false);
+    expect(UpdateGroupInput.parse({ groupId: "team", name: "Renamed" })).not.toHaveProperty(
+      "expectedBotIds",
+    );
+  });
+
   it("keeps historical reserved names readable but rejects restoring them", () => {
     for (const name of localizedUnassignedNames.flatMap((name) => [name, name.normalize("NFD")])) {
       const snapshot = {

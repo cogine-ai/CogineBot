@@ -27,14 +27,15 @@ const models = vi.hoisted(() => ({
 
 const scope = vi.hoisted(() => ({ generation: 0, spaceId: "space-1" }));
 
-vi.mock("../lib/rpc", () => ({
-  currentSpaceSelectionGeneration: () => scope.generation,
-  selectedSpaceId: () => scope.spaceId,
-  rpc: {
-    models,
-    me: vi.fn(),
-  },
-}));
+vi.mock("../lib/rpc", () => {
+  const client = { models, me: vi.fn() };
+  return {
+    currentSpaceSelectionGeneration: () => scope.generation,
+    selectedSpaceId: () => scope.spaceId,
+    rpc: client,
+    createSpaceRpc: () => client,
+  };
+});
 vi.mock("../lib/localized-provider-hint", () => ({
   localizedProviderHint: () => "API key",
 }));

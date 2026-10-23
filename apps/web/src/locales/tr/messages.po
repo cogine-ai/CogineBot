@@ -3531,9 +3531,10 @@ msgstr "Henüz bot etkinliği yok."
 msgid "No bots"
 msgstr ""
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-picker.tsx
 msgid "No bots match"
-msgstr ""
+msgstr "Eşleşen bot yok"
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
@@ -6021,3 +6022,36 @@ msgstr "Bot modeli"
 #: src/pages/shell/bot-panel.tsx
 msgid "Use updated connection"
 msgstr "Güncellenen bağlantıyı kullan"
+
+#. placeholder {0}: selected.length
+#: src/pages/GroupPanel.tsx
+msgid "Members ({0})"
+msgstr "Üyeler ({0})"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show selected"
+msgstr "Seçilenleri göster"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show all"
+msgstr "Tümünü göster"
+
+#: src/pages/GroupPanel.tsx
+msgid "Filter bots"
+msgstr "Botları filtrele"
+
+#: src/pages/GroupPanel.tsx
+msgid "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}"
+msgstr "{GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} üye seçin"
+
+#: src/pages/GroupPanel.tsx
+msgid "No members yet"
+msgstr "Henüz üye yok"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Confirmations"
+msgstr "Onaylar"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Space"
+msgstr "Alan"

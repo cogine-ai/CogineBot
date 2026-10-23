@@ -1,4 +1,4 @@
-import { useLingui } from "@lingui/react/macro";
+import { Trans, useLingui } from "@lingui/react/macro";
 import type { SpaceMemoryConfig } from "@rakazo/contracts";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import {
@@ -9,12 +9,17 @@ import {
   Gauge,
   Monitor,
   Settings,
+  ShieldCheck,
   Volume2,
   XIcon,
 } from "lucide-react";
 import type { ComponentType } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
+import { ListboxSelect } from "../components/ListboxSelect";
+import { SpaceRpcProvider, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
+import { errorText } from "../lib/user-error";
 import {
   ComputerSettingsPanel,
   GeneralSettingsPanels,
@@ -31,6 +36,7 @@ export type SettingsSection =
   | "models"
   | "memory"
   | "voice"
+  | "confirmations"
   | "usage"
   | "computer"
   | "billing"
@@ -43,6 +49,11 @@ type NavItem = {
 };
 
 export function SettingsOverlay({
+  space,
+  spaces = [],
+  currentSpaceId,
+  onSpaceChange,
+  ownerKey,
   email,
   name,
   usage,
@@ -59,6 +70,11 @@ export function SettingsOverlay({
   onClose,
   onVoiceStatusMaybeChanged,
 }: {
+  space?: { id: string; name: string } | null;
+  spaces?: { id: string; name: string }[];
+  currentSpaceId?: string | null;
+  onSpaceChange?: (spaceId: string) => void;
+  ownerKey?: string;
   email?: string | null;
   name: string;
   usage?: {
@@ -90,6 +106,35 @@ export function SettingsOverlay({
   const recoveryHoldTimer = useRef<number | undefined>(undefined);
   const showComputer =
     keepComputerRecovery || (isDeploymentOwner && computersAreUnavailable(sandboxProvider));
+  const targetBinding = useMemo(() => ({ spaceId: space?.id, ownerKey }), [space?.id, ownerKey]);
+  const committedTarget = useRef<typeof targetBinding | null>(null);
+  const leaveRevision = useRef(0);
+  useLayoutEffect(() => {
+    committedTarget.current = targetBinding;
+    leaveRevision.current++;
+    setMemoryBusy(false);
+    setVoiceBusy(false);
+    return () => {
+      if (committedTarget.current === targetBinding) committedTarget.current = null;
+      leaveRevision.current++;
+    };
+  }, [targetBinding]);
+  const targetCurrent = useCallback(
+    () => committedTarget.current === targetBinding,
+    [targetBinding],
+  );
+  const handleMemoryBusy = useCallback(
+    (busy: boolean) => {
+      if (targetCurrent()) setMemoryBusy(busy);
+    },
+    [targetCurrent],
+  );
+  const handleVoiceBusy = useCallback(
+    (busy: boolean) => {
+      if (targetCurrent()) setVoiceBusy(busy);
+    },
+    [targetCurrent],
+  );
   const panelBusy = memoryBusy || voiceBusy;
   const releaseComputerRecovery = useCallback(() => {
     window.clearTimeout(recoveryHoldTimer.current);
@@ -134,6 +179,7 @@ export function SettingsOverlay({
     { id: "models", label: t`Models`, icon: Cpu },
     { id: "memory", label: t`Memory`, icon: Brain },
     { id: "voice", label: t`Voice`, icon: Volume2 },
+    { id: "confirmations", label: t`Confirmations`, icon: ShieldCheck },
     { id: "usage", label: t`Usage`, icon: Gauge },
     ...(showComputer ? [{ id: "computer" as const, label: t`Computer`, icon: Monitor }] : []),
     ...(billingEnabled ? [{ id: "billing" as const, label: t`Billing`, icon: CreditCard }] : []),
@@ -159,7 +205,12 @@ export function SettingsOverlay({
 
   function leaveSettings(next: () => void) {
     if (panelBusy) return;
-    void refreshVoiceStatus().finally(next);
+    const revision = ++leaveRevision.current;
+    void refreshVoiceStatus()
+      .catch(() => undefined)
+      .then(() => {
+        if (targetCurrent() && revision === leaveRevision.current) next();
+      });
   }
 
   function requestClose() {
@@ -210,7 +261,10 @@ export function SettingsOverlay({
                   data-testid={`settings-nav-${item.id}`}
                   aria-current={active ? "page" : undefined}
                   disabled={panelBusy}
-                  onClick={() => setSection(item.id)}
+                  onClick={() => {
+                    leaveRevision.current++;
+                    setSection(item.id);
+                  }}
                   className={`flex shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-start text-[13.5px] transition-colors disabled:pointer-events-none disabled:opacity-50 ${
                     active
                       ? "bg-muted text-foreground"
@@ -229,13 +283,31 @@ export function SettingsOverlay({
               <DialogTitle className="text-2xl font-medium text-foreground">
                 {sectionTitle}
               </DialogTitle>
-              <DialogClose
-                aria-label={closeLabel}
-                disabled={panelBusy}
-                render={<Button variant="ghost" size="icon-sm" />}
-              >
-                <XIcon />
-              </DialogClose>
+              <div className="flex items-center gap-3">
+                {SPACE_SECTIONS.has(section) && space && spaces.length > 0 ? (
+                  <ListboxSelect
+                    options={spaces.map((entry) => ({ value: entry.id, label: entry.name }))}
+                    value={space.id}
+                    label={t`Space`}
+                    testId="settings-space"
+                    disabled={panelBusy}
+                    className="w-40"
+                    onChange={(id) => {
+                      if (!panelBusy && targetCurrent()) {
+                        leaveRevision.current++;
+                        onSpaceChange?.(id);
+                      }
+                    }}
+                  />
+                ) : null}
+                <DialogClose
+                  aria-label={closeLabel}
+                  disabled={panelBusy}
+                  render={<Button variant="ghost" size="icon-sm" />}
+                >
+                  <XIcon />
+                </DialogClose>
+              </div>
             </div>
 
             <div
@@ -273,25 +345,116 @@ export function SettingsOverlay({
               {section === "updates" ? (
                 <UpdatesSettingsPanel isDeploymentOwner={isDeploymentOwner} />
               ) : null}
-              {section === "models" ? (
-                <ModelSettingsOverlay embedded onClose={requestClose} />
-              ) : null}
-              {section === "memory" ? (
-                <MemorySettingsOverlay
-                  embedded
-                  onClose={requestClose}
-                  config={memoryConfig}
-                  onConfigChange={onMemoryConfigChange}
-                  onBusyChange={setMemoryBusy}
-                />
-              ) : null}
-              {section === "voice" ? (
-                <VoiceSettingsOverlay embedded onClose={requestClose} onBusyChange={setVoiceBusy} />
-              ) : null}
+              <SpaceRpcProvider
+                key={`${ownerKey ?? ""}/${space?.id ?? "default"}`}
+                spaceId={space?.id}
+                ownerKey={ownerKey}
+              >
+                {!SPACE_SECTIONS.has(section) || space || !onSpaceChange ? (
+                  <>
+                    {section === "models" ? (
+                      <ModelSettingsOverlay embedded onClose={requestClose} />
+                    ) : null}
+                    {section === "memory" ? (
+                      <TargetMemorySettings
+                        initialConfig={
+                          space?.id === currentSpaceId || !onSpaceChange ? memoryConfig : undefined
+                        }
+                        onConfigChange={(config) => {
+                          if (targetCurrent() && (!onSpaceChange || space?.id === currentSpaceId))
+                            onMemoryConfigChange(config);
+                        }}
+                        onClose={requestClose}
+                        onBusyChange={handleMemoryBusy}
+                      />
+                    ) : null}
+                    {section === "voice" ? (
+                      <VoiceSettingsOverlay
+                        embedded
+                        onClose={requestClose}
+                        onBusyChange={handleVoiceBusy}
+                      />
+                    ) : null}
+                    {section === "confirmations" ? <ApprovalRulesSettings /> : null}
+                  </>
+                ) : (
+                  <p>
+                    <Trans>Loading…</Trans>
+                  </p>
+                )}
+              </SpaceRpcProvider>
             </div>
           </div>
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const SPACE_SECTIONS = new Set<SettingsSection>(["models", "memory", "voice", "confirmations"]);
+function TargetMemorySettings({
+  initialConfig,
+  onConfigChange,
+  onClose,
+  onBusyChange,
+}: {
+  initialConfig: SpaceMemoryConfig | null | undefined;
+  onConfigChange: (config: SpaceMemoryConfig | null) => void;
+  onClose: () => void;
+  onBusyChange: (busy: boolean) => void;
+}) {
+  const { t } = useLingui();
+  const rpc = useSpaceRpc();
+  const current = useSpaceRpcCurrent();
+  const [config, setConfig] = useState(initialConfig);
+  const [error, setError] = useState<string | null>(null);
+  const request = useRef(0);
+  async function refresh() {
+    const revision = ++request.current;
+    try {
+      const next = await rpc.memory.providerConfig();
+      if (current() && revision === request.current) {
+        setConfig(next);
+        setError(null);
+      }
+    } catch (error) {
+      if (current() && revision === request.current) setError(errorText(error, t`Could not load`));
+    }
+  }
+  useEffect(() => {
+    if (initialConfig === undefined) void refresh();
+    return () => {
+      request.current++;
+    };
+  }, [rpc]);
+  return (
+    <>
+      {error ? (
+        <div className="px-6 pt-4">
+          <p className="text-destructive">{error}</p>
+          <Button variant="outline" onClick={() => void refresh()}>
+            <Trans>Retry</Trans>
+          </Button>
+        </div>
+      ) : null}
+      {config !== undefined ? (
+        <MemorySettingsOverlay
+          embedded
+          config={config}
+          onClose={onClose}
+          onBusyChange={onBusyChange}
+          onConfigChange={(next) => {
+            if (current()) {
+              setConfig(next);
+              onConfigChange(next);
+            }
+          }}
+        />
+      ) : !error ? (
+        <p>
+          <Trans>Loading…</Trans>
+        </p>
+      ) : null}
+    </>
   );
 }

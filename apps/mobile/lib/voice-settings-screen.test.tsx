@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   t: (text: string) => text,
 }));
 vi.mock("expo-router", () => ({
+  Stack: { Screen: () => null },
+  useLocalSearchParams: () => ({}),
   useFocusEffect: (callback: () => void) => {
     useEffect(() => {
       if (mocks.focused) callback();
@@ -29,11 +31,24 @@ vi.mock("./call-sounds", () => ({
   saveWaitSoundEnabled: mocks.saveWaiting,
   playCallCue: mocks.cue,
 }));
+vi.mock("./mobile-scope", () => ({
+  captureMobileScope: vi.fn(),
+  isMobileScopeCurrent: () => true,
+  mobileScopeKey: () => "",
+  subscribeMobileScope: () => () => {},
+}));
 vi.mock("./api", () => ({
+  captureApiRequestContext: vi.fn(),
   rpc: async (method: string) =>
     method === "voice/status" ? { configured: false, ready: false, provider: null } : [],
 }));
-vi.mock("./device-voice", () => ({
+vi.mock("expo-secure-store", () => ({
+  getItemAsync: vi.fn(),
+  setItemAsync: vi.fn(),
+  deleteItemAsync: vi.fn(),
+}));
+vi.mock("./device-voice", async (original) => ({
+  ...(await original<typeof import("./device-voice")>()),
   loadDeviceVoiceEnabled: async () => false,
   saveDeviceVoiceEnabled: vi.fn(),
 }));
