@@ -29,8 +29,14 @@ function stubSelectedSpace(id: string) {
   return (next: string) => store.set("rakazo:space-id", next);
 }
 
-function controlledAudio() {
-  const instances: Array<{ src: string; paused: boolean; onended: (() => void) | null }> = [];
+function controlledAudio(play?: () => Promise<void>) {
+  const instances: Array<{
+    src: string;
+    paused: boolean;
+    onended: (() => void) | null;
+    onerror: (() => void) | null;
+    ontimeupdate: (() => void) | null;
+  }> = [];
   vi.stubGlobal(
     "Audio",
     class {
@@ -38,13 +44,14 @@ function controlledAudio() {
       paused = true;
       onended: (() => void) | null = null;
       onerror: (() => void) | null = null;
+      ontimeupdate: (() => void) | null = null;
       constructor(src: string) {
         this.src = src;
         instances.push(this);
       }
       play() {
         this.paused = false;
-        return Promise.resolve();
+        return play?.() ?? Promise.resolve();
       }
       pause() {
         this.paused = true;
@@ -60,7 +67,204 @@ function controlledAudio() {
   return instances;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("Speaker", () => {
+  it.each(["ready", "error"])(
+    "releases its preparation when the remote audio request finishes %s for an expired caller",
+    async (outcome) => {
+      const audios = controlledAudio();
+      const response = deferred<Response>();
+      const fetchMock = vi.fn(() => response.promise);
+      vi.stubGlobal("fetch", fetchMock);
+      target.prepare.mockResolvedValue({ ready: true, utterances: ["Sample"] });
+      const speaker = new Speaker();
+      let current = true;
+      const sample = speaker.speak("Sample", { isCurrent: () => current });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      current = false;
+      if (outcome === "ready") response.resolve(new Response(new Uint8Array([1, 2, 3])));
+      else response.reject(new Error("Late audio response failed"));
+      await sample;
+      expect(speaker.state).toEqual({ status: "idle" });
+      expect(speaker.isSpeaking()).toBe(false);
+      expect(audios).toHaveLength(0);
+    },
+  );
+
+  it.each(["close", "error"])(
+    "releases an expired caller when a streaming audio body signals %s",
+    async (event) => {
+      const audios = controlledAudio();
+      let body!: ReadableStreamDefaultController<Uint8Array>;
+      const pull = vi.fn();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          body = controller;
+          controller.enqueue(new Uint8Array([1]));
+        },
+        pull,
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(stream)),
+      );
+      target.prepare.mockResolvedValue({ ready: true, utterances: ["Sample"] });
+      const speaker = new Speaker();
+      let current = true;
+      const sample = speaker.speak("Sample", { isCurrent: () => current });
+      await vi.waitFor(() => expect(pull).toHaveBeenCalled());
+      current = false;
+      if (event === "close") body.close();
+      else body.error(new Error("Late stream failure"));
+      await sample;
+      expect(speaker.state).toEqual({ status: "idle" });
+      expect(speaker.isSpeaking()).toBe(false);
+      expect(audios).toHaveLength(0);
+    },
+  );
+
+  it("releases playback when the caller expires while Audio.play is starting", async () => {
+    const starting = deferred<void>();
+    const audios = controlledAudio(() => starting.promise);
+    target.prepare.mockResolvedValue({ ready: true, utterances: ["Sample"] });
+    const speaker = new Speaker();
+    let current = true;
+    const sample = speaker.speak("Sample", { isCurrent: () => current });
+    try {
+      await vi.waitFor(() => expect(audios).toHaveLength(1));
+      current = false;
+      starting.resolve();
+      await vi.waitFor(() => expect(speaker.state.status).toBe("idle"));
+      await sample;
+      expect(audios[0]?.paused).toBe(true);
+      expect(speaker.isSpeaking()).toBe(false);
+    } finally {
+      speaker.stop();
+      starting.resolve();
+      await sample;
+    }
+  });
+
+  it("releases expired playback on media progress and removes its listener", async () => {
+    const audios = controlledAudio();
+    target.prepare.mockResolvedValue({ ready: true, utterances: ["Sample"] });
+    const speaker = new Speaker();
+    let current = true;
+    const sample = speaker.speak("Sample", { isCurrent: () => current });
+    await vi.waitFor(() => expect(audios).toHaveLength(1));
+    current = false;
+    audios[0]?.ontimeupdate?.();
+    await sample;
+    expect(speaker.state).toEqual({ status: "idle" });
+    expect(audios[0]?.paused).toBe(true);
+    expect(audios[0]?.ontimeupdate).toBeNull();
+  });
+
+  it("aborts prefetched audio when the expired call still owns the request", async () => {
+    controlledAudio();
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    const fetchMock = vi
+      .fn((_url: string, _options?: RequestInit) => first.promise)
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    target.prepare.mockResolvedValue({ ready: true, utterances: ["First", "Second"] });
+    const speaker = new Speaker();
+    let current = true;
+    const sample = speaker.speak("Sample", { isCurrent: () => current });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    current = false;
+    first.reject(new Error("First audio failed"));
+    await sample;
+    expect(speaker.state).toEqual({ status: "idle" });
+    expect(fetchMock.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
+    second.resolve(new Response());
+  });
+
+  it("does not let an old progress callback stop the newer owner", async () => {
+    const audios = controlledAudio();
+    target.prepare.mockResolvedValue({ ready: true, utterances: ["Sample"] });
+    const speaker = new Speaker();
+    let current = true;
+    const old = speaker.speak("Old sample", { isCurrent: () => current });
+    await vi.waitFor(() => expect(audios).toHaveLength(1));
+    const oldProgress = audios[0]?.ontimeupdate;
+    const next = speaker.speak("Current thread", { messageId: "new" });
+    await vi.waitFor(() => expect(audios).toHaveLength(2));
+    current = false;
+    oldProgress?.();
+    expect(speaker.state).toMatchObject({ status: "speaking", messageId: "new" });
+    expect(audios[1]?.paused).toBe(false);
+    audios[1]?.onended?.();
+    await Promise.all([old, next]);
+  });
+  it.each(["ready", "error"])(
+    "releases its snapshot when preparation finishes %s after the caller expires",
+    async (outcome) => {
+      const speaker = new Speaker();
+      const preparing = deferred<{ ready: boolean; utterances: string[] }>();
+      target.prepare.mockReturnValue(preparing.promise);
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      let current = true;
+      const sample = speaker.speak("Sample", { isCurrent: () => current });
+      expect(speaker.state.status).toBe("preparing");
+      current = false;
+      if (outcome === "ready") preparing.resolve({ ready: true, utterances: ["Sample"] });
+      else preparing.reject(new Error("Late preparation failure"));
+      await sample;
+      expect(speaker.state).toEqual({ status: "idle" });
+      expect(speaker.isSpeaking()).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["ended", "error"])(
+    "releases only its playback when audio signals %s after the caller expires",
+    async (event) => {
+      const audios = controlledAudio();
+      const speaker = new Speaker();
+      target.prepare.mockResolvedValue({ ready: true, utterances: ["Sample"] });
+      let current = true;
+      const sample = speaker.speak("Sample", { isCurrent: () => current });
+      await vi.waitFor(() => expect(audios).toHaveLength(1));
+      current = false;
+      if (event === "ended") audios[0]?.onended?.();
+      else audios[0]?.onerror?.();
+      await sample;
+      expect(audios[0]?.paused).toBe(true);
+      expect(speaker.state).toEqual({ status: "idle" });
+      expect(speaker.isSpeaking()).toBe(false);
+    },
+  );
+
+  it("leaves a newer preparation untouched when an expired caller finishes late", async () => {
+    const speaker = new Speaker();
+    const old = deferred<{ ready: boolean; utterances: string[] }>();
+    const latest = deferred<{ ready: boolean; utterances: string[] }>();
+    target.prepare.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    let oldCurrent = true;
+    const sample = speaker.speak("Old sample", { messageId: "old", isCurrent: () => oldCurrent });
+    const thread = speaker.speak("Current thread", { messageId: "new" });
+    oldCurrent = false;
+    old.resolve({ ready: true, utterances: ["Old sample"] });
+    await sample;
+    expect(speaker.state).toMatchObject({ status: "preparing", messageId: "new" });
+    expect(speaker.isSpeaking("new")).toBe(true);
+    latest.resolve({ ready: true, utterances: [] });
+    await thread;
+    expect(speaker.state.status).toBe("idle");
+  });
   it("keeps an unbound settings sample on the selected Space", async () => {
     stubSelectedSpace("space-a");
     target.prepare.mockResolvedValue({ ready: true, utterances: [] });

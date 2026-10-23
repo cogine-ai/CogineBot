@@ -1,13 +1,46 @@
+// @vitest-environment jsdom
+
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Bot, Group } from "@rakazo/contracts";
 import { createGroupSettingsSave } from "@rakazo/core";
+import type { ComponentProps, ReactNode } from "react";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 
-const source = readFileSync(new URL("./Shell.tsx", import.meta.url), "utf8");
+vi.mock("@lingui/react/macro", () => {
+  const t = (parts: TemplateStringsArray, ...values: unknown[]) =>
+    parts.reduce((text, part, index) => `${text}${index > 0 ? values[index - 1] : ""}${part}`, "");
+  return { useLingui: () => ({ t }), Trans: ({ children }: { children: ReactNode }) => children };
+});
+vi.mock("@rakazo/ui-web", () => ({
+  BotAvatar: () => null,
+  Button: (props: ComponentProps<"button">) =>
+    createElement("button", { type: "button", ...props }),
+  Input: (props: ComponentProps<"input">) => createElement("input", props),
+}));
+vi.mock("./shell/dialogs", () => ({ DeleteItemDialog: () => null }));
+
+import { GroupSettings } from "./GroupPanel";
+
+const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Shell.tsx"), "utf8");
 const start = source.indexOf("  const saveGroupSettings = useMemo(");
 const callback = stripTypeScriptTypes(
   source.slice(start, source.indexOf("  const groupSettingsActor", start)),
 );
+const groupPanelStart = source.indexOf("              <GroupSettings");
+const onSaveStart = source.indexOf("onSave={", groupPanelStart) + "onSave={".length;
+const onSaveCallback = stripTypeScriptTypes(
+  source.slice(onSaveStart, source.indexOf("onRemove={", onSaveStart)).trim().slice(0, -1),
+);
+function groupPanelSave(saveGroupSettings: ReturnType<typeof fixture>["save"] | null) {
+  return new Function("saveGroupSettings", `return (${onSaveCallback});`)(
+    saveGroupSettings,
+  ) as (input: { name?: string; botIds?: string[]; expectedBotIds?: string[] }) => Promise<void>;
+}
 const group = {
   id: "group-a",
   spaceId: "space-a",
@@ -28,13 +61,13 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-function fixture() {
+function fixture(missingSpace = false) {
   const owner = { key: "user-a/session-a" };
   const binding = {
     group,
     owner,
     userId: "user-a",
-    spaceId: "space-a",
+    spaceId: missingSpace ? undefined : "space-a",
     originId: "space-a",
     generation: 0,
   };
@@ -94,6 +127,77 @@ function fixture() {
 }
 
 describe("Shell group save publication", () => {
+  it("rejects the panel save when bootstrap has not supplied its Space context", async () => {
+    const h = fixture(true);
+    expect(h.save).toBeNull();
+    await expect(groupPanelSave(h.save)(input)).rejects.toThrow("GROUP_SETTINGS_UNAVAILABLE");
+    expect(h.update).not.toHaveBeenCalled();
+    expect(h.read).not.toHaveBeenCalled();
+    expect(h.publish).not.toHaveBeenCalled();
+  });
+  it("does not borrow a newly available helper for an earlier contextless callback", async () => {
+    const retained = groupPanelSave(null);
+    const h = fixture();
+    await expect(retained(input)).rejects.toThrow("GROUP_SETTINGS_UNAVAILABLE");
+    expect(h.update).not.toHaveBeenCalled();
+    expect(h.read).not.toHaveBeenCalled();
+    expect(h.publish).not.toHaveBeenCalled();
+    const current = groupPanelSave(h.save)(input);
+    h.pending.resolve(updated);
+    await expect(current).resolves.toBeUndefined();
+    expect(h.update).toHaveBeenCalledExactlyOnceWith({ groupId: "group-a", ...input });
+    expect(h.publish).toHaveBeenCalledOnce();
+  });
+  it("keeps a contextless panel's edited name and membership after Save fails", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const onClose = vi.fn();
+    const bots = ["a", "b", "c"].map(
+      (id) => ({ id, name: `Bot ${id}`, title: "", archivedAt: null }) as Bot,
+    );
+    const button = (name: string) => {
+      const found = [...container.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent === name,
+      );
+      if (!found) throw new Error(`Missing ${name} button`);
+      return found;
+    };
+    try {
+      await act(async () => {
+        root.render(
+          createElement(GroupSettings, {
+            group: group as Group,
+            bots,
+            onSave: groupPanelSave(null),
+            onRemove: async () => undefined,
+            onClose,
+          }),
+        );
+      });
+      const name = container.querySelector<HTMLInputElement>("input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+          name,
+          "Unsaved team",
+        );
+        name.dispatchEvent(new Event("input", { bubbles: true }));
+        button("Show all").click();
+      });
+      await act(async () => button("Bot c").click());
+      await act(async () => button("Save").click());
+      expect(onClose).not.toHaveBeenCalled();
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe("Could not save group");
+      expect(name.value).toBe("Unsaved team");
+      expect(button("Bot c").getAttribute("aria-pressed")).toBe("true");
+      expect(button("Save").disabled).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
   it("publishes its committed roster once after its editor closes without acknowledging that old editor", async () => {
     const h = fixture();
     const result = h.save.save(input);

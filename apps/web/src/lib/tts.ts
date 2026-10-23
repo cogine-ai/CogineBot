@@ -86,8 +86,15 @@ export class Speaker {
     const mine = this.token;
     const controller = new AbortController();
     this.request = controller;
-    const live = () =>
-      this.token === mine && !controller.signal.aborted && opts.isCurrent?.() !== false;
+    const owned = () => this.token === mine && !controller.signal.aborted;
+    const live = () => {
+      if (!owned()) return false;
+      if (opts.isCurrent?.() === false) {
+        this.stop();
+        return false;
+      }
+      return true;
+    };
     const stopOwnedSample = () => {
       if (this.token === mine) this.stop();
     };
@@ -217,6 +224,7 @@ export class Speaker {
         settled = true;
         audio.onended = null;
         audio.onerror = null;
+        audio.ontimeupdate = null;
         if (this.settlePlayback === done) this.settlePlayback = null;
         if (this.audio === audio) this.teardownAudio();
         resolve(ok);
@@ -224,7 +232,15 @@ export class Speaker {
       this.settlePlayback = done;
       audio.onended = () => done(true);
       audio.onerror = () => done(false);
-      audio.play().catch(() => done(false));
+      audio.ontimeupdate = () => {
+        if (!live()) done(false);
+      };
+      audio.play().then(
+        () => {
+          if (!live()) done(false);
+        },
+        () => done(false),
+      );
     });
   }
 }

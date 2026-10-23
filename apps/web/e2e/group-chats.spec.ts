@@ -119,13 +119,26 @@ test("group conversation keeps member avatars, settings and messages in one tran
   await expect(groupName).toHaveValue("Review team");
   await sidebar.getByRole("button", { name: /^Draft team/ }).click();
   await expect(groupName).toHaveValue("Draft team");
+  await groupName.fill("Draft team saved after retry");
   await page.route("**/rpc/groups/update", async (route) => route.abort("failed"));
   await desktopSettings.getByRole("button", { name: "Save", exact: true }).click();
   await expect(desktopSettings.getByRole("alert")).toHaveText("Could not reach the server");
+  await expect(groupName).toHaveValue("Draft team saved after retry");
   await expect(desktopSettings.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
   await page.unroute("**/rpc/groups/update");
   await desktopSettings.getByRole("button", { name: "Save", exact: true }).click();
   await expect(desktopSettings).not.toBeVisible();
+  expect((await rpc<{ name: string }>(page, "groups/get", { groupId: draftGroupId })).name).toBe(
+    "Draft team saved after retry",
+  );
+  await page.getByTestId("bot-settings-trigger").click();
+  await expect(groupName).toHaveValue("Draft team saved after retry");
+  await groupName.fill("Draft team");
+  await desktopSettings.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(desktopSettings).not.toBeVisible();
+  expect((await rpc<{ name: string }>(page, "groups/get", { groupId: draftGroupId })).name).toBe(
+    "Draft team",
+  );
 
   await page
     .getByRole("combobox", { name: "Message Draft team" })

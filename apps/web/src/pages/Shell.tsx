@@ -5231,7 +5231,7 @@ export function ShellPage() {
                 covered={computerOpen}
                 onClose={() => setPanel(null)}
                 onSave={async (input) => {
-                  if (!saveGroupSettings) return;
+                  if (!saveGroupSettings) throw new Error("GROUP_SETTINGS_UNAVAILABLE");
                   const updated = await saveGroupSettings.save(input);
                   saveGroupSettings.publish(updated);
                 }}
