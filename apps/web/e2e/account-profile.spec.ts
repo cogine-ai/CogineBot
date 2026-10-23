@@ -37,11 +37,24 @@ test("account timezone adopts once, survives reload and Space changes, and retai
   await captureScreenshot(page, testInfo, "a5-account-timezone");
   await page.reload();
   await expect.poll(async () => (await rpc<Me>(page, "me", {})).timezone).toBe("UTC");
-  await rpc(page, "spaces/create", { name: "Other clock Space" });
+  const space = await rpc<{ id: string }>(page, "spaces/create", { name: "Other clock Space" });
   await page.reload();
+  const otherSpace = page
+    .locator("aside")
+    .first()
+    .locator(`[data-sidebar-group^="space:${space.id}:"]`);
+  await otherSpace.getByRole("button", { name: "Other clock Space", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("rakazo:space-id")))
+    .toBe(space.id);
+  await completeOnboarding(page);
   await openUserSettings(page);
   await expect(timezone).toHaveValue("UTC");
+  const savedAfterSwitch = page.waitForResponse(
+    (response) => response.url().includes("/rpc/preferences/update") && response.ok(),
+  );
   await timezone.selectOption("Asia/Taipei");
+  expect((await savedAfterSwitch).request().headers()).not.toHaveProperty("x-rakazo-space-id");
   await expect.poll(async () => (await rpc<Me>(page, "me", {})).timezone).toBe("Asia/Taipei");
 });
 
