@@ -55,6 +55,35 @@ function space(
 }
 
 describe("sidebarGroupsForSpaces", () => {
+  it("allows member settings on the hosting row without granting owner actions", () => {
+    const shared = {
+      ...space("shared-space", "Research"),
+      botSections: [{ id: "section-1", name: "Product" }],
+    };
+    const groups = sidebarGroupsForSpaces([space("personal-space", "Personal"), shared], "");
+    const sharedRows = groups.filter((group) => group.spaceId === shared.id);
+    expect(sharedRows.length).toBeGreaterThan(1);
+    expect(sharedRows[0]).toMatchObject({
+      canOpenSpaceSettings: true,
+      canRenameSpace: false,
+      canDeleteSpace: false,
+    });
+    expect(sharedRows.slice(1).every((group) => group.canOpenSpaceSettings === false)).toBe(true);
+  });
+
+  it("keeps empty shared Space settings available without owner actions", () => {
+    const groups = sidebarGroupsForSpaces(
+      [space("personal-space", "Personal"), space("shared-space", "Research", { bots: [] })],
+      "",
+    );
+    expect(groups.find((group) => group.spaceId === "shared-space")).toMatchObject({
+      canOpenSpaceSettings: true,
+      canRenameSpace: false,
+      canDeleteSpace: false,
+      emptySpaceId: "shared-space",
+    });
+  });
+
   it("keeps rename on the only space without showing its name", () => {
     const [group] = sidebarGroupsForSpaces([space("space-1", "Personal", { canRename: true })], "");
 

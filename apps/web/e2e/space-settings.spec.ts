@@ -231,3 +231,174 @@ test("switching the settings target discards a late memory response", async ({
     await page.unroute("**/rpc/memory/providerConfig");
   }
 });
+
+test("a shared Space member can open settings without owner actions or a chat switch", async ({
+  page,
+  browser,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `space-settings-owner-${stamp}@coginebot.test`, "password12", "Space Owner");
+  await completeOnboarding(page);
+  const ownerActor = await rpc<Me>(page, "me", {});
+  const shared = await rpc<{ id: string }>(page, "spaces/create", { name: "Shared research" });
+  const privateSpace = await rpc<{ id: string }>(page, "spaces/create", { name: "Owner private" });
+  const memberContext = await browser.newContext({ baseURL: new URL(page.url()).origin });
+  try {
+    const member = await memberContext.newPage();
+    await signup(
+      member,
+      `space-settings-member-${stamp}@coginebot.test`,
+      "password12",
+      "Space Member",
+    );
+    await completeOnboarding(member);
+    const memberActor = await rpc<Me>(member, "me", {});
+    expect(process.env.DATABASE_URL).toBeTruthy();
+    const { createDb } = await import("../../../packages/db/src/client");
+    const db = createDb(process.env.DATABASE_URL!, {
+      poolMax: 2,
+      applicationName: "space-settings-member-fixture",
+    });
+    try {
+      const sharedRow = await db.prisma.space.findUniqueOrThrow({
+        where: { id: shared.id },
+        select: { organizationId: true },
+      });
+      // Seed only isolated test membership; navigation, settings and denied writes use the API.
+      await db.prisma.member.create({
+        data: {
+          id: crypto.randomUUID(),
+          userId: memberActor.userId,
+          organizationId: sharedRow.organizationId,
+          role: "member",
+          createdAt: new Date(),
+        },
+      });
+      await db.prisma.spaceMember.create({
+        data: {
+          id: crypto.randomUUID(),
+          userId: memberActor.userId,
+          organizationId: sharedRow.organizationId,
+          spaceId: shared.id,
+          role: "member",
+          createdAt: new Date(),
+        },
+      });
+      const defaultMembership = await db.prisma.spaceMember.findUnique({
+        where: { spaceId_userId: { spaceId: ownerActor.spaceId, userId: memberActor.userId } },
+      });
+      expect(defaultMembership).toMatchObject({
+        spaceId: ownerActor.spaceId,
+        userId: memberActor.userId,
+        role: "member",
+      });
+      expect(
+        await db.prisma.spaceMember.findUnique({
+          where: { spaceId_userId: { spaceId: privateSpace.id, userId: memberActor.userId } },
+        }),
+      ).toBeNull();
+      await testInfo.attach("space-member-permission-fixture", {
+        contentType: "application/json",
+        body: JSON.stringify({
+          defaultMembership: {
+            spaceId: defaultMembership!.spaceId,
+            userId: defaultMembership!.userId,
+            role: defaultMembership!.role,
+          },
+          privateMembership: null,
+        }),
+      });
+    } finally {
+      await db.prisma.$disconnect();
+      await db.pool.end();
+    }
+    const created = await member.request.post("/rpc/spaces/create", {
+      headers: { "x-rakazo-space-id": shared.id },
+      data: { json: { name: "Member chats" } },
+    });
+    expect(created.ok()).toBe(true);
+    const { json: chatSpace } = (await created.json()) as { json: { id: string } };
+    await member.evaluate(
+      (spaceId) => localStorage.setItem("rakazo:space-id", spaceId),
+      chatSpace.id,
+    );
+    await member.goto("/onboarding");
+    await completeOnboarding(member);
+    await expect(member.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    const navigation = await inSpace<SpaceNavigation>(member, chatSpace.id, "spaces/list");
+    expect(navigation.spaces.find((space) => space.id === shared.id)).toMatchObject({
+      canRename: false,
+      canDelete: false,
+    });
+    for (const [procedure, input] of [
+      ["spaces/rename", { spaceId: shared.id, name: "Forbidden rename" }],
+      ["spaces/remove", { spaceId: shared.id }],
+    ] as const) {
+      const denied = await member.request.post(`/rpc/${procedure}`, {
+        headers: { "x-rakazo-space-id": chatSpace.id },
+        data: { json: input },
+      });
+      expect(denied.status()).toBe(403);
+    }
+    for (const [procedure, input] of [
+      [
+        "memory/connectProvider",
+        { provider: "serenity", settings: {}, credentials: {}, defaultMemoryScope: "isolated" },
+      ],
+      ["memory/setDefaultScope", { defaultMemoryScope: "shared" }],
+      ["memory/disconnectProvider", {}],
+    ] as const) {
+      const denied = await member.request.post(`/rpc/${procedure}`, {
+        headers: { "x-rakazo-space-id": shared.id },
+        data: { json: input },
+      });
+      expect(denied.status()).toBe(403);
+    }
+    expect(await inSpace<Me>(member, ownerActor.spaceId, "me")).toMatchObject({
+      spaceId: ownerActor.spaceId,
+      userId: memberActor.userId,
+    });
+    const inaccessible = await member.request.post("/rpc/me", {
+      headers: { "x-rakazo-space-id": privateSpace.id },
+      data: { json: {} },
+    });
+    expect(inaccessible.status()).toBe(401);
+    const chatUrl = member.url();
+    const composer = member.getByRole("combobox", { name: "Message Chief" });
+    await composer.fill("Keep this member's chat draft.");
+    const header = member
+      .locator("aside")
+      .first()
+      .getByRole("button", { name: "Shared research", exact: true });
+    await header.click({ button: "right" });
+    await expect(member.getByRole("menuitem", { name: "Settings", exact: true })).toBeVisible();
+    await expect(member.getByRole("menuitem", { name: "Rename space", exact: true })).toHaveCount(
+      0,
+    );
+    await expect(member.getByRole("menuitem", { name: "Delete space", exact: true })).toHaveCount(
+      0,
+    );
+    await captureScreenshot(member, testInfo, "space-member-settings-menu");
+    await member.keyboard.press("Escape");
+    await header.focus();
+    await member.keyboard.press("Shift+F10");
+    const settingsRead = member.waitForRequest(
+      (request) =>
+        request.url().endsWith("/rpc/me") && request.headers()["x-rakazo-space-id"] === shared.id,
+    );
+    await member.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    await settingsRead;
+    const settings = member.getByTestId("user-settings");
+    await expect(
+      settings.getByTestId("settings-space").locator('[data-slot="select-value"]'),
+    ).toHaveText("Shared research");
+    expect((await inSpace<Me>(member, shared.id, "me")).spaceId).toBe(shared.id);
+    await captureScreenshot(member, testInfo, "space-member-settings-target");
+    await settings.getByRole("button", { name: "Close model settings", exact: true }).click();
+    await expect(composer).toHaveValue("Keep this member's chat draft.");
+    expect(member.url()).toBe(chatUrl);
+    expect(await member.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(chatSpace.id);
+  } finally {
+    await memberContext.close();
+  }
+});

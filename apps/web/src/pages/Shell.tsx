@@ -4062,7 +4062,7 @@ export function ShellPage() {
                   nestedRows.flatMap((row) =>
                     row.item.kind === "bot" && row.parentId === parentId ? [row.item.chat.id] : [],
                   );
-                const hasSpaceActions = group.canRenameSpace || group.canDeleteSpace;
+                const hasSpaceActions = group.canOpenSpaceSettings;
                 return (
                   // biome-ignore lint/a11y/noStaticElementInteractions: Move and reorder menus provide keyboard alternatives to this drop target.
                   <div

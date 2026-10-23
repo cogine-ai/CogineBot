@@ -26,6 +26,7 @@ function spaceHeaderMenu(space: { canRename?: boolean; canDelete?: boolean }, ho
   return {
     canRenameSpace: hostsMenu && space.canRename === true,
     canDeleteSpace: hostsMenu && space.canDelete === true,
+    canOpenSpaceSettings: hostsMenu,
   };
 }
 
