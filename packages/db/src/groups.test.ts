@@ -616,50 +616,62 @@ describe("createGroup", () => {
 });
 
 describe("updateGroup membership confirmation", () => {
-  it("rejects a stale active roster before replacing members or cancelling runs", async () => {
-    const actor = {
-      spaceId: "workspace-1",
-      userId: "user-1",
-      email: "user@example.test",
-      isDeploymentOwner: false,
-    };
-    const update = vi.fn();
-    const replace = vi.fn();
-    const cancel = vi.fn();
-    const tx = {
-      $queryRaw: vi.fn(async () => [{ id: "group-1" }]),
-      chatGroup: {
-        findFirst: vi.fn(async () => ({
-          thread: { id: "thread-1" },
-          members: [
-            { botId: "bot-1", bot: { archivedAt: null } },
-            { botId: "bot-3", bot: { archivedAt: null } },
-            { botId: "archived", bot: { archivedAt: new Date() } },
-          ],
-        })),
-        update,
-      },
-      chatGroupMember: { deleteMany: replace },
-      run: { findMany: cancel },
-    };
-    const repos = createGroupRepos({
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
-      bot: {
-        findMany: vi.fn(async () => [
-          { id: "bot-1", name: "One", color: "blue" },
-          { id: "bot-2", name: "Two", color: "blue" },
-        ]),
-      },
-    } as unknown as PrismaClient);
-    await expect(
-      repos.updateGroup(actor, {
-        groupId: "group-1",
-        botIds: ["bot-1", "bot-2"],
-        expectedBotIds: ["bot-1", "bot-2"],
-      }),
-    ).rejects.toThrow("Group members changed. Refresh and try again.");
-    expect(update).not.toHaveBeenCalled();
-    expect(replace).not.toHaveBeenCalled();
-    expect(cancel).not.toHaveBeenCalled();
-  });
+  it.each([
+    { change: "membership", activeBotIds: ["bot-1", "bot-3"] },
+    { change: "member order", activeBotIds: ["bot-2", "bot-1"] },
+  ])(
+    "rejects stale $change before replacing members or cancelling runs",
+    async ({ activeBotIds }) => {
+      const actor = {
+        spaceId: "workspace-1",
+        userId: "user-1",
+        email: "user@example.test",
+        isDeploymentOwner: false,
+      };
+      const update = vi.fn();
+      const replace = vi.fn();
+      const cancel = vi.fn();
+      const tx = {
+        $queryRaw: vi.fn(async () => [{ id: "group-1" }]),
+        chatGroup: {
+          findFirst: vi.fn(async () => ({
+            thread: { id: "thread-1" },
+            members: [
+              ...activeBotIds.map((botId) => ({ botId, bot: { archivedAt: null } })),
+              { botId: "archived", bot: { archivedAt: new Date() } },
+            ],
+          })),
+          update,
+        },
+        chatGroupMember: { deleteMany: replace },
+        run: { findMany: cancel },
+      };
+      const repos = createGroupRepos({
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+        bot: {
+          findMany: vi.fn(async () => [
+            { id: "bot-1", name: "One", color: "blue" },
+            { id: "bot-2", name: "Two", color: "blue" },
+          ]),
+        },
+      } as unknown as PrismaClient);
+      await expect(
+        repos.updateGroup(actor, {
+          groupId: "group-1",
+          botIds: ["bot-1", "bot-2"],
+          expectedBotIds: ["bot-1", "bot-2"],
+        }),
+      ).rejects.toThrow("Group members changed. Refresh and try again.");
+      expect(tx.chatGroup.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: expect.objectContaining({
+            members: expect.objectContaining({ orderBy: groupMemberOrderBy }),
+          }),
+        }),
+      );
+      expect(update).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      expect(cancel).not.toHaveBeenCalled();
+    },
+  );
 });

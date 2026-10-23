@@ -484,17 +484,20 @@ export function createGroupRepos(prisma: PrismaClient) {
             archivedAt: null,
           },
           include: {
-            members: { select: { botId: true, bot: { select: { archivedAt: true } } } },
+            members: {
+              select: { botId: true, bot: { select: { archivedAt: true } } },
+              orderBy: groupMemberOrderBy,
+            },
             thread: { select: { id: true } },
           },
         });
         if (!current?.thread) throw new IsolationError();
         if (input.expectedBotIds) {
-          const expected = new Set(input.expectedBotIds);
+          const expected = input.expectedBotIds;
           const active = current.members.filter((member) => member.bot.archivedAt === null);
           if (
-            expected.size !== active.length ||
-            active.some((member) => !expected.has(member.botId))
+            expected.length !== active.length ||
+            active.some((member, index) => member.botId !== expected[index])
           ) {
             throw new GroupMembershipConflictError();
           }
