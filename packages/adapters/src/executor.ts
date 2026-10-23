@@ -8069,13 +8069,13 @@ export function threadContextForRun<T>(
     : { ...context, includeSemanticRecall: true };
 }
 
-/** Profile fields the creation intro is asked to explain. Other runs keep the prior identity line. */
+/** Creation intros explain the profile; other runs use stored private instructions verbatim. */
 export function runIdentityInstruction(
   bot: { name: string; title: string; description: string; instructions: string },
   trigger: string,
 ): string {
   if (trigger !== "created") {
-    return bot.instructions || `${bot.name}: ${bot.title}\n${bot.description}`;
+    return bot.instructions;
   }
   const instructions = bot.instructions.trim();
   return [
