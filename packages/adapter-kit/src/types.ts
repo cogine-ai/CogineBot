@@ -469,6 +469,8 @@ export interface AgentRunRequest {
   runId: string;
   sourceMessageId?: string | null;
   prompt: string;
+  /** Trusted account timezone used for the current turn and delegated work. */
+  userTimezone?: string | null;
   instructions: string;
   history: Array<{
     id?: string;

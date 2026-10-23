@@ -6055,3 +6055,19 @@ msgstr "확인"
 #: src/pages/SettingsOverlay.tsx
 msgid "Space"
 msgstr "스페이스"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions"
+msgstr "지침"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Timezone"
+msgstr "시간대"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Couldn't update your timezone"
+msgstr "시간대를 업데이트하지 못했습니다"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions must be at most {count} characters"
+msgstr "지침은 최대 {count}자여야 합니다"

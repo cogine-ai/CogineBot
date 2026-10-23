@@ -4,6 +4,13 @@ import { getLogger } from "@rakazo/logging";
 
 type AppendEvent = typeof appendEventInTransaction;
 
+export class BotInstructionsConflictError extends Error {
+  constructor() {
+    super("Instructions changed; review the current instructions first.");
+    this.name = "BotInstructionsConflictError";
+  }
+}
+
 /**
  * Persist a bot row. When profile metadata changes, write `bot.updated` in the same
  * transaction so clients can refresh the accepted profile and notification setting.
@@ -18,27 +25,44 @@ export async function commitBotUpdate(
     botId: string;
     data: Prisma.BotUncheckedUpdateInput;
     emitBotUpdated: boolean;
+    expectedInstructions?: string;
     validate?: (tx: Prisma.TransactionClient) => Promise<void>;
   },
   appendEvent: AppendEvent = appendEventInTransaction,
 ): Promise<{ id: string; name: string; title: string; description: string }> {
-  if (!options.emitBotUpdated && !options.validate) {
-    return options.prisma.bot.update({
-      where: { id: options.botId },
-      data: options.data,
-      select: { id: true, name: true, title: true, description: true },
-    });
-  }
+  const update = async (client: Pick<Prisma.TransactionClient, "bot">) => {
+    try {
+      return await client.bot.update({
+        where: {
+          id: options.botId,
+          spaceId: options.spaceId,
+          ...(options.expectedInstructions !== undefined
+            ? { instructions: options.expectedInstructions }
+            : {}),
+        },
+        data: options.data,
+        select: { id: true, name: true, title: true, description: true },
+      });
+    } catch (error) {
+      // Only this guarded write's missing row means the accepted rules changed.
+      if (
+        options.expectedInstructions !== undefined &&
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "P2025"
+      )
+        throw new BotInstructionsConflictError();
+      throw error;
+    }
+  };
+  if (!options.emitBotUpdated && !options.validate) return update(options.prisma);
 
   const save = () =>
     options.prisma.$transaction(
       async (tx) => {
         await options.validate?.(tx);
-        const updated = await tx.bot.update({
-          where: { id: options.botId },
-          data: options.data,
-          select: { id: true, name: true, title: true, description: true },
-        });
+        const updated = await update(tx);
         const event = options.emitBotUpdated
           ? await appendEvent(tx, {
               spaceId: options.spaceId,
@@ -70,6 +94,7 @@ export function botProfileChanged(input: {
   name?: unknown;
   title?: unknown;
   description?: unknown;
+  instructions?: unknown;
   color?: unknown;
   notifyOnFinish?: unknown;
 }): boolean {
@@ -77,6 +102,7 @@ export function botProfileChanged(input: {
     input.name !== undefined ||
     input.title !== undefined ||
     input.description !== undefined ||
+    input.instructions !== undefined ||
     input.color !== undefined ||
     input.notifyOnFinish !== undefined
   );

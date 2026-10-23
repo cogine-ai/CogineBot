@@ -177,6 +177,7 @@ it.each(["refresh", "unmount", "preclaim"] as const)(
       setMe: vi.fn(),
       retainInboxValue: (_before: unknown, next: unknown) => next,
       saveInbox: vi.fn(),
+      adoptDeviceTimezone: vi.fn(async () => undefined),
       errorText: (error: Error) => error.message,
       t: (value: string) => value,
     };

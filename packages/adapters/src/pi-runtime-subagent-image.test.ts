@@ -162,6 +162,11 @@ it("uses the image planner in a nested subagent's screenshot context", async () 
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   } as Model<"openai-completions">;
   const prepared = policy.prepareContext(context, model);
-  expect(prepared.messages.at(-1)).toMatchObject({ content: [image] });
+  expect(prepared.messages.at(-1)).toMatchObject({
+    content: [
+      { type: "text", text: expect.stringContaining("Screenshot(s) returned by this tool call.") },
+      image,
+    ],
+  });
   expect(policy.getDecision()!.estimatedInputTokens).toBeLessThan(128_000 - 4096);
 });

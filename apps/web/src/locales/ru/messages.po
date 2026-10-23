@@ -6055,3 +6055,19 @@ msgstr "Подтверждения"
 #: src/pages/SettingsOverlay.tsx
 msgid "Space"
 msgstr "Пространство"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions"
+msgstr "Инструкции"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Timezone"
+msgstr "Часовой пояс"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Couldn't update your timezone"
+msgstr "Не удалось обновить часовой пояс"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions must be at most {count} characters"
+msgstr "Инструкции должны содержать не более {count} символов"

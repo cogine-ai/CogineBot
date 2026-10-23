@@ -51,7 +51,13 @@ import {
   getCachedAvatarStyle,
   saveAvatarStyle,
 } from "./avatar-style.js";
+import {
+  persistedIntegrationsCacheScope,
+  readIntegrationsCache,
+  writeIntegrationsCache,
+} from "./integrations-cache.js";
 import { resumeLiveNotifications } from "./live-notifications.js";
+import * as SessionModule from "./session.js";
 import {
   clearSessionToken,
   restoreSessionToken,
@@ -60,6 +66,32 @@ import {
 } from "./session.js";
 import type { UnsentDisk } from "./thread-feedback.js";
 import { configureUnsentSends } from "./thread-feedback.js";
+
+const cachedIntegrationFiles = vi.hoisted(() => new Map<string, string>());
+vi.mock("expo-file-system", () => {
+  class Directory {
+    uri: string;
+    constructor(...parts: Array<string | { uri: string }>) {
+      this.uri = parts.map((part) => (typeof part === "string" ? part : part.uri)).join("/");
+    }
+    get exists() {
+      return true;
+    }
+    create() {}
+  }
+  class File extends Directory {
+    override get exists() {
+      return cachedIntegrationFiles.has(this.uri);
+    }
+    textSync() {
+      return cachedIntegrationFiles.get(this.uri);
+    }
+    write(text: string) {
+      cachedIntegrationFiles.set(this.uri, text);
+    }
+  }
+  return { Directory, File, Paths: { cache: "test-cache" } };
+});
 
 vi.mock("expo-secure-store", () => ({
   getItemAsync: vi.fn(),
@@ -271,6 +303,276 @@ describe("mobile API authentication", () => {
     await expect(rpc("bots/list", {}, { requestContext: context })).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it.each(["preferences/update", "preferences/adoptTimezone", "me"])(
+    "captures %s without a revoked selected Space while preserving default callers",
+    async (procedure) => {
+      await saveSessionToken("fake-account-session");
+      vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) =>
+        key === "rakazo.session_token" ? "fake-account-session" : null,
+      );
+      await selectSpace("revoked-space");
+      const account = await captureApiRequestContext(null);
+      const space = await captureApiRequestContext();
+      expect(account.headers).toEqual({ authorization: "Bearer fake-account-session" });
+      expect(space.headers["x-rakazo-space-id"]).toBe("revoked-space");
+      const fetchMock = vi.fn(async (_url: string, options: RequestInit) =>
+        new Headers(options.headers).has("x-rakazo-space-id")
+          ? rpcErrorResponse(401, "UNAUTHORIZED", "Space access revoked")
+          : jsonResponse({ json: { userId: "user-a", spaceId: "default-space", timezone: "UTC" } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        rpc(procedure, { timezone: "UTC" }, { requestContext: account }),
+      ).resolves.toEqual({ userId: "user-a", spaceId: "default-space", timezone: "UTC" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(selectedSpaceId()).toBe("revoked-space");
+      await expect(snapshotSessionToken()).resolves.toMatchObject({
+        ok: true,
+        value: "fake-account-session",
+      });
+      await saveSessionToken("replacement-session");
+      await expect(
+        rpc(procedure, { timezone: "UTC" }, { requestContext: account }),
+      ).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retains structured RPC conflict data for native recovery classification", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            json: {
+              code: "CONFLICT",
+              status: 409,
+              message: "Instructions changed",
+              data: { reason: "instructions_changed" },
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    await expect(
+      rpc("bots/update", { botId: "bot-a", instructions: "new", expectedInstructions: "old" }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      status: 409,
+      data: { reason: "instructions_changed" },
+    });
+  });
+
+  it("preserves selected Space identity and its offline cache after an account-scoped Me read", async () => {
+    const storage = new Map<string, string>();
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => storage.get(key) ?? null);
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      storage.set(key, value);
+    });
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      storage.delete(key);
+    });
+    await saveSessionToken("fake-verified-owner");
+    await selectSpace("space-b");
+    const fetch = vi.fn(async (_url: string, options: RequestInit) =>
+      jsonResponse({
+        json: {
+          userId: "user-a",
+          spaceId: new Headers(options.headers).get("x-rakazo-space-id") ?? "default-a",
+          timezone: "UTC",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await rpc("me");
+    const verifiedB = await persistedIntegrationsCacheScope();
+    expect(verifiedB).toMatchObject({
+      userId: "user-a",
+      spaceId: "space-b",
+      selectionId: "space-b",
+    });
+    const snapshot = { catalog: [], connections: [] };
+    writeIntegrationsCache(verifiedB!, snapshot);
+    const durableB = storage.get("rakazo.integrations-scope");
+    const accountContext = await captureApiRequestContext(null);
+    await expect(rpc("me", {}, { requestContext: accountContext })).resolves.toMatchObject({
+      spaceId: "default-a",
+    });
+    fetch.mockRejectedValue(new TypeError("Network request failed"));
+    fetch.mockClear();
+    const restoredB = await persistedIntegrationsCacheScope();
+    expect(restoredB).toMatchObject({
+      userId: "user-a",
+      spaceId: "space-b",
+      selectionId: "space-b",
+    });
+    expect(readIntegrationsCache(restoredB!)).toEqual(snapshot);
+    expect(storage.get("rakazo.integrations-scope")).toBe(durableB);
+    expect(selectedSpaceId()).toBe("space-b");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("verifies the default Space only when no Space is selected", async () => {
+    const storage = await verifiedScopeStorage();
+    await clearSpace();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ json: { userId: "user-a", spaceId: "default-a" } })),
+    );
+    await rpc("me", {}, { requestContext: await captureApiRequestContext(null) });
+    expect(await persistedIntegrationsCacheScope()).toMatchObject({
+      userId: "user-a",
+      spaceId: "default-a",
+      selectionId: null,
+    });
+    expect(JSON.parse(storage.get("rakazo.integrations-scope")!)).toMatchObject({
+      userId: "user-a",
+      spaceId: "default-a",
+      selectionId: null,
+    });
+  });
+
+  it("does not claim that a selected Space was verified by a different Space response", async () => {
+    const storage = await verifiedScopeStorage();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ json: { userId: "user-a", spaceId: "default-a" } })),
+    );
+    await rpc("me");
+    expect(storage.has("rakazo.integrations-scope")).toBe(false);
+    expect(await persistedIntegrationsCacheScope()).toBeNull();
+    expect(selectedSpaceId()).toBe("space-b");
+  });
+
+  it.each(["Space", "ABA", "session", "API"])(
+    "does not persist a Me response after %s ownership changes",
+    async (kind) => {
+      const storage = await verifiedScopeStorage();
+      let finish!: (response: Response) => void;
+      const fetch = vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const request = rpc("me");
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      try {
+        if (kind === "Space" || kind === "ABA") await selectSpace("space-c");
+        if (kind === "ABA") await selectSpace("space-b");
+        if (kind === "session") await saveSessionToken("replacement-owner");
+        if (kind === "API") {
+          storage.set("rakazo.api_base", "https://replacement.example.test");
+          await loadApiBase();
+        }
+        finish(jsonResponse({ json: { userId: "user-a", spaceId: "space-b" } }));
+        await request;
+        expect(storage.has("rakazo.integrations-scope")).toBe(false);
+        expect(await persistedIntegrationsCacheScope()).toBeNull();
+      } finally {
+        if (kind === "API") await resetApiBase();
+      }
+    },
+  );
+
+  it.each(["Space", "ABA", "session", "API"])(
+    "rechecks %s ownership while a verified identity save waits for its token",
+    async (kind) => {
+      const storage = await verifiedScopeStorage();
+      let holdNextTokenRead = false;
+      let release!: (token: string) => void;
+      vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => {
+        if (key === "rakazo.session_token" && holdNextTokenRead) {
+          holdNextTokenRead = false;
+          return new Promise<string>((resolve) => {
+            release = resolve;
+          });
+        }
+        return storage.get(key) ?? null;
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          holdNextTokenRead = true;
+          return jsonResponse({ json: { userId: "user-a", spaceId: "space-b" } });
+        }),
+      );
+      const request = rpc("me");
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      let changingSession: Promise<void> | undefined;
+      try {
+        if (kind === "Space" || kind === "ABA") await selectSpace("space-c");
+        if (kind === "ABA") await selectSpace("space-b");
+        if (kind === "session") changingSession = saveSessionToken("replacement-owner");
+        if (kind === "API") {
+          storage.set("rakazo.api_base", "https://replacement.example.test");
+          await loadApiBase();
+        }
+        release("fake-verified-owner");
+        await request;
+        await changingSession;
+        expect(storage.has("rakazo.integrations-scope")).toBe(false);
+        expect(SecureStore.setItemAsync).not.toHaveBeenCalledWith(
+          "rakazo.integrations-scope",
+          expect.any(String),
+        );
+      } finally {
+        if (kind === "API") await resetApiBase();
+      }
+    },
+  );
+
+  it.each(["Space", "ABA", "session", "API"])(
+    "rechecks %s ownership before a queued identity save starts",
+    async (kind) => {
+      const storage = await verifiedScopeStorage();
+      const saveScope = vi.spyOn(SessionModule, "saveVerifiedIntegrationsScope");
+      let release!: () => void;
+      let writeStarted = false;
+      vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+        if (key === "rakazo.integrations-scope" && !writeStarted) {
+          writeStarted = true;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        storage.set(key, value);
+      });
+      const fetch = vi.fn(async () =>
+        jsonResponse({ json: { userId: "user-a", spaceId: "space-b" } }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const first = rpc("me");
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      const queued = rpc("me");
+      await vi.waitFor(() => expect(saveScope).toHaveBeenCalledTimes(2));
+      // Both calls reached the real scope queue; the first native write still holds it.
+      let changingSession: Promise<void> | undefined;
+      try {
+        if (kind === "Space" || kind === "ABA") await selectSpace("space-c");
+        if (kind === "ABA") await selectSpace("space-b");
+        if (kind === "session") changingSession = saveSessionToken("replacement-owner");
+        if (kind === "API") {
+          storage.set("rakazo.api_base", "https://replacement.example.test");
+          await loadApiBase();
+        }
+        release();
+        await Promise.all([first, queued]);
+        await changingSession;
+        expect(
+          vi
+            .mocked(SecureStore.setItemAsync)
+            .mock.calls.filter(([key]) => key === "rakazo.integrations-scope"),
+        ).toHaveLength(1);
+        if (kind === "session") expect(storage.has("rakazo.integrations-scope")).toBe(false);
+      } finally {
+        if (kind === "API") await resetApiBase();
+      }
+    },
+  );
 
   beforeEach(async () => {
     vi.restoreAllMocks();
@@ -3644,3 +3946,18 @@ it("localizes non-JSON successful account-security responses", async () => {
   );
   await expect(fetchAccountSecurity()).rejects.toThrow("Could not load sign-in options");
 });
+
+/** Real session/selection code; only the native persistence boundary is held in memory. */
+async function verifiedScopeStorage() {
+  const storage = new Map<string, string>();
+  vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => storage.get(key) ?? null);
+  vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+    storage.set(key, value);
+  });
+  vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+    storage.delete(key);
+  });
+  await saveSessionToken("fake-verified-owner");
+  await selectSpace("space-b");
+  return storage;
+}

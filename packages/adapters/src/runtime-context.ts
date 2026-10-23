@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import type { AdapterContext, AgentRunRequest, AgentUsage } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
+import { automatedToolMessages } from "./automated-messages.js";
 import type { CacheRequest, ContextBudget } from "./context-selection.js";
 import {
   ContextCacheTracker,
@@ -97,6 +98,15 @@ export function createRuntimeContextPolicy(
   let pendingProjection: { scope: string; entries: ProjectionEntry[] } | undefined;
   let decision: RuntimeContextDecision | undefined;
   let metadataPresent = false;
+  // Views remain local to this policy; projection hashes always use their raw messages.
+  const rawContexts = new WeakMap<Context, Context>();
+  function modelView(ctx: Context): Context {
+    const messages = automatedToolMessages(ctx.messages);
+    if (messages.every((message, index) => message === ctx.messages[index])) return ctx;
+    const view = { ...ctx, messages };
+    rawContexts.set(view, ctx);
+    return view;
+  }
   const historyById = new Map(
     request.history.filter((message) => message.id).map((message) => [message.id!, message]),
   );
@@ -156,6 +166,7 @@ export function createRuntimeContextPolicy(
   }
   return {
     prepareContext(ctx: Context, model: Model<Api>): Context {
+      ctx = rawContexts.get(ctx) ?? ctx;
       const strategy = request.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
       const standaloneHistoryFallback =
         request.contextStrategy === undefined &&
@@ -166,10 +177,16 @@ export function createRuntimeContextPolicy(
       metadataPresent = ctx.messages.some((message) =>
         Boolean((message as Message & OriginalMetadata).rakazoHistory),
       );
-      const fullPrefix = providerContextPrefix(
-        ctx.systemPrompt ?? "",
-        ctx.tools ?? [],
-        ctx.messages,
+      const fullView = modelView(ctx);
+      const prefix = (value: Context) =>
+        providerContextPrefix(value.systemPrompt ?? "", value.tools ?? [], value.messages);
+      const fullPrefix = prefix(fullView);
+      // Reserve every candidate label before selecting raw structured evidence. Labels
+      // are added only afterward, so JSON shortening and projection identity stay intact.
+      const labelReserve = Math.max(
+        0,
+        estimateContextTokens(fullPrefix, options.imageTokens) -
+          estimateContextTokens(prefix(ctx), options.imageTokens),
       );
       const cacheRequest: CacheRequest = cache.stamp({
         accountScope,
@@ -184,15 +201,11 @@ export function createRuntimeContextPolicy(
       if (strategy === "cache-aware" && predictedCache !== "likely-warm") {
         const candidate = project(ctx, model);
         if (candidate) {
-          const prefix = providerContextPrefix(
-            ctx.systemPrompt ?? "",
-            ctx.tools ?? [],
-            candidate.messages,
-          );
+          const candidatePrefix = prefix(modelView({ ...ctx, messages: candidate.messages }));
           const prediction = cache.predict({
             ...cacheRequest,
-            prefix,
-            prefixTokens: estimateContextTokens(prefix, options.imageTokens),
+            prefix: candidatePrefix,
+            prefixTokens: estimateContextTokens(candidatePrefix, options.imageTokens),
           });
           if (prediction === "likely-warm") {
             projected = candidate;
@@ -214,7 +227,7 @@ export function createRuntimeContextPolicy(
           truncatedToolResults: 0,
           observedReuse: null,
         };
-        return ctx;
+        return fullView;
       }
       // Metadata distinguishes repeated historical requests from the live request.
       let messages = projected?.messages ?? [...ctx.messages];
@@ -233,7 +246,9 @@ export function createRuntimeContextPolicy(
       const modelWindow = request.model.contextWindow ?? model.contextWindow;
       const outputReserve = request.model.maxTokens ?? model.maxTokens;
       const fixed =
-        estimateContextTokens(ctx.systemPrompt ?? "") + estimateContextTokens(ctx.tools ?? []);
+        estimateContextTokens(ctx.systemPrompt ?? "") +
+        estimateContextTokens(ctx.tools ?? []) +
+        labelReserve;
       // Recent history and navigation have their own bounds. Active tool progress
       // uses the actual model budget rather than an artificial smaller window.
       const contextWindow = modelWindow;
@@ -241,7 +256,7 @@ export function createRuntimeContextPolicy(
       let catalogIds = projected?.catalogIds ?? [];
       const budget = {
         contextWindow,
-        outputReserve,
+        outputReserve: outputReserve + labelReserve,
         systemPrompt: ctx.systemPrompt ?? "",
         tools: ctx.tools ?? [],
         imageTokens: options.imageTokens,
@@ -305,7 +320,7 @@ export function createRuntimeContextPolicy(
             fixed +
               estimateContextTokens(required, options.imageTokens) +
               estimateContextTokens(catalogMessage) <
-            contextWindow - outputReserve
+            contextWindow - budget.outputReserve
           ) {
             const insertIndex = messages[0]?.role === "system" ? 1 : 0;
             messages.splice(insertIndex, 0, catalogMessage);
@@ -383,15 +398,13 @@ export function createRuntimeContextPolicy(
           return false;
         }
       }).length;
-      const prepared = { ...ctx, messages: selected.messages };
+      const prepared = modelView({ ...ctx, messages: selected.messages });
+      const preparedPrefix = prefix(prepared);
+      const preparedTokens = estimateContextTokens(preparedPrefix, options.imageTokens);
       pending = {
         ...cacheRequest,
-        prefix: providerContextPrefix(
-          prepared.systemPrompt ?? "",
-          prepared.tools ?? [],
-          prepared.messages,
-        ),
-        prefixTokens: selected.estimatedInputTokens,
+        prefix: preparedPrefix,
+        prefixTokens: preparedTokens,
       };
       pendingProjection = {
         scope: projectionScope(model),
@@ -403,7 +416,7 @@ export function createRuntimeContextPolicy(
       decision = {
         strategy,
         predictedCache: cache.predict(pending),
-        estimatedInputTokens: selected.estimatedInputTokens,
+        estimatedInputTokens: preparedTokens,
         droppedMessages: Math.max(0, ctx.messages.length - selected.messages.length),
         truncatedToolResults: Math.max(selected.truncatedToolResults, shortenedStructuredResults),
         observedReuse: null,

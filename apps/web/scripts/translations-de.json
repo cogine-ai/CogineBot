@@ -662,5 +662,9 @@
   "No bots match": "Keine passenden Bots",
   "No members yet": "Noch keine Mitglieder",
   "Confirmations": "Bestätigungen",
-  "Space": "Bereich"
+  "Space": "Bereich",
+  "Instructions": "Anweisungen",
+  "Timezone": "Zeitzone",
+  "Couldn't update your timezone": "Deine Zeitzone konnte nicht aktualisiert werden",
+  "Instructions must be at most {count} characters": "Anweisungen dürfen höchstens {count} Zeichen lang sein"
 }

@@ -984,4 +984,10 @@ export const DE_MESSAGES: Record<string, string> = {
     "Wähle für diese Einträge ein anderes Modell, bevor du die Verbindung trennst.",
   "Bot model": "Bot-Modell",
   "Save model": "Modell speichern",
+  Instructions: "Anweisungen",
+  Timezone: "Zeitzone",
+  "Could not save timezone": "Zeitzone konnte nicht gespeichert werden",
+  "Instructions must be at most {count} characters":
+    "Anweisungen dürfen höchstens {count} Zeichen lang sein",
+  "Save other settings": "Andere Einstellungen speichern",
 };

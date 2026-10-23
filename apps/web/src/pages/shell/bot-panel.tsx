@@ -11,8 +11,10 @@ import type {
 } from "@rakazo/contracts";
 import {
   BOT_DESCRIPTION_MAX_LENGTH,
+  BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
+  isBotInstructionsConflict,
   isBuiltinToolName,
 } from "@rakazo/contracts";
 import {
@@ -104,6 +106,7 @@ export function CreateBotForm({
     name: string;
     title: string;
     description: string;
+    instructions: string;
     computerMode: ComputerMode;
   }) => Promise<void>;
   onCancel: () => void;
@@ -113,12 +116,18 @@ export function CreateBotForm({
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [instructions, setInstructions] = useState("");
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit() {
     if (!name.trim() || submitting) return;
+    const count = BOT_INSTRUCTIONS_MAX_LENGTH;
+    if (instructions.length > count) {
+      setError(t`Instructions must be at most ${count} characters`);
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -126,6 +135,7 @@ export function CreateBotForm({
         name: name.trim(),
         title: title.trim(),
         description: description.trim(),
+        instructions,
         computerMode,
       });
     } catch (err) {
@@ -188,6 +198,16 @@ export function CreateBotForm({
           className="mt-2"
         />
       </label>
+      <label htmlFor={`${ids}-instructions`} className={fieldLabelClass}>
+        <Trans>Instructions</Trans>
+        <Textarea
+          id={`${ids}-instructions`}
+          value={instructions}
+          onChange={(event) => setInstructions(event.target.value)}
+          rows={4}
+          className="mt-2"
+        />
+      </label>
       <div data-testid="create-bot-computer">
         <ComputerModePicker
           value={computerMode}
@@ -223,6 +243,7 @@ export function BotSettings({
     title?: string;
     description?: string;
     instructions?: string;
+    expectedInstructions?: string;
     color?: string;
     notifyOnFinish?: boolean;
     computerMode?: ComputerMode;
@@ -245,11 +266,13 @@ export function BotSettings({
   const [name, setName] = useState(bot.name);
   const [title, setTitle] = useState(bot.title);
   const [description, setDescription] = useState(bot.description);
-  // A roster refresh can skip replacing bots while a reorder is in flight, so
-  // this prop keeps the description from when the panel opened. Later saves
-  // compare against the description last saved here; otherwise a model or
-  // voice change treats that stale text as an edit and overwrites instructions.
-  const savedDescriptionRef = useRef(bot.description ?? "");
+  const [instructions, setInstructions] = useState(bot.instructions);
+  // Accepted baselines are independent of stale roster props and newer draft edits.
+  const savedProfileRef = useRef({
+    description: bot.description ?? "",
+    instructions: bot.instructions,
+  });
+  const [instructionsConflict, setInstructionsConflict] = useState(false);
   const [color, setColor] = useState(bot.color);
   const [notifyOnFinish, setNotifyOnFinish] = useState(bot.notifyOnFinish ?? true);
   const [notificationPending, setNotificationPending] = useState(false);
@@ -320,6 +343,7 @@ export function BotSettings({
       name?: string;
       title?: string;
       description?: string;
+      instructions?: string;
       color?: string;
       disabledBuiltinTools?: string[];
       baseDisabledBuiltinTools?: string[];
@@ -419,6 +443,7 @@ export function BotSettings({
     name?: string;
     title?: string;
     description?: string;
+    instructions?: string;
     color?: string;
     disabledBuiltinTools?: string[];
     baseDisabledBuiltinTools?: string[];
@@ -436,6 +461,7 @@ export function BotSettings({
     const nextDescription = (
       patchOverrides?.description !== undefined ? patchOverrides.description : description
     ).trim();
+    const nextInstructions = patchOverrides?.instructions ?? savedProfileRef.current.instructions;
     const nextColor = patchOverrides?.color !== undefined ? patchOverrides.color : color;
 
     if (nextName) setName(nextName);
@@ -445,15 +471,23 @@ export function BotSettings({
     // A conflicted model draft must not block unrelated profile/tool auto-saves.
     const saveModel = modelChanged && modelConflict === null;
     try {
+      const count = BOT_INSTRUCTIONS_MAX_LENGTH;
+      if (nextInstructions.length > count) {
+        setError(t`Instructions must be at most ${count} characters`);
+        return;
+      }
       setSaving(true);
       setError(null);
       const patch = {
         name: nextName || bot.name,
         title: nextTitle,
-        // One field feeds both, so it only goes on the wire when it changed: a
-        // model, thinking or voice save must not overwrite longer instructions,
-        // nor fail on a description that is already above its own limit.
-        ...botProfilePatch(savedDescriptionRef.current, nextDescription),
+        ...botProfilePatch(savedProfileRef.current, {
+          description: nextDescription,
+          instructions:
+            instructionsConflict && patchOverrides?.instructions === undefined
+              ? savedProfileRef.current.instructions
+              : nextInstructions,
+        }),
         // Unchanged color stays off the wire so a legacy named value cannot fail a name save.
         ...(nextColor !== bot.color ? { color: nextColor } : {}),
         computerMode,
@@ -508,11 +542,25 @@ export function BotSettings({
         persistedDisabledToolsRef.current = nextTools;
         break;
       }
-      savedDescriptionRef.current = nextDescription;
+      savedProfileRef.current = {
+        description: nextDescription,
+        instructions: patch.instructions ?? savedProfileRef.current.instructions,
+      };
+      if (patch.instructions !== undefined) setInstructionsConflict(false);
     } catch (err) {
       if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
       setError(errorText(err, t`Could not save`));
-      if (saveModel && err && typeof err === "object" && "code" in err && err.code === "CONFLICT")
+      const rulesConflict = isBotInstructionsConflict(err);
+      if (nextInstructions !== savedProfileRef.current.instructions && rulesConflict)
+        setInstructionsConflict(true);
+      if (
+        saveModel &&
+        !rulesConflict &&
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        err.code === "CONFLICT"
+      )
         await refreshConflictedConnection(selectionRevision, spaceGeneration);
     } finally {
       pendingSavesRef.current -= 1;
@@ -543,6 +591,7 @@ export function BotSettings({
     name?: string;
     title?: string;
     description?: string;
+    instructions?: string;
     color?: string;
     disabledBuiltinTools?: string[];
   }) {
@@ -640,6 +689,17 @@ export function BotSettings({
           onChange={(e) => setDescription(e.target.value)}
           onBlur={() => void enqueueSave()}
           rows={3}
+          className="mt-1.5"
+        />
+      </label>
+      <label htmlFor={`${ids}-instructions`} className={fieldLabelClass}>
+        <Trans>Instructions</Trans>
+        <Textarea
+          id={`${ids}-instructions`}
+          value={instructions}
+          onChange={(event) => setInstructions(event.target.value)}
+          onBlur={() => void enqueueSave({ instructions })}
+          rows={6}
           className="mt-1.5"
         />
       </label>
@@ -860,7 +920,11 @@ export function BotSettings({
         ))}
         {advancedOpened ? <BotCredentialsSection botId={bot.id} /> : null}
       </details>
-      {error ? <p className="mt-2 text-[13px] text-destructive">{error}</p> : null}
+      {error ? (
+        <p role="alert" className="mt-2 text-[13px] text-destructive">
+          {error}
+        </p>
+      ) : null}
       {modelConflict === "ready" &&
       connectedOptions.some(
         (option) => option.key === selectedModelKey && option.connectionRevision !== undefined,
@@ -902,11 +966,16 @@ export function BotSettings({
               name,
               title,
               description,
+              ...(instructionsConflict ? {} : { instructions }),
               color,
             });
           }}
         >
-          {modelConflict !== null ? <Trans>Save other settings</Trans> : <Trans>Save</Trans>}
+          {modelConflict !== null || instructionsConflict ? (
+            <Trans>Save other settings</Trans>
+          ) : (
+            <Trans>Save</Trans>
+          )}
         </Button>
         <Button variant="ghost" size="sm" className="-ms-2.5" onClick={() => void onExport()}>
           <Trans>Export</Trans>

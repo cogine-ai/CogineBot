@@ -665,5 +665,9 @@
   "No bots match": "कोई बॉट मेल नहीं खाता",
   "No members yet": "अभी कोई सदस्य नहीं है",
   "Confirmations": "पुष्टियाँ",
-  "Space": "स्पेस"
+  "Space": "स्पेस",
+  "Instructions": "निर्देश",
+  "Timezone": "समय क्षेत्र",
+  "Couldn't update your timezone": "आपका समय क्षेत्र अपडेट नहीं किया जा सका",
+  "Instructions must be at most {count} characters": "निर्देश अधिकतम {count} वर्णों के होने चाहिए"
 }

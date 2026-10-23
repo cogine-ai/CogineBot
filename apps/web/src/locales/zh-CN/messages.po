@@ -6055,3 +6055,19 @@ msgstr "操作确认"
 #: src/pages/SettingsOverlay.tsx
 msgid "Space"
 msgstr "空间"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions"
+msgstr "指令"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Timezone"
+msgstr "时区"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Couldn't update your timezone"
+msgstr "无法更新你的时区"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions must be at most {count} characters"
+msgstr "指令最多可包含 {count} 个字符"

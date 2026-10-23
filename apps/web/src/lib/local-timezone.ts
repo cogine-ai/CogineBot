@@ -1,7 +1,8 @@
-/**
- * The browser's IANA timezone (e.g. "Australia/Sydney"), for timestamp inputs
- * that would otherwise default to UTC. Falls back to UTC when unavailable.
- */
+import { detectedTimezone } from "@rakazo/contracts";
+
+export { detectedTimezone, timezoneOptions } from "@rakazo/contracts";
+
+/** Timestamp inputs remain usable when the runtime cannot report its timezone. */
 export function localTimezone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  return detectedTimezone() ?? "UTC";
 }

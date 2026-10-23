@@ -6055,3 +6055,19 @@ msgstr "Confirmations"
 #: src/pages/SettingsOverlay.tsx
 msgid "Space"
 msgstr "Espace"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions"
+msgstr "Instructions"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Timezone"
+msgstr "Fuseau horaire"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Couldn't update your timezone"
+msgstr "Impossible de mettre à jour votre fuseau horaire"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Instructions must be at most {count} characters"
+msgstr "Les instructions doivent contenir au maximum {count} caractères"

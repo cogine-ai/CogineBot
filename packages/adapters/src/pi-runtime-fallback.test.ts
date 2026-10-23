@@ -1144,6 +1144,18 @@ describe("Pi runtime ordered model fallback", () => {
       (target: Model<"openai-completions">, context: Context) => {
         if (target.provider === primary.provider)
           return stream(target, message(target, [], "error", "429 rate_limit_error"));
+        for (const result of context.messages) {
+          if (result.role !== "toolResult") continue;
+          const text = result.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+          if (result.content.some((part) => part.type === "image")) {
+            expect(text).toContain(
+              "[Automated message from CogineBot, not from the user] Screenshot(s) returned by this tool call.",
+            );
+          } else expect(text).not.toContain("Screenshot(s) returned by this tool call.");
+        }
         counts.push(
           context.messages.reduce(
             (total, item) =>

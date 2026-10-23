@@ -56,6 +56,8 @@ export function SettingsOverlay({
   ownerKey,
   email,
   name,
+  timezone,
+  onTimezoneChange,
   usage,
   onUsageOpen,
   initialSection = "general",
@@ -77,6 +79,8 @@ export function SettingsOverlay({
   ownerKey?: string;
   email?: string | null;
   name: string;
+  timezone?: string | null;
+  onTimezoneChange?: (timezone: string) => Promise<void>;
   usage?: {
     runs: number;
     inputTokens: number | null;
@@ -319,8 +323,11 @@ export function SettingsOverlay({
             >
               {section === "general" ? (
                 <GeneralSettingsPanels
+                  key={ownerKey}
                   email={email}
                   name={name}
+                  timezone={timezone}
+                  onTimezoneChange={onTimezoneChange}
                   messagingEnabled={messagingEnabled}
                   onOpenMessaging={
                     onOpenMessaging ? () => leaveSettings(onOpenMessaging) : undefined

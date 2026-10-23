@@ -144,10 +144,12 @@ import type {
 import {
   ATTACHMENT_MAX_BYTES,
   appContract,
+  BOT_INSTRUCTIONS_CONFLICT_REASON,
   BotSecretAuth,
   ComputerCommandSchema,
   foldComputerCommands,
   IntegrationProviderIdSchema,
+  normalizeCreateBotProfile,
   normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   parseTicketRef,
@@ -239,7 +241,7 @@ import {
   listSpaceArtifacts,
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
-import { botProfileChanged, commitBotUpdate } from "./bot-update.js";
+import { BotInstructionsConflictError, botProfileChanged, commitBotUpdate } from "./bot-update.js";
 import {
   executionBlocksUserTakeover,
   resolveBusyBotName,
@@ -879,10 +881,19 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     preferences: {
+      adoptTimezone: authed.preferences.adoptTimezone.handler(
+        async ({ context, input }): Promise<Me> => {
+          await deps.prisma.user.updateMany({
+            where: { id: context.actor.userId, timezone: null },
+            data: { timezone: input.timezone },
+          });
+          return meDto(deps, context.actor);
+        },
+      ),
       update: authed.preferences.update.handler(async ({ context, input }): Promise<Me> => {
         await deps.prisma.user.update({
           where: { id: context.actor.userId },
-          data: { avatarStyle: input.avatarStyle },
+          data: { avatarStyle: input.avatarStyle, timezone: input.timezone },
         });
         return meDto(deps, context.actor);
       }),
@@ -1620,7 +1631,10 @@ export function createRouter(deps: RouterDeps) {
       create: authed.bots.create.handler(async ({ context, input }) => {
         let bot: Bot;
         try {
-          bot = await repos.createBot(context.actor, input);
+          bot = await repos.createBot(context.actor, {
+            ...input,
+            ...normalizeCreateBotProfile(input),
+          });
         } catch (error) {
           throw mapSpaceLifecycleError(error);
         }
@@ -1809,6 +1823,7 @@ export function createRouter(deps: RouterDeps) {
           spaceId: context.actor.spaceId,
           threadId: existing.thread.id,
           botId: input.botId,
+          expectedInstructions: input.expectedInstructions,
           emitBotUpdated: botProfileChanged(input),
           validate,
           data: {
@@ -1839,6 +1854,13 @@ export function createRouter(deps: RouterDeps) {
               ? { disabledBuiltinTools: input.disabledBuiltinTools }
               : {}),
           },
+        }).catch((error: unknown) => {
+          if (error instanceof BotInstructionsConflictError)
+            throw new ORPCError("CONFLICT", {
+              message: "Instructions changed. Refresh and try again.",
+              data: { reason: BOT_INSTRUCTIONS_CONFLICT_REASON },
+            });
+          throw error;
         });
         const bots = await repos.listBots(context.actor);
         const bot = bots.find((b) => b.id === input.botId);
@@ -6830,6 +6852,7 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     canChooseHostComputer: actor.isDeploymentOwner && deps.env.sandboxProvider === "docker",
     sandboxProvider: deps.env.sandboxProvider,
     avatarStyle: user.avatarStyle === "organic" ? "organic" : "robot",
+    timezone: user.timezone ?? null,
     billingEnabled: Boolean(deps.billing) && !actor.isDeploymentOwner,
   };
 }

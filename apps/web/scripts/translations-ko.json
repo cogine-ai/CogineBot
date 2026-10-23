@@ -662,5 +662,9 @@
   "No bots match": "일치하는 봇이 없습니다",
   "No members yet": "아직 멤버가 없습니다",
   "Confirmations": "확인",
-  "Space": "스페이스"
+  "Space": "스페이스",
+  "Instructions": "지침",
+  "Timezone": "시간대",
+  "Couldn't update your timezone": "시간대를 업데이트하지 못했습니다",
+  "Instructions must be at most {count} characters": "지침은 최대 {count}자여야 합니다"
 }

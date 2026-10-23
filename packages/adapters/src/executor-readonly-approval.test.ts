@@ -98,7 +98,7 @@ function fixture({
   trigger?: string;
   secrets?: string[];
   prompt?: string;
-  bot?: { name: string; title: string; description: string };
+  bot?: { name: string; title: string; description: string; instructions?: string };
   shutdownSignal?: AbortSignal;
   connections?: TestConnection[];
   connectionIds?: string[];
@@ -206,6 +206,7 @@ function fixture({
         name: bot.name,
         title: bot.title,
         description: bot.description,
+        instructions: bot.instructions ?? "",
         disabledBuiltinTools,
         computerId: "computer-1",
         computer: { id: "computer-1", scope: "dedicated" },
@@ -360,6 +361,115 @@ function fixture({
     },
   };
 }
+
+describe("bot instructions in actual model requests", () => {
+  async function modelRequest(instructions: string, trigger = "user") {
+    const provider = "openrouter";
+    const modelId = "openai/gpt-5.6-luna";
+    const payloads: Array<{
+      messages: Array<{ role: string; content: string | Array<{ type: string; text: string }> }>;
+      tools?: unknown[];
+    }> = [];
+    const frames = [
+      {
+        choices: [
+          { index: 0, delta: { role: "assistant", content: "Done." }, finish_reason: null },
+        ],
+      },
+      { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+    ];
+    const reply = `${frames
+      .map((frame) => `data: ${JSON.stringify({ id: "profile-fixture", ...frame })}\n\n`)
+      .join("")}data: [DONE]\n\n`;
+    const fetcher = vi.fn(async (_input: unknown, init?: { body?: unknown }) => {
+      payloads.push(JSON.parse(String(init?.body)));
+      return new Response(reply, { headers: { "content-type": "text/event-stream" } });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    vi.stubEnv("PI_DEFAULT_PROVIDER", provider);
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-profile-key");
+    try {
+      const f = fixture({
+        builtin: true,
+        trigger,
+        prompt: "Answer this check.",
+        deploymentModelKey: "synthetic-profile-key",
+        bot: {
+          name: "PUBLIC_NAME_CANARY",
+          title: "PUBLIC_TITLE_CANARY",
+          description: "PUBLIC_DESCRIPTION_CANARY",
+          instructions,
+        },
+      });
+      f.prisma.deploymentSettings.findUnique.mockResolvedValue({
+        defaultModelProvider: provider,
+        defaultModelId: modelId,
+      });
+      Object.assign(f.prisma, {
+        usageRecord: { createMany: vi.fn(async () => ({ count: 1 })) },
+      });
+      const pi = new PiAgentRuntime();
+      f.runtimeRun.mockImplementation(async function* (
+        request: AgentRunRequest,
+        context?: Parameters<typeof pi.run>[1],
+      ) {
+        yield* pi.run({ ...request, claimSteering: undefined }, context);
+      });
+      await f.run();
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(f.execute).not.toHaveBeenCalled();
+      const payload = payloads[0]!;
+      const system = payload.messages
+        .filter((message) => message.role === "system" || message.role === "developer")
+        .map((message) =>
+          typeof message.content === "string"
+            ? message.content
+            : message.content.map((part) => part.text).join("\n"),
+        )
+        .join("\n");
+      expect(system).toContain("A bot and a subagent are different.");
+      return { payload, system, request: f.runtimeRun.mock.calls[0]![0] };
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  }
+
+  it.each(["user", "routine"])(
+    "honors explicitly empty stored instructions during a %s run",
+    async (trigger) => {
+      const { system, request, payload } = await modelRequest("", trigger);
+      expect(system).not.toContain("PUBLIC_DESCRIPTION_CANARY");
+      expect(system).not.toContain("PUBLIC_NAME_CANARY");
+      expect(system).not.toContain("PUBLIC_TITLE_CANARY");
+      expect(request.tools.length).toBeGreaterThan(0);
+      expect(payload.tools?.length ?? 0).toBeGreaterThan(0);
+    },
+  );
+
+  it.each([" \n\t ", "  PRIVATE_RULE_CANARY\n\tKeep the raw ending.  "])(
+    "preserves the stored instruction bytes in the actual request: %j",
+    async (instructions) => {
+      const { system, request } = await modelRequest(instructions);
+      expect(request.instructions.startsWith(`${instructions}\n\n`)).toBe(true);
+      expect(system.startsWith(`${instructions}\n\n`)).toBe(true);
+      expect(system).not.toContain("PUBLIC_DESCRIPTION_CANARY");
+      expect(system).not.toContain("PUBLIC_NAME_CANARY");
+      expect(system).not.toContain("PUBLIC_TITLE_CANARY");
+    },
+  );
+
+  it("retains the creation intro profile with no executor or model tools", async () => {
+    const { system, request, payload } = await modelRequest("", "created");
+    expect(system).toContain("Name: PUBLIC_NAME_CANARY");
+    expect(system).toContain("Title: PUBLIC_TITLE_CANARY");
+    expect(system).toContain("Description: PUBLIC_DESCRIPTION_CANARY");
+    expect(system).toContain("Instructions: (none)");
+    expect(request.tools).toEqual([]);
+    expect(payload.tools ?? []).toEqual([]);
+  });
+});
 
 describe("automatic review connection accounting", () => {
   it.each([

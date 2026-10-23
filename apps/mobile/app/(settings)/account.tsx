@@ -24,8 +24,10 @@ import {
   SettingsSwitch,
   useStackedSettings,
 } from "../../components/settings-group";
+import { AccountTimezone } from "../../lib/account-timezone-settings";
 import type { MobileBot, MobileMe } from "../../lib/api";
 import {
+  captureApiRequestContext,
   currentApiBase,
   deleteAccount,
   fetchAccountSecurity,
@@ -54,6 +56,12 @@ import {
   setLiveNotificationSettings,
 } from "../../lib/live-notifications";
 import { presentMessageActionSheet } from "../../lib/message-action-sheet";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../../lib/mobile-scope";
 import { native, useResolvedAppearance, useThemedStyles } from "../../lib/native";
 import { registerPushToken } from "../../lib/push";
 import {
@@ -73,6 +81,11 @@ import { errorText } from "../../lib/user-error";
 
 /** Render account settings, including the entry point for voice configuration. */
 export default function Account() {
+  const scope = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
+  return <AccountSettings key={scope} />;
+}
+
+function AccountSettings() {
   const { t, locale } = useI18n();
   const colorScheme = useResolvedAppearance();
   const router = useRouter();
@@ -127,9 +140,14 @@ export default function Account() {
   const versionAccessibility = [versionInfo.nativeLabel, updateLabel].filter(Boolean).join(". ");
 
   useEffect(() => {
-    void rpc<MobileMe>("me")
-      .then(setMe)
-      .catch(() => undefined);
+    let active = true;
+    const owner = captureMobileScope();
+    void (async () => {
+      const requestContext = await captureApiRequestContext(null);
+      if (!active || !isMobileScopeCurrent(owner)) return;
+      const next = await rpc<MobileMe>("me", {}, { requestContext });
+      if (active && isMobileScopeCurrent(owner)) setMe(next);
+    })().catch(() => undefined);
     void rpc<{
       runs: number;
       inputTokens: number | null;
@@ -144,6 +162,9 @@ export default function Account() {
         .catch(() => undefined)
         .finally(() => setNotificationsReady(true));
     }
+    return () => {
+      active = false;
+    };
   }, []);
 
   const usageBlock = (
@@ -331,6 +352,13 @@ export default function Account() {
           />
           {focus !== "usage" ? usageBlock : null}
         </SettingsGroup>
+
+        <AccountTimezone
+          me={me}
+          onChange={(timezone) =>
+            setMe((current) => (current ? { ...current, timezone } : current))
+          }
+        />
 
         {(security?.sso && !security.ssoLinked) || canChangePassword ? (
           <SettingsGroup>

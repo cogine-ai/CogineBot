@@ -105,6 +105,8 @@ async function main() {
         "packages/testkit/src/authorization.test.ts",
         "packages/testkit/src/attachments.test.ts",
         "packages/testkit/src/group-creation.postgres.test.ts",
+        "packages/testkit/src/account-profile.postgres.test.ts",
+        "apps/api/src/bot-profile.postgres.test.ts",
         "packages/testkit/src/thread-message-sequence.postgres.test.ts",
         "apps/api/src/artifacts.postgres.test.ts",
         "apps/api/src/board-app.postgres.test.ts",
@@ -162,23 +164,31 @@ async function main() {
         if (result.exitCode !== 0)
           throw new Error("Isolated integration database operation failed");
       };
-      for (const [index, suite] of suites.entries()) {
+      const selectedSuites = e2eSpec
+        ? suites.filter((suite) => new RegExp(e2eSpec).test(suite))
+        : suites;
+      if (selectedSuites.length === 0) throw new Error("No integration suites matched --spec");
+      for (const [index, suite] of selectedSuites.entries()) {
         const database = `integration_${index}`;
         await databaseCommand(`CREATE DATABASE "${database}" TEMPLATE "${template}"`);
         const suiteUrl = new URL(databaseUrl);
         suiteUrl.pathname = `/${database}`;
         try {
-          await runProcess("pnpm", ["exec", "vitest", "run", suite], {
-            ...process.env,
-            DATABASE_URL: suiteUrl.toString(),
-            REALTIME_DATABASE_URL: suiteUrl.toString(),
-            VERIFY_NATIVE_REMAINING_LIFECYCLE:
-              suite === remainingLifecycleSuite ? "harness_isolated" : "",
-            VERIFY_NATIVE_REMAINING_LIFECYCLE_DATABASE:
-              suite === remainingLifecycleSuite ? database : "",
-            OPENROUTER_API_KEY: "",
-            MODEL_API_KEY: "",
-          });
+          await runProcess(
+            "pnpm",
+            ["exec", "vitest", "run", suite, ...(e2eGrep ? ["--testNamePattern", e2eGrep] : [])],
+            {
+              ...process.env,
+              DATABASE_URL: suiteUrl.toString(),
+              REALTIME_DATABASE_URL: suiteUrl.toString(),
+              VERIFY_NATIVE_REMAINING_LIFECYCLE:
+                suite === remainingLifecycleSuite ? "harness_isolated" : "",
+              VERIFY_NATIVE_REMAINING_LIFECYCLE_DATABASE:
+                suite === remainingLifecycleSuite ? database : "",
+              OPENROUTER_API_KEY: "",
+              MODEL_API_KEY: "",
+            },
+          );
         } finally {
           await databaseCommand(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
         }
