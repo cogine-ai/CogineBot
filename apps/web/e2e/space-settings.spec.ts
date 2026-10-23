@@ -450,6 +450,8 @@ for (const role of ["owner", "member"] as const) {
     });
     const sidebar = page.locator("aside").first();
     await expect(sidebar.locator("[data-sidebar-section-header]")).toHaveCount(0);
+    // Let the archived chat route settle before checking settings isolation.
+    await expect(page).toHaveURL(/\/app$/);
     const currentUrl = page.url();
     const selectedSpace = await page.evaluate(() => localStorage.getItem("rakazo:space-id"));
 
