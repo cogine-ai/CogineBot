@@ -2,8 +2,8 @@ import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { ActionApprovalRule, ActionAutoReviewSettings } from "@rakazo/contracts";
 import { Button, Label, Switch } from "@rakazo/ui-web";
-import { useEffect, useId, useState } from "react";
-import { rpc } from "../lib/rpc";
+import { useEffect, useId, useRef, useState } from "react";
+import { useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
 
 function describeRule(rule: ActionApprovalRule): string {
@@ -27,6 +27,9 @@ function describeRule(rule: ActionApprovalRule): string {
 
 export function ApprovalRulesSettings() {
   const { t } = useLingui();
+  const rpc = useSpaceRpc();
+  const scopeCurrent = useSpaceRpcCurrent();
+  const generation = useRef(0);
   const autoReviewId = useId();
   const [rules, setRules] = useState<ActionApprovalRule[]>([]);
   const [autoReview, setAutoReview] = useState<ActionAutoReviewSettings | null>(null);
@@ -36,6 +39,8 @@ export function ApprovalRulesSettings() {
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
+    if (!scopeCurrent()) return;
+    const request = ++generation.current;
     setLoading(true);
     setError(null);
     try {
@@ -43,21 +48,26 @@ export function ApprovalRulesSettings() {
         rpc.approvalRules.list(),
         rpc.autoReview.get(),
       ]);
+      if (!scopeCurrent() || request !== generation.current) return;
       setRules(nextRules);
       setAutoReview(nextAutoReview);
     } catch (err) {
+      if (!scopeCurrent() || request !== generation.current) return;
       setError(errorText(err, t`Could not load approval rules`));
     } finally {
-      setLoading(false);
+      if (scopeCurrent() && request === generation.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     void refresh();
-  }, []);
+    return () => {
+      generation.current++;
+    };
+  }, [rpc]);
 
   async function setPreset(matchValue: "email" | "purchase") {
-    if (loading || savingPreset) return;
+    if (!scopeCurrent() || loading || savingPreset) return;
     if (
       rules.some(
         (rule) =>
@@ -76,34 +86,42 @@ export function ApprovalRulesSettings() {
         matchKind: "category",
         matchValue,
       });
+      if (!scopeCurrent()) return;
       setRules((current) => [...current, saved]);
     } catch (err) {
+      if (!scopeCurrent()) return;
       setError(errorText(err, t`Could not save rule`));
     } finally {
-      setSavingPreset(null);
+      if (scopeCurrent()) setSavingPreset(null);
     }
   }
 
   async function removeRule(id: string) {
+    if (!scopeCurrent()) return;
     setError(null);
     try {
       await rpc.approvalRules.remove({ id });
+      if (!scopeCurrent()) return;
       setRules((current) => current.filter((rule) => rule.id !== id));
     } catch (err) {
+      if (!scopeCurrent()) return;
       setError(errorText(err, t`Could not remove rule`));
     }
   }
 
   async function toggleAutoReview(enabled: boolean) {
-    if (loading || savingAutoReview) return;
+    if (!scopeCurrent() || loading || savingAutoReview) return;
     setSavingAutoReview(true);
     setError(null);
     try {
-      setAutoReview(await rpc.autoReview.set({ enabled }));
+      const next = await rpc.autoReview.set({ enabled });
+      if (!scopeCurrent()) return;
+      setAutoReview(next);
     } catch (err) {
+      if (!scopeCurrent()) return;
       setError(errorText(err, t`Could not save Auto Review`));
     } finally {
-      setSavingAutoReview(false);
+      if (scopeCurrent()) setSavingAutoReview(false);
     }
   }
 
@@ -148,7 +166,14 @@ export function ApprovalRulesSettings() {
           ) : null}
         </div>
       </div>
-      {error ? <p className="mt-3 text-[13px] text-destructive">{error}</p> : null}
+      {error ? (
+        <div>
+          <p className="mt-3 text-[13px] text-destructive">{error}</p>
+          <Button variant="outline" onClick={() => void refresh()} disabled={loading}>
+            <Trans>Retry</Trans>
+          </Button>
+        </div>
+      ) : null}
       {loading ? (
         <p className="mt-4 text-[13px] text-muted-foreground">
           <Trans>Loading rules…</Trans>

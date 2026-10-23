@@ -1,10 +1,20 @@
 import type { ModelCredential, ModelOAuthBegin, ThinkingLevel } from "@rakazo/contracts";
 import { cancelModelOAuthAttempt, finishModelOAuthAttempt } from "@rakazo/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { desktopBridge, oauthStateOf, onDesktopOAuthCallback } from "./desktop";
 import { waitForModelOAuth } from "./model-auth";
-import { rpc } from "./rpc";
+import type { RpcClient } from "./rpc";
+import { createSpaceRpc, currentSpaceSelectionGeneration, selectedSpaceId } from "./rpc";
+import { useBoundSpaceId, useSpaceRpcCurrent } from "./space-rpc";
 import { errorText } from "./user-error";
+
+type OAuthRequest = {
+  controller: AbortController;
+  client: RpcClient;
+  loginId: string | null;
+  isCurrent: () => boolean;
+  cancel: () => void;
+};
 
 export type ModelOAuthSignInBegin = {
   provider: string;
@@ -24,12 +34,21 @@ export function useModelOAuthSignIn(options: {
   onClearError?: () => void;
 }) {
   const { onFinished, onError, onClearError } = options;
+  const boundSpaceId = useBoundSpaceId();
+  const contextCurrent = useSpaceRpcCurrent();
   const [oauth, setOauth] = useState<ModelOAuthBegin | null>(null);
   const [pasteCode, setPasteCode] = useState("");
   const [oauthPending, setOauthPending] = useState(false);
   const [popupBlocked, setPopupBlocked] = useState(false);
   const oauthAbortRef = useRef<AbortController | null>(null);
-  const oauthLoginIdRef = useRef<string | null>(null);
+  const oauthRequestRef = useRef<OAuthRequest | null>(null);
+  const mountedRef = useRef(false);
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const oauthCodeSubmittingRef = useRef(false);
   const oauthCaptureRef = useRef<(() => void) | null>(null);
   const onFinishedRef = useRef(onFinished);
@@ -48,8 +67,8 @@ export function useModelOAuthSignIn(options: {
   function cancelOAuthAttempt(resetState = true) {
     releaseOAuthCapture();
     oauthCodeSubmittingRef.current = false;
-    const loginId = oauthLoginIdRef.current;
-    oauthLoginIdRef.current = null;
+    const request = oauthRequestRef.current;
+    oauthRequestRef.current = null;
     cancelModelOAuthAttempt(oauthAbortRef, () => {
       if (resetState) {
         setOauth(null);
@@ -57,30 +76,38 @@ export function useModelOAuthSignIn(options: {
         setPopupBlocked(false);
       }
     });
-    if (loginId) void rpc.models.cancelOAuth({ loginId }).catch(() => undefined);
+    request?.cancel();
   }
 
-  async function finishSubscriptionSignIn(loginId: string, controller: AbortController) {
-    await waitForModelOAuth(loginId, controller.signal);
-    if (controller.signal.aborted) return;
-    const credential = await rpc.models.finishOAuth({ loginId }, { signal: controller.signal });
-    if (controller.signal.aborted) return;
-    oauthLoginIdRef.current = null;
+  async function finishSubscriptionSignIn(loginId: string, request: OAuthRequest) {
+    const { controller, client } = request;
+    await waitForModelOAuth(loginId, controller.signal, client);
+    if (!request.isCurrent()) return;
+    const credential = await client.models.finishOAuth({ loginId }, { signal: controller.signal });
+    if (!request.isCurrent()) return;
+    request.loginId = null;
     setOauth(null);
     // Keep post-connect UI work outside the OAuth try/catch so a refresh failure
     // is not reported as a failed sign-in (finishOAuth already persisted).
     try {
       await onFinishedRef.current(controller, credential);
     } catch (err) {
-      if (controller.signal.aborted) return;
+      if (!request.isCurrent()) return;
       onErrorRef.current(errorText(err, "Connected, but could not refresh"));
     }
   }
 
   async function submitOAuthCode(captured?: string, login?: ModelOAuthBegin) {
     const attempt = login ?? oauth;
-    if (attempt?.mode !== "auth-url" || oauthCodeSubmittingRef.current) return;
-    const controller = oauthAbortRef.current;
+    const request = oauthRequestRef.current;
+    if (
+      !request?.isCurrent() ||
+      attempt?.mode !== "auth-url" ||
+      attempt.loginId !== request.loginId ||
+      oauthCodeSubmittingRef.current
+    )
+      return;
+    const { controller, client } = request;
     const capture = oauthCaptureRef.current;
     const code = (captured ?? pasteCode).trim();
     if (!controller || !code) return;
@@ -90,18 +117,17 @@ export function useModelOAuthSignIn(options: {
     let submitted = false;
     let retryable = false;
     try {
-      await rpc.models.submitOAuthCode(
+      await client.models.submitOAuthCode(
         { loginId: attempt.loginId, code },
         { signal: controller.signal },
       );
       submitted = true;
-      await finishSubscriptionSignIn(attempt.loginId, controller);
+      await finishSubscriptionSignIn(attempt.loginId, request);
     } catch (err) {
-      if (controller.signal.aborted) return;
+      if (!request.isCurrent()) return;
       if (submitted) {
-        oauthLoginIdRef.current = null;
         setOauth(null);
-        void rpc.models.cancelOAuth({ loginId: attempt.loginId }).catch(() => undefined);
+        request.cancel();
       } else {
         retryable = true;
         setPasteCode(code);
@@ -110,26 +136,57 @@ export function useModelOAuthSignIn(options: {
     } finally {
       // A cancelled attempt may already have started another sign-in; do not clear
       // its submitting guard or the newer desktop callback is dropped.
-      if (oauthAbortRef.current === controller) {
+      if (request.isCurrent() && oauthAbortRef.current === controller) {
         oauthCodeSubmittingRef.current = false;
       }
       if (!retryable) {
         // Only drop this attempt's listener — a newer sign-in may already own the ref.
         releaseOAuthCapture(capture);
-        finishModelOAuthAttempt(oauthAbortRef, controller, () => setOauthPending(false));
+        finishModelOAuthAttempt(oauthAbortRef, controller, () => {
+          if (request.isCurrent()) setOauthPending(false);
+        });
       }
     }
   }
 
   async function startSubscriptionSignIn(begin: ModelOAuthSignInBegin) {
+    if (!mountedRef.current || !contextCurrent()) return;
+    cancelOAuthAttempt(false);
     onClearErrorRef.current?.();
     setOauthPending(true);
     setPopupBlocked(false);
     const controller = new AbortController();
     oauthAbortRef.current = controller;
+    const originSpaceId = selectedSpaceId();
+    const originGeneration = currentSpaceSelectionGeneration();
+    const target = boundSpaceId ?? originSpaceId;
+    // Cleanup is restricted to the server login returned to this attempt. It
+    // remains usable after the UI is revoked and never carries an aborted signal.
+    const cleanupClient = createSpaceRpc(target);
+    const request: OAuthRequest = {
+      controller,
+      client: createSpaceRpc(target, () => request.isCurrent()),
+      loginId: null,
+      isCurrent: () =>
+        mountedRef.current &&
+        oauthRequestRef.current === request &&
+        !controller.signal.aborted &&
+        contextCurrent() &&
+        originSpaceId === selectedSpaceId() &&
+        originGeneration === currentSpaceSelectionGeneration(),
+      cancel: () => {
+        const loginId = request.loginId;
+        request.loginId = null;
+        if (loginId)
+          void Promise.resolve()
+            .then(() => cleanupClient.models.cancelOAuth({ loginId }))
+            .catch(() => undefined);
+      },
+    };
+    oauthRequestRef.current = request;
     let waitingForCode = false;
     try {
-      const started = await rpc.models.beginOAuth(
+      const started = await request.client.models.beginOAuth(
         {
           provider: begin.provider,
           modelId: begin.modelId,
@@ -138,8 +195,11 @@ export function useModelOAuthSignIn(options: {
         },
         { signal: controller.signal },
       );
-      if (controller.signal.aborted) return;
-      oauthLoginIdRef.current = started.loginId;
+      request.loginId = started.loginId;
+      if (!request.isCurrent()) {
+        request.cancel();
+        return;
+      }
       setPasteCode("");
       setOauth(started);
       if (started.mode === "auth-url") {
@@ -163,7 +223,7 @@ export function useModelOAuthSignIn(options: {
           cancelBrowser();
         };
         await browserAuth.open(started.verificationUri);
-        if (controller.signal.aborted) return;
+        if (!request.isCurrent()) return;
       } else {
         // null means the browser blocked the popup — the card keeps showing the
         // URL, and callers can flag that nothing opened.
@@ -172,18 +232,18 @@ export function useModelOAuthSignIn(options: {
         }
       }
       waitingForCode = started.mode === "auth-url";
-      if (!waitingForCode) await finishSubscriptionSignIn(started.loginId, controller);
+      if (!waitingForCode) await finishSubscriptionSignIn(started.loginId, request);
     } catch (err) {
-      if (controller.signal.aborted) return;
-      const loginId = oauthLoginIdRef.current;
-      oauthLoginIdRef.current = null;
-      if (loginId) void rpc.models.cancelOAuth({ loginId }).catch(() => undefined);
+      if (!request.isCurrent()) return;
+      request.cancel();
       onErrorRef.current(errorText(err, "Could not start sign-in"));
       setOauth(null);
     } finally {
       if (!waitingForCode) {
         if (oauthAbortRef.current === controller) releaseOAuthCapture();
-        finishModelOAuthAttempt(oauthAbortRef, controller, () => setOauthPending(false));
+        finishModelOAuthAttempt(oauthAbortRef, controller, () => {
+          if (request.isCurrent()) setOauthPending(false);
+        });
       }
     }
   }

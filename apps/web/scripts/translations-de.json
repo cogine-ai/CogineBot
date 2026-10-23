@@ -653,5 +653,14 @@
   "Event callback URL": "Ereignis-Callback-URL",
   "Save this application to get its event callback URL.": "Speichern Sie diese Anwendung, um ihre Ereignis-Callback-URL zu erhalten.",
   "Interactions endpoint URL": "Interaktions-Endpunkt-URL",
-  "Connect this bot before registering this URL in Discord.": "Verbinden Sie diesen Bot, bevor Sie diese URL in Discord registrieren."
+  "Connect this bot before registering this URL in Discord.": "Verbinden Sie diesen Bot, bevor Sie diese URL in Discord registrieren.",
+  "Members ({0})": "Mitglieder ({0})",
+  "Show selected": "Ausgewählte anzeigen",
+  "Show all": "Alle anzeigen",
+  "Filter bots": "Bots filtern",
+  "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}": "{GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} Mitglieder auswählen",
+  "No bots match": "Keine passenden Bots",
+  "No members yet": "Noch keine Mitglieder",
+  "Confirmations": "Bestätigungen",
+  "Space": "Bereich"
 }

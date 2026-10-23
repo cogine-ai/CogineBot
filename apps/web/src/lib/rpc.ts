@@ -12,7 +12,7 @@ export function currentSpaceSelectionGeneration(): number {
   return spaceSelectionGeneration;
 }
 
-type RpcClientContext = { spaceId?: string | null };
+type RpcClientContext = { spaceId?: string | null; isCurrent?: () => boolean };
 
 export function selectedSpaceId(): string | null {
   if (typeof window === "undefined") return null;
@@ -64,11 +64,18 @@ const link = new RPCLink<RpcClientContext>({
       ? "http://127.0.0.1:5173/rpc"
       : `${window.location.origin}${window.location.pathname === LOCAL_SETTINGS_PAGE ? LOCAL_SETTINGS_RPC : "/rpc"}`,
   fetch: async (input, init, options) => {
+    const assertCurrent = () => {
+      if (options.context.isCurrent?.() === false)
+        throw new DOMException("Settings closed", "AbortError");
+    };
+    assertCurrent();
     const request = new Request(input, init);
     if (typeof window !== "undefined" && window.location.pathname === LOCAL_SETTINGS_PAGE) {
       const bridge = desktopBridge()?.localSettings;
       if (!bridge) throw new Error("Local settings require the desktop app");
-      const result = await bridge.request(new URL(request.url).pathname, await request.text());
+      const body = await request.text();
+      assertCurrent();
+      const result = await bridge.request(new URL(request.url).pathname, body);
       return new Response(result.body, {
         status: result.status,
         headers: { "content-type": "application/json" },
@@ -79,8 +86,40 @@ const link = new RPCLink<RpcClientContext>({
     return fetch(request, {
       headers: withSpaceHeaders(request.headers, spaceId),
       credentials: "include",
+      signal: options.signal,
     });
   },
 });
 
-export const rpc: ContractRouterClient<AppContract, RpcClientContext> = createORPCClient(link);
+export type RpcClient = ContractRouterClient<AppContract, RpcClientContext>;
+export const rpc: RpcClient = createORPCClient(link);
+
+/** Capture a request target without changing the selected conversation. */
+export function createSpaceRpc(spaceId: string | null, isCurrent?: () => boolean): RpcClient {
+  return createORPCClient({
+    call: (path, input, options) => {
+      if (isCurrent?.() === false) throw new DOMException("Settings closed", "AbortError");
+      return link.call(path, input, {
+        ...options,
+        context: {
+          ...options.context,
+          spaceId: options.context.spaceId === undefined ? spaceId : options.context.spaceId,
+          ...(isCurrent
+            ? { isCurrent: () => isCurrent() && options.context.isCurrent?.() !== false }
+            : {}),
+        },
+      });
+    },
+  });
+}
+
+const spaceClients = new Map<string, RpcClient>();
+
+export function rpcForSpace(spaceId: string): RpcClient {
+  let client = spaceClients.get(spaceId);
+  if (!client) {
+    client = createSpaceRpc(spaceId);
+    spaceClients.set(spaceId, client);
+  }
+  return client;
+}

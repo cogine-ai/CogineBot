@@ -40,7 +40,9 @@ export function ChatRecipients({
       (bot) =>
         !bot.archivedAt &&
         !selectedBotIds.includes(bot.id) &&
-        (!needle || bot.name.toLocaleLowerCase().includes(needle)),
+        (!needle ||
+          bot.name.toLocaleLowerCase().includes(needle) ||
+          bot.title.toLocaleLowerCase().includes(needle)),
     );
   }, [bots, search, selectedBotIds]);
   const atLimit = selectedBotIds.length >= GROUP_MEMBER_MAX;

@@ -436,7 +436,7 @@ test("a late first-message success moves the remaining draft without changing th
   await captureScreenshot(page, testInfo, "new-chat-late-success-moved-remaining-draft");
 });
 
-test("six long-named recipients fit the narrow desktop with a persistent compact rail", async ({
+test("ten long-named recipients fit the narrow desktop with a persistent compact rail", async ({
   page,
 }, testInfo) => {
   await signup(
@@ -448,7 +448,7 @@ test("six long-named recipients fit the narrow desktop with a persistent compact
   await completeOnboarding(page);
   const chiefId = activeBotId(page);
   const companions: Array<{ id: string; name: string }> = [];
-  for (let index = 1; index <= 6; index += 1) {
+  for (let index = 1; index <= 10; index += 1) {
     const name =
       `Companion ${index}: weekend plans, books, quiet walks and conversations about everyday life`
         .slice(0, 79)
@@ -481,7 +481,7 @@ test("six long-named recipients fit the narrow desktop with a persistent compact
   const recipients = page.getByTestId("chat-recipients");
   const chips = recipients.locator('[data-testid^="recipient-chip-"]');
   const search = recipients.getByTestId("recipient-search");
-  await expect(chips).toHaveCount(6);
+  await expect(chips).toHaveCount(10);
   await expect(search).toBeDisabled();
   const recipientsBox = (await recipients.boundingBox())!;
   for (const bot of companions) {
@@ -532,14 +532,14 @@ test("six long-named recipients fit the narrow desktop with a persistent compact
     .toBeLessThanOrEqual(800);
   expect(creates).toEqual([]);
   expect(await groupRows(page)).toEqual([]);
-  await captureScreenshot(page, testInfo, "group-six-long-recipients-800-compact-rail");
+  await captureScreenshot(page, testInfo, "group-ten-long-recipients-800-compact-rail");
 
   await page.getByTestId(`recipient-chip-${companions[0]!.id}`).getByRole("button").click();
-  await expect(chips).toHaveCount(5);
+  await expect(chips).toHaveCount(9);
   await expect(search).toBeEnabled();
   await search.click();
   await page.getByTestId(`recipient-option-${chiefId}`).click();
-  await expect(chips).toHaveCount(6);
+  await expect(chips).toHaveCount(10);
   await expect(page.getByTestId(`recipient-chip-${chiefId}`)).toBeVisible();
   await expect(page.getByTestId(`recipient-chip-${companions[0]!.id}`)).toHaveCount(0);
   await expect(search).toBeDisabled();

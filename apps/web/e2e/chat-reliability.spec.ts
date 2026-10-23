@@ -727,12 +727,14 @@ test("a hanging initialization times out, retries once and ignores its late snap
   const { state, errors } = await mockChat(page);
   await page.clock.install();
   const initialStarted = deferred();
+  const liveInitialStarted = deferred();
   const releaseInitial = deferred();
   const deliveries: Array<Promise<void>> = [];
   let recovering = false;
   state.bootstrap = async (route, data) => {
     if (!recovering) {
       initialStarted.resolve();
+      if (state.bootstrapRequests === 2) liveInitialStarted.resolve();
       const delivered = deferred();
       deliveries.push(delivered.promise);
       await releaseInitial.promise;
@@ -752,12 +754,14 @@ test("a hanging initialization times out, retries once and ignores its late snap
   await expect(page.locator('[data-testid="composer-bar"] [role="combobox"]:enabled')).toHaveCount(
     0,
   );
-  // Development StrictMode may consume a primed request in its first effect mount.
-  // The live mount must remain single-flight while every initial read is held.
+  // The development app primes one read; StrictMode's live mount starts a second.
+  // Both held reads must enter the handler before measuring focus-triggered requests.
   await expect(
     page.getByTestId("bootstrap-status").getByRole("button", { name: "Retry" }),
   ).toBeDisabled();
+  await liveInitialStarted.promise;
   const initialRequests = state.bootstrapRequests;
+  expect(initialRequests).toBe(2);
   for (let attempt = 0; attempt < 3; attempt += 1)
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await page.clock.fastForward(100);

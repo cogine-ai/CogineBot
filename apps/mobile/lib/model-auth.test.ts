@@ -30,6 +30,19 @@ describe("mobile waitForModelOAuth", () => {
     await expect(waitForModelOAuth("login-id")).resolves.toMatchObject({ status: "ready" });
     expect(mockRpc).toHaveBeenCalledTimes(1);
   });
+
+  it("polls with the client that began the target sign-in", async () => {
+    const client = vi.fn().mockResolvedValue({ status: "ready" });
+    await expect(waitForModelOAuth("target-login", undefined, client)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(client).toHaveBeenCalledWith(
+      "models/completeOAuth",
+      { loginId: "target-login" },
+      { signal: undefined },
+    );
+    expect(mockRpc).not.toHaveBeenCalled();
+  });
 });
 
 describe("mobile OAuth focus lifecycle", () => {

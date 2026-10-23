@@ -656,5 +656,14 @@
   "Event callback URL": "इवेंट कॉलबैक URL",
   "Save this application to get its event callback URL.": "इवेंट कॉलबैक URL पाने के लिए यह ऐप सेव करें।",
   "Interactions endpoint URL": "इंटरैक्शन एंडपॉइंट URL",
-  "Connect this bot before registering this URL in Discord.": "Discord में यह URL दर्ज करने से पहले इस बॉट को कनेक्ट करें।"
+  "Connect this bot before registering this URL in Discord.": "Discord में यह URL दर्ज करने से पहले इस बॉट को कनेक्ट करें।",
+  "Members ({0})": "सदस्य ({0})",
+  "Show selected": "चुने हुए दिखाएँ",
+  "Show all": "सभी दिखाएँ",
+  "Filter bots": "बॉट फ़िल्टर करें",
+  "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}": "{GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} सदस्य चुनें",
+  "No bots match": "कोई बॉट मेल नहीं खाता",
+  "No members yet": "अभी कोई सदस्य नहीं है",
+  "Confirmations": "पुष्टियाँ",
+  "Space": "स्पेस"
 }

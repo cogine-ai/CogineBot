@@ -3531,9 +3531,10 @@ msgstr "अभी तक कोई बॉट गतिविधि नहीं�
 msgid "No bots"
 msgstr ""
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-picker.tsx
 msgid "No bots match"
-msgstr ""
+msgstr "कोई बॉट मेल नहीं खाता"
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
@@ -6021,3 +6022,36 @@ msgstr "बॉट मॉडल"
 #: src/pages/shell/bot-panel.tsx
 msgid "Use updated connection"
 msgstr "अपडेट किया गया कनेक्शन इस्तेमाल करें"
+
+#. placeholder {0}: selected.length
+#: src/pages/GroupPanel.tsx
+msgid "Members ({0})"
+msgstr "सदस्य ({0})"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show selected"
+msgstr "चुने हुए दिखाएँ"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show all"
+msgstr "सभी दिखाएँ"
+
+#: src/pages/GroupPanel.tsx
+msgid "Filter bots"
+msgstr "बॉट फ़िल्टर करें"
+
+#: src/pages/GroupPanel.tsx
+msgid "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}"
+msgstr "{GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} सदस्य चुनें"
+
+#: src/pages/GroupPanel.tsx
+msgid "No members yet"
+msgstr "अभी कोई सदस्य नहीं है"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Confirmations"
+msgstr "पुष्टियाँ"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Space"
+msgstr "स्पेस"

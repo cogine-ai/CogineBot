@@ -1,5 +1,5 @@
-import { useFocusEffect } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -13,7 +13,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
 import { Checkmark } from "../../components/row-accessories";
-import { rpc } from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
 import {
   loadCallSoundsEnabled,
@@ -22,9 +21,16 @@ import {
   saveCallSoundsEnabled,
   saveWaitSoundEnabled,
 } from "../../lib/call-sounds";
-import { loadDeviceVoiceEnabled, saveDeviceVoiceEnabled } from "../../lib/device-voice";
+import {
+  beginDeviceVoiceIntent,
+  currentDeviceVoiceIntent,
+  loadDeviceVoiceEnabled,
+  saveDeviceVoiceEnabled,
+} from "../../lib/device-voice";
 import { useI18n } from "../../lib/i18n";
+import { captureMobileScope, isMobileScopeCurrent } from "../../lib/mobile-scope";
 import { native, useThemedStyles } from "../../lib/native";
+import { useSpaceSettings, useSpaceSettingsKey } from "../../lib/space-settings";
 import { errorText } from "../../lib/user-error";
 import { speakText } from "../../lib/voice";
 
@@ -49,6 +55,27 @@ type VoiceStatus = {
 type VoiceInfo = { id: string; label: string; description?: string };
 
 export default function VoiceSettings() {
+  const { spaceId, name } = useLocalSearchParams<{ spaceId?: string; name?: string }>();
+  const target = typeof spaceId === "string" ? spaceId : undefined;
+  const key = useSpaceSettingsKey(target);
+  return (
+    <VoiceSettingsForm
+      key={key}
+      targetSpaceId={target}
+      targetName={typeof name === "string" ? name : target}
+    />
+  );
+}
+
+function VoiceSettingsForm({
+  targetSpaceId,
+  targetName,
+}: {
+  targetSpaceId?: string;
+  targetName?: string;
+}) {
+  const settings = useSpaceSettings(targetSpaceId);
+  const { rpc } = settings;
   const styles = useThemedStyles(createVoiceStyles);
   const { t } = useI18n();
   const [catalog, setCatalog] = useState<VoiceCatalogEntry[]>([]);
@@ -74,41 +101,73 @@ export default function VoiceSettings() {
   const [error, setError] = useState<string | null>(null);
   const deviceVoiceRevision = useRef(0);
   const deviceVoiceSaveInFlight = useRef(false);
+  const deviceVoiceOwner = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    const owner = {};
+    deviceVoiceOwner.current = owner;
+    return () => {
+      if (deviceVoiceOwner.current === owner) deviceVoiceOwner.current = null;
+    };
+  }, [rpc]);
+  function captureDeviceVoiceOwner() {
+    const owner = deviceVoiceOwner.current;
+    const scope = captureMobileScope();
+    return () =>
+      owner !== null &&
+      deviceVoiceOwner.current === owner &&
+      isMobileScopeCurrent(scope) &&
+      settings.isCurrent();
+  }
 
-  const load = useCallback(async (nextProvider?: string) => {
-    const [nextCatalog, nextCredentials, nextStatus] = await Promise.all([
-      rpc<VoiceCatalogEntry[]>("voice/catalog"),
-      rpc<VoiceCredential[]>("voice/credentials"),
-      rpc<VoiceStatus>("voice/status"),
-    ]);
-    const selected = nextProvider || nextStatus.provider || nextCatalog[0]?.id || "";
-    setCatalog(nextCatalog);
-    setCredentials(nextCredentials);
-    setStatus(nextStatus);
-    setProvider(selected);
-    const cred = nextCredentials.find((entry) => entry.provider === selected);
-    setVoiceId(cred?.voiceId ?? "");
-    setSpeechModel(cred?.speechModel ?? "");
-    if (cred) {
-      setVoices(await rpc<VoiceInfo[]>("voice/voices", { provider: selected }));
-    } else {
-      setVoices([]);
-    }
-  }, []);
+  const load = useCallback(
+    async (nextProvider?: string) => {
+      const [nextCatalog, nextCredentials, nextStatus] = await Promise.all([
+        rpc<VoiceCatalogEntry[]>("voice/catalog"),
+        rpc<VoiceCredential[]>("voice/credentials"),
+        rpc<VoiceStatus>("voice/status"),
+      ]);
+      const selected = nextProvider || nextStatus.provider || nextCatalog[0]?.id || "";
+      setCatalog(nextCatalog);
+      setCredentials(nextCredentials);
+      setStatus(nextStatus);
+      setProvider(selected);
+      const cred = nextCredentials.find((entry) => entry.provider === selected);
+      setVoiceId(cred?.voiceId ?? "");
+      setSpeechModel(cred?.speechModel ?? "");
+      if (cred) {
+        setVoices(await rpc<VoiceInfo[]>("voice/voices", { provider: selected }));
+      } else {
+        setVoices([]);
+      }
+    },
+    [rpc],
+  );
 
   useFocusEffect(
     useCallback(() => {
       setLoading(true);
       const revision = ++deviceVoiceRevision.current;
+      const ownerCurrent = captureDeviceVoiceOwner();
+      const intent = currentDeviceVoiceIntent();
       void loadDeviceVoiceEnabled()
         .then((value) => {
-          if (deviceVoiceSaveInFlight.current) return;
+          if (
+            !ownerCurrent() ||
+            intent !== currentDeviceVoiceIntent() ||
+            deviceVoiceSaveInFlight.current
+          )
+            return;
           if (deviceVoiceRevision.current !== revision) return;
           setDeviceVoice(value);
           setDeviceVoiceReady(true);
         })
         .catch((err: unknown) => {
-          if (deviceVoiceSaveInFlight.current) return;
+          if (
+            !ownerCurrent() ||
+            intent !== currentDeviceVoiceIntent() ||
+            deviceVoiceSaveInFlight.current
+          )
+            return;
           if (deviceVoiceRevision.current !== revision) return;
           setDeviceVoiceReady(true);
           setError(errorText(err, t("Could not load voice settings")));
@@ -166,16 +225,24 @@ export default function VoiceSettings() {
     if (saved && next) await playCallCue("start").catch(() => undefined);
   }
 
-  async function saveDeviceVoice(next: boolean): Promise<boolean> {
+  async function saveDeviceVoice(
+    next: boolean,
+    intent: number,
+    ownerCurrent: () => boolean,
+  ): Promise<boolean> {
+    const current = () => ownerCurrent() && intent === currentDeviceVoiceIntent();
+    if (!current()) return false;
     deviceVoiceSaveInFlight.current = true;
     deviceVoiceRevision.current++;
     setDeviceVoice(next);
     try {
-      await saveDeviceVoiceEnabled(next);
-      return true;
+      await saveDeviceVoiceEnabled(next, { intent, isCurrent: current });
+      return current();
     } catch (err) {
-      setDeviceVoice(!next);
-      setError(errorText(err, t("Could not save that preference")));
+      if (current()) {
+        setDeviceVoice(!next);
+        setError(errorText(err, t("Could not save that preference")));
+      }
       return false;
     } finally {
       deviceVoiceSaveInFlight.current = false;
@@ -184,24 +251,33 @@ export default function VoiceSettings() {
   }
 
   async function toggleDeviceVoice() {
-    if (pending !== null || !deviceVoiceReady) return;
+    const ownerCurrent = captureDeviceVoiceOwner();
+    if (!ownerCurrent() || pending !== null || !deviceVoiceReady || deviceVoiceSaveInFlight.current)
+      return;
+    const intent = beginDeviceVoiceIntent();
     setPending("device-voice");
     setError(null);
     try {
-      await saveDeviceVoice(!deviceVoice);
+      await saveDeviceVoice(!deviceVoice, intent, ownerCurrent);
     } finally {
-      setPending(null);
+      if (ownerCurrent()) setPending(null);
     }
   }
 
   async function chooseProvider(nextProvider: string) {
-    if (pending !== null || !deviceVoiceReady) return;
+    const ownerCurrent = captureDeviceVoiceOwner();
+    if (!ownerCurrent() || pending !== null || !deviceVoiceReady || deviceVoiceSaveInFlight.current)
+      return;
     const wasDeviceVoice = deviceVoice;
     const previousProvider = provider;
+    // A compensation belongs to this exact device intent, not whichever one is latest later.
+    const intent = wasDeviceVoice ? beginDeviceVoiceIntent() : currentDeviceVoiceIntent();
+    const current = () => ownerCurrent() && intent === currentDeviceVoiceIntent();
     setPending("voice");
     setError(null);
     try {
-      if (wasDeviceVoice && !(await saveDeviceVoice(false))) return;
+      if (wasDeviceVoice && !(await saveDeviceVoice(false, intent, ownerCurrent))) return;
+      if (!current()) return;
       setProvider(nextProvider);
       const cred = credentials.find((entry) => entry.provider === nextProvider);
       if (cred?.voiceId && status?.provider !== nextProvider) {
@@ -210,14 +286,17 @@ export default function VoiceSettings() {
             voiceId: cred.voiceId,
             provider: nextProvider,
           });
+          if (!current()) return;
           setStatus(saved);
         } catch (err) {
+          if (!current()) return;
           setProvider(previousProvider);
-          if (wasDeviceVoice && !(await saveDeviceVoice(true))) return;
-          setError(errorText(err, t("Could not save that voice")));
+          if (wasDeviceVoice && !(await saveDeviceVoice(true, intent, ownerCurrent))) return;
+          if (current()) setError(errorText(err, t("Could not save that voice")));
           return;
         }
       }
+      if (!current()) return;
       setApiKey("");
       setVoiceId(cred?.voiceId ?? "");
       setSpeechModel(cred?.speechModel ?? "");
@@ -225,12 +304,13 @@ export default function VoiceSettings() {
       try {
         await load(nextProvider);
       } catch (err) {
+        if (!current()) return;
         // A refresh failure must not leave another provider's voices available.
         setVoices([]);
         setError(errorText(err, t("Could not load voice settings")));
       }
     } finally {
-      setPending(null);
+      if (ownerCurrent()) setPending(null);
     }
   }
 
@@ -314,7 +394,12 @@ export default function VoiceSettings() {
     setPending("test");
     setError(null);
     try {
-      const ready = await speakText(t("Hi, this is how I'll sound when I read replies out loud."));
+      const requestContext = targetSpaceId ? await settings.captureApiRequestContext() : undefined;
+      const ready = await speakText(t("Hi, this is how I'll sound when I read replies out loud."), {
+        requestContext,
+        isCurrent: settings.isCurrent,
+        signal: settings.signal(),
+      });
       if (!ready) {
         throw new Error(t("Connect a voice provider first."));
       }
@@ -327,6 +412,7 @@ export default function VoiceSettings() {
 
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
+      {targetName ? <Stack.Screen options={{ title: `${targetName} · ${t("Voice")}` }} /> : null}
       <ScrollView contentContainerStyle={styles.content} contentInsetAdjustmentBehavior="automatic">
         {loading ? <ActivityIndicator color={native.secondaryLabel} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}

@@ -15,7 +15,7 @@ import {
 } from "@rakazo/ui-web";
 import { XIcon } from "lucide-react";
 import { useEffect, useId, useState } from "react";
-import { rpc } from "../lib/rpc";
+import { useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
 import { SpaceMemorySection } from "./KnowledgeSection";
 import {
@@ -70,6 +70,8 @@ export function MemorySettingsOverlay({
   onBusyChange?: (busy: boolean) => void;
 }) {
   const { t } = useLingui();
+  const rpc = useSpaceRpc();
+  const current = useSpaceRpcCurrent();
   const providerSelectId = useId();
   const defaultRegistration = defaultMemoryProviderSettings();
   const [selectedProvider, setSelectedProvider] = useState(
@@ -105,7 +107,7 @@ export function MemorySettingsOverlay({
   }
 
   async function connect(draft: MemoryProviderConnectionDraft) {
-    if (!registration) return false;
+    if (!registration || !current()) return false;
     setError(null);
     markPending("connect");
     try {
@@ -114,40 +116,47 @@ export function MemorySettingsOverlay({
         ...draft,
         defaultMemoryScope: defaultScope,
       });
+      if (!current()) return false;
       onConfigChange(next);
       return true;
     } catch (err) {
+      if (!current()) return false;
       setError(errorText(err, t`Could not connect ${registration.name}`));
       return false;
     } finally {
-      markPending(null);
+      if (current()) markPending(null);
     }
   }
 
   async function disconnect() {
+    if (!current()) return;
     setError(null);
     markPending("disconnect");
     try {
       await rpc.memory.disconnectProvider();
+      if (!current()) return;
       onConfigChange(null);
     } catch (err) {
+      if (!current()) return false;
       setError(errorText(err, t`Could not disconnect memory provider`));
     } finally {
-      markPending(null);
+      if (current()) markPending(null);
     }
   }
 
   async function updateDefaultScope(scope: "isolated" | "shared") {
-    if (scope === defaultScope) return;
+    if (!current() || scope === defaultScope) return;
     setError(null);
     markPending("scope");
     try {
       const next = await rpc.memory.setDefaultScope({ defaultMemoryScope: scope });
+      if (!current()) return;
       onConfigChange(next);
     } catch (err) {
+      if (!current()) return false;
       setError(errorText(err, t`Could not update the default memory scope`));
     } finally {
-      markPending(null);
+      if (current()) markPending(null);
     }
   }
 

@@ -3531,9 +3531,10 @@ msgstr "아직 봇 활동이 없습니다."
 msgid "No bots"
 msgstr ""
 
+#: src/pages/GroupPanel.tsx
 #: src/pages/shell/bot-picker.tsx
 msgid "No bots match"
-msgstr ""
+msgstr "일치하는 봇이 없습니다"
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
@@ -6021,3 +6022,36 @@ msgstr "봇 모델"
 #: src/pages/shell/bot-panel.tsx
 msgid "Use updated connection"
 msgstr "업데이트된 연결 사용"
+
+#. placeholder {0}: selected.length
+#: src/pages/GroupPanel.tsx
+msgid "Members ({0})"
+msgstr "멤버 ({0})"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show selected"
+msgstr "선택한 멤버 표시"
+
+#: src/pages/GroupPanel.tsx
+msgid "Show all"
+msgstr "모두 표시"
+
+#: src/pages/GroupPanel.tsx
+msgid "Filter bots"
+msgstr "봇 필터링"
+
+#: src/pages/GroupPanel.tsx
+msgid "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}"
+msgstr "{GROUP_MEMBER_MIN}~{GROUP_MEMBER_MAX}명 선택"
+
+#: src/pages/GroupPanel.tsx
+msgid "No members yet"
+msgstr "아직 멤버가 없습니다"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Confirmations"
+msgstr "확인"
+
+#: src/pages/SettingsOverlay.tsx
+msgid "Space"
+msgstr "스페이스"

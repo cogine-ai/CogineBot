@@ -192,6 +192,7 @@ import {
   findTicket,
   formatMessagingLinkCode,
   GroupCreationConflictError,
+  GroupMembershipConflictError,
   groupMemberOrderBy,
   InvalidSpaceNameError,
   IsolationError,
@@ -2062,7 +2063,12 @@ export function createRouter(deps: RouterDeps) {
           });
           if (!section) throw new IsolationError();
         }
-        const updated = await groupRepos.updateGroup(context.actor, input);
+        const updated = await groupRepos.updateGroup(context.actor, input).catch((error) => {
+          if (error instanceof GroupMembershipConflictError) {
+            throw new ORPCError("CONFLICT", { message: error.message });
+          }
+          throw error;
+        });
         await Promise.all(
           updated.cancelledRunIds.map((runId) =>
             deps.jobs.cancel(runJobKey(runId)).catch(() => undefined),

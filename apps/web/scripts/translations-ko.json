@@ -653,5 +653,14 @@
   "Event callback URL": "이벤트 콜백 URL",
   "Save this application to get its event callback URL.": "이 앱을 저장하면 이벤트 콜백 URL이 표시됩니다.",
   "Interactions endpoint URL": "상호작용 엔드포인트 URL",
-  "Connect this bot before registering this URL in Discord.": "이 봇을 연결한 후 Discord에 이 URL을 등록하세요."
+  "Connect this bot before registering this URL in Discord.": "이 봇을 연결한 후 Discord에 이 URL을 등록하세요.",
+  "Members ({0})": "멤버 ({0})",
+  "Show selected": "선택한 멤버 표시",
+  "Show all": "모두 표시",
+  "Filter bots": "봇 필터링",
+  "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}": "{GROUP_MEMBER_MIN}~{GROUP_MEMBER_MAX}명 선택",
+  "No bots match": "일치하는 봇이 없습니다",
+  "No members yet": "아직 멤버가 없습니다",
+  "Confirmations": "확인",
+  "Space": "스페이스"
 }

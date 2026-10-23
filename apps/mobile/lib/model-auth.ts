@@ -8,9 +8,13 @@ type CompleteOAuthResult =
   | { status: "ready" }
   | { status: "error"; error: string };
 
-export async function waitForModelOAuth(loginId: string, signal?: AbortSignal) {
+export async function waitForModelOAuth(
+  loginId: string,
+  signal?: AbortSignal,
+  client: typeof rpc = rpc,
+) {
   return waitForModelOAuthCompletion(
-    () => rpc<CompleteOAuthResult>("models/completeOAuth", { loginId }, { signal }),
+    () => client<CompleteOAuthResult>("models/completeOAuth", { loginId }, { signal }),
     { signal },
   );
 }

@@ -11,6 +11,7 @@ const settingsScreens = new Set([
   "integration-setup",
   "integrations",
   "models",
+  "space-settings",
   "mcp",
   "voice",
 ]);

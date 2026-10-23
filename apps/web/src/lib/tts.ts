@@ -13,6 +13,9 @@ export interface SpeechSnapshot {
 }
 
 interface SpeakOptions {
+  spaceId?: string | null;
+  signal?: AbortSignal;
+  isCurrent?: () => boolean;
   voiceId?: string;
   botId?: string;
   messageId?: string;
@@ -78,71 +81,87 @@ export class Speaker {
   }
 
   async speak(text: string, opts: SpeakOptions = {}): Promise<void> {
+    if (opts.signal?.aborted || opts.isCurrent?.() === false) return;
     this.stop();
     const mine = this.token;
     const controller = new AbortController();
     this.request = controller;
-    const live = () => this.token === mine && !controller.signal.aborted;
-    const spaceId = selectedSpaceId();
-
-    this.set({ status: "preparing", botId: opts.botId, messageId: opts.messageId });
-    let utterances: string[];
-    try {
-      utterances = await withAbort(controller.signal, () =>
-        this.prepare(text, opts, controller.signal, spaceId),
-      );
-    } catch (error) {
-      if (live()) {
-        this.set({ ...IDLE, error: errorText(error) });
+    const owned = () => this.token === mine && !controller.signal.aborted;
+    const live = () => {
+      if (!owned()) return false;
+      if (opts.isCurrent?.() === false) {
+        this.stop();
+        return false;
       }
-      if (this.request === controller) this.request = null;
-      return;
-    }
-    if (!live()) return;
-    if (!utterances.length) {
-      this.set(IDLE);
-      if (this.request === controller) this.request = null;
-      return;
-    }
-
-    type Rendered = { blob: Blob; error?: never } | { blob?: never; error: unknown };
-    const render = (utterance: string): Promise<Rendered> =>
-      this.render(utterance, opts, controller.signal, spaceId).then(
-        (blob) => ({ blob }),
-        (error: unknown) => ({ error }),
-      );
-    let next: Promise<Rendered> | null = render(utterances[0] ?? "");
-    for (let i = 0; i < utterances.length; i += 1) {
-      const current = next;
-      next = i + 1 < utterances.length ? render(utterances[i + 1] ?? "") : null;
-      if (!current) break;
-      const rendered = await current;
-      if ("error" in rendered) {
+      return true;
+    };
+    const stopOwnedSample = () => {
+      if (this.token === mine) this.stop();
+    };
+    opts.signal?.addEventListener("abort", stopOwnedSample, { once: true });
+    const spaceId = opts.spaceId ?? selectedSpaceId();
+    try {
+      this.set({ status: "preparing", botId: opts.botId, messageId: opts.messageId });
+      let utterances: string[];
+      try {
+        utterances = await withAbort(controller.signal, () =>
+          this.prepare(text, opts, controller.signal, spaceId),
+        );
+      } catch (error) {
         if (live()) {
-          this.set({
-            ...IDLE,
-            error: errorText(rendered.error),
-          });
+          this.set({ ...IDLE, error: errorText(error) });
         }
         if (this.request === controller) this.request = null;
         return;
       }
       if (!live()) return;
-      this.set({
-        status: "speaking",
-        botId: opts.botId,
-        messageId: opts.messageId,
-        caption: utterances[i],
-      });
-      const finished = await this.play(rendered.blob, live);
-      if (!finished || !live()) {
-        if (live()) this.set(IDLE);
+      if (!utterances.length) {
+        this.set(IDLE);
         if (this.request === controller) this.request = null;
         return;
       }
+
+      type Rendered = { blob: Blob; error?: never } | { blob?: never; error: unknown };
+      const render = (utterance: string): Promise<Rendered> =>
+        this.render(utterance, opts, controller.signal, spaceId).then(
+          (blob) => ({ blob }),
+          (error: unknown) => ({ error }),
+        );
+      let next: Promise<Rendered> | null = render(utterances[0] ?? "");
+      for (let i = 0; i < utterances.length; i += 1) {
+        const current = next;
+        next = i + 1 < utterances.length ? render(utterances[i + 1] ?? "") : null;
+        if (!current) break;
+        const rendered = await current;
+        if ("error" in rendered) {
+          if (live()) {
+            this.set({
+              ...IDLE,
+              error: errorText(rendered.error),
+            });
+          }
+          if (this.request === controller) this.request = null;
+          return;
+        }
+        if (!live()) return;
+        this.set({
+          status: "speaking",
+          botId: opts.botId,
+          messageId: opts.messageId,
+          caption: utterances[i],
+        });
+        const finished = await this.play(rendered.blob, live);
+        if (!finished || !live()) {
+          if (live()) this.set(IDLE);
+          if (this.request === controller) this.request = null;
+          return;
+        }
+      }
+      if (live()) this.set(IDLE);
+      if (this.request === controller) this.request = null;
+    } finally {
+      opts.signal?.removeEventListener("abort", stopOwnedSample);
     }
-    if (live()) this.set(IDLE);
-    if (this.request === controller) this.request = null;
   }
 
   private async prepare(
@@ -153,7 +172,7 @@ export class Speaker {
   ): Promise<string[]> {
     const body = await rpc.voice.prepare(
       { text, voiceId: opts.voiceId, botId: opts.botId },
-      { signal, context: { spaceId } },
+      { signal, context: { spaceId, ...(opts.isCurrent ? { isCurrent: opts.isCurrent } : {}) } },
     );
     if (!body.ready) {
       throw new Error("Add a voice provider key and pick a voice in Voice settings.");
@@ -205,6 +224,7 @@ export class Speaker {
         settled = true;
         audio.onended = null;
         audio.onerror = null;
+        audio.ontimeupdate = null;
         if (this.settlePlayback === done) this.settlePlayback = null;
         if (this.audio === audio) this.teardownAudio();
         resolve(ok);
@@ -212,7 +232,15 @@ export class Speaker {
       this.settlePlayback = done;
       audio.onended = () => done(true);
       audio.onerror = () => done(false);
-      audio.play().catch(() => done(false));
+      audio.ontimeupdate = () => {
+        if (!live()) done(false);
+      };
+      audio.play().then(
+        () => {
+          if (!live()) done(false);
+        },
+        () => done(false),
+      );
     });
   }
 }

@@ -37,6 +37,7 @@ import {
   buildComposerMentionOptions,
   type ComposerMention,
   clampMentionHighlightIndex,
+  createGroupSettingsSave,
   cronFromPreset,
   formatMessageTime,
   groupVoiceChats,
@@ -220,7 +221,14 @@ import {
   rightPanelStorageKey,
   writeRightPanelState,
 } from "../lib/right-panel-state";
-import { clearSpaceSelection, rpc, selectedSpaceId, selectSpace } from "../lib/rpc";
+import {
+  clearSpaceSelection,
+  createSpaceRpc,
+  currentSpaceSelectionGeneration,
+  rpc,
+  selectedSpaceId,
+  selectSpace,
+} from "../lib/rpc";
 import { readSeenRunErrorIds, rememberSeenRunErrorId } from "../lib/run-error-storage";
 import { sharedInflight } from "../lib/shared-inflight";
 import {
@@ -572,6 +580,7 @@ export function ShellPage() {
   const [mcpOpen, setMcpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [settingsSpaceId, setSettingsSpaceId] = useState<string | null>(null);
   const [messagingSettingsOpen, setMessagingSettingsOpen] = useState(false);
   const [messagingSurfaceEnabled, setMessagingSurfaceEnabled] = useState(false);
   const [messagingProviders, setMessagingProviders] = useState<string[]>([]);
@@ -906,6 +915,83 @@ export function ShellPage() {
   activeBotId.current = inGroup ? undefined : active?.id;
   const activeGroupId = useRef<string | undefined>(groupId);
   activeGroupId.current = inNewChat ? undefined : groupId;
+  const settingsCurrentSpaceId = selectedSpaceId() ?? bootstrapMe?.spaceId ?? null;
+  const settingsTargetId = settingsSpaceId ?? settingsCurrentSpaceId;
+  const settingsSpace = spaces.find((entry) => entry.id === settingsTargetId) ?? null;
+  const settingsOwnerKey = JSON.stringify([userId, session.data?.session.id]);
+  const settingsOwner = useMemo(() => ({ key: settingsOwnerKey }), [settingsOwnerKey]);
+  const committedSettingsOwner = useRef<typeof settingsOwner | null>(null);
+  useLayoutEffect(() => {
+    committedSettingsOwner.current = settingsOwner;
+    return () => {
+      if (committedSettingsOwner.current === settingsOwner) committedSettingsOwner.current = null;
+    };
+  }, [settingsOwner]);
+  const groupEditorBinding = useMemo(
+    () => ({
+      group: panel === "group-settings" ? activeGroup : undefined,
+      userId,
+      owner: settingsOwner,
+      spaceId: bootstrapMe?.spaceId,
+      originId: selectedSpaceId(),
+      generation: currentSpaceSelectionGeneration(),
+    }),
+    [panel === "group-settings", activeGroup?.id, userId, bootstrapMe?.spaceId, settingsOwnerKey],
+  );
+  const committedGroupEditor = useRef<typeof groupEditorBinding | null>(null);
+  useLayoutEffect(() => {
+    committedGroupEditor.current = groupEditorBinding;
+    return () => {
+      if (committedGroupEditor.current === groupEditorBinding) committedGroupEditor.current = null;
+    };
+  }, [groupEditorBinding]);
+  const saveGroupSettings = useMemo(() => {
+    const binding = groupEditorBinding;
+    if (!binding.group || !binding.spaceId) return null;
+    const originCurrent = () =>
+      binding.owner === committedSettingsOwner.current &&
+      binding.userId === groupSettingsActor.current.userId &&
+      binding.spaceId === groupSettingsActor.current.spaceId &&
+      binding.originId === selectedSpaceId() &&
+      binding.generation === currentSpaceSelectionGeneration();
+    const isCurrent = () => committedGroupEditor.current === binding && originCurrent();
+    const client = createSpaceRpc(binding.spaceId, isCurrent);
+    const published = new WeakSet<Group>();
+    const publish = (updated: Group) => {
+      if (
+        !originCurrent() ||
+        updated?.id !== binding.group!.id ||
+        updated.spaceId !== binding.spaceId ||
+        typeof updated.name !== "string" ||
+        typeof updated.updatedAt !== "string" ||
+        !Array.isArray(updated.members) ||
+        !updated.members.every((member) => typeof member?.botId === "string") ||
+        published.has(updated)
+      )
+        return;
+      published.add(updated);
+      applySavedGroupUpdate(updated, { userId: binding.userId, spaceId: binding.spaceId });
+    };
+    const save = createGroupSettingsSave({
+      group: binding.group,
+      update: async (input) => {
+        const updated = await client.groups.update({ groupId: binding.group!.id, ...input });
+        // A committed write may update the roster after its editor closes, while
+        // only the original editor may continue or acknowledge the save.
+        publish(updated);
+        return updated;
+      },
+      read: () => client.groups.get({ groupId: binding.group!.id }),
+      isCurrent,
+      isAmbiguous: (error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return false;
+        const status =
+          error && typeof error === "object" && "status" in error ? error.status : undefined;
+        return typeof status !== "number";
+      },
+    });
+    return { save, publish };
+  }, [groupEditorBinding]);
   const groupSettingsActor = useRef({ userId, spaceId: bootstrapMe?.spaceId });
   groupSettingsActor.current = { userId, spaceId: bootstrapMe?.spaceId };
   const screenRequest = useRef(0);
@@ -3258,6 +3344,7 @@ export function ShellPage() {
   }
 
   function openSettings(section: SettingsSection = "general") {
+    setSettingsSpaceId(null);
     setSettingsSection(section);
     setSettingsOpen(true);
   }
@@ -3737,6 +3824,32 @@ export function ShellPage() {
               aria-label={t`Switch space`}
               title={currentSpaceName}
               className={`flex w-full items-center rounded-lg text-[12px] text-foreground hover:bg-sidebar-accent ${compactSidebar ? "h-9 justify-center" : "gap-3 px-2 py-2"}`}
+              onContextMenu={(event) => {
+                if (spaces.length !== 1 || !currentSpace) return;
+                event.preventDefault();
+                setSpacePickerOpen(false);
+                spaceMenuAnchor.current = event.currentTarget;
+                setSpaceMenu({
+                  id: currentSpace.id,
+                  position: { x: event.clientX, y: event.clientY },
+                });
+              }}
+              onKeyDown={(event) => {
+                if (
+                  spaces.length !== 1 ||
+                  !currentSpace ||
+                  !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+                )
+                  return;
+                event.preventDefault();
+                setSpacePickerOpen(false);
+                const rect = event.currentTarget.getBoundingClientRect();
+                spaceMenuAnchor.current = event.currentTarget;
+                setSpaceMenu({
+                  id: currentSpace.id,
+                  position: { x: rect.left, y: rect.bottom },
+                });
+              }}
             >
               <Layers size={17} strokeWidth={1.6} className="shrink-0 text-muted-foreground" />
               {!compactSidebar ? (
@@ -3975,7 +4088,7 @@ export function ShellPage() {
                   nestedRows.flatMap((row) =>
                     row.item.kind === "bot" && row.parentId === parentId ? [row.item.chat.id] : [],
                   );
-                const hasSpaceActions = group.canRenameSpace || group.canDeleteSpace;
+                const hasSpaceActions = group.canOpenSpaceSettings;
                 return (
                   // biome-ignore lint/a11y/noStaticElementInteractions: Move and reorder menus provide keyboard alternatives to this drop target.
                   <div
@@ -5144,9 +5257,9 @@ export function ShellPage() {
                 covered={computerOpen}
                 onClose={() => setPanel(null)}
                 onSave={async (input) => {
-                  const actor = groupSettingsActor.current;
-                  const updated = await rpc.groups.update({ groupId: activeGroup.id, ...input });
-                  applySavedGroupUpdate(updated, actor);
+                  if (!saveGroupSettings) throw new Error("GROUP_SETTINGS_UNAVAILABLE");
+                  const updated = await saveGroupSettings.save(input);
+                  saveGroupSettings.publish(updated);
                 }}
                 onRemove={async () => {
                   await rpc.groups.remove({ groupId: activeGroup.id });
@@ -5517,6 +5630,19 @@ export function ShellPage() {
               sideOffset={0}
               className="w-[220px]"
             >
+              {spaceMenuTarget ? (
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSettingsSpaceId(spaceMenuTarget.id);
+                    setSettingsSection("models");
+                    setSettingsOpen(true);
+                    setSpaceMenu(null);
+                  }}
+                >
+                  <Settings />
+                  {t`Settings`}
+                </DropdownMenuItem>
+              ) : null}
               {spaceMenuTarget?.canRename ? (
                 <DropdownMenuItem
                   onClick={() => {
@@ -5801,6 +5927,11 @@ export function ShellPage() {
       <Suspense fallback={null}>
         {settingsOpen ? (
           <SettingsOverlay
+            space={settingsSpace}
+            spaces={spaces}
+            currentSpaceId={settingsCurrentSpaceId}
+            ownerKey={settingsOwnerKey}
+            onSpaceChange={setSettingsSpaceId}
             name={userName}
             email={session.data?.user.email}
             usage={usage}
@@ -5823,13 +5954,22 @@ export function ShellPage() {
               setMemoryProviderConfig(config);
             }}
             onVoiceStatusMaybeChanged={async () => {
+              const owner = settingsOwner;
+              const spaceId = settingsCurrentSpaceId;
+              const generation = currentSpaceSelectionGeneration();
+              const current = () =>
+                owner === committedSettingsOwner.current &&
+                generation === currentSpaceSelectionGeneration() &&
+                (selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null) === spaceId;
+              const client = createSpaceRpc(spaceId, current);
               try {
-                setVoiceStatus(
-                  await Promise.race([rpc.voice.status(), voiceStatusRefreshTimeout()]),
-                );
+                const status = await Promise.race([
+                  client.voice.status(),
+                  voiceStatusRefreshTimeout(),
+                ]);
+                if (current()) setVoiceStatus(status);
               } catch {
-                // Prefer reopening Voice settings over starting a call with stale readiness.
-                setVoiceStatus(null);
+                if (current()) setVoiceStatus(null);
               }
             }}
             onClose={() => {

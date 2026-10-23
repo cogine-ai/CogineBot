@@ -14,6 +14,64 @@ import { retainInboxValue } from "./inbox-retention";
 const testFileUrl = import.meta.url;
 const source = readFileSync(new URL("../app/index.tsx", testFileUrl), "utf8");
 
+it("opens a nondeletable Space's settings without selecting it and fences stale menu callbacks", () => {
+  const push = vi.fn();
+  const select = vi.fn();
+  const remove = vi.fn();
+  let current = true;
+  const dependencies = {
+    React,
+    useCallback: (callback: unknown) => callback,
+    captureMobileScope: () => ({}),
+    isMobileScopeCurrent: () => current,
+    InboxContextMenu: () => null,
+    Pressable: () => null,
+    Text: () => null,
+    canDeleteInboxSpace: () => false,
+    router: { push },
+    chooseInboxSpace: select,
+    confirmDeleteSpace: remove,
+    t: (text: string) => text,
+    botSections: [],
+    collapsedRosterParents: new Set(),
+    day: 0,
+    me: { spaceId: "space-a" },
+    organizationBusy: false,
+    openBot: vi.fn(),
+    openGroup: vi.fn(),
+    handleChatAction: vi.fn(),
+    handleSectionAction: vi.fn(),
+    spaceBusy: false,
+    spaceRecoveryId: null,
+    styles: {},
+    toggleRosterParent: vi.fn(),
+    toggleSidebarSection: vi.fn(),
+  };
+  const listSource = source.slice(
+    source.indexOf("  const renderItem = useCallback("),
+    source.indexOf("  if (!ready) {"),
+  );
+  const compiled = ts.transpileModule(`${listSource}\nreturn renderItem;`, {
+    compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const renderItem = new Function(...Object.keys(dependencies), compiled)(
+    ...Object.values(dependencies),
+  );
+  const row = renderItem({ item: { type: "heading", space: { id: "space-b" }, title: "Team B" } });
+  expect(row.props.enabled).toBe(true);
+  expect(row.props.actions.map((action: { id: string }) => action.id)).toEqual(["settings"]);
+  row.props.onAction("settings");
+  expect(push).toHaveBeenCalledWith({
+    pathname: "/space-settings",
+    params: { spaceId: "space-b", name: "Team B" },
+  });
+  expect(select).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  current = false;
+  row.props.onAction("settings");
+  expect(push).toHaveBeenCalledTimes(1);
+});
+
 // Run the actual row and renderItem code with native presentation stubbed out.
 // React still performs real memo comparisons; this measures JS row executions only.
 function measure(before: boolean) {
@@ -65,6 +123,9 @@ function measure(before: boolean) {
     appearance: "light",
     botSections: [],
     day: new Date(2026, 9, 10).getTime(),
+    router: { push: action },
+    captureMobileScope: () => ({}),
+    isMobileScopeCurrent: () => true,
     chooseInboxSpace: action,
     collapsedRosterParents: new Set(),
     confirmDeleteSpace: action,
@@ -195,6 +256,9 @@ it.each(["midnight", "focus", "foreground"])(
       chatOrganizationActions: () => [],
       appearance: "light",
       botSections: [],
+      router: { push: action },
+      captureMobileScope: () => ({}),
+      isMobileScopeCurrent: () => true,
       chooseInboxSpace: action,
       collapsedRosterParents: new Set(),
       confirmDeleteSpace: action,

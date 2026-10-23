@@ -5,14 +5,41 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import VoiceSettings from "../app/(settings)/voice";
+import { speakText } from "./voice";
 
-const state = vi.hoisted(() => ({ rpc: vi.fn(), load: vi.fn(), save: vi.fn() }));
+const state = vi.hoisted(() => ({
+  rpc: vi.fn(),
+  load: vi.fn(),
+  save: vi.fn(),
+  params: {} as Record<string, string>,
+  generation: 0,
+}));
 const t = (text: string) => text;
 vi.mock("expo-router", () => ({
+  Stack: { Screen: () => null },
+  useLocalSearchParams: () => state.params,
   useFocusEffect: (callback: () => void) => useEffect(callback, [callback]),
 }));
-vi.mock("./api", () => ({ rpc: state.rpc }));
-vi.mock("./device-voice", () => ({
+vi.mock("./mobile-scope", () => ({
+  captureMobileScope: () => ({ generation: state.generation }),
+  isMobileScopeCurrent: (scope: { generation: number }) => scope.generation === state.generation,
+  mobileScopeKey: () => String(state.generation),
+  subscribeMobileScope: () => () => {},
+}));
+vi.mock("./api", () => ({
+  rpc: state.rpc,
+  captureApiRequestContext: async () => ({
+    apiBase: "https://api.example.test",
+    headers: { "x-rakazo-space-id": "space-1" },
+  }),
+}));
+vi.mock("expo-secure-store", () => ({
+  getItemAsync: vi.fn(),
+  setItemAsync: vi.fn(),
+  deleteItemAsync: vi.fn(),
+}));
+vi.mock("./device-voice", async (original) => ({
+  ...(await original<typeof import("./device-voice")>()),
   loadDeviceVoiceEnabled: state.load,
   saveDeviceVoiceEnabled: state.save,
 }));
@@ -23,7 +50,7 @@ vi.mock("./call-sounds", () => ({
   saveWaitSoundEnabled: vi.fn(),
   playCallCue: vi.fn(),
 }));
-vi.mock("./voice", () => ({ speakText: vi.fn() }));
+vi.mock("./voice", () => ({ speakText: vi.fn(async () => true) }));
 vi.mock("./appearance", () => ({ mobileTokens: () => ({}) }));
 vi.mock("./native", () => ({ native: {}, useThemedStyles: (factory: () => unknown) => factory() }));
 vi.mock("./i18n", () => ({ t: (text: string) => text, useI18n: () => ({ t }) }));
@@ -107,9 +134,12 @@ async function click(label: string) {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   activeProvider = "fish-audio";
+  state.params = {};
+  state.generation = 0;
   state.load.mockReset().mockResolvedValue(true);
   state.save.mockReset().mockResolvedValue(undefined);
   state.rpc.mockReset().mockImplementation(async (proc: string, args?: { provider: string }) => {
+    if (proc === "me") return { userId: "user-1", spaceId: state.params.spaceId ?? "space-1" };
     if (proc === "voice/catalog") return catalog;
     if (proc === "voice/credentials") return credentials;
     if (proc === "voice/setVoice") activeProvider = args!.provider;
@@ -177,7 +207,10 @@ it("saves device voice off before activating a connected provider's saved voice"
     }),
   );
   await click("Other provider");
-  expect(state.save).toHaveBeenCalledWith(false);
+  expect(state.save).toHaveBeenCalledWith(false, {
+    intent: expect.any(Number),
+    isCurrent: expect.any(Function),
+  });
   expect(state.rpc).not.toHaveBeenCalledWith("voice/setVoice", expect.anything());
   expect(button("Fish Audio").disabled).toBe(true);
   await act(async () => finish());
@@ -220,7 +253,7 @@ it.each([true, false])(
     expect(container.textContent).toContain("Could not save that voice");
     if (device) {
       selected("This device");
-      expect(state.save.mock.calls).toEqual([[false], [true]]);
+      expect(state.save.mock.calls.map(([enabled]) => [enabled])).toEqual([[false], [true]]);
       await click("This device");
     } else {
       expect(state.save).not.toHaveBeenCalled();
@@ -255,4 +288,20 @@ it("clears stale voices if the refresh fails after activating a provider", async
   expect(container.textContent).not.toContain("fish-audio voice");
   expect(container.textContent).toContain("Could not load voice settings");
   expect(state.save).not.toHaveBeenCalled();
+});
+
+it("binds provider changes and the sample to an explicit Space", async () => {
+  state.params = { spaceId: "space-2" };
+  state.load.mockResolvedValue(false);
+  await render();
+  await click("Other provider");
+  await click("Hear a sample");
+  for (const [name, , options] of state.rpc.mock.calls) {
+    if (name.startsWith("voice/"))
+      expect(options?.requestContext?.headers["x-rakazo-space-id"]).toBe("space-2");
+  }
+  expect(state.rpc.mock.calls.some(([name]) => name === "voice/setVoice")).toBe(true);
+  expect(
+    vi.mocked(speakText).mock.lastCall?.[1]?.requestContext?.headers["x-rakazo-space-id"],
+  ).toBe("space-2");
 });

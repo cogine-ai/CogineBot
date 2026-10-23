@@ -314,6 +314,12 @@ describePostgres("retrying group creation through the real API", () => {
       expect.soft(listed?.members.map((member) => member.botId)).toEqual(expectedBotIds);
       expect.soft(detail.members.map((member) => member.botId)).toEqual(expectedBotIds);
       expect.soft(snapshot.members.map((member) => member.botId)).toEqual(expectedBotIds);
+      const confirmed = await rpc<Group>("groups/update", {
+        groupId: group.id,
+        name: `Ordered companions ${index + 1}`,
+        expectedBotIds,
+      });
+      expect(confirmed.members.map((member) => member.botId)).toEqual(expectedBotIds);
 
       try {
         const receipt = await rpc<{ runId: string; runIds?: string[] }>("threads/send", {
@@ -352,5 +358,213 @@ describePostgres("retrying group creation through the real API", () => {
     } finally {
       await rpc("threads/stop", { groupId: group.id });
     }
+  });
+  it("creates ten members in order and rejects an eleventh without changing the group", async () => {
+    const members: Bot[] = [];
+    for (let index = 1; index <= 11; index += 1) members.push(await createBot(`Member ${index}`));
+    const botIds = members.slice(0, 10).map((bot) => bot.id);
+    const created = await rpc<Group>("groups/create", { name: "Ten members", botIds });
+    expect(created.members.map((member) => member.botId)).toEqual(botIds);
+    expect(
+      (await rpc<Group>("groups/get", { groupId: created.id })).members.map(
+        (member) => member.botId,
+      ),
+    ).toEqual(botIds);
+    expect(
+      (
+        await raw("groups/update", {
+          groupId: created.id,
+          botIds: members.map((bot) => bot.id),
+          expectedBotIds: botIds,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await rpc<Group>("groups/get", { groupId: created.id })).members.map(
+        (member) => member.botId,
+      ),
+    ).toEqual(botIds);
+    expect(
+      (await raw("groups/create", { name: "Too many", botIds: members.map((bot) => bot.id) }))
+        .status,
+    ).toBe(400);
+  });
+
+  it("serializes competing confirmed roster replacements and keeps the winner's order", async () => {
+    const created = await rpc<Group>("groups/create", {
+      name: "Concurrent editors",
+      botIds: [bots[0]!.id, bots[1]!.id],
+    });
+    const expectedBotIds = created.members.map((member) => member.botId);
+    const inputs = [
+      {
+        groupId: created.id,
+        name: "First editor",
+        botIds: [bots[2]!.id, bots[0]!.id],
+        expectedBotIds,
+      },
+      {
+        groupId: created.id,
+        name: "Second editor",
+        botIds: [bots[1]!.id, bots[2]!.id],
+        expectedBotIds,
+      },
+    ];
+    const responses = await Promise.all(inputs.map((input) => raw("groups/update", input)));
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    const winner = responses.findIndex((response) => response.status === 200);
+    const current = await rpc<Group>("groups/get", { groupId: created.id });
+    expect(current.name).toBe(inputs[winner]!.name);
+    expect(current.members.map((member) => member.botId)).toEqual(inputs[winner]!.botIds);
+    expect((await raw("groups/update", inputs[1 - winner]!)).status).toBe(409);
+    const unchanged = await rpc<Group>("groups/get", { groupId: created.id });
+    expect(unchanged.name).toBe(current.name);
+    expect(unchanged.members).toEqual(current.members);
+    const renamed = await rpc<Group>("groups/update", {
+      groupId: created.id,
+      name: "Legacy rename",
+    });
+    expect(renamed.members).toEqual(current.members);
+    expect(renamed.name).toBe("Legacy rename");
+  });
+
+  it("rejects an old ordered roster after a peer changes the default recipient", async () => {
+    const replacement = await createBot("Replacement companion");
+    const originalOrder = bots.map((bot) => bot.id);
+    const winnerOrder = [bots[1]!.id, bots[2]!.id, bots[0]!.id];
+    const created = await rpc<Group>("groups/create", {
+      name: "Original companions",
+      botIds: originalOrder,
+    });
+    const winner = await rpc<Group>("groups/update", {
+      groupId: created.id,
+      name: "Winner companions",
+      pinned: true,
+      botIds: winnerOrder,
+      expectedBotIds: originalOrder,
+    });
+    expect(winner.members.map((member) => member.botId)).toEqual(winnerOrder);
+
+    const task = await handles.prisma.task.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId: bots[2]!.id,
+        threadId: created.threadId,
+        prompt: "Synthetic pending group work",
+        status: "waiting_input",
+      },
+    });
+    const pending = await handles.prisma.run.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId: bots[2]!.id,
+        threadId: created.threadId,
+        taskId: task.id,
+        status: "waiting_input",
+        trigger: "user",
+      },
+    });
+    const before = await handles.prisma.chatGroup.findUniqueOrThrow({
+      where: { id: created.id },
+    });
+    const beforeEventCount = await handles.prisma.event.count({
+      where: { threadId: created.threadId },
+    });
+    try {
+      const stale = await raw("groups/update", {
+        groupId: created.id,
+        name: "Stale companions",
+        pinned: false,
+        botIds: [bots[0]!.id, bots[1]!.id, replacement.id],
+        expectedBotIds: originalOrder,
+      });
+      expect.soft(stale.status).toBe(409);
+      const unchanged = await rpc<Group>("groups/get", { groupId: created.id });
+      expect.soft(unchanged).toMatchObject({ name: winner.name, pinned: true });
+      expect.soft(unchanged.members.map((member) => member.botId)).toEqual(winnerOrder);
+      expect
+        .soft(await handles.prisma.chatGroup.findUniqueOrThrow({ where: { id: created.id } }))
+        .toEqual(before);
+      expect
+        .soft(await handles.prisma.run.findUniqueOrThrow({ where: { id: pending.id } }))
+        .toEqual(pending);
+      expect
+        .soft(await handles.prisma.task.findUniqueOrThrow({ where: { id: task.id } }))
+        .toEqual(task);
+      expect
+        .soft(await handles.prisma.event.count({ where: { threadId: created.threadId } }))
+        .toBe(beforeEventCount);
+    } finally {
+      await rpc("threads/stop", { groupId: created.id });
+    }
+
+    try {
+      const receipt = await rpc<{ runId: string; runIds?: string[] }>("threads/send", {
+        groupId: created.id,
+        text: "A thought for the first companion.",
+        clientNonce: `ordered-cas-default-${stamp}`,
+      });
+      const runs = await handles.prisma.run.findMany({
+        where: { id: { in: receipt.runIds ?? [receipt.runId] } },
+        select: { botId: true },
+      });
+      expect(runs.map((run) => run.botId)).toEqual([winnerOrder[0]]);
+    } finally {
+      await rpc("threads/stop", { groupId: created.id });
+    }
+
+    const fresh = await rpc<Group>("groups/update", {
+      groupId: created.id,
+      botIds: [replacement.id, bots[1]!.id],
+      expectedBotIds: winnerOrder,
+    });
+    expect(fresh.members.map((member) => member.botId)).toEqual([replacement.id, bots[1]!.id]);
+    const legacy = await rpc<Group>("groups/update", {
+      groupId: created.id,
+      botIds: [bots[1]!.id, replacement.id],
+    });
+    expect(legacy.members.map((member) => member.botId)).toEqual([bots[1]!.id, replacement.id]);
+  });
+
+  it("compares only active members and never admits a foreign editor through CAS", async () => {
+    const localBots: Bot[] = [];
+    for (const name of ["Active one", "Archived member", "Active two", "Replacement"])
+      localBots.push(await createBot(name));
+    const created = await rpc<Group>("groups/create", {
+      name: "Archived roster",
+      botIds: localBots.slice(0, 3).map((bot) => bot.id),
+    });
+    await rpc("bots/archive", { botId: localBots[1]!.id });
+    const active = (await rpc<Group>("groups/get", { groupId: created.id })).members.map(
+      (member) => member.botId,
+    );
+    expect(active).toEqual([localBots[0]!.id, localBots[2]!.id]);
+    const input = {
+      groupId: created.id,
+      botIds: [localBots[3]!.id, localBots[2]!.id],
+      expectedBotIds: active,
+    };
+    expect(
+      (await raw("groups/update", { ...input, expectedBotIds: [...active].reverse() })).status,
+    ).toBe(409);
+    const otherCookie = await signup("foreign-editor");
+    expect((await raw("groups/update", input, otherCookie)).status).toBeGreaterThanOrEqual(400);
+    expect(
+      (await rpc<Group>("groups/get", { groupId: created.id })).members.map(
+        (member) => member.botId,
+      ),
+    ).toEqual(active);
+    const updated = await rpc<Group>("groups/update", input);
+    expect(updated.members.map((member) => member.botId)).toEqual(input.botIds);
+    expect(
+      (
+        await raw("groups/update", {
+          ...input,
+          expectedBotIds: localBots.slice(0, 3).map((bot) => bot.id),
+        })
+      ).status,
+    ).toBe(409);
   });
 });

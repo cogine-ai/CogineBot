@@ -650,5 +650,14 @@
   "Event callback URL": "Olay geri çağrı URL’si",
   "Save this application to get its event callback URL.": "Olay geri çağrı URL’sini almak için bu uygulamayı kaydedin.",
   "Interactions endpoint URL": "Etkileşim uç noktası URL’si",
-  "Connect this bot before registering this URL in Discord.": "Bu URL’yi Discord’a kaydetmeden önce bu botu bağlayın."
+  "Connect this bot before registering this URL in Discord.": "Bu URL’yi Discord’a kaydetmeden önce bu botu bağlayın.",
+  "Members ({0})": "Üyeler ({0})",
+  "Show selected": "Seçilenleri göster",
+  "Show all": "Tümünü göster",
+  "Filter bots": "Botları filtrele",
+  "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}": "{GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} üye seçin",
+  "No bots match": "Eşleşen bot yok",
+  "No members yet": "Henüz üye yok",
+  "Confirmations": "Onaylar",
+  "Space": "Alan"
 }

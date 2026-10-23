@@ -28,6 +28,13 @@ export class GroupCreationConflictError extends Error {
   }
 }
 
+export class GroupMembershipConflictError extends Error {
+  constructor(message = "Group members changed. Refresh and try again.") {
+    super(message);
+    this.name = "GroupMembershipConflictError";
+  }
+}
+
 function groupCreationSignature(input: CreateGroupInput): string {
   return createHash("sha256")
     .update(JSON.stringify({ name: input.name.trim(), botIds: input.botIds }))
@@ -461,6 +468,7 @@ export function createGroupRepos(prisma: PrismaClient) {
         groupId: string;
         name?: string;
         botIds?: string[];
+        expectedBotIds?: string[];
         pinned?: boolean;
         sectionId?: string | null;
       },
@@ -476,11 +484,24 @@ export function createGroupRepos(prisma: PrismaClient) {
             archivedAt: null,
           },
           include: {
-            members: { select: { botId: true, bot: { select: { archivedAt: true } } } },
+            members: {
+              select: { botId: true, bot: { select: { archivedAt: true } } },
+              orderBy: groupMemberOrderBy,
+            },
             thread: { select: { id: true } },
           },
         });
         if (!current?.thread) throw new IsolationError();
+        if (input.expectedBotIds) {
+          const expected = input.expectedBotIds;
+          const active = current.members.filter((member) => member.bot.archivedAt === null);
+          if (
+            expected.length !== active.length ||
+            active.some((member, index) => member.botId !== expected[index])
+          ) {
+            throw new GroupMembershipConflictError();
+          }
+        }
         if (
           !members &&
           !hasMinimumActiveMembers(

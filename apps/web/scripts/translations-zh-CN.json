@@ -802,5 +802,14 @@
   "Event callback URL": "事件回调 URL",
   "Save this application to get its event callback URL.": "保存此应用后即可获取事件回调 URL。",
   "Interactions endpoint URL": "交互端点 URL",
-  "Connect this bot before registering this URL in Discord.": "请先连接此机器人，再到 Discord 登记此 URL。"
+  "Connect this bot before registering this URL in Discord.": "请先连接此机器人，再到 Discord 登记此 URL。",
+  "Members ({0})": "成员（{0}）",
+  "Show selected": "仅显示已选",
+  "Show all": "显示全部",
+  "Filter bots": "筛选机器人",
+  "Pick {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX}": "选择 {GROUP_MEMBER_MIN}–{GROUP_MEMBER_MAX} 位成员",
+  "No bots match": "没有匹配的机器人",
+  "No members yet": "暂无成员",
+  "Confirmations": "操作确认",
+  "Space": "空间"
 }

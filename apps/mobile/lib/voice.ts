@@ -17,6 +17,9 @@ type SpeechOptions = {
   botId?: string;
   messageId?: string;
   speaker?: PlaybackSpeaker;
+  requestContext?: ApiRequestContext;
+  isCurrent?: () => boolean;
+  signal?: AbortSignal;
 };
 export const VOICE_RESPONSE_TIMEOUT_MS = 70_000;
 export const MAX_VOICE_AUDIO_BYTES = 16 * 1024 * 1024;
@@ -139,11 +142,23 @@ async function advanceSpeechQueue(epoch: number): Promise<boolean> {
 }
 
 export async function speakText(text: string, opts: SpeechOptions = {}): Promise<boolean> {
-  return speakPrepared(text, opts, beginSpeech());
+  if (opts.signal?.aborted || opts.isCurrent?.() === false) return false;
+  const epoch = beginSpeech();
+  const stopOwnedSample = () => {
+    if (isCurrentSpeech(epoch)) stopVoicePlayback();
+  };
+  opts.signal?.addEventListener("abort", stopOwnedSample, { once: true });
+  try {
+    return await speakPrepared(text, opts, epoch);
+  } finally {
+    opts.signal?.removeEventListener("abort", stopOwnedSample);
+  }
 }
 
 async function speakPrepared(text: string, opts: SpeechOptions, epoch: number): Promise<boolean> {
-  if (!isCurrentSpeech(epoch)) return false;
+  const live = () =>
+    isCurrentSpeech(epoch) && !opts.signal?.aborted && opts.isCurrent?.() !== false;
+  if (!live()) return false;
   announcedSpeaker =
     opts.botId && opts.speaker ? { botId: opts.botId, speaker: opts.speaker } : undefined;
   // Stop has to work before a player exists. Pause stays hidden until one does.
@@ -167,21 +182,21 @@ async function speakPrepared(text: string, opts: SpeechOptions, epoch: number): 
       // through hosted voice after the user opted for on-device only.
       useDeviceVoice = true;
     }
-    if (!isCurrentSpeech(epoch)) return false;
+    if (!live()) return false;
     if (useDeviceVoice) {
       const spoken = await speakOnDevice(text, opts.botId, opts.messageId, epoch);
-      if (!isCurrentSpeech(epoch)) return false;
+      if (!live()) return false;
       if (!spoken && playback.status !== "idle") setPlayback(IDLE_PLAYBACK, null);
       return spoken;
     }
-    const requestContext = await captureApiRequestContext();
-    if (!isCurrentSpeech(epoch)) return false;
+    const requestContext = opts.requestContext ?? (await captureApiRequestContext());
+    if (!live()) return false;
     const prepared = await rpc<{ ready: boolean; utterances: string[] }>(
       "voice/prepare",
       { text, voiceId: opts.voiceId, botId: opts.botId },
-      { requestContext },
+      { requestContext, ...(opts.signal ? { signal: opts.signal } : {}) },
     );
-    if (!isCurrentSpeech(epoch)) return false;
+    if (!live()) return false;
     if (!prepared.ready) {
       if (playback.status !== "idle") setPlayback(IDLE_PLAYBACK, null);
       return false;
@@ -190,7 +205,7 @@ async function speakPrepared(text: string, opts: SpeechOptions, epoch: number): 
     const generation = startHostedSpeechSession();
     // The prepare control only owns the dock; stopping it would hide Stop.
     if (activeControl !== prepareControl) activeControl?.stop();
-    if (!isCurrentSpeech(epoch)) return false;
+    if (!live()) return false;
     const session = new HostedSession(generation);
     const control: VoiceControl = {
       pause: () => {
@@ -219,12 +234,12 @@ async function speakPrepared(text: string, opts: SpeechOptions, epoch: number): 
     let finished = false;
     try {
       for (const utterance of prepared.utterances) {
-        if (session.isStopped || !isCurrentSpeech(epoch)) break;
+        if (session.isStopped || !live()) break;
         const audio = await renderUtterance(utterance, opts, requestContext);
-        if (session.isStopped || !isCurrentSpeech(epoch)) break;
+        if (session.isStopped || !live()) break;
         await playMpeg(audio, session);
       }
-      finished = !session.isStopped && isCurrentSpeech(epoch);
+      finished = !session.isStopped && live();
     } finally {
       releasePlayback(epoch, isCurrentHostedSpeechSession(generation), finished);
     }
@@ -345,10 +360,7 @@ function speakOneUtterance(Speech: typeof ExpoSpeech, text: string, voice?: stri
   });
 }
 
-export async function speakUtterance(
-  text: string,
-  opts: SpeechOptions & { requestContext?: ApiRequestContext } = {},
-): Promise<Uint8Array> {
+export async function speakUtterance(text: string, opts: SpeechOptions = {}): Promise<Uint8Array> {
   const requestContext = opts.requestContext ?? (await captureApiRequestContext());
   await ensureAiDataConsent({
     uses: ["voice"],
@@ -365,7 +377,7 @@ async function renderUtterance(
   opts: SpeechOptions,
   requestContext: ApiRequestContext,
 ): Promise<Uint8Array> {
-  const deadline = requestDeadline(VOICE_RESPONSE_TIMEOUT_MS);
+  const deadline = requestDeadline(VOICE_RESPONSE_TIMEOUT_MS, opts.signal);
   try {
     const res = await withAbort(
       fetch(`${requestContext.apiBase}/api/voice/speak`, {
@@ -603,8 +615,11 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function requestDeadline(timeoutMs: number) {
+function requestDeadline(timeoutMs: number, parent?: AbortSignal) {
   const controller = new AbortController();
+  const abort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) abort();
+  else parent?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(
     () => controller.abort(new Error("Voice request timed out.")),
     timeoutMs,
@@ -613,6 +628,7 @@ function requestDeadline(timeoutMs: number) {
     signal: controller.signal,
     dispose() {
       clearTimeout(timer);
+      parent?.removeEventListener("abort", abort);
     },
   };
 }

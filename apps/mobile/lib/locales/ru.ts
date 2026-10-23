@@ -1,4 +1,10 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Members ({count})": "Участники ({count})",
+  "Show selected": "Показать выбранных",
+  "Show all": "Показать всех",
+  "Filter bots": "Фильтр ботов",
+  "Pick {min}–{max}": "Выберите от {min} до {max} участников",
+  "No members yet": "Участников пока нет",
   Routines: "Задачи",
   Profile: "Профиль",
   "Could not load routines": "Не удалось загрузить задачи",

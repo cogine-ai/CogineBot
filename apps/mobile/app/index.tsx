@@ -1175,24 +1175,44 @@ function Home() {
   );
 
   const renderItem = useCallback(
-    ({ item }: { item: InboxItem }) =>
-      item.type === "heading" ? (
+    ({ item }: { item: InboxItem }) => {
+      const owner = captureMobileScope();
+      return item.type === "heading" ? (
         item.space ? (
           <InboxContextMenu
-            enabled={canDeleteInboxSpace(item.space)}
+            enabled={!spaceBusy && !spaceRecoveryId && !organizationBusy}
             actions={[
-              {
-                id: "delete",
-                title: t("Delete space"),
-                image: "trash",
-                attributes: {
-                  destructive: true,
-                  disabled: spaceBusy || !!spaceRecoveryId || organizationBusy,
-                },
-              },
+              { id: "settings", title: t("Settings"), image: "gearshape" },
+              ...(canDeleteInboxSpace(item.space)
+                ? [
+                    {
+                      id: "delete",
+                      title: t("Delete space"),
+                      image: "trash" as const,
+                      attributes: {
+                        destructive: true,
+                        disabled: spaceBusy || !!spaceRecoveryId || organizationBusy,
+                      },
+                    },
+                  ]
+                : []),
             ]}
-            onAction={() => {
-              if (item.space) confirmDeleteSpace(item.space);
+            onAction={(action) => {
+              if (
+                !item.space ||
+                !isMobileScopeCurrent(owner) ||
+                spaceBusy ||
+                spaceRecoveryId ||
+                organizationBusy
+              )
+                return;
+              if (action === "settings")
+                router.push({
+                  pathname: "/space-settings",
+                  params: { spaceId: item.space.id, name: item.title },
+                });
+              else if (action === "delete" && canDeleteInboxSpace(item.space))
+                confirmDeleteSpace(item.space);
             }}
           >
             <Pressable
@@ -1259,8 +1279,10 @@ function Home() {
             onPress={openBot}
           />
         </InboxContextMenu>
-      ),
+      );
+    },
     [
+      router,
       botSections,
       chooseInboxSpace,
       collapsedRosterParents,

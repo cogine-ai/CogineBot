@@ -39,7 +39,7 @@ import {
   toggleEnabledModelId,
 } from "@rakazo/core";
 import * as Clipboard from "expo-clipboard";
-import { useFocusEffect } from "expo-router";
+import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
@@ -65,13 +65,7 @@ import type {
   MobileModel,
   MobileModelCredential,
 } from "../../lib/api";
-import {
-  captureApiRequestContext,
-  currentApiBase,
-  currentSpaceSelectionGeneration,
-  rpc,
-  selectedSpaceId,
-} from "../../lib/api";
+import { currentApiBase, currentSpaceSelectionGeneration, selectedSpaceId } from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
 import { useI18n } from "../../lib/i18n";
 import { presentMessageActionSheet } from "../../lib/message-action-sheet";
@@ -84,6 +78,7 @@ import { mobileBackupScopeIsCurrent } from "../../lib/model-backups";
 import { thinkingLevelLabel } from "../../lib/model-catalog";
 import { native, useResolvedAppearance, useThemedStyles } from "../../lib/native";
 import { currentSessionGeneration } from "../../lib/session";
+import { useSpaceSettings, useSpaceSettingsKey } from "../../lib/space-settings";
 import { errorText } from "../../lib/user-error";
 
 function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
@@ -114,6 +109,29 @@ type ModelSelection = {
 type FeedbackAnchor = "probe" | "model" | "connection";
 
 export default function Models() {
+  const { spaceId, name } = useLocalSearchParams<{ spaceId?: string; name?: string }>();
+  const target = typeof spaceId === "string" ? spaceId : undefined;
+  const key = useSpaceSettingsKey(target);
+  return (
+    <ModelsForm
+      key={key}
+      targetSpaceId={target}
+      targetName={typeof name === "string" ? name : target}
+    />
+  );
+}
+
+function ModelsForm({
+  targetSpaceId,
+  targetName,
+}: {
+  targetSpaceId?: string;
+  targetName?: string;
+}) {
+  const settings = useSpaceSettings(targetSpaceId);
+  const { rpc, captureApiRequestContext } = settings;
+  const settingsCurrent = settings.isCurrent;
+  const settingsSelectedSpaceId = () => targetSpaceId ?? selectedSpaceId();
   const styles = useThemedStyles(createModelsStyles);
   const { t } = useI18n();
   const colorScheme = useResolvedAppearance();
@@ -279,8 +297,8 @@ export default function Models() {
       setOauth(null);
       setOauthPending(false);
     });
-    if (loginId) void rpc("models/cancelOAuth", { loginId }).catch(() => undefined);
-  }, []);
+    if (loginId) void settings.cancelOAuth(loginId).catch(() => undefined);
+  }, [settings.cancelOAuth]);
 
   const load = useCallback(async (preferred: ModelSelection = {}) => {
     setError(null);
@@ -398,7 +416,7 @@ export default function Models() {
             expectedSpaceId: expected.spaceId,
             currentUserId: currentMe.userId,
             currentSpaceId: currentMe.spaceId,
-            selectedSpaceId: selectedSpaceId(),
+            selectedSpaceId: settingsSelectedSpaceId(),
             requestGeneration,
             currentGeneration: backupRequestGenerationRef.current,
           })
@@ -415,7 +433,7 @@ export default function Models() {
             expectedSpaceId: expected.spaceId,
             currentUserId: liveMe.userId,
             currentSpaceId: liveMe.spaceId,
-            selectedSpaceId: selectedSpaceId(),
+            selectedSpaceId: settingsSelectedSpaceId(),
             requestGeneration,
             currentGeneration: backupRequestGenerationRef.current,
           })
@@ -762,7 +780,8 @@ export default function Models() {
       sessionGeneration === currentSessionGeneration() &&
       liveMe?.userId === scope?.userId &&
       liveMe?.spaceId === scope?.spaceId &&
-      (!selectedSpaceId() || selectedSpaceId() === scope?.spaceId) &&
+      settingsCurrent() &&
+      (!settingsSelectedSpaceId() || settingsSelectedSpaceId() === scope?.spaceId) &&
       (!context || context.apiBase === currentApiBase())
     );
   }
@@ -1017,7 +1036,7 @@ export default function Models() {
       !controller.signal.aborted &&
       apiBase === currentApiBase() &&
       operationCurrent(revision, scope, spaceGeneration, sessionGeneration);
-    await waitForModelOAuth(loginId, controller.signal);
+    await waitForModelOAuth(loginId, controller.signal, rpc);
     if (!isCurrent()) return;
     const savedConnection = await rpc<MobileModelCredential>(
       "models/finishOAuth",
@@ -1056,7 +1075,10 @@ export default function Models() {
         },
         { signal: controller.signal },
       );
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || !settingsCurrent()) {
+        void settings.cancelOAuth(started.loginId).catch(() => undefined);
+        return;
+      }
       oauthLoginIdRef.current = started.loginId;
       setPasteCode("");
       setOauth(started);
@@ -1067,7 +1089,7 @@ export default function Models() {
       if (controller.signal.aborted) return;
       const loginId = oauthLoginIdRef.current;
       oauthLoginIdRef.current = null;
-      if (loginId) void rpc("models/cancelOAuth", { loginId }).catch(() => undefined);
+      if (loginId) void settings.cancelOAuth(loginId).catch(() => undefined);
       publishFeedback("connection", {
         error: errorText(err, t("Could not start sign-in")),
       });
@@ -1104,7 +1126,7 @@ export default function Models() {
       if (submitted) {
         oauthLoginIdRef.current = null;
         setOauth(null);
-        void rpc("models/cancelOAuth", { loginId: oauth.loginId }).catch(() => undefined);
+        void settings.cancelOAuth(oauth.loginId).catch(() => undefined);
       } else {
         retryable = true;
         setPasteCode(code);
@@ -1737,7 +1759,8 @@ export default function Models() {
             apiBase !== currentApiBase() ||
             owner.userId !== meRef.current?.userId ||
             owner.spaceId !== meRef.current?.spaceId ||
-            (selectedSpaceId() !== null && selectedSpaceId() !== owner.spaceId)
+            !settingsCurrent() ||
+            (settingsSelectedSpaceId() !== null && settingsSelectedSpaceId() !== owner.spaceId)
           )
             return;
           addBackupChoice({
@@ -1789,7 +1812,7 @@ export default function Models() {
           expectedSpaceId: expected.spaceId,
           currentUserId: currentMe.userId,
           currentSpaceId: currentMe.spaceId,
-          selectedSpaceId: selectedSpaceId(),
+          selectedSpaceId: settingsSelectedSpaceId(),
           requestGeneration,
           currentGeneration: backupRequestGenerationRef.current,
         })
@@ -1805,7 +1828,7 @@ export default function Models() {
           expectedSpaceId: expected.spaceId,
           currentUserId: liveMe.userId,
           currentSpaceId: liveMe.spaceId,
-          selectedSpaceId: selectedSpaceId(),
+          selectedSpaceId: settingsSelectedSpaceId(),
           requestGeneration,
           currentGeneration: backupRequestGenerationRef.current,
         })
@@ -1910,6 +1933,7 @@ export default function Models() {
 
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
+      {targetName ? <Stack.Screen options={{ title: `${targetName} · ${t("Models")}` }} /> : null}
       <ScrollView
         contentContainerStyle={styles.content}
         contentInsetAdjustmentBehavior="automatic"
