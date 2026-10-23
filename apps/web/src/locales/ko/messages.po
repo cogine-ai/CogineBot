@@ -6071,3 +6071,35 @@ msgstr "시간대를 업데이트하지 못했습니다"
 #: src/pages/shell/bot-panel.tsx
 msgid "Instructions must be at most {count} characters"
 msgstr "지침은 최대 {count}자여야 합니다"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Blank bot"
+msgstr "빈 봇"
+
+#: src/pages/Shell.tsx
+msgid "Try example"
+msgstr "예시 사용"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Open bot"
+msgstr "봇 열기"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Create another bot"
+msgstr "다른 봇 만들기"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Bot created. Your edits are kept."
+msgstr "봇이 생성되었습니다. 수정 내용은 유지됩니다."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "This bot is archived."
+msgstr "이 봇은 보관되었습니다."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Connect an email account"
+msgstr "이메일 계정 연결"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Gmail or Outlook (optional)"
+msgstr "Gmail 또는 Outlook (선택 사항)"

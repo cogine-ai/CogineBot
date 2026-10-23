@@ -2,6 +2,9 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type {
   AgentSkillCatalogEntry,
   Bot,
+  BotCreationDraft,
+  BotTemplate,
+  BotTemplateSelection,
   ComputerMode,
   Me,
   ModelCatalogEntry,
@@ -13,11 +16,15 @@ import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
+  BOT_TEMPLATES,
   BOT_TITLE_MAX_LENGTH,
+  botTemplateDraft,
   isBotInstructionsConflict,
   isBuiltinToolName,
 } from "@rakazo/contracts";
+import type { BotCreationReceipt, createBotCreation } from "@rakazo/core";
 import {
+  BotCreationError,
   connectedModelChoices,
   credentialForModel,
   modelOptionKey,
@@ -99,52 +106,92 @@ function ComputerModePicker({
 }
 
 export function CreateBotForm({
-  onCreate,
+  creation,
+  onCreated,
+  onOpen,
+  onConnectEmail,
   onCancel,
 }: {
-  onCreate: (input: {
-    name: string;
-    title: string;
-    description: string;
-    instructions: string;
-    computerMode: ComputerMode;
-  }) => Promise<void>;
+  creation: ReturnType<typeof createBotCreation>;
+  onCreated: (receipt: BotCreationReceipt) => void;
+  onOpen: (bot: Bot) => void;
+  onConnectEmail: () => void;
   onCancel: () => void;
 }) {
   const { t } = useLingui();
   const ids = useId();
-  const [name, setName] = useState("");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [computerMode, setComputerMode] = useState<ComputerMode>("team");
+  const [draft, setDraft] = useState(() => botTemplateDraft(null));
+  const draftRef = useRef(draft);
+  const version = useRef(0);
+  const templateRef = useRef<BotTemplateSelection | null>(null);
+  const [template, setTemplate] = useState<BotTemplateSelection | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const busy = useRef(false);
+  const mounted = useRef(false);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const [receipt, setReceipt] = useState<BotCreationReceipt | null>(null);
   const [error, setError] = useState<string | null>(null);
-
+  function edit(patch: Partial<BotCreationDraft>) {
+    draftRef.current = { ...draftRef.current, ...patch };
+    version.current += 1;
+    setDraft(draftRef.current);
+  }
+  function chooseTemplate(choice: BotTemplate | null) {
+    templateRef.current = choice
+      ? { templateId: choice.templateId, version: choice.version }
+      : null;
+    setTemplate(templateRef.current);
+    edit(botTemplateDraft(choice));
+    setError(null);
+  }
   async function handleSubmit() {
-    if (!name.trim() || submitting) return;
-    const count = BOT_INSTRUCTIONS_MAX_LENGTH;
-    if (instructions.length > count) {
-      setError(t`Instructions must be at most ${count} characters`);
-      return;
+    if (busy.current) return;
+    const current = draftRef.current;
+    if (creation.status() === "idle") {
+      if (!current.name.trim()) return;
+      const count = BOT_INSTRUCTIONS_MAX_LENGTH;
+      if (current.instructions.length > count) {
+        setError(t`Instructions must be at most ${count} characters`);
+        return;
+      }
     }
+    busy.current = true;
     setError(null);
     setSubmitting(true);
     try {
-      await onCreate({
-        name: name.trim(),
-        title: title.trim(),
-        description: description.trim(),
-        instructions,
-        computerMode,
+      const result = await creation.submit({
+        draft: {
+          ...current,
+          name: current.name.trim(),
+          title: current.title.trim(),
+          description: current.description.trim(),
+        },
+        draftVersion: version.current,
+        template: templateRef.current,
       });
+      if (!mounted.current) return;
+      setReceipt(result);
+      onCreated(result);
+      if (version.current === result.submitted.draftVersion) onOpen(result.bot);
     } catch (err) {
-      setError(errorText(err, t`Could not create bot`));
+      if (mounted.current)
+        setError(
+          err instanceof BotCreationError && err.code === "archived_recovery"
+            ? t`This bot is archived.`
+            : errorText(err instanceof BotCreationError ? err.cause : err, t`Could not create bot`),
+        );
     } finally {
-      setSubmitting(false);
+      busy.current = false;
+      if (mounted.current) setSubmitting(false);
     }
   }
-
+  const { name, title, description, instructions, computerMode } = draft;
+  const confirmed = creation.status() === "confirmed";
   return (
     <div data-testid="create-bot-form">
       <div className="mb-4 flex items-center justify-between">
@@ -153,6 +200,27 @@ export function CreateBotForm({
         </span>
         <Button variant="ghost" size="icon-sm" aria-label={t`Cancel new bot`} onClick={onCancel}>
           <X size={16} strokeWidth={1.8} />
+        </Button>
+      </div>
+      <div className="mb-4 grid gap-2" data-testid="bot-template-choices">
+        {BOT_TEMPLATES.map((choice) => (
+          <Button
+            key={choice.templateId}
+            variant="outline"
+            aria-pressed={template?.templateId === choice.templateId}
+            className="h-auto flex-col items-start gap-1 whitespace-normal py-3 text-start"
+            onClick={() => chooseTemplate(choice)}
+          >
+            <span>{choice.name}</span>
+            <span className="text-xs text-muted-foreground">{choice.title}</span>
+          </Button>
+        ))}
+        <Button
+          variant="ghost"
+          aria-pressed={template === null}
+          onClick={() => chooseTemplate(null)}
+        >
+          <Trans>Blank bot</Trans>
         </Button>
       </div>
       {error ? (
@@ -164,13 +232,23 @@ export function CreateBotForm({
           {error}
         </p>
       ) : null}
+      {receipt ? (
+        <div className="mb-3 text-[13px]" role="status">
+          <p>
+            <Trans>Bot created. Your edits are kept.</Trans>
+          </p>
+          <Button variant="outline" onClick={() => onOpen(receipt.bot)}>
+            <Trans>Open bot</Trans>
+          </Button>
+        </div>
+      ) : null}
       <label htmlFor={`${ids}-name`} className="mt-6 block text-[14px] text-muted-foreground">
         <Trans>Name</Trans>
         <Input
           id={`${ids}-name`}
           value={name}
           maxLength={BOT_NAME_MAX_LENGTH}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => edit({ name: e.target.value })}
           placeholder={t`Name this bot`}
           className="mt-2"
         />
@@ -181,7 +259,7 @@ export function CreateBotForm({
           id={`${ids}-title`}
           value={title}
           maxLength={BOT_TITLE_MAX_LENGTH}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => edit({ title: e.target.value })}
           placeholder={t`Describe what this bot does`}
           className="mt-2"
         />
@@ -192,7 +270,7 @@ export function CreateBotForm({
           id={`${ids}-description`}
           value={description}
           maxLength={BOT_DESCRIPTION_MAX_LENGTH}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={(e) => edit({ description: e.target.value })}
           placeholder={t`What this bot is for`}
           rows={4}
           className="mt-2"
@@ -203,7 +281,7 @@ export function CreateBotForm({
         <Textarea
           id={`${ids}-instructions`}
           value={instructions}
-          onChange={(event) => setInstructions(event.target.value)}
+          onChange={(e) => edit({ instructions: e.target.value })}
           rows={4}
           className="mt-2"
         />
@@ -211,18 +289,47 @@ export function CreateBotForm({
       <div data-testid="create-bot-computer">
         <ComputerModePicker
           value={computerMode}
-          onChange={setComputerMode}
+          onChange={(value) => edit({ computerMode: value })}
           teamTestId="create-bot-team"
           privateTestId="create-bot-private"
         />
       </div>
-      <Button
-        className="mt-5"
-        disabled={!name.trim() || submitting}
-        onClick={() => void handleSubmit()}
-      >
-        {submitting ? <Trans>Creating…</Trans> : <Trans>Create</Trans>}
-      </Button>
+      {template?.templateId === "email-draft-v1" ? (
+        <div className="mt-4">
+          <Button variant="outline" onClick={onConnectEmail}>
+            <Trans>Connect an email account</Trans>
+          </Button>
+          <p className="mt-1 text-xs text-muted-foreground">
+            <Trans>Gmail or Outlook (optional)</Trans>
+          </p>
+        </div>
+      ) : null}
+      {confirmed ? (
+        <Button
+          className="mt-5"
+          onClick={() => {
+            creation.startAnother();
+            setReceipt(null);
+            setError(null);
+          }}
+        >
+          <Trans>Create another bot</Trans>
+        </Button>
+      ) : (
+        <Button
+          className="mt-5"
+          disabled={submitting || (creation.status() === "idle" && !name.trim())}
+          onClick={() => void handleSubmit()}
+        >
+          {submitting ? (
+            <Trans>Creating…</Trans>
+          ) : creation.status() === "unknown" ? (
+            <Trans>Retry</Trans>
+          ) : (
+            <Trans>Create</Trans>
+          )}
+        </Button>
+      )}
     </div>
   );
 }

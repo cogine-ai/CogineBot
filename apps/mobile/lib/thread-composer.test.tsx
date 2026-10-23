@@ -137,6 +137,64 @@ describe("thread composer isolation", () => {
     expect(props.send).toHaveBeenCalledOnce();
   });
 
+  it("inserts an example once into the current empty composer without sending", () => {
+    let inserted = false;
+    let repeated = true;
+    act(() => {
+      inserted = composer.current!.insertTextIfEmpty("Example draft", "bot-1", () => true);
+      repeated = composer.current!.insertTextIfEmpty("Another draft", "bot-1", () => true);
+    });
+    expect(inserted).toBe(true);
+    expect(repeated).toBe(false);
+    expect(composer.current!.snapshot().promptText).toBe("Example draft");
+    expect(props.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { attachmentIds: ["attachment"] },
+    { replyTargetId: "reply" },
+    { replyQuote: "" },
+    { replyQuote: "Quote" },
+    { sending: true },
+    { working: true },
+    { onCall: true },
+    { botId: "other-bot" },
+  ])("retains every occupied or busy composer slot: %j", (changes) => {
+    render(changes);
+    const before = composer.current!.snapshot();
+    expect(composer.current!.insertTextIfEmpty("Example", "bot-1", () => true)).toBe(false);
+    expect(composer.current!.snapshot()).toEqual(before);
+    expect(props.send).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite same-tick whitespace or selected context", () => {
+    act(() => {
+      input.change(" \n");
+      expect(composer.current!.insertTextIfEmpty("Example", "bot-1", () => true)).toBe(false);
+    });
+    // The existing Send serializer trims whitespace; the native input remains occupied.
+    expect(container.querySelector("input")!.value).toBe(" ");
+    act(() => composer.current!.reset());
+    type("@He");
+    press("@{name}");
+    expect(composer.current!.insertTextIfEmpty("Example", "bot-1", () => true)).toBe(false);
+    expect(composer.current!.snapshot().mentions).toEqual([bot]);
+    act(() => composer.current!.reset());
+    type("/Wri");
+    press("Skill {name}");
+    expect(composer.current!.insertTextIfEmpty("Example", "bot-1", () => true)).toBe(false);
+    expect(composer.current!.snapshot().skill).toEqual(skill);
+  });
+
+  it("fences stale targets, lost authority and retained handles after unmount", () => {
+    const held = composer.current!;
+    expect(held.insertTextIfEmpty("Example", "bot-1", () => false)).toBe(false);
+    render({ botId: "other-bot" });
+    expect(held.insertTextIfEmpty("Example", "bot-1", () => true)).toBe(false);
+    act(() => root.render(null));
+    expect(held.insertTextIfEmpty("Example", "other-bot", () => true)).toBe(false);
+  });
+
   it("preserves draft across reply, attachment, and sending updates and resets on thread switch", () => {
     type("Draft");
     render({

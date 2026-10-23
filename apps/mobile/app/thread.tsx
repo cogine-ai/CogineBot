@@ -146,6 +146,7 @@ import { nextAutoSpeakAction } from "../lib/auto-speak";
 import { confirmDeleteBot, restoreArchivedBot } from "../lib/bot-lifecycle";
 import { retainUnchangedBotRoster } from "../lib/bot-roster";
 import { findSwitchTarget, ringOnArrival, takeRingOnArrival } from "../lib/bot-switch";
+import { insertMobileBotExample, readMobileBotExample } from "../lib/bot-template-examples";
 import { setCallProviderTranscribe, startCall, useCallSession } from "../lib/call-session";
 import { transparentColor } from "../lib/color";
 import { loadDeviceVoiceEnabled } from "../lib/device-voice";
@@ -813,6 +814,53 @@ function Thread({
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
   const activePendingAttachments = attachmentsForThread(pendingAttachments, threadKey);
   const composerRef = useRef<ThreadComposerHandle>(null);
+  const [, updateExample] = useState(0);
+  const exampleTarget = useRef<{
+    botId?: string;
+    groupId?: string;
+    readOnly: boolean;
+    scope: MobileScope | null;
+    ready: boolean;
+  } | null>(null);
+  useLayoutEffect(() => {
+    exampleTarget.current = {
+      botId,
+      groupId,
+      readOnly,
+      scope: profileScope,
+      ready: snap?.botId === botId && !showingSaved && !restoring,
+    };
+    return () => {
+      exampleTarget.current = null;
+    };
+  }, [botId, groupId, readOnly, profileScope, snap?.botId, showingSaved, restoring]);
+  const templateExample =
+    botId && !groupId && !readOnly && profileScope ? readMobileBotExample(botId) : null;
+  function insertTemplateExample() {
+    if (!templateExample) return;
+    const result = insertMobileBotExample(
+      templateExample,
+      (text) =>
+        composerRef.current?.insertTextIfEmpty(text, templateExample.botId, () => {
+          const target = exampleTarget.current;
+          const current = snapRef.current;
+          return Boolean(
+            target &&
+              target.botId === templateExample.botId &&
+              !target.groupId &&
+              !target.readOnly &&
+              target.ready &&
+              current?.botId === templateExample.botId &&
+              !isWorkingStatus(current.run?.status) &&
+              !current.activeRuns?.some((run) => isWorkingStatus(run.status)) &&
+              target.scope &&
+              isMobileScopeCurrent(target.scope) &&
+              !preparingSend.current,
+          );
+        }) ?? false,
+    );
+    if (result === "inserted") updateExample((n) => n + 1);
+  }
   const composerMentionTargets = useMemo(
     () =>
       buildComposerMentionOptions({
@@ -2755,6 +2803,17 @@ function Thread({
                 </Pressable>
               </View>
             ))}
+          </View>
+        ) : null}
+        {templateExample ? (
+          <View style={{ marginHorizontal: 16, marginBottom: 8 }}>
+            <Text style={{ color: tokens.mutedForeground }}>{templateExample.text}</Text>
+            <NativeActionButton
+              label={t("Try example")}
+              prominence="quiet"
+              disabled={working || sending || onCall}
+              onPress={insertTemplateExample}
+            />
           </View>
         ) : null}
         <ThreadComposer

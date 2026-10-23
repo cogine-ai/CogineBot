@@ -1,4 +1,12 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Blank bot": "Leerer Bot",
+  "Try example": "Beispiel ausprobieren",
+  "Open bot": "Bot öffnen",
+  "Create another bot": "Weiteren Bot erstellen",
+  "Bot created. Your edits are kept.": "Bot erstellt. Deine Änderungen bleiben erhalten.",
+  "This bot is archived.": "Dieser Bot ist archiviert.",
+  "Connect an email account": "E-Mail-Konto verbinden",
+  "Gmail or Outlook (optional)": "Gmail oder Outlook (optional)",
   "Members ({count})": "Mitglieder ({count})",
   "Show selected": "Ausgewählte anzeigen",
   "Show all": "Alle anzeigen",

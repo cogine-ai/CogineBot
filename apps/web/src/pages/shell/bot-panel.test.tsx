@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import type { Bot } from "@rakazo/contracts";
+import type { Bot, CreateBotInput } from "@rakazo/contracts";
 import { BOT_INSTRUCTIONS_CONFLICT_REASON } from "@rakazo/contracts";
-import { modelOptionKey } from "@rakazo/core";
+import { createBotCreation, modelOptionKey } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
 import { act, Suspense, startTransition } from "react";
 import type { Root } from "react-dom/client";
@@ -122,9 +122,51 @@ function bot(description = "Billing"): Bot {
   };
 }
 
+function creationFor(create: (input: CreateBotInput) => Promise<Bot>) {
+  let nonce = 0;
+  return createBotCreation({
+    spaceId: "space-1",
+    create,
+    list: async () => [],
+    makeNonce: () => `test-${++nonce}`,
+    isCurrent: () => true,
+    isAmbiguous: () => true,
+  });
+}
+
 let container: HTMLDivElement;
 let root: Root;
 const onSave = vi.fn<ComponentProps<typeof BotSettings>["onSave"]>(async () => undefined);
+
+it("previews a research template without creating a bot", async () => {
+  const onCreate = vi.fn(async () => {
+    throw new Error("Creation must wait for an explicit click");
+  });
+  await act(async () => {
+    root.render(
+      <CreateBotForm
+        creation={creationFor(onCreate)}
+        onCreated={() => undefined}
+        onOpen={() => undefined}
+        onConnectEmail={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+  });
+  const choice = [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("资料研究"),
+  );
+  expect(choice).toBeInstanceOf(HTMLButtonElement);
+  await act(async () => choice!.click());
+  expect(container.querySelector<HTMLInputElement>('[id$="-name"]')?.value).toBe("资料研究");
+  expect(container.querySelector<HTMLInputElement>('[id$="-title"]')?.value).toBe(
+    "查证资料并给出来源",
+  );
+  expect(instructionsField().value).toBe(
+    "先明确研究问题和时间范围。优先一手资料，区分事实、推断和未知；关键结论附来源与日期。需要账号或付费资源时沿产品确认流程，不自行发布。",
+  );
+  expect(onCreate).not.toHaveBeenCalled();
+});
 
 async function render(
   description = "Billing",
@@ -873,9 +915,21 @@ it("ignores a conflict refresh after the Space epoch changes and returns", async
 
 describe("independent execution rules", () => {
   it("retains raw rules on create separately from public description", async () => {
-    const create = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn(async (input: CreateBotInput) => ({
+      ...bot(),
+      ...input,
+      spawnKey: input.spawnKey ?? null,
+    }));
     await act(async () =>
-      root.render(<CreateBotForm onCreate={create} onCancel={() => undefined} />),
+      root.render(
+        <CreateBotForm
+          creation={creationFor(create)}
+          onCreated={() => undefined}
+          onOpen={() => undefined}
+          onConnectEmail={() => undefined}
+          onCancel={() => undefined}
+        />,
+      ),
     );
     const name = container.querySelector<HTMLInputElement>('[id$="-name"]')!;
     await act(async () => {
@@ -895,6 +949,8 @@ describe("independent execution rules", () => {
       description: "Public role",
       instructions: " \nExact private rules\n\n",
       computerMode: "team",
+      notifyOnFinish: true,
+      spawnKey: "bot-create:test-1",
     });
   });
   it("description-only edits never send execution rules or their CAS", async () => {
@@ -975,9 +1031,21 @@ it("does not submit an unaccepted rule draft while a separate profile field blur
 
 describe("full instruction draft limits", () => {
   it("retains oversized create rules and rejects before onCreate", async () => {
-    const create = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn(async (input: CreateBotInput) => ({
+      ...bot(),
+      ...input,
+      spawnKey: input.spawnKey ?? null,
+    }));
     await act(async () =>
-      root.render(<CreateBotForm onCreate={create} onCancel={() => undefined} />),
+      root.render(
+        <CreateBotForm
+          creation={creationFor(create)}
+          onCreated={() => undefined}
+          onOpen={() => undefined}
+          onConnectEmail={() => undefined}
+          onCancel={() => undefined}
+        />,
+      ),
     );
     const name = container.querySelector<HTMLInputElement>('[id$="-name"]')!;
     await act(async () => {
@@ -1124,4 +1192,100 @@ describe("independent conflict reasons", () => {
       ),
     ).toBe(false);
   });
+});
+
+it("retains newer live edits after an older receipt and requires explicit another creation", async () => {
+  const pending = deferred<Bot>();
+  const create = vi
+    .fn<(input: CreateBotInput) => Promise<Bot>>()
+    .mockReturnValueOnce(pending.promise);
+  const creation = creationFor(create);
+  const opened = vi.fn();
+  const published = vi.fn();
+  await act(async () =>
+    root.render(
+      <CreateBotForm
+        creation={creation}
+        onCreated={published}
+        onOpen={opened}
+        onConnectEmail={() => undefined}
+        onCancel={() => undefined}
+      />,
+    ),
+  );
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((entry) => entry.textContent === label)!;
+  await act(async () => button("资料研究查证资料并给出来源").click());
+  await act(async () => {
+    button("Create").click();
+    button("Create").click();
+  });
+  expect(create).toHaveBeenCalledTimes(1);
+  await setInstructions(" \nNew live rules\n");
+  const payload = create.mock.calls[0]![0];
+  await act(async () =>
+    pending.resolve({ ...bot(), ...payload, spawnKey: payload.spawnKey ?? null }),
+  );
+  expect(opened).not.toHaveBeenCalled();
+  expect(published).toHaveBeenCalledTimes(1);
+  expect(instructionsField().value).toBe(" \nNew live rules\n");
+  expect(container.textContent).toContain("Bot created. Your edits are kept.");
+  await act(async () => button("Create another bot").click());
+  expect(instructionsField().value).toBe(" \nNew live rules\n");
+  create.mockImplementation(async (input) => ({
+    ...bot(),
+    id: "bot-2",
+    ...input,
+    spawnKey: input.spawnKey ?? null,
+  }));
+  await act(async () => button("Create").click());
+  expect(create.mock.calls[1]?.[0].spawnKey).not.toBe(payload.spawnKey);
+  expect(create.mock.calls[1]?.[0].instructions).toBe(" \nNew live rules\n");
+  expect(opened).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the edited preview after a lost reply and retries the frozen intent after complete reads", async () => {
+  let reads = 0;
+  const create = vi.fn(async (input: CreateBotInput) => {
+    if (create.mock.calls.length === 1) throw new TypeError("reply lost");
+    return { ...bot(), ...input, spawnKey: input.spawnKey ?? null };
+  });
+  const creation = createBotCreation({
+    spaceId: "space-1",
+    create,
+    list: async () => {
+      reads += 1;
+      return [];
+    },
+    makeNonce: () => "retry",
+    isCurrent: () => true,
+    isAmbiguous: () => true,
+  });
+  const open = vi.fn();
+  const connect = vi.fn();
+  await act(async () =>
+    root.render(
+      <CreateBotForm
+        creation={creation}
+        onCreated={() => undefined}
+        onOpen={open}
+        onConnectEmail={connect}
+        onCancel={() => undefined}
+      />,
+    ),
+  );
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((entry) => entry.textContent === label)!;
+  await act(async () => button("邮件草稿整理邮件并准备回复").click());
+  expect(connect).not.toHaveBeenCalled();
+  expect(button("Create").disabled).toBe(false);
+  await act(async () => button("Create").click());
+  expect(reads).toBe(1);
+  await setInstructions("New unsent rules");
+  await act(async () => button("Retry").click());
+  expect(reads).toBe(2);
+  expect(create.mock.calls[1]![0]).toEqual(create.mock.calls[0]![0]);
+  expect(instructionsField().value).toBe("New unsent rules");
+  expect(open).not.toHaveBeenCalled();
+  expect(button("Open bot")).toBeInstanceOf(HTMLButtonElement);
 });

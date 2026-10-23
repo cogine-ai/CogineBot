@@ -10,6 +10,7 @@ import type {
 import {
   BOT_COLORS,
   BotSectionNameSchema,
+  isBotCreationSpawnKey,
   RestoreBotSectionNameInput as RestoreBotSectionNameSchema,
   RestoreBotSectionInput as RestoreBotSectionSchema,
 } from "@rakazo/contracts";
@@ -727,7 +728,7 @@ export function createRepos(prisma: PrismaClient) {
         if (!input.spawnKey || !isSpawnKeyConflict(error)) throw error;
         const existing = await findBySpawnKey();
         if (!existing || existing.userId !== actor.userId) throw error;
-        if (!existing.archivedAt) {
+        if (!existing.archivedAt || isBotCreationSpawnKey(input.spawnKey)) {
           bot = existing;
         } else {
           // Free the key from the archived bot so empty-space onboarding

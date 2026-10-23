@@ -17,7 +17,8 @@ const state = vi.hoisted(() => ({
   persisted: vi.fn(),
   focused: true,
   alert: vi.fn(),
-  params: {} as { app?: string | string[]; botId?: string | string[] },
+  params: {} as { app?: string | string[]; botId?: string | string[]; accountOnly?: string },
+  lastBot: "",
 }));
 vi.mock("expo-router", () => ({
   router: { push: vi.fn() },
@@ -37,7 +38,7 @@ vi.mock("./integrations-cache", () => ({
   readIntegrationsCache: state.read,
   writeIntegrationsCache: state.write,
 }));
-vi.mock("./last-bot", () => ({ loadLastBotId: async () => "" }));
+vi.mock("./last-bot", () => ({ loadLastBotId: async () => state.lastBot }));
 vi.mock("./appearance", () => ({ mobileTokens: () => ({ destructive: "red" }) }));
 vi.mock("./native", () => ({ native: {}, useThemedStyles: (factory: () => unknown) => factory() }));
 vi.mock("./i18n", () => ({
@@ -185,6 +186,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   state.current = true;
   state.params = {};
+  state.lastBot = "";
   state.focused = true;
   state.scope.mockReset().mockResolvedValue({ userId: "user-a", spaceId: "space-a" });
   state.persisted.mockReset().mockResolvedValue(null);
@@ -416,6 +418,36 @@ it("persists a completed connection before refreshing", async () => {
   });
   expect(container.textContent).toContain("Example appConnectedManage");
 });
+
+it.each(["1", undefined])(
+  "completes account setup without preview notifications only in accountOnly=%s",
+  async (accountOnly) => {
+    state.params = { accountOnly };
+    state.lastBot = "unrelated-last-bot";
+    state.read.mockReturnValue({ catalog: [{ ...item, connected: false }], connections: [] });
+    await render();
+    state.rpc.mockImplementation((procedure: string) => {
+      if (procedure === "connections/begin")
+        return Promise.resolve({ connectionId: account.id, authorizationUrl: null });
+      if (procedure === "connections/complete") return Promise.resolve(account);
+      if (procedure === "connections/catalog") return Promise.reject(new Error("Unavailable"));
+      return Promise.resolve([]);
+    });
+    const add = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Add",
+    )!;
+    expect(add).not.toBeUndefined();
+    await act(async () => add.click());
+    expect(state.rpc.mock.calls.some(([procedure]) => procedure === "connections/complete")).toBe(
+      true,
+    );
+    const notifications = state.rpc.mock.calls.filter(
+      ([procedure]) => procedure === "onboarding/appConnected",
+    );
+    expect(notifications).toHaveLength(accountOnly === "1" ? 0 : 1);
+    expect(container.textContent).toContain("Example appConnectedManage");
+  },
+);
 
 it("paints persisted cached rows while identity is pending or offline", async () => {
   state.persisted.mockResolvedValue({ userId: "user-a", spaceId: "space-a" });

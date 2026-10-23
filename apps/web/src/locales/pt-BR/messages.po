@@ -6071,3 +6071,35 @@ msgstr "Não foi possível atualizar seu fuso horário"
 #: src/pages/shell/bot-panel.tsx
 msgid "Instructions must be at most {count} characters"
 msgstr "As instruções devem ter no máximo {count} caracteres"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Blank bot"
+msgstr "Bot em branco"
+
+#: src/pages/Shell.tsx
+msgid "Try example"
+msgstr "Experimentar exemplo"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Open bot"
+msgstr "Abrir bot"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Create another bot"
+msgstr "Criar outro bot"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Bot created. Your edits are kept."
+msgstr "Bot criado. Suas alterações foram mantidas."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "This bot is archived."
+msgstr "Este bot está arquivado."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Connect an email account"
+msgstr "Conectar uma conta de e-mail"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Gmail or Outlook (optional)"
+msgstr "Gmail ou Outlook (opcional)"

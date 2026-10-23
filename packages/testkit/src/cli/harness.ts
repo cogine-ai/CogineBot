@@ -107,6 +107,7 @@ async function main() {
         "packages/testkit/src/group-creation.postgres.test.ts",
         "packages/testkit/src/account-profile.postgres.test.ts",
         "apps/api/src/bot-profile.postgres.test.ts",
+        "apps/api/src/bot-creation.postgres.test.ts",
         "packages/testkit/src/thread-message-sequence.postgres.test.ts",
         "apps/api/src/artifacts.postgres.test.ts",
         "apps/api/src/board-app.postgres.test.ts",

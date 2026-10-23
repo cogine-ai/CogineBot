@@ -85,9 +85,10 @@ function sourceLabel(item: Pick<ConnectionCatalogItem, "connectorId">) {
 export default function Integrations() {
   const styles = useThemedStyles(createIntegrationsStyles);
   const { t } = useI18n();
-  const { app, botId } = useLocalSearchParams<{
+  const { app, botId, accountOnly } = useLocalSearchParams<{
     app?: string | string[];
     botId?: string | string[];
+    accountOnly?: string | string[];
   }>();
   const initialApp = useRef(typeof app === "string" ? app : null);
   const initialBotId = useRef(typeof botId === "string" ? botId : null);
@@ -464,6 +465,7 @@ export default function Integrations() {
   }
 
   async function notifyAppConnected(item: ConnectionCatalogItem, isCurrent: () => boolean) {
+    if (accountOnly === "1") return;
     const card = sourceCard.current;
     if (card && item.connectorId === "native" && item.slug === card.appId) {
       if (!isCurrent() || !isIntegrationsScopeCurrent(card.scope)) return;

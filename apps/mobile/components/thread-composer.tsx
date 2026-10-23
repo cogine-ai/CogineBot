@@ -8,8 +8,15 @@ import {
   serializeComposerPrompt,
   truncateSlashDescription,
 } from "@rakazo/core";
-import type { Ref } from "react";
-import { useImperativeHandle, useMemo, useState } from "react";
+import type { Ref, SetStateAction } from "react";
+import {
+  useCallback,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ViewStyle } from "react-native";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useI18n } from "../lib/i18n";
@@ -21,7 +28,20 @@ import { NativeSymbol } from "./native-symbol";
 export type ThreadComposerHandle = {
   snapshot: () => ComposerSnapshot;
   reset: () => void;
+  insertTextIfEmpty: (text: string, botId: string, isCurrent: () => boolean) => boolean;
 };
+
+/** Event-time values close the gap before React commits a typed or inserted draft. */
+function useComposerValue<T>(initial: T) {
+  const [value, setValue] = useState(initial);
+  const current = useRef(initial);
+  const update = useCallback((next: SetStateAction<T>) => {
+    current.current =
+      typeof next === "function" ? (next as (value: T) => T)(current.current) : next;
+    setValue(current.current);
+  }, []);
+  return [value, update, current] as const;
+}
 
 type ThreadComposerProps = {
   ref: Ref<ThreadComposerHandle>;
@@ -67,16 +87,48 @@ export function ThreadComposer({
   const tokens = useMobileTokens();
   const colorScheme = useResolvedAppearance();
   const { t } = useI18n();
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft, draftValue] = useComposerValue("");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
-  const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
-  const [selectedSkill, setSelectedSkill] = useState<AgentSkillCatalogEntry | null>(null);
+  const [selectedMentions, setSelectedMentions, mentionsValue] = useComposerValue<
+    ComposerMention[]
+  >([]);
+  const [selectedSkill, setSelectedSkill, skillValue] =
+    useComposerValue<AgentSkillCatalogEntry | null>(null);
+  const committed = useRef({
+    active: false,
+    botId,
+    onCall,
+    working,
+    sending,
+    attachmentIds,
+    replyTargetId,
+    replyQuote,
+  });
+  useLayoutEffect(() => {
+    committed.current = {
+      active: true,
+      botId,
+      onCall,
+      working,
+      sending,
+      attachmentIds,
+      replyTargetId,
+      replyQuote,
+    };
+    return () => {
+      committed.current.active = false;
+    };
+  });
   useImperativeHandle(ref, () => ({
     snapshot: () => ({
-      promptText: serializeComposerPrompt(draft, selectedSkill, selectedMentions),
-      mentions: selectedMentions,
-      skill: selectedSkill,
+      promptText: serializeComposerPrompt(
+        draftValue.current,
+        skillValue.current,
+        mentionsValue.current,
+      ),
+      mentions: mentionsValue.current,
+      skill: skillValue.current,
       replyTargetId,
       replyQuote,
       attachmentIds,
@@ -87,6 +139,30 @@ export function ThreadComposer({
       setSlashQuery(null);
       setSelectedSkill(null);
       setSelectedMentions([]);
+    },
+    insertTextIfEmpty: (text, targetBotId, isCurrent) => {
+      if (!isCurrent()) return false;
+      const state = committed.current;
+      if (
+        !state.active ||
+        !targetBotId ||
+        state.botId !== targetBotId ||
+        state.onCall ||
+        state.working ||
+        state.sending ||
+        draftValue.current.length > 0 ||
+        mentionsValue.current.length > 0 ||
+        skillValue.current !== null ||
+        state.attachmentIds.length > 0 ||
+        state.replyTargetId !== undefined ||
+        state.replyQuote !== null ||
+        !text
+      )
+        return false;
+      setDraft(text);
+      setMentionQuery(null);
+      setSlashQuery(null);
+      return true;
     },
   }));
   const mentionOptions = useMemo(() => {

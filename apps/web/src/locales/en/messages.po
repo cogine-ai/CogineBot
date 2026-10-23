@@ -6071,3 +6071,35 @@ msgstr "Couldn't update your timezone"
 #: src/pages/shell/bot-panel.tsx
 msgid "Instructions must be at most {count} characters"
 msgstr "Instructions must be at most {count} characters"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Blank bot"
+msgstr "Blank bot"
+
+#: src/pages/Shell.tsx
+msgid "Try example"
+msgstr "Try example"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Open bot"
+msgstr "Open bot"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Create another bot"
+msgstr "Create another bot"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Bot created. Your edits are kept."
+msgstr "Bot created. Your edits are kept."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "This bot is archived."
+msgstr "This bot is archived."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Connect an email account"
+msgstr "Connect an email account"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Gmail or Outlook (optional)"
+msgstr "Gmail or Outlook (optional)"

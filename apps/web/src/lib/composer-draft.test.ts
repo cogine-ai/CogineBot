@@ -5,6 +5,7 @@ import {
   clearComposerDrafts,
   clearSubmittedComposerDraft,
   consumeSubmittedComposerDraft,
+  insertEmptyComposerDraft,
   makeComposerDraftKey,
   moveComposerDraft,
   readComposerDraft,
@@ -298,5 +299,31 @@ describe("tab-local composer drafts", () => {
     writeComposerDraft(key, { text: "Second", attachments: [selectedAgain] });
     consumeSubmittedComposerDraft(key, submitted);
     expect(readComposerDraft(key).attachments).toEqual([selectedAgain]);
+  });
+});
+
+describe("template example insertion into the actual draft store", () => {
+  it("inserts only into an empty current composer without dispatching a send", () => {
+    expect(insertEmptyComposerDraft(key, "Example", () => true)).toBe(true);
+    expect(readComposerDraft(key).text).toBe("Example");
+    expect(insertEmptyComposerDraft(key, "Replacement", () => true)).toBe(false);
+    expect(readComposerDraft(key).text).toBe("Example");
+  });
+  it.each([
+    { text: " " },
+    { selectedSkill: skill },
+    { selectedMentions: [mention] },
+    { replyTarget: reply },
+    { replyQuote: "" },
+    { attachments: [{ id: "file", threadKey: key, file: new File(["x"], "x.txt") }] },
+  ])("preserves every occupied draft slot: %o", (patch) => {
+    const original = writeComposerDraft(key, patch);
+    expect(insertEmptyComposerDraft(key, "Example", () => true)).toBe(false);
+    expect(readComposerDraft(key)).toBe(original);
+  });
+  it("rejects a closed, busy or wrong-target callback and a missing target", () => {
+    expect(insertEmptyComposerDraft(key, "Example", () => false)).toBe(false);
+    expect(insertEmptyComposerDraft(null, "Example", () => true)).toBe(false);
+    expect(readComposerDraft(key).text).toBe("");
   });
 });

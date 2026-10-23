@@ -1,17 +1,39 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import type { Bot } from "@rakazo/contracts";
+import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ReactNode } from "react";
-import { act, createElement, useEffect } from "react";
+import { act, createElement, createRef, useEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import BotSettingsScreen from "../app/bot-settings";
 import NewBot from "../app/new";
+
+import type { ThreadComposerHandle } from "../components/thread-composer";
+import { ThreadComposer } from "../components/thread-composer";
+import { insertMobileBotExample, readMobileBotExample } from "./bot-template-examples";
+import { allowFocusPrompt, scheduleFocusPrompt } from "./focus-prompt";
+
+const testFileUrl = import.meta.url;
 
 const mocks = vi.hoisted(() => ({
   rpc: vi.fn(),
   back: vi.fn(),
   replace: vi.fn(),
+  push: vi.fn(),
+  close: () => {},
+  scope: {
+    apiBase: "https://api.example.test",
+    apiGeneration: 1,
+    sessionGeneration: 1,
+    spaceId: "space-1" as string | null,
+    spaceGeneration: 1,
+    selectionSeq: 1,
+  },
+  listeners: new Set<() => void>(),
   botId: "bot-fixture",
   deviceVoices: vi.fn(),
   voiceForBot: vi.fn(),
@@ -29,10 +51,36 @@ vi.mock("./bot-voices", () => ({
 vi.mock("./device-voice", () => ({ loadDeviceVoiceEnabled: async () => true }));
 vi.mock("./voice", () => ({ stopVoicePlayback: mocks.stopVoicePlayback }));
 vi.mock("expo-speech", () => ({ stop: mocks.stop, speak: mocks.speak }));
-vi.mock("./api", () => ({ rpc: mocks.rpc }));
+vi.mock("./api", () => ({
+  rpc: mocks.rpc,
+  captureApiRequestContext: async () => ({
+    apiBase: mocks.scope.apiBase,
+    sessionGeneration: mocks.scope.sessionGeneration,
+    headers: { authorization: "Bearer synthetic", "x-rakazo-space-id": mocks.scope.spaceId },
+  }),
+}));
+vi.mock("./mobile-scope", () => ({
+  captureMobileScope: () => ({ ...mocks.scope }),
+  mobileScopeKey: () => JSON.stringify(mocks.scope),
+  isMobileScopeCurrent: (scope: unknown) => JSON.stringify(scope) === JSON.stringify(mocks.scope),
+  subscribeMobileScope: (listener: () => void) => {
+    mocks.listeners.add(listener);
+    return () => mocks.listeners.delete(listener);
+  },
+}));
+vi.mock("./session", () => ({
+  currentReadySessionGeneration: () => mocks.scope.sessionGeneration,
+  subscribeSessionGeneration: () => () => {},
+}));
 vi.mock("expo-router", () => ({
   Stack: { Screen: () => null },
-  useRouter: () => ({ back: mocks.back, replace: mocks.replace }),
+  useRouter: () => ({
+    back: mocks.back,
+    replace: mocks.replace,
+    push: mocks.push,
+    canDismiss: () => false,
+    canGoBack: () => true,
+  }),
   useLocalSearchParams: () => ({ botId: mocks.botId }),
   useFocusEffect: (effect: () => (() => void) | undefined) => useEffect(effect, [effect]),
 }));
@@ -65,6 +113,7 @@ vi.mock("react-native", () => {
     StyleSheet: { create: (styles: unknown) => styles },
     ScrollView: view,
     View: view,
+    ActivityIndicator: () => null,
     Text: ({ children, style }: { children?: ReactNode; style: unknown }) =>
       createElement("span", { "data-style": JSON.stringify(style) }, children),
     TextInput: ({
@@ -131,6 +180,9 @@ vi.mock("../components/native-action-button", () => ({
   ),
 }));
 vi.mock("../components/native-switch", () => ({ NativeSwitch: () => null }));
+vi.mock("../components/glass-surface", () => ({
+  GlassSurface: ({ children }: { children: ReactNode }) => children,
+}));
 vi.mock("../components/row-accessories", () => ({ Chevron: () => null }));
 vi.mock("../components/native-symbol", () => ({
   NativeSymbol: ({ ios, android }: { ios: string; android: string }) =>
@@ -169,7 +221,12 @@ vi.mock("@expo/ui/community/menu", () => ({
 }));
 
 vi.mock("./focus-prompt", () => ({ allowFocusPrompt: vi.fn(), scheduleFocusPrompt: vi.fn() }));
-vi.mock("../components/sheet-header", () => ({ cancelHeaderOptions: () => ({}) }));
+vi.mock("../components/sheet-header", () => ({
+  cancelHeaderOptions: (_label: string, close: () => void) => {
+    mocks.close = close;
+    return {};
+  },
+}));
 
 const acceptedInstructions = "  Keep rules\n\nindependent.\n";
 const acceptedBot = {
@@ -182,6 +239,54 @@ const acceptedBot = {
   computerMode: "team",
   autoSpeak: false,
 };
+
+function createdBot(input: Record<string, unknown>, patch: Partial<Bot> = {}): Bot {
+  return {
+    id: "created-fixture",
+    spaceId: "space-1",
+    threadId: "created-thread",
+    name: "Fixture",
+    title: "",
+    description: "",
+    instructions: "",
+    color: "synthetic",
+    notifyOnFinish: true,
+    pinned: false,
+    sectionId: null,
+    archivedAt: null,
+    unread: false,
+    parentBotId: null,
+    memoryScope: null,
+    preview: "",
+    status: "idle",
+    runErrorId: null,
+    computerMode: "team",
+    updatedAt: "2026-10-24T00:00:00Z",
+    createdAt: "2026-10-24T00:00:00Z",
+    voiceId: null,
+    autoSpeak: false,
+    modelProvider: null,
+    modelId: null,
+    thinkingLevel: null,
+    teamChatAmbientEnabled: false,
+    teamChatRules: "",
+    disabledBuiltinTools: [],
+    webhookConfigured: false,
+    spawnKey: String(input.spawnKey),
+    ...input,
+    ...patch,
+  } as Bot;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
 
 async function change(input: HTMLTextAreaElement, value: string) {
   await act(async () => {
@@ -201,10 +306,18 @@ describe("native profile fields", () => {
     vi.clearAllMocks();
     mocks.botId = "bot-fixture";
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    mocks.rpc.mockImplementation(async (procedure: string) => {
+    mocks.scope = {
+      apiBase: "https://api.example.test",
+      apiGeneration: 1,
+      sessionGeneration: mocks.scope.sessionGeneration + 1,
+      spaceId: "space-1",
+      spaceGeneration: 1,
+      selectionSeq: 1,
+    };
+    mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
       if (procedure === "bots/get") return acceptedBot;
-      if (procedure === "bots/create") return acceptedBot;
-      if (procedure === "me") return {};
+      if (procedure === "bots/create") return createdBot(input);
+      if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
       return [];
     });
     mocks.deviceVoices.mockResolvedValue([]);
@@ -261,6 +374,11 @@ describe("native profile fields", () => {
     expect(mocks.rpc).toHaveBeenCalledWith(
       "bots/create",
       expect.objectContaining({ description: "Public role", instructions: "  Private rules\n" }),
+      expect.objectContaining({
+        requestContext: expect.objectContaining({
+          headers: expect.objectContaining({ "x-rakazo-space-id": "space-1" }),
+        }),
+      }),
     );
   });
 
@@ -466,6 +584,392 @@ describe("native profile fields", () => {
     expect(mocks.rpc).toHaveBeenCalledWith(
       "bots/create",
       expect.objectContaining({ description: "Public role", instructions: "" }),
+      expect.objectContaining({
+        requestContext: expect.objectContaining({
+          headers: expect.objectContaining({ "x-rakazo-space-id": "space-1" }),
+        }),
+      }),
     );
   });
+
+  it.each(BOT_TEMPLATES)(
+    "previews $templateId without creating and submits its editable fields explicitly",
+    async (template) => {
+      await act(async () => root.render(<NewBot />));
+      await submit(template.name);
+      expect(field("Name this bot").value).toBe(template.name);
+      expect(field("Describe what this bot does").value).toBe(template.title);
+      expect(field("What this bot is for").value).toBe(template.description);
+      expect(field("Instructions").value).toBe(template.instructions);
+      expect(mocks.rpc.mock.calls.some(([procedure]) => procedure === "bots/create")).toBe(false);
+      const raw = `  Edited ${template.instructions}\n`;
+      await change(field("Instructions"), raw);
+      await submit("Create");
+      const creates = mocks.rpc.mock.calls.filter(([procedure]) => procedure === "bots/create");
+      expect(creates).toHaveLength(1);
+      expect(creates[0]![1]).toEqual({
+        name: template.name,
+        title: template.title,
+        description: template.description,
+        instructions: raw,
+        computerMode: "team",
+        notifyOnFinish: true,
+        spawnKey: expect.stringMatching(/^bot-create:/),
+      });
+      expect(mocks.replace).toHaveBeenCalledWith({
+        pathname: "/thread",
+        params: { botId: "created-fixture", name: template.name },
+      });
+      expect(readMobileBotExample("created-fixture")?.text).toBe(template.examplePrompt);
+      expect(
+        mocks.rpc.mock.calls.some(([procedure]) => /messages\/send|tasks\/create/.test(procedure)),
+      ).toBe(false);
+    },
+  );
+
+  it.each(["template", "blank"] as const)(
+    "creates the %s preview without scheduling the legacy focus flow",
+    async (mode) => {
+      await act(async () => root.render(<NewBot />));
+      const template = BOT_TEMPLATES[0]!;
+      await submit(mode === "template" ? template.name : "Blank bot");
+      if (mode === "blank") await change(field("Name this bot"), "Blank preview");
+      const name = field("Name this bot").value;
+      await submit("Create");
+      expect(mocks.replace).toHaveBeenCalledWith({
+        pathname: "/thread",
+        params: { botId: "created-fixture", name },
+      });
+      expect(mocks.rpc.mock.calls.map(([procedure]) => procedure)).toEqual(["me", "bots/create"]);
+      expect(allowFocusPrompt).not.toHaveBeenCalled();
+      expect(scheduleFocusPrompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it("offers optional account-only email setup and preserves the preview without creating", async () => {
+    await act(async () => root.render(<NewBot />));
+    await submit("邮件草稿");
+    await change(field("Instructions"), "  My email rules\n");
+    await submit("Connect an email account");
+    expect(mocks.push).toHaveBeenCalledWith({
+      pathname: "/(settings)/integrations",
+      params: { accountOnly: "1" },
+    });
+    expect(field("Instructions").value).toBe("  My email rules\n");
+    expect(mocks.rpc.mock.calls.some(([procedure]) => procedure !== "me")).toBe(false);
+  });
+
+  it("carries an example across sheet teardown into the actual empty composer only once", async () => {
+    await act(async () => root.render(<NewBot />));
+    await submit("资料研究");
+    await submit("Create");
+    const example = readMobileBotExample("created-fixture")!;
+    expect(example).not.toBeNull();
+    const composer = createRef<ThreadComposerHandle>();
+    const send = vi.fn(async () => {});
+    await act(async () =>
+      root.render(
+        <ThreadComposer
+          ref={composer}
+          agentSkills={[]}
+          composerMentionTargets={[]}
+          composerPrompt="Message…"
+          replyQuote={null}
+          attachmentIds={[]}
+          botId="created-fixture"
+          onCall={false}
+          working={false}
+          sending={false}
+          styles={{ circleButton: {}, composerFill: {} }}
+          attachActions={[]}
+          attachFrom={() => {}}
+          send={send}
+          stop={async () => {}}
+          startVoiceCall={async () => {}}
+          onSlashAction={() => {}}
+        />,
+      ),
+    );
+    expect(composer.current!.snapshot().promptText).toBe("");
+    expect(readMobileBotExample("created-fixture")).toEqual(example);
+    const source = readFileSync(new URL("../app/thread.tsx", testFileUrl), "utf8");
+    const start = source.indexOf("  function insertTemplateExample()");
+    const end = source.indexOf("  const composerMentionTargets", start);
+    const status = source.slice(
+      source.indexOf("function isWorkingStatus("),
+      source.indexOf("function speakableMessageText("),
+    );
+    const target = {
+      botId: "created-fixture",
+      groupId: undefined as string | undefined,
+      readOnly: false,
+      scope: { ...mocks.scope },
+      ready: true,
+    };
+    const snapshot = {
+      botId: "created-fixture",
+      run: null as { status: string } | null,
+      activeRuns: [] as Array<{ status: string }>,
+    };
+    const preparingSend = { current: false };
+    const dependencies = {
+      templateExample: example,
+      insertMobileBotExample,
+      composerRef: composer,
+      exampleTarget: { current: target },
+      snapRef: { current: snapshot },
+      preparingSend,
+      updateExample: vi.fn(),
+      isMobileScopeCurrent: (scope: unknown) =>
+        JSON.stringify(scope) === JSON.stringify(mocks.scope),
+    };
+    const insert = new Function(
+      ...Object.keys(dependencies),
+      ts.transpileModule(`${status}\n${source.slice(start, end)}\nreturn insertTemplateExample;`, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+      }).outputText,
+    )(...Object.values(dependencies));
+    for (const state of ["queued", "leased", "running", "waiting_input", "waiting_takeover"]) {
+      snapshot.run = { status: state };
+      act(() => insert());
+      expect(composer.current!.snapshot().promptText).toBe("");
+    }
+    snapshot.run = null;
+    snapshot.activeRuns = [{ status: "running" }];
+    act(() => insert());
+    expect(composer.current!.snapshot().promptText).toBe("");
+    snapshot.activeRuns = [];
+    for (const change of [
+      { ready: false },
+      { readOnly: true },
+      { groupId: "group" },
+      { botId: "other" },
+      { scope: { ...mocks.scope, spaceGeneration: 99 } },
+    ]) {
+      Object.assign(target, change);
+      act(() => insert());
+      expect(composer.current!.snapshot().promptText).toBe("");
+      Object.assign(target, {
+        ready: true,
+        readOnly: false,
+        groupId: undefined,
+        botId: "created-fixture",
+        scope: { ...mocks.scope },
+      });
+    }
+    preparingSend.current = true;
+    act(() => insert());
+    expect(composer.current!.snapshot().promptText).toBe("");
+    preparingSend.current = false;
+    act(() => insert());
+    expect(composer.current!.snapshot().promptText).toBe(BOT_TEMPLATES[0]!.examplePrompt);
+    expect(send).not.toHaveBeenCalled();
+    act(() => composer.current!.reset());
+    expect(insertMobileBotExample(example, () => true)).toBe("gone");
+    expect(composer.current!.snapshot().promptText).toBe("");
+  });
+
+  it("binds an initially implicit Space to verified Me before explicit creation", async () => {
+    mocks.scope.spaceId = null;
+    await act(async () => root.render(<NewBot />));
+    await submit("文档整理");
+    await submit("Create");
+    const [, , options] = mocks.rpc.mock.calls.find(([procedure]) => procedure === "bots/create")!;
+    expect(options.requestContext.headers["x-rakazo-space-id"]).toBe("space-1");
+  });
+
+  it("does not dispatch through a mismatched verified account Space", async () => {
+    mocks.rpc.mockResolvedValue({ userId: "user-1", spaceId: "foreign-space" });
+    await act(async () => root.render(<NewBot />));
+    await submit("资料研究");
+    const button = [...container.querySelectorAll("button")].find(
+      (item) => item.textContent === "Create",
+    )!;
+    expect(button.disabled).toBe(true);
+    expect(mocks.rpc.mock.calls.some(([procedure]) => procedure === "bots/create")).toBe(false);
+  });
+
+  it("cancels a preview without creating and ignores a dispatched result after cancel", async () => {
+    await act(async () => root.render(<NewBot />));
+    await submit("资料研究");
+    expect(mocks.rpc.mock.calls.some(([procedure]) => procedure === "bots/create")).toBe(false);
+    const wait = deferred<Bot>();
+    const original = mocks.rpc.getMockImplementation()!;
+    mocks.rpc.mockImplementation((procedure: string, input: Record<string, unknown>) =>
+      procedure === "bots/create" ? wait.promise : original(procedure, input),
+    );
+    await submit("Create");
+    const input = mocks.rpc.mock.calls.find(([procedure]) => procedure === "bots/create")![1];
+    act(() => mocks.close());
+    await act(async () => wait.resolve(createdBot(input)));
+    expect(mocks.replace).not.toHaveBeenCalled();
+    expect(readMobileBotExample("created-fixture")).toBeNull();
+  });
+
+  it.each(["Open bot", "Create another bot"])(
+    "keeps in-flight edits after lost receipt recovery and requires explicit %s",
+    async (action) => {
+      const wait = deferred<Bot>();
+      let submitted: Record<string, unknown> = {};
+      let writes = 0;
+      mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+        if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
+        if (procedure === "bots/create") {
+          writes++;
+          if (writes === 1) {
+            submitted = input;
+            return wait.promise;
+          }
+          return createdBot(input, { id: "created-second", threadId: "second-thread" });
+        }
+        if (procedure === "bots/list") return [createdBot(submitted)];
+        return [];
+      });
+      await act(async () => root.render(<NewBot />));
+      await submit("资料研究");
+      await submit("Create");
+      await change(field("Name this bot"), "Retained live name");
+      await change(field("Instructions"), "  Retained live rules\n");
+      await act(async () => wait.reject(new TypeError("Connection lost")));
+      expect(mocks.replace).not.toHaveBeenCalled();
+      expect(field("Name this bot").value).toBe("Retained live name");
+      expect(field("Instructions").value).toBe("  Retained live rules\n");
+      expect(container.textContent).toContain("Bot created. Your edits are kept.");
+      expect(writes).toBe(1);
+      await submit(action);
+      expect(writes).toBe(action === "Open bot" ? 1 : 2);
+      if (action === "Create another bot") {
+        const second = mocks.rpc.mock.calls.filter(
+          ([procedure]) => procedure === "bots/create",
+        )[1]![1];
+        expect(second).toMatchObject({
+          name: "Retained live name",
+          instructions: "  Retained live rules\n",
+        });
+        expect(second.spawnKey).not.toBe(submitted.spawnKey);
+      }
+      expect(mocks.replace).toHaveBeenCalledOnce();
+      expect(mocks.rpc.mock.calls.some(([procedure]) => procedure === "bots/update")).toBe(false);
+    },
+  );
+
+  it("keeps an archived recovery in the preview and explicitly creates another with a new key", async () => {
+    let first: Record<string, unknown> = {};
+    let writes = 0;
+    mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
+      if (procedure === "bots/create") {
+        if (++writes === 1) {
+          first = input;
+          throw new Error("Connection lost");
+        }
+        return createdBot(input);
+      }
+      return procedure === "bots/listArchived"
+        ? [createdBot(first, { archivedAt: "2026-10-24T00:00:00Z" })]
+        : [];
+    });
+    await act(async () => root.render(<NewBot />));
+    await submit("文档整理");
+    await submit("Create");
+    expect(container.textContent).toContain("This bot is archived.");
+    expect(container.textContent).not.toContain("Open bot");
+    expect(mocks.replace).not.toHaveBeenCalled();
+    expect(readMobileBotExample("created-fixture")).toBeNull();
+    await change(field("Instructions"), "Edited after archive");
+    await submit("Create another bot");
+    const input = mocks.rpc.mock.calls.filter(([procedure]) => procedure === "bots/create")[1]![1];
+    expect(input.instructions).toBe("Edited after archive");
+    expect(input.spawnKey).not.toBe(first.spawnKey);
+    expect(mocks.replace).toHaveBeenCalledOnce();
+  });
+
+  it("requires both owned rosters before recovering an uncertain receipt and keeps newer edits", async () => {
+    let submitted: Record<string, unknown> = {};
+    let failedArchive = true;
+    mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
+      if (procedure === "bots/create") {
+        submitted = input;
+        throw new TypeError("Connection lost");
+      }
+      if (procedure === "bots/list") return [createdBot(submitted)];
+      if (procedure === "bots/listArchived" && failedArchive) throw new TypeError("Offline");
+      return [];
+    });
+    await act(async () => root.render(<NewBot />));
+    await submit("资料研究");
+    await submit("Create");
+    expect(mocks.replace).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Create another bot");
+    await change(field("Instructions"), "Retained after incomplete recovery");
+    failedArchive = false;
+    await submit("Retry");
+    expect(mocks.rpc.mock.calls.filter(([procedure]) => procedure === "bots/create")).toHaveLength(
+      1,
+    );
+    expect(field("Instructions").value).toBe("Retained after incomplete recovery");
+    expect(mocks.replace).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Open bot");
+    expect(container.textContent).toContain("Create another bot");
+  });
+
+  it.each(["empty name", "oversized rules"])(
+    "retries the frozen intent despite newer invalid live %s",
+    async (kind) => {
+      let writes = 0;
+      mocks.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+        if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
+        if (procedure === "bots/create") {
+          if (++writes === 1) throw new TypeError("Connection lost");
+          return createdBot(input);
+        }
+        return [];
+      });
+      await act(async () => root.render(<NewBot />));
+      await submit("资料研究");
+      await submit("Create");
+      const original = mocks.rpc.mock.calls.find(([procedure]) => procedure === "bots/create")![1];
+      if (kind === "empty name") await change(field("Name this bot"), "");
+      else await change(field("Instructions"), "x".repeat(20_001));
+      await submit("Retry");
+      expect(
+        mocks.rpc.mock.calls
+          .filter(([procedure]) => procedure === "bots/create")
+          .map(([, input]) => input),
+      ).toEqual([original, original]);
+      expect(mocks.replace).not.toHaveBeenCalled();
+      expect(field(kind === "empty name" ? "Name this bot" : "Instructions").value).toBe(
+        kind === "empty name" ? "" : "x".repeat(20_001),
+      );
+      expect(container.textContent).toContain("Open bot");
+    },
+  );
+
+  it.each(["Space ABA", "session", "API ABA"])(
+    "drops a late creation acknowledgment after %s",
+    async (kind) => {
+      const wait = deferred<Bot>();
+      const original = mocks.rpc.getMockImplementation()!;
+      mocks.rpc.mockImplementation((procedure: string, input: Record<string, unknown>) =>
+        procedure === "bots/create" ? wait.promise : original(procedure, input),
+      );
+      await act(async () => root.render(<NewBot />));
+      await submit("资料研究");
+      await submit("Create");
+      const input = mocks.rpc.mock.calls.find(([procedure]) => procedure === "bots/create")![1];
+      await act(async () => {
+        if (kind === "Space ABA")
+          mocks.scope = { ...mocks.scope, spaceGeneration: mocks.scope.spaceGeneration + 2 };
+        else if (kind === "session")
+          mocks.scope = { ...mocks.scope, sessionGeneration: mocks.scope.sessionGeneration + 1 };
+        else mocks.scope = { ...mocks.scope, apiGeneration: mocks.scope.apiGeneration + 2 };
+        for (const listener of mocks.listeners) listener();
+      });
+      await act(async () => wait.resolve(createdBot(input)));
+      expect(mocks.replace).not.toHaveBeenCalled();
+      expect(readMobileBotExample("created-fixture")).toBeNull();
+      expect(field("Name this bot").value).toBe("");
+    },
+  );
 });

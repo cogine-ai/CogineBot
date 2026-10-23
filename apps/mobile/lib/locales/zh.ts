@@ -1,4 +1,12 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Blank bot": "空白机器人",
+  "Try example": "试用示例",
+  "Open bot": "打开机器人",
+  "Create another bot": "再创建一个机器人",
+  "Bot created. Your edits are kept.": "机器人已创建，你的修改已保留。",
+  "This bot is archived.": "此机器人已归档。",
+  "Connect an email account": "连接邮箱账号",
+  "Gmail or Outlook (optional)": "Gmail 或 Outlook（可选）",
   "Members ({count})": "成员（{count}）",
   "Show selected": "仅显示已选",
   "Show all": "显示全部",

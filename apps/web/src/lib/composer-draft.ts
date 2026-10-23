@@ -168,3 +168,25 @@ export function clearComposerDrafts(): void {
   drafts.clear();
   for (const key of keys) notify(key);
 }
+
+/** Fill a current, wholly empty composer without replacing any unsent context. */
+export function insertEmptyComposerDraft(
+  key: string | null,
+  text: string,
+  isCurrent: () => boolean,
+): boolean {
+  if (!key || !isCurrent()) return false;
+  const draft = readComposerDraft(key);
+  if (
+    draft.text !== "" ||
+    draft.attachments.length > 0 ||
+    draft.selectedSkill !== null ||
+    draft.selectedMentions.length > 0 ||
+    draft.replyTarget !== null ||
+    draft.replyQuote !== null ||
+    !isCurrent()
+  )
+    return false;
+  writeComposerDraft(key, { text });
+  return true;
+}

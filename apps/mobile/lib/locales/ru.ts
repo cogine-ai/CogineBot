@@ -1,4 +1,12 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Blank bot": "Пустой бот",
+  "Try example": "Попробовать пример",
+  "Open bot": "Открыть бота",
+  "Create another bot": "Создать ещё одного бота",
+  "Bot created. Your edits are kept.": "Бот создан. Ваши изменения сохранены.",
+  "This bot is archived.": "Этот бот в архиве.",
+  "Connect an email account": "Подключить почту",
+  "Gmail or Outlook (optional)": "Gmail или Outlook (необязательно)",
   "Members ({count})": "Участники ({count})",
   "Show selected": "Показать выбранных",
   "Show all": "Показать всех",

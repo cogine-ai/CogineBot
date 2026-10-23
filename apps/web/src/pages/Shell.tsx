@@ -6,7 +6,6 @@ import type {
   AgentSkillCatalogEntry,
   Bot,
   BotSection,
-  ComputerMode,
   ComputerReleaseReason,
   ComputerStatus,
   Connection,
@@ -31,8 +30,8 @@ import {
   canReactToThreadMessage,
   MESSAGE_REACTIONS,
   type MessageReaction,
-  normalizeCreateBotProfile,
 } from "@rakazo/contracts";
+import type { BotCreationReceipt } from "@rakazo/core";
 import {
   buildComposerMentionOptions,
   type ComposerMention,
@@ -183,6 +182,7 @@ import type {
 import {
   clearComposerDrafts,
   consumeSubmittedComposerDraft,
+  insertEmptyComposerDraft,
   makeComposerDraftKey,
   moveComposerDraft,
   readComposerDraft,
@@ -263,6 +263,7 @@ import {
 } from "../lib/transcript-scroll";
 import { speaker } from "../lib/tts";
 import { useAccountTimezone } from "../lib/use-account-timezone";
+import { useBotCreation, useBotCreationEditor } from "../lib/use-bot-creation";
 import { useComposerDraft } from "../lib/use-composer-draft";
 import { errorText } from "../lib/user-error";
 import { ActivityList } from "./ActivityList";
@@ -921,6 +922,20 @@ export function ShellPage() {
   const settingsSpace = spaces.find((entry) => entry.id === settingsTargetId) ?? null;
   const settingsOwnerKey = JSON.stringify([userId, session.data?.session.id]);
   const settingsOwner = useMemo(() => ({ key: settingsOwnerKey }), [settingsOwnerKey]);
+  const creationSpaceId = userId && bootstrapMe?.userId === userId ? bootstrapMe.spaceId : null;
+  const creationScope = useBotCreation({
+    ownerKey: creationSpaceId ? settingsOwnerKey : null,
+    spaceId: creationSpaceId,
+  });
+  const botCreationEditor = useBotCreationEditor({
+    scope: creationScope,
+    spaceId: creationSpaceId,
+    enabled: panel === "create",
+  });
+  const [creationAppsEditor, setCreationAppsEditor] = useState<typeof botCreationEditor>(null);
+  const [creationMcpEditor, setCreationMcpEditor] = useState<typeof botCreationEditor>(null);
+  const [, refreshTemplateExample] = useState(0);
+
   const saveAccountTimezone = useAccountTimezone({
     ownerKey: userId ? settingsOwnerKey : null,
     userId: userId ?? null,
@@ -2678,6 +2693,61 @@ export function ShellPage() {
   );
   const transcriptRunning = workingRuns.length > 0;
   const composerRunning = currentRuns.some((run) => isActive(run.status));
+  const exampleTarget = useMemo(
+    () => ({
+      scope: creationScope,
+      key: draftScopeKey,
+      botId: active?.id,
+      blocked:
+        inGroup ||
+        inNewChat ||
+        Boolean(peerConversation) ||
+        Boolean(recordingSkill) ||
+        composerRunning,
+    }),
+    [
+      creationScope,
+      draftScopeKey,
+      active?.id,
+      inGroup,
+      inNewChat,
+      peerConversation,
+      recordingSkill,
+      composerRunning,
+    ],
+  );
+  const committedExampleTarget = useRef<typeof exampleTarget | null>(null);
+  useLayoutEffect(() => {
+    committedExampleTarget.current = exampleTarget;
+    return () => {
+      if (committedExampleTarget.current === exampleTarget) committedExampleTarget.current = null;
+    };
+  }, [exampleTarget]);
+  const templateExample =
+    active && !inGroup && !inNewChat
+      ? creationScope.examples.read(creationScope.scopeKey, active.id)
+      : null;
+  function insertTemplateExample() {
+    if (!templateExample) return;
+    creationScope.examples.insert(
+      creationScope.scopeKey,
+      templateExample.botId,
+      templateExample.exampleNonce,
+      (text) =>
+        insertEmptyComposerDraft(
+          exampleTarget.key,
+          text,
+          () =>
+            committedExampleTarget.current === exampleTarget &&
+            exampleTarget.scope.scopeCurrent() &&
+            exampleTarget.botId === templateExample.botId &&
+            !exampleTarget.blocked &&
+            !sendingRef.current,
+        ),
+    );
+    refreshTemplateExample((value) => value + 1);
+  }
+
   const runError = threadRunError(activeSnapshot, dismissedRunErrorIds);
   const displayedRunError = !sendError ? runError : null;
   const displayedRunErrorId = displayedRunError ? (activeSnapshot?.run?.id ?? null) : null;
@@ -3360,28 +3430,28 @@ export function ShellPage() {
     setSettingsOpen(true);
   }
 
-  async function createBot(input: {
-    name: string;
-    title: string;
-    description: string;
-    instructions: string;
-    computerMode: ComputerMode;
-  }) {
-    const bot = await rpc.bots.create({
-      ...normalizeCreateBotProfile(input),
-      notifyOnFinish: true,
-      computerMode: input.computerMode,
-    });
-    // Successful creation wins over list/bootstrap reads started before it.
+  function publishCreatedBot(receipt: BotCreationReceipt) {
+    if (!botCreationEditor?.isCurrent()) return;
+    const bot = receipt.bot;
     botsRefreshEpoch.current += 1;
     botsRefreshApplied.current = botsRefreshEpoch.current;
     setBots((current) =>
       current.some((item) => item.id === bot.id) ? current : [bot, ...current],
     );
+    if (receipt.submitted.template && receipt.exampleNonce) {
+      creationScope.examples.remember({
+        scopeKey: creationScope.scopeKey,
+        botId: bot.id,
+        selection: receipt.submitted.template,
+        exampleNonce: receipt.exampleNonce,
+      });
+      refreshTemplateExample((value) => value + 1);
+    }
+  }
+  function openCreatedBot(bot: Bot) {
+    if (!botCreationEditor?.isCurrent() || bot.spaceId !== creationSpaceId) return;
     navigate(`/app/${bot.id}`);
     setPanel(null);
-    await rpc.onboarding.start({ botId: bot.id }).catch(() => undefined);
-    await refreshBots().catch(() => undefined);
   }
 
   async function bootComputer({
@@ -4997,6 +5067,17 @@ export function ShellPage() {
               <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
             </div>
           ) : null}
+          {templateExample ? (
+            <div className="px-6 pb-2">
+              <Button
+                variant="outline"
+                disabled={sending || exampleTarget.blocked}
+                onClick={insertTemplateExample}
+              >
+                <Trans>Try example</Trans>
+              </Button>
+            </div>
+          ) : null}
           {active || activeGroup || inNewChat ? (
             <Composer
               draftKey={draftScopeKey}
@@ -5284,10 +5365,14 @@ export function ShellPage() {
                 }}
               />
             ) : null}
-            {panel === "create" ? (
+            {panel === "create" && botCreationEditor ? (
               <CreateBotForm
+                key={creationScope.scopeKey}
+                creation={botCreationEditor.creation}
+                onCreated={publishCreatedBot}
+                onOpen={openCreatedBot}
+                onConnectEmail={() => setCreationAppsEditor(botCreationEditor)}
                 onCancel={() => setPanel(null)}
-                onCreate={(input) => createBot(input)}
               />
             ) : null}
             {panel === "settings" && active ? (
@@ -5919,6 +6004,19 @@ export function ShellPage() {
           />
         ) : null}
 
+        {creationAppsEditor && creationAppsEditor === botCreationEditor && panel === "create" ? (
+          <PluginsOverlay
+            onConnectionsChanged={connectionsChanged}
+            onClose={() => setCreationAppsEditor(null)}
+            onOpenMcp={() => {
+              setCreationAppsEditor(null);
+              setCreationMcpEditor(botCreationEditor);
+            }}
+          />
+        ) : null}
+        {creationMcpEditor && creationMcpEditor === botCreationEditor && panel === "create" ? (
+          <McpServersOverlay onClose={() => setCreationMcpEditor(null)} />
+        ) : null}
         {pluginsOpen ? (
           <PluginsOverlay
             activeBotId={activeBotId.current}

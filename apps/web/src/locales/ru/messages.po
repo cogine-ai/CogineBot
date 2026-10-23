@@ -6071,3 +6071,35 @@ msgstr "Не удалось обновить часовой пояс"
 #: src/pages/shell/bot-panel.tsx
 msgid "Instructions must be at most {count} characters"
 msgstr "Инструкции должны содержать не более {count} символов"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Blank bot"
+msgstr "Пустой бот"
+
+#: src/pages/Shell.tsx
+msgid "Try example"
+msgstr "Попробовать пример"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Open bot"
+msgstr "Открыть бота"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Create another bot"
+msgstr "Создать ещё одного бота"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Bot created. Your edits are kept."
+msgstr "Бот создан. Ваши изменения сохранены."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "This bot is archived."
+msgstr "Этот бот в архиве."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Connect an email account"
+msgstr "Подключить почту"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Gmail or Outlook (optional)"
+msgstr "Gmail или Outlook (необязательно)"
