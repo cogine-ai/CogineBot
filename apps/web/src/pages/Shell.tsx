@@ -5172,7 +5172,7 @@ export function ShellPage() {
                 memoryProviderConfigured={memoryProviderConfig != null}
                 onSkillsChange={setAgentSkills}
                 onSave={async ({ computerMode, ...patch }) => {
-                  if (computerMode !== active.computerMode) {
+                  if (computerMode !== undefined && computerMode !== active.computerMode) {
                     await rpc.bots.setComputer({
                       botId: active.id,
                       mode: computerMode,

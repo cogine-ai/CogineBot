@@ -1,6 +1,7 @@
 import { requireNativeModule } from "expo-modules-core";
+import type { NotificationPermissionsStatus } from "expo-notifications";
 import * as Notifications from "expo-notifications";
-import { Platform } from "react-native";
+import { Linking, Platform } from "react-native";
 import { apiBaseWarning, normalizeApiBase } from "./endpoint";
 import { t } from "./i18n";
 
@@ -147,24 +148,117 @@ export async function setOpenNotificationThread(
   }
 }
 
-export async function dismissThreadNotifications(target: {
-  botId?: string;
-  threadId?: string;
-}): Promise<void> {
-  if (!target.botId && !target.threadId) return;
+export async function dismissThreadNotifications(
+  target: {
+    botId?: string;
+    threadId?: string;
+  },
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
+  if ((!target.botId && !target.threadId) || !isCurrent()) return;
   const presented = await Notifications.getPresentedNotificationsAsync();
-  await Promise.all(
-    presented
-      .filter(({ request }) => {
-        const data = request.content.data ?? {};
-        return notificationTargetsThread(data, target);
-      })
-      .map(({ request }) => Notifications.dismissNotificationAsync(request.identifier)),
-  );
+  let failure: unknown;
+  for (const { request } of presented) {
+    if (!isCurrent()) return;
+    if (notificationTargetsThread(request.content.data, target)) {
+      try {
+        await Notifications.dismissNotificationAsync(request.identifier);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  }
+  if (failure) throw failure;
 }
 
-export async function openLiveNotificationSettings(): Promise<void> {
-  await nativeNotifications?.openSettings();
+export type ChatNotifyPermissionStatus = "allowed" | "denied" | "unknown";
+
+export type ChatNotifyChange = Readonly<{
+  botId: string;
+  threadId?: string | null;
+  notifyOnFinish: boolean;
+  apiBase: string;
+  token: string;
+  spaceId: string;
+  isCurrent: () => boolean;
+  onAllowed?: () => Promise<void>;
+}>;
+
+function notificationPermission(status: NotificationPermissionsStatus): ChatNotifyPermissionStatus {
+  if (status.ios) {
+    switch (status.ios.status) {
+      case Notifications.IosAuthorizationStatus.AUTHORIZED:
+      case Notifications.IosAuthorizationStatus.PROVISIONAL:
+      case Notifications.IosAuthorizationStatus.EPHEMERAL:
+        return "allowed";
+      case Notifications.IosAuthorizationStatus.DENIED:
+        return "denied";
+      default:
+        return "unknown";
+    }
+  }
+  return status.granted ? "allowed" : status.status === "denied" ? "denied" : "unknown";
+}
+
+export async function readChatNotificationPermission(
+  isCurrent: () => boolean,
+): Promise<ChatNotifyPermissionStatus | null> {
+  if (!isCurrent()) return null;
+  try {
+    const status = await Notifications.getPermissionsAsync();
+    return isCurrent() ? notificationPermission(status) : null;
+  } catch {
+    return isCurrent() ? "unknown" : null;
+  }
+}
+
+/** Updates this device after the existing chat preference has been saved. */
+export async function afterChatNotifyChange(
+  change: ChatNotifyChange,
+): Promise<ChatNotifyPermissionStatus | null> {
+  const { isCurrent } = change;
+  if (!isCurrent()) return null;
+  if (change.token && change.spaceId) {
+    await resumeLiveNotifications(change.apiBase, change.token, change.spaceId).catch(
+      () => undefined,
+    );
+  }
+  if (!isCurrent()) return null;
+  if (!change.notifyOnFinish) {
+    await dismissThreadNotifications(
+      change.threadId ? { threadId: change.threadId } : { botId: change.botId },
+      isCurrent,
+    ).catch(() => undefined);
+    return null;
+  }
+  try {
+    const status = await Notifications.getPermissionsAsync();
+    if (!isCurrent()) return null;
+    let permission = notificationPermission(status);
+    if (permission !== "allowed" && status.canAskAgain) {
+      const requested = await Notifications.requestPermissionsAsync();
+      if (!isCurrent()) return null;
+      permission = notificationPermission(requested);
+    }
+    if (permission === "allowed" && isCurrent()) {
+      try {
+        await change.onAllowed?.();
+      } catch {
+        // Device registration failure does not change the known OS permission.
+      }
+    }
+    return isCurrent() ? permission : null;
+  } catch {
+    return isCurrent() ? "unknown" : null;
+  }
+}
+
+export async function openLiveNotificationSettings(
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
+  if (!isCurrent()) return;
+  if (nativeNotifications) await nativeNotifications.openSettings();
+  else if (Platform.OS === "ios") await Linking.openSettings();
 }
 
 export async function canPostPromotedNotifications(): Promise<boolean> {

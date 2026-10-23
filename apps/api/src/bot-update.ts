@@ -5,8 +5,8 @@ import { getLogger } from "@rakazo/logging";
 type AppendEvent = typeof appendEventInTransaction;
 
 /**
- * Persist a bot row. When profile labels change, write `bot.updated` in the same
- * transaction so clients never observe a successful rename without a durable event.
+ * Persist a bot row. When profile metadata changes, write `bot.updated` in the same
+ * transaction so clients can refresh the accepted profile and notification setting.
  * Realtime notify stays best-effort after commit.
  */
 export async function commitBotUpdate(
@@ -66,16 +66,18 @@ export async function commitBotUpdate(
   return committed.updated;
 }
 
-export function botProfileLabelsChanged(input: {
+export function botProfileChanged(input: {
   name?: unknown;
   title?: unknown;
   description?: unknown;
   color?: unknown;
+  notifyOnFinish?: unknown;
 }): boolean {
   return (
     input.name !== undefined ||
     input.title !== undefined ||
     input.description !== undefined ||
-    input.color !== undefined
+    input.color !== undefined ||
+    input.notifyOnFinish !== undefined
   );
 }

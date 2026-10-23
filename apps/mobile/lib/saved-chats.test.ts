@@ -187,6 +187,21 @@ it("keeps the confirmed inbox when an older asynchronous cache save finishes lat
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(readSavedInbox(scope)?.bots[0]?.sectionId).toBeNull();
 });
+it("drops an inbox save invalidated while resolving its disk namespace", async () => {
+  let finish!: (token: string) => void;
+  vi.mocked(loadSessionToken).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  let current = true;
+  saveInbox(scope, navigation, me, () => current);
+  current = false;
+  finish("fake-token");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(readSavedInbox(scope)).toBeNull();
+});
 it("round trips only what the inbox shows", () => {
   expect(readSavedInbox(scope)).toBeNull();
   writeSavedInbox(scope, navigation, me);

@@ -1056,5 +1056,22 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
     }
     await db.bot.update({ where: { id: f.bot.id }, data: { archivedAt: now() } });
     await assert.rejects(listNativeRoutineTriggersBatch(peer, actor, ids), /Routine not found/);
+    const archived = await listNativeRoutineTriggersBatch(peer, actor, ids, {
+      includeArchived: true,
+    });
+    assert.equal(archived.get(f.routine.id)?.[0]?.id, f.row.id);
+    assert.deepEqual(archived.get(f.untouched.id), []);
+    await assert.rejects(
+      listNativeRoutineTriggersBatch(peer, { userId: other, spaceId: space }, ids, {
+        includeArchived: true,
+      }),
+      /Routine not found/,
+    );
+    await assert.rejects(
+      listNativeRoutineTriggersBatch(peer, { userId: owner, spaceId: otherSpace }, ids, {
+        includeArchived: true,
+      }),
+      /Routine not found/,
+    );
   });
 });

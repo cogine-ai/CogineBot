@@ -1,9 +1,13 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
+import type { Bot, SpaceNavigation } from "@rakazo/contracts";
 import {
+  activeBotId,
   captureScreenshot,
   completeOnboarding,
   createBotFromPicker,
   openNewBot,
+  rpc,
   signup,
 } from "./helpers";
 
@@ -196,3 +200,142 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   await expect(page.getByPlaceholder("Message Chief")).toBeVisible();
   await captureScreenshot(page, testInfo, "31-deleted-bot-fallback");
 });
+
+test("keeps the shared Bot notification setting across live updates and other saves", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `shared-notification-${stamp}@rakazo.test`, "password12", "Shared Setting");
+  await completeOnboarding(page);
+  await page.waitForURL(/\/app\/[^/]+$/);
+  const botId = activeBotId(page);
+  await expect.poll(async () => (await rpc<Bot>(page, "bots/get", { botId })).status).toBe("idle");
+  await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
+  const settings = page.getByTestId("bot-settings");
+  const notifications = settings.getByRole("switch", { name: "Notifications", exact: true });
+  await expect(notifications).toBeChecked();
+  const head = await rpc<{ cursor: number }>(page, "threads/head", { botId });
+
+  const rosterPreference = (value: boolean) =>
+    page.waitForResponse(async (response) => {
+      if (!response.ok() || new URL(response.url()).pathname !== "/rpc/spaces/list") return false;
+      const body = (await response.json()) as { json: SpaceNavigation };
+      return body.json.current.bots.some((bot) => bot.id === botId && bot.notifyOnFinish === value);
+    });
+  const externalOff = rosterPreference(false);
+  await rpc(page, "bots/update", { botId, notifyOnFinish: false });
+  await externalOff;
+  await expect(notifications).not.toBeChecked();
+  const replayed = await replayNotificationUpdate(page, botId, head.cursor);
+  expect(replayed).toMatchObject({ botId, type: "bot.updated" });
+  expect(replayed.seq).toBeGreaterThan(head.cursor);
+
+  await settings.getByText("Advanced", { exact: true }).click();
+  const aloud = settings.getByRole("switch", { name: "Read replies aloud", exact: true });
+  await aloud.click();
+  const manualSaved = page.waitForResponse(
+    (response) => response.ok() && new URL(response.url()).pathname === "/rpc/bots/update",
+  );
+  await settings.getByRole("button", { name: "Save", exact: true }).click();
+  const manualPatch = (await manualSaved).request().postDataJSON() as {
+    json: Record<string, unknown>;
+  };
+  expect(manualPatch.json).toMatchObject({ botId, autoSpeak: true });
+  expect(manualPatch.json).not.toHaveProperty("notifyOnFinish");
+  expect((await rpc<Bot>(page, "bots/get", { botId })).notifyOnFinish).toBe(false);
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let captured!: () => void;
+  const ownCaptured = new Promise<void>((resolve) => {
+    captured = resolve;
+  });
+  let ownPatch: unknown;
+  await page.route("**/rpc/bots/update", async (route) => {
+    ownPatch = route.request().postDataJSON();
+    captured();
+    await held;
+    await route.continue();
+  });
+  try {
+    await notifications.click();
+    await ownCaptured;
+    expect(ownPatch).toEqual({ json: { botId, notifyOnFinish: true } });
+    await expect(notifications).toBeChecked();
+    await expect(notifications).toBeDisabled();
+    const externalOn = rosterPreference(true);
+    await rpc(page, "bots/update", { botId, notifyOnFinish: true });
+    await externalOn;
+    const externalOffAgain = rosterPreference(false);
+    await rpc(page, "bots/update", { botId, notifyOnFinish: false });
+    await externalOffAgain;
+    expect((await rpc<Bot>(page, "bots/get", { botId })).notifyOnFinish).toBe(false);
+    await expect(notifications).toBeChecked();
+    await expect(notifications).toBeDisabled();
+    const ownSaved = page.waitForResponse(
+      (response) => response.ok() && new URL(response.url()).pathname === "/rpc/bots/update",
+    );
+    const acceptedRoster = rosterPreference(true);
+    release();
+    await ownSaved;
+    await acceptedRoster;
+    await expect(notifications).toBeChecked();
+    await expect(notifications).toBeEnabled();
+    expect((await rpc<Bot>(page, "bots/get", { botId })).notifyOnFinish).toBe(true);
+    await notifications.scrollIntoViewIfNeeded();
+    await captureScreenshot(page, testInfo, "a3-shared-notification-setting");
+  } finally {
+    release();
+    await page.unroute("**/rpc/bots/update");
+  }
+});
+
+async function replayNotificationUpdate(page: Page, botId: string, cursor: number) {
+  return page.evaluate(
+    async ({ botId, cursor }) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      try {
+        const response = await fetch("/rpc/threads/subscribe", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ json: { botId, cursor } }),
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.headers.get("content-type")?.includes("text/event-stream"))
+          throw new Error(`Thread replay failed: ${response.status}`);
+        reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) throw new Error("Thread replay ended before the preference update");
+          buffer += decoder.decode(value, { stream: true });
+          for (;;) {
+            const boundary = buffer.indexOf("\n\n");
+            if (boundary === -1) break;
+            const frame = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const data = frame.split("\n").find((line) => line.startsWith("data: "));
+            if (!data) continue;
+            const event = (
+              JSON.parse(data.slice(6)) as {
+                json?: { type: string; botId: string; seq: number };
+              }
+            ).json;
+            if (event?.type === "bot.updated" && event.botId === botId && event.seq > cursor)
+              return event;
+          }
+        }
+      } finally {
+        clearTimeout(timeout);
+        controller.abort();
+        await reader?.cancel().catch(() => undefined);
+      }
+    },
+    { botId, cursor },
+  );
+}

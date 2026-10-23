@@ -238,7 +238,7 @@ import {
   listSpaceArtifacts,
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
-import { botProfileLabelsChanged, commitBotUpdate } from "./bot-update.js";
+import { botProfileChanged, commitBotUpdate } from "./bot-update.js";
 import {
   executionBlocksUserTakeover,
   resolveBusyBotName,
@@ -1808,7 +1808,7 @@ export function createRouter(deps: RouterDeps) {
           spaceId: context.actor.spaceId,
           threadId: existing.thread.id,
           botId: input.botId,
-          emitBotUpdated: botProfileLabelsChanged(input),
+          emitBotUpdated: botProfileChanged(input),
           validate,
           data: {
             name: input.name,
@@ -3401,8 +3401,8 @@ export function createRouter(deps: RouterDeps) {
         listRoutineRuns(deps.prisma, context.actor, input.routineId, input.before),
       ),
       list: authed.routines.list.handler(async ({ context, input }) => {
-        await repos.getBot(context.actor, input.botId);
-        return listRoutinesDto(deps, context.actor, input.botId);
+        await repos.getBot(context.actor, input.botId, { includeArchived: true });
+        return listRoutinesDto(deps, context.actor, input.botId, { includeArchived: true });
       }),
       create: authed.routines.create.handler(async ({ context, input }) => {
         if (hasMixedOneShotSchedule(input.crons)) {
@@ -6301,7 +6301,7 @@ export function createRouter(deps: RouterDeps) {
         }));
       }),
       listSpace: authed.artifacts.listSpace.handler(async ({ context, input }) => {
-        if (input.botId) await repos.getBot(context.actor, input.botId);
+        if (input.botId) await repos.getBot(context.actor, input.botId, { includeArchived: true });
         try {
           return await listSpaceArtifacts(deps, context.actor, input);
         } catch (error) {
@@ -6339,7 +6339,7 @@ export function createRouter(deps: RouterDeps) {
             contextBotId,
           });
         }
-        await repos.getBot(context.actor, input.botId!);
+        await repos.getBot(context.actor, input.botId!, { includeArchived: true });
         try {
           return await getOwnedArtifact(deps, context.actor, {
             botId: input.botId!,
@@ -7529,7 +7529,12 @@ function mapRoutine(
   };
 }
 
-async function listRoutinesDto(deps: RouterDeps, actor: Actor, botId: string) {
+async function listRoutinesDto(
+  deps: RouterDeps,
+  actor: Actor,
+  botId: string,
+  options: { includeArchived?: boolean } = {},
+) {
   const rows = await deps.prisma.routine.findMany({
     where: { botId, spaceId: actor.spaceId },
   });
@@ -7537,6 +7542,7 @@ async function listRoutinesDto(deps: RouterDeps, actor: Actor, botId: string) {
     deps.prisma,
     actor,
     rows.map((row) => row.id),
+    options,
   );
   return rows.map((row) => mapRoutine(row, nativeByRoutine.get(row.id) ?? []));
 }

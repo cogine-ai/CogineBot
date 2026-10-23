@@ -3,7 +3,7 @@
 import type { Bot } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
-import { act } from "react";
+import { act, Suspense, startTransition } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,7 +44,15 @@ vi.mock("@rakazo/ui-web", () => ({
   }: ComponentProps<"button"> & {
     checked?: boolean;
     onCheckedChange?: (checked: boolean) => void;
-  }) => <button type="button" {...props} onClick={() => onCheckedChange?.(!checked)} />,
+  }) => (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={Boolean(checked)}
+      {...props}
+      onClick={() => onCheckedChange?.(!checked)}
+    />
+  ),
   Toggle: ({
     onPressedChange,
     pressed,
@@ -115,15 +123,17 @@ function bot(description = "Billing"): Bot {
 
 let container: HTMLDivElement;
 let root: Root;
-const onSave = vi.fn(
-  async (_patch: Parameters<ComponentProps<typeof BotSettings>["onSave"]>[0]) => undefined,
-);
+const onSave = vi.fn<ComponentProps<typeof BotSettings>["onSave"]>(async () => undefined);
 
-async function render(description = "Billing", memoryProviderConfigured = false) {
+async function render(
+  description = "Billing",
+  memoryProviderConfigured = false,
+  refreshed: Partial<Bot> = {},
+) {
   await act(async () => {
     root.render(
       <BotSettings
-        bot={bot(description)}
+        bot={{ ...bot(description), ...refreshed }}
         memoryProviderConfigured={memoryProviderConfigured}
         onSkillsChange={() => undefined}
         onSave={onSave}
@@ -132,6 +142,12 @@ async function render(description = "Billing", memoryProviderConfigured = false)
       />,
     );
   });
+}
+
+function notificationSwitch(): HTMLButtonElement {
+  const button = container.querySelector('[id$="-notify-finish"]');
+  if (!(button instanceof HTMLButtonElement)) throw new Error("Missing notification switch");
+  return button;
 }
 
 function descriptionField(): HTMLTextAreaElement {
@@ -187,6 +203,172 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+});
+
+it("receives the shared notification preference while its settings panel stays mounted", async () => {
+  await render();
+  expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+  await render("Billing", false, { notifyOnFinish: false, updatedAt: "2026-10-22T12:00:00.000Z" });
+  expect(notificationSwitch().getAttribute("aria-checked")).toBe("false");
+  expect(onSave).not.toHaveBeenCalled();
+});
+
+describe("BotSettings shared notifications", () => {
+  it("sends only the explicit preference and leaves it out of a later manual save", async () => {
+    await render();
+    await setDescription("Unsaved instructions");
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenNthCalledWith(1, { notifyOnFinish: false });
+    expect(descriptionField().value).toBe("Unsaved instructions");
+    await clickSave();
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      description: "Unsaved instructions",
+      instructions: "Unsaved instructions",
+    });
+    expect(onSave.mock.calls[1]?.[0]).not.toHaveProperty("notifyOnFinish");
+  });
+
+  it("retains one optimistic choice during changing server props and ignores duplicate clicks", async () => {
+    const pending = deferred<void>();
+    onSave.mockImplementationOnce(() => pending.promise);
+    await render();
+    await act(async () => {
+      notificationSwitch().click();
+      notificationSwitch().click();
+    });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(notificationSwitch().disabled).toBe(true);
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("false");
+    await render("Billing", false, { notifyOnFinish: false });
+    await render("Billing", false, { notifyOnFinish: true });
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(notificationSwitch().disabled).toBe(true);
+    await act(async () => pending.resolve());
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(notificationSwitch().disabled).toBe(false);
+    await render("Billing", false, { notifyOnFinish: true });
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+  });
+
+  it.each([true, false])(
+    "rolls a rejected choice back to the latest confirmed preference (%s) and permits retry",
+    async (confirmed) => {
+      const pending = deferred<void>();
+      onSave.mockImplementationOnce(() => pending.promise);
+      await render();
+      await act(async () => notificationSwitch().click());
+      await render("Billing", false, { notifyOnFinish: confirmed });
+      await act(async () => pending.reject(new Error("Offline")));
+      expect(notificationSwitch().getAttribute("aria-checked")).toBe(String(confirmed));
+      expect(notificationSwitch().disabled).toBe(false);
+      expect(container.textContent).toContain("Offline");
+      await act(async () => notificationSwitch().click());
+      expect(onSave).toHaveBeenNthCalledWith(2, { notifyOnFinish: !confirmed });
+      expect(notificationSwitch().getAttribute("aria-checked")).toBe(String(!confirmed));
+    },
+  );
+
+  it("drops a queued notification write after Space A-B-A without sending it to the new owner", async () => {
+    const pending = deferred<void>();
+    onSave.mockImplementationOnce(() => pending.promise);
+    await render();
+    await clickSave();
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenCalledTimes(1);
+    modelScope.generation = 1;
+    await render("Billing", false, { id: "bot-b", spaceId: "space-b" });
+    modelScope.generation = 2;
+    await render();
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(notificationSwitch().disabled).toBe(false);
+    await act(async () => pending.resolve());
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenNthCalledWith(2, { notifyOnFinish: false });
+  });
+
+  it("settles the committed owner's save after a different-owner transition is discarded", async () => {
+    const pending = deferred<void>();
+    const suspended = deferred<void>();
+    onSave.mockImplementationOnce(() => pending.promise);
+    let suspendedRenders = 0;
+    function RenderGate({ blocked }: { blocked: boolean }) {
+      if (blocked) {
+        suspendedRenders += 1;
+        throw suspended.promise;
+      }
+      return null;
+    }
+    const tree = (currentBot: Bot, blocked: boolean) => (
+      <Suspense fallback={<div>Loading settings</div>}>
+        <BotSettings
+          bot={currentBot}
+          memoryProviderConfigured={false}
+          onSkillsChange={() => undefined}
+          onSave={onSave}
+          onExport={async () => undefined}
+          onClear={() => undefined}
+        />
+        <RenderGate blocked={blocked} />
+      </Suspense>
+    );
+    const committed = tree(bot(), false);
+    await act(async () => root.render(committed));
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenCalledExactlyOnceWith({ notifyOnFinish: false });
+    expect(notificationSwitch().disabled).toBe(true);
+    await act(async () => {
+      startTransition(() => root.render(tree({ ...bot(), id: "bot-b", spaceId: "space-b" }, true)));
+    });
+    expect(suspendedRenders).toBeGreaterThan(0);
+    expect(container.textContent).not.toContain("Loading settings");
+    await act(async () => root.render(committed));
+    await act(async () => pending.reject(new Error("Current save failed")));
+    expect(notificationSwitch().disabled).toBe(false);
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Current save failed");
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenNthCalledWith(2, { notifyOnFinish: false });
+  });
+
+  it("does not let an old completion unlock the next owner's pending choice", async () => {
+    const previous = deferred<void>();
+    const current = deferred<void>();
+    onSave
+      .mockImplementationOnce(() => previous.promise)
+      .mockImplementationOnce(() => current.promise);
+    await render();
+    await act(async () => notificationSwitch().click());
+    modelScope.generation = 1;
+    await render("Billing", false, { id: "bot-b", spaceId: "space-b" });
+    await act(async () => notificationSwitch().click());
+    expect(notificationSwitch().disabled).toBe(true);
+    await act(async () => previous.reject(new Error("Old request failed")));
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(notificationSwitch().disabled).toBe(true);
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).not.toContain("Old request failed");
+    await act(async () => current.resolve());
+    expect(notificationSwitch().disabled).toBe(false);
+  });
+
+  it("ignores an old owner's failed in-flight notification after Space A-B-A", async () => {
+    const pending = deferred<void>();
+    onSave.mockImplementationOnce(() => pending.promise);
+    await render();
+    await act(async () => notificationSwitch().click());
+    modelScope.generation = 1;
+    await render("Billing", false, { id: "bot-b", spaceId: "space-b" });
+    modelScope.generation = 2;
+    await render();
+    await act(async () => pending.reject(new Error("Old owner failure")));
+    expect(container.textContent).not.toContain("Old owner failure");
+    expect(notificationSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(notificationSwitch().disabled).toBe(false);
+    await act(async () => notificationSwitch().click());
+    expect(onSave).toHaveBeenNthCalledWith(2, { notifyOnFinish: false });
+  });
 });
 
 describe("BotSettings model choices", () => {

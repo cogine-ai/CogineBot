@@ -125,6 +125,8 @@ import {
   blockText,
   copyableMobileMessageText,
   currentApiBase,
+  currentApiBaseGeneration,
+  isSpaceSelectionPending,
   loadSessionToken,
   mergeMobileSnapshot,
   messagingProviderLabel,
@@ -134,6 +136,7 @@ import {
   selectableMobileMessageText,
   selectedSpaceId,
   selectSpace,
+  subscribeSpaceSelectionPending,
   subscribeThread,
 } from "../lib/api";
 import { mobileTokens } from "../lib/appearance";
@@ -167,6 +170,13 @@ import {
   quotableMessageSegments,
   truncateQuoteExcerpt,
 } from "../lib/message-presentation";
+import type { MobileScope } from "../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
 import { native, useMobileTokens, useResolvedAppearance, useThemedStyles } from "../lib/native";
 import { iosAtLeast } from "../lib/native-controls";
 import {
@@ -198,6 +208,7 @@ import {
   loadVerifiedIntegrationsScope,
   subscribeSessionGeneration,
 } from "../lib/session";
+import { spaceRequestContext } from "../lib/space-request-context";
 import type { SendAttempt } from "../lib/thread-feedback";
 import { confirmEchoes, subscribeDelivered, useThreadFeedback } from "../lib/thread-feedback";
 import { ThreadJumpAnchor } from "../lib/thread-jump";
@@ -274,12 +285,25 @@ function speakableMessageText(message: MobileMessage): string {
 }
 
 export default function ThreadRoute() {
+  const mobileOwnerKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
+  const mobileOwner = useMemo(captureMobileScope, [mobileOwnerKey]);
+  const selectionPending = useSyncExternalStore(
+    subscribeSpaceSelectionPending,
+    isSpaceSelectionPending,
+    isSpaceSelectionPending,
+  );
   const generation = useSyncExternalStore(subscribeSessionGeneration, currentSessionGeneration);
   const ready = useSyncExternalStore(subscribeSessionGeneration, currentReadySessionGeneration);
-  const [owner, setOwner] = useState<{ key: string; generation: number } | null>(null);
+  const [owner, setOwner] = useState<{
+    key: string;
+    generation: number;
+    apiBase: string;
+    apiGeneration: number;
+  } | null>(null);
   useEffect(() => {
     if (generation !== ready) return;
-    const apiBase = currentApiBase();
+    const apiBase = mobileOwner.apiBase;
+    const apiGeneration = mobileOwner.apiGeneration;
     let cancelled = false;
     let notified = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -291,9 +315,15 @@ export default function ThreadRoute() {
             !cancelled &&
             scope &&
             generation === currentSessionGeneration() &&
-            apiBase === currentApiBase()
+            apiBase === currentApiBase() &&
+            apiGeneration === currentApiBaseGeneration()
           )
-            setOwner({ key: JSON.stringify([apiBase, scope.userId]), generation });
+            setOwner({
+              key: JSON.stringify([apiBase, scope.userId]),
+              generation,
+              apiBase,
+              apiGeneration,
+            });
         })
         .catch((error) => {
           if (!cancelled && !notified) Alert.alert(t("Could not continue"), errorText(error));
@@ -305,13 +335,25 @@ export default function ThreadRoute() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [generation, ready]);
+  }, [generation, ready, mobileOwner.apiBase, mobileOwner.apiGeneration]);
   const tokens = useMobileTokens();
   const { t } = useI18n();
   const router = useRouter();
   const focused = useIsFocused();
-  const { spaceId } = useLocalSearchParams<{ spaceId?: string | string[] }>();
+  const navigation = useNavigation();
+  const { spaceId, botId, readOnly } = useLocalSearchParams<{
+    spaceId?: string | string[];
+    botId?: string;
+    readOnly?: string;
+  }>();
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(() => selectedSpaceId());
+  const [implicitProfileSpace, setImplicitProfileSpace] = useState(() => selectedSpaceId());
+  const [defaultProfileProof, setDefaultProfileProof] = useState<{
+    scope: MobileScope;
+    botId: string;
+    readOnly: boolean;
+    spaceId: string;
+  } | null>(null);
   const [switchFailed, setSwitchFailed] = useState(false);
   const [appliedFocus, setAppliedFocus] = useState(focused);
   // Before paint, so a stacked route cannot render its thread against a space
@@ -327,6 +369,94 @@ export default function ThreadRoute() {
   if (focusSync.activeSpaceId !== activeSpaceId) setActiveSpaceId(focusSync.activeSpaceId);
   if (focusSync.switchFailed !== switchFailed) setSwitchFailed(focusSync.switchFailed);
   const request = threadSpaceRequest(spaceId, focusSync.activeSpaceId);
+  const profileReady =
+    focused &&
+    !selectionPending &&
+    generation === ready &&
+    owner?.generation === generation &&
+    owner.apiBase === mobileOwner.apiBase &&
+    owner.apiGeneration === mobileOwner.apiGeneration &&
+    mobileOwner.sessionGeneration === generation &&
+    request.action === "show" &&
+    !focusSync.switchFailed &&
+    mobileOwner.spaceId === focusSync.activeSpaceId &&
+    threadSpaceRequest(spaceId, mobileOwner.spaceId).action === "show" &&
+    isMobileScopeCurrent(mobileOwner);
+  const hasDefaultProfileProof =
+    defaultProfileProof?.scope === mobileOwner &&
+    defaultProfileProof.botId === botId &&
+    defaultProfileProof.readOnly === (readOnly === "1") &&
+    defaultProfileProof.spaceId === implicitProfileSpace;
+  const profileScope =
+    profileReady &&
+    (spaceId !== undefined ||
+      (mobileOwner.spaceId ? mobileOwner.spaceId === implicitProfileSpace : hasDefaultProfileProof))
+      ? mobileOwner
+      : null;
+
+  useEffect(() => {
+    if (
+      !profileReady ||
+      spaceId !== undefined ||
+      mobileOwner.spaceId !== null ||
+      !botId ||
+      hasDefaultProfileProof
+    )
+      return;
+    let cancelled = false;
+    const eligible = () =>
+      !cancelled &&
+      navigation.isFocused() &&
+      !isSpaceSelectionPending() &&
+      isMobileScopeCurrent(mobileOwner);
+    void (async () => {
+      try {
+        const requestContext = await spaceRequestContext(mobileOwner, eligible);
+        if (!eligible()) return;
+        const bot =
+          readOnly === "1"
+            ? (
+                await rpc<Array<{ id: string; spaceId: string }>>(
+                  "bots/listArchived",
+                  {},
+                  { requestContext },
+                )
+              ).find((row) => row.id === botId)
+            : await rpc<{ id: string; spaceId: string }>("bots/get", { botId }, { requestContext });
+        if (!eligible()) return;
+        const verifiedSpace = requestContext.headers["x-rakazo-space-id"];
+        if (
+          !bot ||
+          bot.id !== botId ||
+          !verifiedSpace ||
+          bot.spaceId !== verifiedSpace ||
+          (implicitProfileSpace !== null && implicitProfileSpace !== verifiedSpace)
+        )
+          return;
+        setImplicitProfileSpace((previous) => previous ?? verifiedSpace);
+        setDefaultProfileProof({
+          scope: mobileOwner,
+          botId,
+          readOnly: readOnly === "1",
+          spaceId: verifiedSpace,
+        });
+      } catch {
+        // A failed read cannot grant navigation; refocus can verify it again.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    profileReady,
+    spaceId,
+    mobileOwner,
+    botId,
+    readOnly,
+    hasDefaultProfileProof,
+    implicitProfileSpace,
+    navigation,
+  ]);
 
   useEffect(() => {
     if (!focused) return;
@@ -361,7 +491,9 @@ export default function ThreadRoute() {
       <>
         {owner?.generation !== generation ? <ActivityIndicator color={tokens.foreground} /> : null}
         <View style={{ flex: 1, display: owner?.generation === generation ? "flex" : "none" }}>
-          {owner ? <Thread key={owner.key} sessionEpoch={ready} /> : null}
+          {owner ? (
+            <Thread key={owner.key} sessionEpoch={ready} profileScope={profileScope} />
+          ) : null}
         </View>
       </>
     );
@@ -443,7 +575,65 @@ function createThreadHeaderStyles() {
   });
 }
 
-function Thread({ sessionEpoch }: { sessionEpoch: number }) {
+function useThreadProfileNavigation({
+  scope,
+  botId,
+  inGroup,
+  readOnly,
+  router,
+  navigation,
+}: {
+  scope: MobileScope | null;
+  botId?: string;
+  inGroup: boolean;
+  readOnly: boolean;
+  router: Pick<ReturnType<typeof useRouter>, "push">;
+  navigation: { isFocused(): boolean };
+}) {
+  const focused = useIsFocused();
+  const binding = useMemo(
+    () => (scope && focused ? { scope, botId, inGroup, readOnly } : null),
+    [scope, focused, botId, inGroup, readOnly],
+  );
+  const committedProfile = useRef<typeof binding>(null);
+  useLayoutEffect(() => {
+    committedProfile.current =
+      binding &&
+      navigation.isFocused() &&
+      !isSpaceSelectionPending() &&
+      isMobileScopeCurrent(binding.scope)
+        ? binding
+        : null;
+    return () => {
+      committedProfile.current = null;
+    };
+  }, [binding, navigation]);
+  const openBotProfile = useCallback(() => {
+    if (
+      !binding ||
+      committedProfile.current !== binding ||
+      !binding.botId ||
+      binding.inGroup ||
+      !navigation.isFocused() ||
+      isSpaceSelectionPending() ||
+      !isMobileScopeCurrent(binding.scope)
+    )
+      return;
+    router.push({
+      pathname: "/bot-profile",
+      params: { botId: binding.botId, ...(binding.readOnly ? { readOnly: "1" } : {}) },
+    });
+  }, [binding, navigation, router]);
+  return openBotProfile;
+}
+
+function Thread({
+  sessionEpoch,
+  profileScope,
+}: {
+  sessionEpoch: number;
+  profileScope: MobileScope | null;
+}) {
   const colorScheme = useResolvedAppearance();
   const tokens = mobileTokens();
   const styles = useThemedStyles(createThreadHeaderStyles);
@@ -472,6 +662,14 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
     readOnly?: string;
   }>();
   const readOnly = readOnlyParam === "1";
+  const openBotProfile = useThreadProfileNavigation({
+    scope: profileScope,
+    botId,
+    inGroup: Boolean(groupId),
+    readOnly,
+    router,
+    navigation,
+  });
   const [restoring, setRestoring] = useState(false);
   const requestedThreadId = typeof threadId === "string" && threadId ? threadId : undefined;
   const inGroup = Boolean(groupId);
@@ -838,12 +1036,9 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
       headerTitle: () => (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={!inGroup && botId ? t("Chat settings") : displayName || t("Thread")}
-          disabled={readOnly || inGroup || !botId}
-          onPress={() => {
-            if (readOnly || !botId || inGroup) return;
-            router.push({ pathname: "/bot-settings", params: { botId } });
-          }}
+          accessibilityLabel={!inGroup && botId ? t("Profile") : displayName || t("Thread")}
+          disabled={inGroup || !botId}
+          onPress={openBotProfile}
         >
           <GlassSurface style={styles.titleCapsule} fallbackStyle={styles.titleCapsuleFill}>
             {!inGroup && currentBot ? (
@@ -919,6 +1114,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
         : {}),
     });
   }, [
+    openBotProfile,
     readOnly,
     restoring,
     botId,
@@ -972,6 +1168,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   }
 
   const botActions = [
+    { text: t("Profile"), onPress: openBotProfile },
     {
       text: t("Chat settings"),
       onPress: () =>

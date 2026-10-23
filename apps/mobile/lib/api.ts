@@ -57,6 +57,7 @@ import {
   saveSessionToken,
   saveVerifiedIntegrationsScope,
   snapshotSessionToken,
+  subscribeSessionGeneration,
   tokenFromAuthResponse,
 } from "./session";
 import { clearUnsentSends } from "./thread-feedback";
@@ -72,7 +73,12 @@ export const MAX_MOBILE_RPC_RESPONSE_BYTES = 16 * 1024 * 1024;
 const SPACE_AUTH_RECOVERY_SAFE_PROCS = new Set(["spaces/list", "me"]);
 
 let cachedApiBase: string | undefined;
+let apiBaseGeneration = 0;
 const apiBaseListeners = new Set<() => void>();
+
+export function currentApiBaseGeneration(): number {
+  return apiBaseGeneration;
+}
 
 export function subscribeApiBase(listener: () => void): () => void {
   apiBaseListeners.add(listener);
@@ -82,6 +88,7 @@ export function subscribeApiBase(listener: () => void): () => void {
 }
 
 function setCachedApiBase(url: string): void {
+  if (currentApiBase() !== url) apiBaseGeneration += 1;
   if (cachedApiBase !== undefined && cachedApiBase !== url) clearUnsentSends();
   cachedApiBase = url;
   for (const listener of apiBaseListeners) listener();
@@ -97,9 +104,72 @@ export function currentSpaceSelectionGeneration(): number {
 /** Counts selectSpace attempts so one still cleaning up a rollback record
  * cannot claim the selection after a newer attempt has started. */
 let spaceSelectionRequestGeneration = 0;
+const spaceSelectionListeners = new Set<() => void>();
+let pendingSpaceSelection: {
+  requestSeq: number;
+  apiBase: string;
+  apiGeneration: number;
+  sessionGeneration: number;
+} | null = null;
+const pendingSpaceSelectionListeners = new Set<() => void>();
+
+export function isSpaceSelectionPending(): boolean {
+  const pending = pendingSpaceSelection;
+  return Boolean(
+    pending &&
+      pending.requestSeq === spaceSelectionRequestGeneration &&
+      pending.apiBase === currentApiBase() &&
+      pending.apiGeneration === currentApiBaseGeneration() &&
+      pending.sessionGeneration === currentSessionGeneration(),
+  );
+}
+
+export function subscribeSpaceSelectionPending(listener: () => void): () => void {
+  const notify = () => {
+    try {
+      listener();
+    } catch {
+      /* Observers cannot change selection receipts. */
+    }
+  };
+  pendingSpaceSelectionListeners.add(notify);
+  const stopApi = subscribeApiBase(notify);
+  const stopSession = subscribeSessionGeneration(notify);
+  return () => {
+    pendingSpaceSelectionListeners.delete(notify);
+    stopApi();
+    stopSession();
+  };
+}
+
+function publishSpaceSelectionPending() {
+  for (const listener of [...pendingSpaceSelectionListeners]) listener();
+}
+
+function invalidatePendingSpaceSelection() {
+  if (!pendingSpaceSelection) return;
+  pendingSpaceSelection = null;
+  publishSpaceSelectionPending();
+}
+
+export function spaceSelectionSeq(): number {
+  return spaceSelectionRequestGeneration;
+}
+
+export function subscribeSelectedSpace(listener: () => void): () => void {
+  spaceSelectionListeners.add(listener);
+  return () => {
+    spaceSelectionListeners.delete(listener);
+  };
+}
+
+function publishSpaceSelection(): void {
+  for (const listener of spaceSelectionListeners) listener();
+}
 
 function bumpSpaceSelectionGeneration(): void {
   spaceSelectionGeneration += 1;
+  publishSpaceSelection();
 }
 
 /** Keeps a timeout or cancel reason; turns transport and parsing detail into copy. */
@@ -151,6 +221,7 @@ export async function loadApiBase() {
   setCachedApiBase(apiBase);
   try {
     const storedSpace = (await SecureStore.getItemAsync(SPACE_KEY)) ?? "";
+    invalidatePendingSpaceSelection();
     cachedSpaceId = storedSpace;
     bumpSpaceSelectionGeneration();
     // A deletion fallback must override the now-invalid saved Space even when
@@ -162,47 +233,83 @@ export async function loadApiBase() {
   return currentApiBase();
 }
 
-export async function selectSpace(id: string) {
+export type SpaceSelectionOptions = { isCurrent?: () => boolean };
+
+export async function selectSpace(id: string, options: SpaceSelectionOptions = {}) {
+  if (options.isCurrent?.() === false) return false;
+  const apiBase = currentApiBase();
+  const apiGeneration = currentApiBaseGeneration();
+  const sessionGeneration = currentSessionGeneration();
+  const startingSpaceId = cachedSpaceId;
+  const startingSpaceGeneration = spaceSelectionGeneration;
   const requestGeneration = ++spaceSelectionRequestGeneration;
-  if (!(await clearStoredValue(SPACE_ROLLBACK_KEY))) return false;
-  // Rollback cleanup is the first await. A newer selection may have claimed
-  // the live space while this call was still deleting the rollback record.
-  if (requestGeneration !== spaceSelectionRequestGeneration) return false;
-  // Claim memory before persisting: recovery paths reconcile against the
-  // in-memory selection, so a durable write must never precede its owner.
-  const previousSpaceId = cachedSpaceId;
-  cachedSpaceId = id;
-  bumpSpaceSelectionGeneration();
-  // Generation ownership distinguishes A→B→A from "we still own this claim":
-  // an ID-only check would treat a later same-id selection as ours.
-  const claimGeneration = spaceSelectionGeneration;
+  const pending = { requestSeq: requestGeneration, apiBase, apiGeneration, sessionGeneration };
+  pendingSpaceSelection = pending;
+  publishSpaceSelectionPending();
   try {
-    await SecureStore.setItemAsync(SPACE_KEY, id);
-    // Our write may have landed stale behind a newer overlapping selection's
-    // write. Re-assert the live selection best-effort so durable converges
-    // to it; each selector heals at most once, so overlapping chains settle
-    // on the latest claim. Never delete here: a missing memory owner means
-    // another path (recovery, sign-out) owns cleanup.
-    const liveSpaceId = cachedSpaceId;
-    if (liveSpaceId && liveSpaceId !== id) {
-      await writeStoredValue(SPACE_KEY, liveSpaceId);
+    publishSpaceSelection();
+    const authorityCurrent = () =>
+      apiBase === currentApiBase() &&
+      apiGeneration === currentApiBaseGeneration() &&
+      sessionGeneration === currentSessionGeneration();
+    const canClaim = () =>
+      authorityCurrent() &&
+      options.isCurrent?.() !== false &&
+      requestGeneration === spaceSelectionRequestGeneration &&
+      startingSpaceId === cachedSpaceId &&
+      startingSpaceGeneration === spaceSelectionGeneration;
+    if (!(await clearStoredValue(SPACE_ROLLBACK_KEY))) return false;
+    // Rollback cleanup is the first await. A newer selection may have claimed
+    // the live space while this call was still deleting the rollback record.
+    if (!canClaim()) return false;
+    const token = await loadSessionToken();
+    if (!canClaim()) return false;
+    // Claim memory before persisting: recovery paths reconcile against the
+    // in-memory selection, so a durable write must never precede its owner.
+    const previousSpaceId = cachedSpaceId;
+    cachedSpaceId = id;
+    bumpSpaceSelectionGeneration();
+    // Generation ownership distinguishes A→B→A from "we still own this claim":
+    // an ID-only check would treat a later same-id selection as ours.
+    const claimGeneration = spaceSelectionGeneration;
+    try {
+      await SecureStore.setItemAsync(SPACE_KEY, id);
+      // A dispatched storage write can finish after a newer selection or sign-out.
+      if (cachedSpaceId !== id || spaceSelectionGeneration !== claimGeneration) {
+        await reconcileStoredSpace();
+      }
+    } catch {
+      // Roll back the claim and heal durable state: a concurrent recovery may
+      // have persisted the rolled-back id after reading it, which would leave
+      // restart opening a Space the live session is not using. A newer
+      // overlapping selection owns both by now, so only heal a claim we hold.
+      if (
+        authorityCurrent() &&
+        cachedSpaceId === id &&
+        spaceSelectionGeneration === claimGeneration
+      ) {
+        cachedSpaceId = previousSpaceId;
+        bumpSpaceSelectionGeneration();
+      }
+      await reconcileStoredSpace();
+      return false;
     }
-  } catch {
-    // Roll back the claim and heal durable state: a concurrent recovery may
-    // have persisted the rolled-back id after reading it, which would leave
-    // restart opening a Space the live session is not using. A newer
-    // overlapping selection owns both by now, so only heal a claim we hold.
-    if (cachedSpaceId === id && spaceSelectionGeneration === claimGeneration) {
-      cachedSpaceId = previousSpaceId;
-      bumpSpaceSelectionGeneration();
-      if (previousSpaceId) await writeStoredValue(SPACE_KEY, previousSpaceId);
+    const current = () =>
+      authorityCurrent() &&
+      options.isCurrent?.() !== false &&
+      requestGeneration === spaceSelectionRequestGeneration &&
+      claimGeneration === spaceSelectionGeneration &&
+      cachedSpaceId === id;
+    if (current()) {
+      await resumeLiveNotifications(apiBase, token, id).catch(() => undefined);
     }
-    return false;
+    return true;
+  } finally {
+    if (pendingSpaceSelection === pending) {
+      pendingSpaceSelection = null;
+      publishSpaceSelectionPending();
+    }
   }
-  await resumeLiveNotifications(currentApiBase(), await loadSessionToken(), id).catch(
-    () => undefined,
-  );
-  return true;
 }
 
 export function selectedSpaceId(): string | null {
@@ -214,6 +321,7 @@ export function selectedSpaceId(): string | null {
  * writing the replacement selection so a cleanup failure cannot leave the new
  * id beside a stale record that recoverSpaceRollback would prefer on restart. */
 export async function adoptDeletedSpaceFallback(id: string): Promise<boolean> {
+  invalidatePendingSpaceSelection();
   cachedSpaceId = id;
   bumpSpaceSelectionGeneration();
   // Neutralize any same-endpoint rollback before writing SPACE_KEY. Writing the
@@ -242,18 +350,47 @@ export async function adoptDeletedSpaceFallback(id: string): Promise<boolean> {
   return recoverySaved || (staleSelectionCleared && (await clearStoredValue(SPACE_ROLLBACK_KEY)));
 }
 
-export async function selectInitialSpace(id: string) {
+export async function selectInitialSpace(id: string, options: SpaceSelectionOptions = {}) {
+  if (options.isCurrent?.() === false) return false;
   if (selectedSpaceId()) return true;
-  return selectSpace(id);
+  return selectSpace(id, options);
 }
 
 export async function clearSpace(): Promise<boolean> {
+  const apiBase = currentApiBase();
+  const apiGeneration = currentApiBaseGeneration();
+  const sessionGeneration = currentSessionGeneration();
+  const id = cachedSpaceId;
+  const generation = spaceSelectionGeneration;
+  const sequence = spaceSelectionRequestGeneration;
   const spaceCleared = await clearStoredValue(SPACE_KEY);
   const rollbackCleared = await clearStoredValue(SPACE_ROLLBACK_KEY);
   if (!spaceCleared || !rollbackCleared) return false;
+  if (
+    apiBase !== currentApiBase() ||
+    apiGeneration !== currentApiBaseGeneration() ||
+    sessionGeneration !== currentSessionGeneration() ||
+    id !== cachedSpaceId ||
+    generation !== spaceSelectionGeneration ||
+    sequence !== spaceSelectionRequestGeneration
+  ) {
+    await reconcileStoredSpace();
+    return false;
+  }
+  invalidatePendingSpaceSelection();
   cachedSpaceId = "";
   bumpSpaceSelectionGeneration();
-  return true;
+  return reconcileStoredSpace();
+}
+
+async function reconcileStoredSpace(): Promise<boolean> {
+  for (;;) {
+    const id = cachedSpaceId;
+    const generation = spaceSelectionGeneration;
+    const saved = id ? await writeStoredValue(SPACE_KEY, id) : await clearStoredValue(SPACE_KEY);
+    if (!saved) return false;
+    if (id === cachedSpaceId && generation === spaceSelectionGeneration) return true;
+  }
 }
 
 async function clearStoredValue(key: string): Promise<boolean> {

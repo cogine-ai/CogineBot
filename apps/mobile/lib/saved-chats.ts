@@ -215,13 +215,20 @@ export function saveInbox(
   verifiedLoad: IntegrationsCacheScope,
   navigation: InboxForSave,
   me: SavedInbox["me"],
+  isCurrent: () => boolean = () => true,
 ): void {
-  if (!isIntegrationsScopeCurrent(verifiedLoad) || verifiedLoad.userId !== me.userId) return;
+  if (
+    !isCurrent() ||
+    !isIntegrationsScopeCurrent(verifiedLoad) ||
+    verifiedLoad.userId !== me.userId
+  )
+    return;
   const revision = ++inboxSaveRevision;
   const { sessionGeneration, ...verified } = verifiedLoad;
-  void saveVerifiedIntegrationsScope(sessionGeneration, verified);
+  void saveVerifiedIntegrationsScope(sessionGeneration, verified, isCurrent);
   void withSessionNamespace(verifiedLoad).then((scope) => {
-    if (scope && revision === inboxSaveRevision) writeSavedInbox(scope, navigation, me);
+    if (isCurrent() && scope && revision === inboxSaveRevision)
+      writeSavedInbox(scope, navigation, me);
   });
 }
 

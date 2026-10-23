@@ -158,6 +158,14 @@ jobs:
           path: apps/web/test-results/model-settings-*/**/a1-*.png
           if-no-files-found: error
           retention-days: 7
+      - name: Retain shared notification acceptance screenshot
+        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shared-notification-ui-screenshot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/bot-crud-*/**/a3-shared-notification-setting.png
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain successful synthetic UI screenshots
         if: inputs.upload_artifacts == true && matrix.lane == 'web' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

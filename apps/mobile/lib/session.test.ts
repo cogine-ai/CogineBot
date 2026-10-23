@@ -360,6 +360,10 @@ describe("verified integration session scope", () => {
     expect(disk.has("rakazo.integrations-scope")).toBe(false);
     expect(await loadVerifiedIntegrationsScope()).toBeNull();
   });
+  it("does not queue a verified scope for an invalidated caller", async () => {
+    await saveVerifiedIntegrationsScope(currentSessionGeneration(), scope, () => false);
+    expect(disk.has("rakazo.integrations-scope")).toBe(false);
+  });
   it("treats malformed stored scopes as misses", async () => {
     await saveVerifiedIntegrationsScope(currentSessionGeneration(), scope);
     disk.set("rakazo.integrations-scope", "{");

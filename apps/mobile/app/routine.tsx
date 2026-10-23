@@ -6,39 +6,54 @@ import {
   parseModelOptionKey,
 } from "@rakazo/core";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, ScrollView, Text, View } from "react-native";
 import { glassHeaderOptions } from "../components/glass-title";
 import { MenuPicker } from "../components/menu-picker";
 import { NativeActionButton } from "../components/native-action-button";
-import {
-  captureApiRequestContext,
-  currentApiBase,
-  currentSpaceSelectionGeneration,
-  rpc,
-} from "../lib/api";
+import type { ApiRequestContext } from "../lib/api";
+import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
+import type { MobileScope } from "../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
 import { thinkingLevelLabel } from "../lib/model-catalog";
 import { native, useMobileTokens } from "../lib/native";
 import { routineStatusLine } from "../lib/routine";
-import { currentSessionGeneration } from "../lib/session";
+import { spaceRequestContext } from "../lib/space-request-context";
 import { errorText } from "../lib/user-error";
 
-type RoutineScope = {
+type RoutineScope = MobileScope & {
   generation: number;
-  apiBase: string;
-  spaceGeneration: number;
-  sessionGeneration: number;
+  owner: { key: string };
+  verifiedSpaceId?: string;
 };
 
 export default function RoutineDetail() {
   const tokens = useMobileTokens();
   const { t } = useI18n();
-  const { botId, botName, routineId } = useLocalSearchParams<{
+  const {
+    botId,
+    botName,
+    routineId,
+    origin,
+    readOnly: readOnlyParam,
+  } = useLocalSearchParams<{
     botId?: string;
     botName?: string;
     routineId?: string;
+    origin?: string;
+    readOnly?: string;
   }>();
+  const readOnly = readOnlyParam === "1";
+  const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
+  const routeKey = JSON.stringify([botId, routineId, readOnly, scopeKey]);
+  const routeOwner = useRef({ key: routeKey });
+  if (routeOwner.current.key !== routeKey) routeOwner.current = { key: routeKey };
   const router = useRouter();
   const routeGeneration = useRef(0);
   const scopeRef = useRef<RoutineScope | null>(null);
@@ -78,21 +93,21 @@ export default function RoutineDetail() {
   function current(scope: RoutineScope): boolean {
     return (
       scopeRef.current === scope &&
+      scope.owner === routeOwner.current &&
       scope.generation === routeGeneration.current &&
-      scope.spaceGeneration === currentSpaceSelectionGeneration() &&
-      scope.sessionGeneration === currentSessionGeneration() &&
-      scope.apiBase === currentApiBase()
+      isMobileScopeCurrent(scope)
     );
   }
 
-  async function loadModels(scope: RoutineScope) {
-    if (!current(scope)) return;
+  async function loadModels(scope: RoutineScope, initialContext?: ApiRequestContext) {
+    if (readOnly || !current(scope)) return;
     const request = ++modelRequest.current;
     const eligible = () => current(scope) && request === modelRequest.current;
     setModelsLoading(true);
     setModelsError(null);
     try {
-      const requestContext = await captureApiRequestContext();
+      const requestContext =
+        initialContext ?? (await spaceRequestContext(scope, eligible, scope.verifiedSpaceId));
       if (!eligible()) return;
       const [nextCatalog, nextCredentials] = await Promise.all([
         rpc<ModelCatalogEntry[]>("models/list", {}, { requestContext }),
@@ -111,10 +126,9 @@ export default function RoutineDetail() {
 
   useEffect(() => {
     const scope: RoutineScope = {
+      ...captureMobileScope(),
       generation: ++routeGeneration.current,
-      apiBase: currentApiBase(),
-      spaceGeneration: currentSpaceSelectionGeneration(),
-      sessionGeneration: currentSessionGeneration(),
+      owner: routeOwner.current,
     };
     scopeRef.current = scope;
     setRoutine(null);
@@ -123,7 +137,7 @@ export default function RoutineDetail() {
     setCatalog([]);
     setModelsReady(false);
     setModelsError(null);
-    setModelsLoading(true);
+    setModelsLoading(!readOnly);
     setModelKey("");
     setModelRevision(undefined);
     setThinkingLevel("");
@@ -132,14 +146,15 @@ export default function RoutineDetail() {
       setLoading(false);
     } else {
       setLoading(true);
-      void loadModels(scope);
       void (async () => {
-        const requestContext = await captureApiRequestContext();
+        const requestContext = await spaceRequestContext(scope, () => current(scope));
         if (!current(scope)) return;
+        if (!readOnly) void loadModels(scope, requestContext);
         const routines = await rpc<Routine[]>("routines/list", { botId }, { requestContext });
         if (!current(scope)) return;
-        const match = routines.find((item) => item.id === routineId);
+        const match = routines.find((item) => item.id === routineId && item.botId === botId);
         if (match) {
+          scope.verifiedSpaceId = requestContext.headers["x-rakazo-space-id"];
           setRoutine(match);
           setModelKey(
             match.modelProvider && match.modelId
@@ -159,7 +174,7 @@ export default function RoutineDetail() {
     return () => {
       if (scopeRef.current === scope) scopeRef.current = null;
     };
-  }, [botId, routineId]);
+  }, [botId, routineId, readOnly, scopeKey]);
 
   const shownScope = scopeRef.current;
   async function saveModel() {
@@ -168,6 +183,7 @@ export default function RoutineDetail() {
       !scope ||
       !current(scope) ||
       !routine ||
+      readOnly ||
       saveInFlight.current ||
       !modelsReady ||
       modelsLoading ||
@@ -180,7 +196,7 @@ export default function RoutineDetail() {
     setSavingModel(true);
     setError(null);
     try {
-      const requestContext = await captureApiRequestContext();
+      const requestContext = await spaceRequestContext(scope, eligible, scope.verifiedSpaceId);
       if (!eligible()) return;
       const saved = await rpc<Routine>(
         "routines/update",
@@ -245,8 +261,8 @@ export default function RoutineDetail() {
               {routine.prompt}
             </Text>
           </View>
-          {modelsLoading ? <ActivityIndicator color={tokens.mutedForeground} /> : null}
-          {modelsError ? (
+          {!readOnly && modelsLoading ? <ActivityIndicator color={tokens.mutedForeground} /> : null}
+          {!readOnly && modelsError ? (
             <View style={{ gap: 8 }}>
               <Text style={{ color: tokens.destructive, fontSize: 15 }}>{modelsError}</Text>
               <NativeActionButton
@@ -258,7 +274,7 @@ export default function RoutineDetail() {
               />
             </View>
           ) : null}
-          {modelsReady && !modelsLoading && !modelsError ? (
+          {!readOnly && modelsReady && !modelsLoading && !modelsError ? (
             <>
               <View style={{ backgroundColor: native.fill, borderRadius: 16 }}>
                 <MenuPicker
@@ -314,16 +330,18 @@ export default function RoutineDetail() {
               />
             </>
           ) : null}
-          <NativeActionButton
-            label={t("Open conversation")}
-            onPress={() => {
-              if (!shownScope || !current(shownScope)) return;
-              router.push({
-                pathname: "/thread",
-                params: { botId: botId ?? "", name: botName ?? t("Bot") },
-              });
-            }}
-          />
+          {origin !== "profile" && !readOnly ? (
+            <NativeActionButton
+              label={t("Open conversation")}
+              onPress={() => {
+                if (!shownScope || !current(shownScope)) return;
+                router.push({
+                  pathname: "/thread",
+                  params: { botId: botId ?? "", name: botName ?? t("Bot") },
+                });
+              }}
+            />
+          ) : null}
         </>
       ) : null}
     </ScrollView>

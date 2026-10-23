@@ -562,6 +562,18 @@ describe("thread event reduction", () => {
     expect(next).toMatchObject({ cursor: 12, messages: [], olderCursor: null, run: null });
   });
 
+  it("leaves transcript state unchanged for a Bot profile metadata update", () => {
+    const initial = snapshot([message("existing", [{ kind: "text", text: "Earlier" }], 0)]);
+    const metadata = event({
+      type: "bot.updated",
+      seq: 12,
+      runId: undefined,
+      payload: { botId: "bot-1", name: "Chief", title: "", description: "" },
+    });
+    expect(isThreadSnapshotEvent(metadata)).toBe(false);
+    expect(reduceThreadSnapshot(initial, metadata)).toBe(initial);
+  });
+
   it("routes clear and terminal events through the snapshot reducer", () => {
     expect(
       isThreadSnapshotEvent(event({ type: "thread.cleared", seq: 12, runId: undefined })),

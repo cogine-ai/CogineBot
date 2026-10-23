@@ -14,10 +14,11 @@ import { presentMessageActionSheet } from "./message-action-sheet";
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
   push: vi.fn(),
-  params: { botId: "bot-1", routineId: "routine-1" },
+  params: { botId: "bot-1", routineId: "routine-1" } as Record<string, string>,
   apiBase: "https://api.example.test",
   spaceGeneration: 0,
   sessionGeneration: 0,
+  spaceId: "space-1" as string | null,
   focus: undefined as undefined | (() => (() => void) | undefined),
   blur: undefined as undefined | (() => void),
 }));
@@ -25,14 +26,32 @@ vi.mock("./api", () => ({
   rpc: state.rpc,
   currentApiBase: () => state.apiBase,
   currentSpaceSelectionGeneration: () => state.spaceGeneration,
-  selectedSpaceId: () => "space-1",
+  selectedSpaceId: () => state.spaceId,
   captureApiRequestContext: async () => ({
     apiBase: state.apiBase,
-    spaceId: "space-1",
+    spaceId: state.spaceId,
+    headers: state.spaceId ? { "x-rakazo-space-id": state.spaceId } : {},
     sessionGeneration: state.sessionGeneration,
   }),
 }));
 vi.mock("./session", () => ({ currentSessionGeneration: () => state.sessionGeneration }));
+vi.mock("./mobile-scope", () => {
+  const capture = () => ({
+    apiBase: state.apiBase,
+    apiGeneration: 0,
+    sessionGeneration: state.sessionGeneration,
+    spaceId: state.spaceId,
+    spaceGeneration: state.spaceGeneration,
+    selectionSeq: 0,
+  });
+  return {
+    captureMobileScope: capture,
+    isMobileScopeCurrent: (scope: Record<string, unknown>) =>
+      Object.entries(capture()).every(([key, value]) => scope[key] === value),
+    mobileScopeKey: () => JSON.stringify(capture()),
+    subscribeMobileScope: () => () => {},
+  };
+});
 vi.mock("expo-router", () => ({
   Stack: { Screen: () => null },
   useRouter: () => ({ back: vi.fn(), push: state.push }),
@@ -231,6 +250,7 @@ beforeEach(() => {
   state.apiBase = "https://api.example.test";
   state.spaceGeneration = 0;
   state.sessionGeneration = 0;
+  state.spaceId = "space-1";
   state.focus = undefined;
   state.blur = undefined;
   state.rpc.mockReset().mockImplementation(async (procedure: string) => {
@@ -464,6 +484,63 @@ it.each(["space", "session", "api"] as const)(
     expect(container.textContent).not.toContain("1. Server");
   },
 );
+
+it("shows a historical Routine without loading model credentials or exposing writes", async () => {
+  state.params.readOnly = "1";
+  state.params.origin = "profile";
+  await act(async () => root.render(<RoutineDetail />));
+  expect(container.textContent).toContain("Review");
+  expect(container.textContent).not.toContain("Open conversation");
+  expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
+  expect(
+    state.rpc.mock.calls.some(
+      ([procedure]) =>
+        procedure === "models/list" ||
+        procedure === "models/credentials" ||
+        procedure === "routines/update",
+    ),
+  ).toBe(false);
+});
+
+it("keeps the verified Routine Space when the server default changes before Save", async () => {
+  state.spaceId = null;
+  const normal = state.rpc.getMockImplementation()!;
+  let defaultSpace = "space-1";
+  state.rpc.mockImplementation(async (p: string, input: unknown) => {
+    if (p === "me") return { spaceId: defaultSpace };
+    if (p === "routines/update")
+      return { ...(await normal("routines/list"))[0], ...(input as object) };
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  defaultSpace = "space-2";
+  await chooseRoutineModel("model-b");
+  await act(async () => button("Save model").click());
+  const update = state.rpc.mock.calls.find(([p]) => p === "routines/update");
+  expect(update?.[2]?.requestContext.headers["x-rakazo-space-id"]).toBe("space-1");
+  expect(state.rpc.mock.calls.filter(([p]) => p === "me")).toHaveLength(1);
+  expect(state.spaceId).toBeNull();
+});
+
+it("retains a pending write gate and fences a previous editable handler when the same Routine becomes readonly", async () => {
+  const saving = deferred<unknown>();
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((p: string, input: unknown) =>
+    p === "routines/update" ? saving.promise : normal(p, input),
+  );
+  await act(async () => root.render(<RoutineDetail />));
+  await chooseRoutineModel("model-b");
+  await act(async () => button("Save model").click());
+  state.params = { ...state.params, readOnly: "1", origin: "profile" };
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () =>
+    saving.resolve({ ...(await normal("routines/list"))[0], prompt: "Old saved prompt" }),
+  );
+  expect(container.textContent).toContain("Review");
+  expect(container.textContent).not.toContain("Old saved prompt");
+  expect(container.textContent).not.toContain("Save model");
+  expect(state.rpc.mock.calls.filter(([p]) => p === "routines/update")).toHaveLength(1);
+});
 
 it("keeps an already dispatched backup write locked while acknowledging a connection save", async () => {
   const normal = state.rpc.getMockImplementation()!;

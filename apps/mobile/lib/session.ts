@@ -100,17 +100,18 @@ export async function loadVerifiedIntegrationsScope(): Promise<VerifiedIntegrati
 export function saveVerifiedIntegrationsScope(
   generation: number,
   scope: VerifiedIntegrationsScope,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   return enqueueScopeWrite(async () => {
-    if (generation !== sessionGeneration) return;
+    if (!isCurrent() || generation !== sessionGeneration) return;
     const token = await snapshotSessionToken();
-    if (!token.ok || !token.value || generation !== sessionGeneration) return;
+    if (!isCurrent() || !token.ok || !token.value || generation !== sessionGeneration) return;
     try {
       await SecureStore.setItemAsync(
         INTEGRATIONS_SCOPE_KEY,
         JSON.stringify({ ...scope, token: token.value }),
       );
-      if (generation === sessionGeneration) scopeInvalidated = false;
+      if (isCurrent() && generation === sessionGeneration) scopeInvalidated = false;
     } catch {
       // Verified scope persistence is optional.
     }
