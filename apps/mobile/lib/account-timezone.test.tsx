@@ -5,7 +5,12 @@ import { act, createElement, Suspense, startTransition } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { adoptDeviceTimezone } from "./account-timezone";
+import {
+  adoptDeviceTimezone,
+  deviceTimezone,
+  timezoneOptions,
+  validTimezone,
+} from "./account-timezone";
 import { AccountTimezone } from "./account-timezone-settings";
 import type { MobileMe } from "./api";
 
@@ -112,6 +117,24 @@ describe("native account timezone", () => {
     container.remove();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it.each([undefined, null, 42, { toString: () => "UTC" }, "", "+05:30", "not/a-zone"])(
+    "rejects an unknown or invalid native timezone value: %s",
+    (zone) => {
+      expect(validTimezone(zone)).toBe(false);
+    },
+  );
+
+  it("preserves native unavailable-zone and saved-alias picker fallbacks", () => {
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({
+      timeZone: "",
+    } as Intl.ResolvedDateTimeFormatOptions);
+    vi.spyOn(Intl, "supportedValuesOf").mockImplementation(() => {
+      throw new RangeError("unavailable");
+    });
+    expect(deviceTimezone()).toBeUndefined();
+    expect(timezoneOptions("Asia/Calcutta")).toEqual(["Asia/Calcutta", "UTC"]);
   });
 
   it("adopts the actual valid device zone only for an unset authenticated account", async () => {
