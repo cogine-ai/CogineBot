@@ -12,6 +12,11 @@ import type {
   ThreadMessage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
+import {
+  CreateBotInput,
+  isBotCreationSpawnKey,
+  normalizeCreateBotProfile,
+} from "@rakazo/contracts";
 import { captureScreenshot, openNewBot } from "./helpers";
 
 // Exercise the real app with synthetic HTTP contracts; no API, database or model is contacted.
@@ -117,11 +122,14 @@ async function mockChat(page: Page) {
     orders: [] as string[][],
     threadReads: [] as Array<{ botId: string; spaceId: string }>,
     listRequests: 0,
+    botListRequests: 0,
+    archivedBotListRequests: 0,
     bootstrapRequests: 0,
     connectionRequests: 0,
+    creations: [] as Array<{ input: CreateBotInput; spaceId: string }>,
     list: null as null | ((route: Route, snapshot: SpaceNavigation) => Promise<void>),
     bootstrap: null as null | ((route: Route, snapshot: AppBootstrap) => Promise<void>),
-    onboarding: null as null | ((route: Route) => Promise<void>),
+    create: null as null | ((route: Route, created: Bot) => Promise<void>),
     thread: null as null | ((route: Route, snapshot: ThreadSnapshot) => Promise<void>),
     send: null as null | ((route: Route, input: Record<string, unknown>) => Promise<void>),
     reorder: null as null | ((route: Route, botIds: string[]) => Promise<void>),
@@ -145,7 +153,7 @@ async function mockChat(page: Page) {
     avatarStyle: "organic",
     billingEnabled: false,
   });
-  const other = bot("other-chief", "Other Chief", "space-other");
+  const otherBots = [bot("other-chief", "Other Chief", "space-other")];
   const spaces = (): Space[] => [
     {
       id: "space-primary",
@@ -166,7 +174,7 @@ async function mockChat(page: Page) {
       hasContent: true,
       canRename: true,
       canDelete: true,
-      bots: [other],
+      bots: otherBots,
       groups: [],
       externalConversations: [],
       botSections: [],
@@ -176,7 +184,7 @@ async function mockChat(page: Page) {
     current: {
       id: spaceId,
       name: spaceId === "space-other" ? "Other Space" : "Primary Space",
-      bots: spaceId === "space-other" ? [other] : state.bots,
+      bots: spaceId === "space-other" ? otherBots : state.bots,
       groups: spaceId === "space-other" ? [] : state.groups,
       externalConversations: [],
       botSections: [],
@@ -305,13 +313,35 @@ async function mockChat(page: Page) {
       return json(route, { ok: true });
     }
     if (path === "bots/create") {
-      const created = bot("created-bot", input.name);
-      state.bots = [created, ...state.bots];
-      return json(route, created);
+      const draft = CreateBotInput.parse(request.postDataJSON().json);
+      state.creations.push({ input: draft, spaceId });
+      const created: Bot = {
+        ...bot("created-bot", draft.name, spaceId),
+        ...normalizeCreateBotProfile(draft),
+        notifyOnFinish: draft.notifyOnFinish,
+        computerMode: draft.computerMode,
+        color: draft.color ?? "#E4C05D",
+        spawnKey: draft.spawnKey ?? null,
+      };
+      if (spaceId === "space-other") otherBots.unshift(created);
+      else state.bots = [created, ...state.bots];
+      return state.create ? state.create(route, created) : json(route, created);
     }
-    if (path === "onboarding/start") {
-      if (state.onboarding) return state.onboarding(route);
-      return json(route, { started: true });
+    if (path === "bots/list") {
+      state.botListRequests += 1;
+      const bots = spaceId === "space-other" ? otherBots : state.bots;
+      return json(
+        route,
+        bots.filter((row) => row.archivedAt === null),
+      );
+    }
+    if (path === "bots/listArchived") {
+      state.archivedBotListRequests += 1;
+      const bots = spaceId === "space-other" ? otherBots : state.bots;
+      return json(
+        route,
+        bots.filter((row) => row.archivedAt !== null),
+      );
     }
     if (path === "connections/list") {
       state.connectionRequests += 1;
@@ -323,7 +353,6 @@ async function mockChat(page: Page) {
     if (path === "memory/providerConfig") return json(route, null);
     if (path === "computer/screenUrl") return json(route, { url: null });
     const empty = [
-      "bots/listArchived",
       "groups/listArchived",
       "agentSkills/catalog",
       "agentSkills/list",
@@ -2464,7 +2493,7 @@ test("a newer explicit order is saved after an older order fails without reapply
 });
 
 for (const refreshFails of [false, true]) {
-  test(`creating a Bot rejects an older roster during slow onboarding, refresh ${refreshFails ? "fails" : "succeeds"}`, async ({
+  test(`a creation receipt rejects an older roster and keeps its Bot when a later refresh ${refreshFails ? "fails" : "succeeds"}`, async ({
     page,
   }, testInfo) => {
     const { state, errors } = await mockChat(page);
@@ -2472,95 +2501,159 @@ for (const refreshFails of [false, true]) {
     const listStarted = deferred();
     const listDelivered = deferred();
     const releaseList = deferred();
-    const onboardingStarted = deferred();
-    const releaseOnboarding = deferred();
+    const createCommitted = deferred();
+    const releaseCreate = deferred();
+    const refreshFinished = deferred();
+    let refreshAttempts = 0;
     let captured = false;
     state.list = async (route, snapshot) => {
       if (!captured) {
         captured = true;
+        expect(snapshot.current.bots.some((row) => row.id === "created-bot")).toBe(false);
         listStarted.resolve();
         await releaseList.promise;
         await json(route, snapshot);
         listDelivered.resolve();
         return;
       }
-      if (refreshFails) return route.abort("failed");
-      return json(route, snapshot);
+      refreshAttempts += 1;
+      if (refreshFails) await route.abort("failed");
+      else await json(route, snapshot);
+      refreshFinished.resolve();
     };
-    state.onboarding = async (route) => {
-      onboardingStarted.resolve();
-      await releaseOnboarding.promise;
-      return json(route, { started: true });
+    state.create = async (route, created) => {
+      expect(state.bots.some((row) => row.id === created.id)).toBe(true);
+      createCommitted.resolve();
+      await releaseCreate.promise;
+      await json(route, created);
     };
-    await refresh(page, state, true);
-    await listStarted.promise;
-    await openNewBot(page);
-    const form = page.getByTestId("create-bot-form");
-    await form.locator("label:has-text('Name') input").fill("Created Companion");
-    await form.getByRole("button", { name: "Create", exact: true }).click();
-    await onboardingStarted.promise;
-    await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
-    releaseList.resolve();
-    await listDelivered.promise;
-    await painted(page);
-    await expect(page.locator('[data-roster-bot-id="created-bot"]')).toBeVisible({ timeout: 3000 });
-    await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
-    releaseOnboarding.resolve();
-    await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "closed");
-    await expect(page.locator('[data-roster-bot-id="created-bot"]')).toBeVisible({ timeout: 3000 });
-    await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
-    await captureScreenshot(
-      page,
-      testInfo,
-      `created-bot-refresh-${refreshFails ? "failed" : "ok"}`,
-    );
-    expect(errors).toEqual([]);
+    try {
+      await refresh(page, state, true);
+      await listStarted.promise;
+      await openNewBot(page);
+      const form = page.getByTestId("create-bot-form");
+      await form.locator("label:has-text('Name') input").fill("Created Companion");
+      await form.getByRole("button", { name: "Create", exact: true }).click();
+      await createCommitted.promise;
+      expect(state.creations).toHaveLength(1);
+      const creation = state.creations[0]!;
+      expect(creation.spaceId).toBe("space-primary");
+      expect(isBotCreationSpawnKey(creation.input.spawnKey)).toBe(true);
+      await expect(page).toHaveURL(/\/app\/chief$/);
+      releaseCreate.resolve();
+      await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
+      await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "closed");
+      releaseList.resolve();
+      await listDelivered.promise;
+      await painted(page);
+      await expect(page.locator('[data-roster-bot-id="created-bot"]')).toBeVisible({
+        timeout: 3000,
+      });
+      await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
+
+      // Creation publishes its receipt directly; a later focus refresh is a separate read.
+      const readOutcome = refreshFails
+        ? page
+            .waitForEvent("requestfailed", {
+              predicate: (request) => new URL(request.url()).pathname === "/rpc/spaces/list",
+            })
+            .then((request) => expect(request.failure()?.errorText).toBeTruthy())
+        : page
+            .waitForResponse((response) => new URL(response.url()).pathname === "/rpc/spaces/list")
+            .then(async (response) => {
+              expect(response.ok()).toBe(true);
+              const snapshot = (await response.json()) as { json: SpaceNavigation };
+              expect(snapshot.json.current.bots.some((row) => row.id === "created-bot")).toBe(true);
+            });
+      await refresh(page, state, true);
+      await refreshFinished.promise;
+      await readOutcome;
+      await painted(page);
+      expect(refreshAttempts).toBe(1);
+      await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "closed");
+      await expect(page.locator('[data-roster-bot-id="created-bot"]')).toBeVisible({
+        timeout: 3000,
+      });
+      await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
+      expect(state.botListRequests).toBe(0);
+      expect(state.archivedBotListRequests).toBe(0);
+      await captureScreenshot(
+        page,
+        testInfo,
+        `created-bot-refresh-${refreshFails ? "failed" : "ok"}`,
+      );
+      expect(errors).toEqual([]);
+    } finally {
+      releaseCreate.resolve();
+      releaseList.resolve();
+    }
   });
 }
 
-test("switching Space during post-create onboarding leaves the other Space isolated", async ({
+test("a committed creation without its receipt leaves the other Space isolated after reload", async ({
   page,
 }) => {
   const { state, errors } = await mockChat(page);
   await ready(page);
-  const onboardingStarted = deferred();
-  const releaseOnboarding = deferred();
-  state.onboarding = async (route) => {
-    onboardingStarted.resolve();
-    await releaseOnboarding.promise;
-    return json(route, { started: true });
+  const createCommitted = deferred();
+  const releaseCreate = deferred();
+  const createFinished = deferred();
+  state.create = async (route, created) => {
+    expect(created.spaceId).toBe("space-primary");
+    expect(state.bots.some((row) => row.id === created.id)).toBe(true);
+    createCommitted.resolve();
+    await releaseCreate.promise;
+    // Cross-Space navigation reloads the document and abandons its pending receipt.
+    await route.abort("aborted");
+    createFinished.resolve();
   };
-  await openNewBot(page);
-  const form = page.getByTestId("create-bot-form");
-  await form.locator("label:has-text('Name') input").fill("Created Companion");
-  await form.getByRole("button", { name: "Create", exact: true }).click();
-  await onboardingStarted.promise;
-  await page.getByTestId("space-menu-trigger").click();
-  const spaceMenu = page.locator('[data-slot="popover-content"]').filter({
-    has: page.getByTestId("create-new-space"),
-  });
-  await spaceMenu.getByRole("button", { name: "Other Space", exact: true }).click();
-  releaseOnboarding.resolve();
-  await expect(page).toHaveURL(/\/app\/other-chief$/);
-  await expect(page.getByTestId("sidebar-current-space")).toHaveText("Other Space");
-  await expect(
-    page.getByRole("combobox", { name: "Message Other Chief", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.locator('[data-sidebar-group^="space:space-other:"] [data-roster-bot-id="created-bot"]'),
-  ).toHaveCount(0);
-  await expect(
-    page.locator('[data-sidebar-group^="space:space-primary:"] [data-roster-bot-id="created-bot"]'),
-  ).toHaveCount(1);
-  await expect
-    .poll(() =>
-      state.threadReads.some(
-        (read) => read.botId === "other-chief" && read.spaceId === "space-other",
+  try {
+    await openNewBot(page);
+    const form = page.getByTestId("create-bot-form");
+    await form.locator("label:has-text('Name') input").fill("Created Companion");
+    await form.getByRole("button", { name: "Create", exact: true }).click();
+    await createCommitted.promise;
+    expect(state.creations).toHaveLength(1);
+    const creation = state.creations[0]!;
+    expect(creation.spaceId).toBe("space-primary");
+    expect(isBotCreationSpawnKey(creation.input.spawnKey)).toBe(true);
+    await expect(page).toHaveURL(/\/app\/chief$/);
+    await page.getByTestId("space-menu-trigger").click();
+    const spaceMenu = page.locator('[data-slot="popover-content"]').filter({
+      has: page.getByTestId("create-new-space"),
+    });
+    await spaceMenu.getByRole("button", { name: "Other Space", exact: true }).click();
+    await expect(page).toHaveURL(/\/app\/other-chief$/);
+    await expect(page.getByTestId("sidebar-current-space")).toHaveText("Other Space");
+    await expect(
+      page.getByRole("combobox", { name: "Message Other Chief", exact: true }),
+    ).toBeVisible();
+    releaseCreate.resolve();
+    await createFinished.promise;
+    await painted(page);
+    await expect(page).toHaveURL(/\/app\/other-chief$/);
+    await expect(
+      page.locator('[data-sidebar-group^="space:space-other:"] [data-roster-bot-id="created-bot"]'),
+    ).toHaveCount(0);
+    await expect(
+      page.locator(
+        '[data-sidebar-group^="space:space-primary:"] [data-roster-bot-id="created-bot"]',
       ),
-    )
-    .toBe(true);
-  const composer = page.getByRole("combobox", { name: "Message Other Chief", exact: true });
-  await composer.fill("@Created");
-  await expect(page.getByTestId("mention-picker")).toHaveCount(0);
-  expect(errors).toEqual([]);
+    ).toHaveCount(1);
+    await expect
+      .poll(() =>
+        state.threadReads.some(
+          (read) => read.botId === "other-chief" && read.spaceId === "space-other",
+        ),
+      )
+      .toBe(true);
+    const composer = page.getByRole("combobox", { name: "Message Other Chief", exact: true });
+    await composer.fill("@Created");
+    await expect(page.getByTestId("mention-picker")).toHaveCount(0);
+    expect(state.botListRequests).toBe(0);
+    expect(state.archivedBotListRequests).toBe(0);
+    expect(errors).toEqual([]);
+  } finally {
+    releaseCreate.resolve();
+  }
 });
