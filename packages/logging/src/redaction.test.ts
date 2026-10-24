@@ -224,6 +224,46 @@ describe("redaction", () => {
     expect(redactSensitiveText(text)).toBe(text);
   });
 
+  it.each(
+    ["gsk_", "xai-", "hf_", "csk-"].flatMap((prefix) =>
+      [8, 43, 48, 52].map((length) => [prefix, length] as const),
+    ),
+  )("redacts a complete bare %s candidate with %s tail characters", (prefix, length) => {
+    for (const suffix of ["A", "-", "_"]) {
+      const key = `${prefix}${"SYNTHETICPROVIDERONLY".padEnd(length, "A").slice(0, length - 1)}${suffix}`;
+      for (const text of [
+        key,
+        `Provider diagnostic (${key}), retry later.`,
+        `Returned ${key}\nRetry-After: 30`,
+        `界${key}😀`,
+        `${key} ${key}`,
+        JSON.stringify({ error: { message: `Provider returned (${key}).` } }),
+        JSON.stringify({
+          response_body: JSON.stringify({ message: `Provider returned (${key}).` }),
+        }),
+      ]) {
+        const cleaned = redactSensitiveText(text);
+        expect(cleaned).not.toContain(prefix);
+        expect(cleaned).toContain("[Redacted]");
+        expect(redactSensitiveText(cleaned)).toBe(cleaned);
+      }
+      expect(redactSensitiveText(`Provider diagnostic (${key}), retry later.`)).toBe(
+        "Provider diagnostic ([Redacted]), retry later.",
+      );
+    }
+  });
+
+  it.each(["gsk_", "xai-", "hf_", "csk-"])(
+    "preserves short %s placeholders and embedded names while concealing long candidates",
+    (prefix) => {
+      const normal = `${prefix} ${prefix}demo ${prefix}short ${prefix}1234567 prefix${prefix}SYNTHETICPROVIDERONLY prefix_${prefix}SYNTHETICPROVIDERONLY prefix-${prefix}SYNTHETICPROVIDERONLY`;
+      expect(redactSensitiveText(normal)).toBe(normal);
+      expect(
+        redactSensitiveText(`A long placeholder ${prefix}placeholder_name is concealed.`),
+      ).toBe("A long placeholder [Redacted] is concealed.");
+    },
+  );
+
   it.each(["sk_live", "sk_test", "rk_live", "rk_test"])(
     "redacts bare %s payment keys",
     (prefix) => {

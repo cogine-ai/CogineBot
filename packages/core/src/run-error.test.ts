@@ -99,6 +99,26 @@ describe("run failure diagnostics", () => {
     },
   );
 
+  it.each(
+    ["gsk_", "xai-", "hf_", "csk-"].flatMap((prefix) =>
+      [8, 43, 48, 52].map((length) => [prefix, length] as const),
+    ),
+  )("cleans a bare %s candidate with %s tail characters before clipping", (prefix, length) => {
+    const key = `${prefix}${"SYNTHETICPROVIDERONLY".padEnd(length - 1, "A").slice(0, length - 1)}_`;
+    for (const prefixBytes of [350, 8100, 8140, 8180, 8200]) {
+      const raw = `${"界".repeat(Math.floor(prefixBytes / 3))} (${key})\n${"😀".repeat(200)}`;
+      for (const diagnostic of [
+        raw,
+        JSON.stringify({ response_body: JSON.stringify({ message: raw }) }),
+      ]) {
+        const cleaned = sanitizeRunErrorDetails(diagnostic);
+        expect(cleaned).not.toContain(prefix);
+        expect(new TextEncoder().encode(cleaned).length).toBeLessThanOrEqual(8192);
+        expect(sanitizeRunErrorDetails(cleaned)).toBe(cleaned);
+      }
+    }
+  });
+
   it.each([
     [
       '{"error":{"message":"Insufficient credits","code":402,"metadata":{"provider_name":"OpenAI"}}}',
