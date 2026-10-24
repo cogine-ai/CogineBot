@@ -18,6 +18,11 @@
       "types": "./src/axiom.ts",
       "development": "./src/axiom.ts",
       "default": "./src/axiom.ts"
+    },
+    "./redaction": {
+      "types": "./src/redaction.ts",
+      "development": "./src/redaction.ts",
+      "default": "./src/redaction.ts"
     }
   },
   "scripts": {

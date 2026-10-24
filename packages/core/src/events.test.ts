@@ -142,6 +142,19 @@ describe("reduceLiveMessageBlocks", () => {
 });
 
 describe("runFailureError", () => {
+  it("preserves full diagnostic text only for an explicit details consumer", () => {
+    const details = `  ${"x".repeat(500)}  `;
+    const event = { type: "run.failed", payload: { error: details } };
+    expect(runFailureError(event, { preserveDetails: true })).toBe("x".repeat(500));
+    expect(runFailureError(event)).toBe(`${"x".repeat(300)}…`);
+    expect(
+      runFailureError(
+        { type: "run.completed", payload: { error: details } },
+        { preserveDetails: true },
+      ),
+    ).toBeNull();
+  });
+
   it("returns the error only for run.failed with a real message", () => {
     expect(runFailureError({ type: "run.failed", payload: { error: "provider missing" } })).toBe(
       "provider missing",

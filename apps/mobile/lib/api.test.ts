@@ -57,6 +57,12 @@ import {
   writeIntegrationsCache,
 } from "./integrations-cache.js";
 import { resumeLiveNotifications } from "./live-notifications.js";
+import type { RejectedDraftContent } from "./rejected-session-draft";
+import {
+  discardRejectedSessionDraft,
+  registerRejectedSessionDraftCapture,
+  restoreRejectedSessionDraft,
+} from "./rejected-session-draft";
 import * as SessionModule from "./session.js";
 import {
   clearSessionToken,
@@ -2213,6 +2219,634 @@ describe("mobile API authentication", () => {
     expect(storage.get("rakazo.space_id")).toBe("space-a");
   });
 
+  it("restores a rejected editor only after a fresh same-owner Me proof", async () => {
+    const storage = new Map<string, string>();
+    mockSecureStore(storage);
+    await loadApiBase();
+    await saveSessionToken("synthetic-rejected-editor-token");
+    const scope = {
+      apiBase: currentApiBase(),
+      userId: "draft-owner",
+      spaceId: "draft-space",
+      targetKind: "bot" as const,
+      targetId: "bot-a",
+      threadId: "thread-a",
+    };
+    const generation = SessionModule.currentSessionGeneration();
+    const content: RejectedDraftContent = {
+      text: "Unsent editor text",
+      attachments: [{ name: "notes.txt", mimeType: "text/plain", contentBase64: "ZmlsZQ==" }],
+    };
+    const stop = registerRejectedSessionDraftCapture(() => ({
+      scope,
+      sessionGeneration: generation,
+      content,
+    }));
+    const restored = vi.fn(() => true);
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")),
+      );
+      await expect(rpc("me")).rejects.toThrow("Unauthorized");
+      expect(await SessionModule.loadSessionToken()).toBe("");
+      await saveSessionToken("synthetic-restored-editor-token");
+      await SessionModule.saveVerifiedIntegrationsScope(SessionModule.currentSessionGeneration(), {
+        apiBase: scope.apiBase,
+        userId: scope.userId,
+        spaceId: scope.spaceId,
+        selectionId: null,
+      });
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(false);
+      expect(restored).not.toHaveBeenCalled();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } })),
+      );
+      await rpc("me");
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(true);
+      expect(restored).toHaveBeenCalledWith(content);
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(false);
+      expect(restored).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+      discardRejectedSessionDraft();
+    }
+  });
+
+  it("discards a rejected editor after a different authenticated Me owner even if the old owner returns", async () => {
+    const storage = new Map<string, string>();
+    mockSecureStore(storage);
+    await loadApiBase();
+    await saveSessionToken("synthetic-rejected-editor-token");
+    const scope = {
+      apiBase: currentApiBase(),
+      userId: "draft-owner",
+      spaceId: "draft-space",
+      targetKind: "bot" as const,
+      targetId: "bot-a",
+      threadId: "thread-a",
+    };
+    const generation = SessionModule.currentSessionGeneration();
+    const stop = registerRejectedSessionDraftCapture(() => ({
+      scope,
+      sessionGeneration: generation,
+      content: { text: "Owner-only draft", attachments: [] },
+    }));
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")),
+      );
+      await expect(rpc("me")).rejects.toThrow();
+      await saveSessionToken("synthetic-different-owner-token");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          jsonResponse({ json: { userId: "different-owner", spaceId: scope.spaceId } }),
+        ),
+      );
+      await rpc("me");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } })),
+      );
+      await rpc("me");
+      const restored = vi.fn(() => true);
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(false);
+      expect(restored).not.toHaveBeenCalled();
+    } finally {
+      stop();
+      discardRejectedSessionDraft();
+    }
+  });
+
+  it("discards a rejected editor across an actual API A-to-B-to-A reload without a session change", async () => {
+    const storage = new Map<string, string>();
+    mockSecureStore(storage);
+    await loadApiBase();
+    await saveSessionToken("synthetic-rejected-editor-token");
+    const scope = {
+      apiBase: currentApiBase(),
+      userId: "draft-owner",
+      spaceId: "draft-space",
+      targetKind: "bot" as const,
+      targetId: "bot-a",
+      threadId: "thread-a",
+    };
+    const generation = SessionModule.currentSessionGeneration();
+    const stop = registerRejectedSessionDraftCapture(() => ({
+      scope,
+      sessionGeneration: generation,
+      content: { text: "API-owned draft", attachments: [] },
+    }));
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")),
+      );
+      await expect(rpc("me")).rejects.toThrow();
+      await saveSessionToken("synthetic-restored-editor-token");
+      const authenticated = SessionModule.currentSessionGeneration();
+      storage.set("rakazo.api_base", "https://replacement.example.test");
+      await loadApiBase();
+      storage.delete("rakazo.api_base");
+      await loadApiBase();
+      expect(currentApiBase()).toBe(scope.apiBase);
+      expect(SessionModule.currentSessionGeneration()).toBe(authenticated);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } })),
+      );
+      await rpc("me");
+      const restored = vi.fn(() => true);
+      expect(restoreRejectedSessionDraft(scope, authenticated, restored)).toBe(false);
+      expect(restored).not.toHaveBeenCalled();
+    } finally {
+      stop();
+      discardRejectedSessionDraft();
+    }
+  });
+
+  it("does not verify a rejected editor from a Me response abandoned across automatic Space selection", async () => {
+    const storage = new Map<string, string>();
+    mockSecureStore(storage);
+    await loadApiBase();
+    await saveSessionToken("synthetic-rejected-editor-token");
+    const scope = {
+      apiBase: currentApiBase(),
+      userId: "draft-owner",
+      spaceId: "draft-space",
+      targetKind: "bot" as const,
+      targetId: "bot-a",
+      threadId: "thread-a",
+    };
+    const generation = SessionModule.currentSessionGeneration();
+    const stop = registerRejectedSessionDraftCapture(() => ({
+      scope,
+      sessionGeneration: generation,
+      content: { text: "Still unsent", attachments: [] },
+    }));
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")),
+      );
+      await expect(rpc("me")).rejects.toThrow();
+      await saveSessionToken("synthetic-restored-editor-token");
+      const pendingFetch = deferredFetch();
+      vi.stubGlobal("fetch", pendingFetch.fetchMock);
+      const pending = rpc("me");
+      await pendingFetch.fetchStarted;
+      await selectInitialSpace("temporary-space");
+      pendingFetch.resolveFetch(
+        jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } }),
+      );
+      await pending;
+      const restored = vi.fn(() => true);
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(false);
+      expect(restored).not.toHaveBeenCalled();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } })),
+      );
+      await selectSpace(scope.spaceId);
+      await rpc("me");
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(true);
+    } finally {
+      stop();
+      discardRejectedSessionDraft();
+    }
+  });
+
+  it.each([
+    "automatic default",
+    "explicit other",
+    "explicit clear",
+    "abandoned selection",
+  ] as const)(
+    "applies rejected-editor ownership after post-auth %s Space navigation",
+    async (navigation) => {
+      const storage = new Map<string, string>();
+      mockSecureStore(storage);
+      await loadApiBase();
+      await saveSessionToken("synthetic-rejected-editor-session");
+      await selectSpace("space-a");
+      const scope = {
+        apiBase: currentApiBase(),
+        userId: "draft-owner",
+        spaceId: "space-a",
+        targetKind: "bot" as const,
+        targetId: "bot-a",
+        threadId: "thread-a",
+      };
+      const generation = SessionModule.currentSessionGeneration();
+      const stop = registerRejectedSessionDraftCapture(() =>
+        selectedSpaceId() === scope.spaceId
+          ? {
+              scope,
+              sessionGeneration: generation,
+              content: { text: "Private editor before selected-Space rejection", attachments: [] },
+            }
+          : null,
+      );
+      try {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")),
+        );
+        await expect(rpc("me")).rejects.toMatchObject({ status: 401 });
+        await saveSessionToken("synthetic-restored-editor-session");
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () =>
+            jsonResponse({ json: { userId: scope.userId, spaceId: "default-space" } }),
+          ),
+        );
+        await rpc("me");
+        await expect(selectInitialSpace("default-space")).resolves.toBe(true);
+        if (navigation === "explicit other") await selectSpace("space-b");
+        if (navigation === "explicit clear") await clearSpace();
+        if (navigation === "abandoned selection") {
+          await expect(selectSpace("space-b", { isCurrent: () => false })).resolves.toBe(false);
+        }
+        await selectSpace(scope.spaceId);
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () =>
+            jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } }),
+          ),
+        );
+        await rpc("me");
+        const restored = vi.fn(() => true);
+        const permitted =
+          navigation === "automatic default" || navigation === "abandoned selection";
+        expect(
+          restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+        ).toBe(permitted);
+        expect(restored).toHaveBeenCalledTimes(permitted ? 1 : 0);
+      } finally {
+        stop();
+        discardRejectedSessionDraft();
+      }
+    },
+  );
+
+  it.each(["sign-in", "sign-out", "API ABA"] as const)(
+    "does not navigate for an old rejected session after %s during its credential wipe",
+    async (boundary) => {
+      const store = new Map<string, string>();
+      mockSecureStore(store);
+      await loadApiBase();
+      await saveSessionToken("synthetic-old-rejected-session");
+      let finishWipe!: () => void;
+      let held = false;
+      vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+        if (key === "rakazo.session_token" && !held) {
+          held = true;
+          await new Promise<void>((resolve) => {
+            finishWipe = resolve;
+          });
+        }
+        store.delete(key);
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) =>
+          url.endsWith("/rpc/me")
+            ? rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")
+            : url.endsWith("/api/auth/sign-in/email")
+              ? jsonResponse({ token: "synthetic-new-session" })
+              : jsonResponse({ json: null }),
+        ),
+      );
+      const rejected = vi.fn();
+      const stop = subscribeSessionRejected(rejected);
+      const pending = rpc("me").catch((error) => error);
+      let boundaryTask: Promise<unknown> | undefined;
+      try {
+        await vi.waitFor(() => expect(finishWipe).toBeTypeOf("function"));
+        const rejectedGeneration = SessionModule.currentSessionGeneration();
+        if (boundary === "sign-in") {
+          boundaryTask = signIn("draft@example.test", "synthetic-password");
+          await vi.waitFor(() =>
+            expect(SessionModule.currentSessionGeneration()).toBeGreaterThan(rejectedGeneration),
+          );
+        } else if (boundary === "sign-out") {
+          boundaryTask = signOut();
+          await vi.waitFor(() =>
+            expect(SessionModule.currentSessionGeneration()).toBeGreaterThan(rejectedGeneration),
+          );
+        } else {
+          const current = SessionModule.currentSessionGeneration();
+          store.set("rakazo.api_base", "https://temporary.example.test");
+          await loadApiBase();
+          store.delete("rakazo.api_base");
+          await loadApiBase();
+          expect(SessionModule.currentSessionGeneration()).toBe(current);
+        }
+        finishWipe();
+        await boundaryTask;
+        await expect(pending).resolves.toMatchObject({ status: 401 });
+        expect(rejected).not.toHaveBeenCalled();
+        if (boundary === "sign-in")
+          expect(await SessionModule.loadSessionToken()).toBe("synthetic-new-session");
+      } finally {
+        finishWipe?.();
+        await Promise.allSettled([pending, ...(boundaryTask ? [boundaryTask] : [])]);
+        stop();
+      }
+    },
+  );
+
+  it("still reports rejected-session navigation when credential storage cannot be cleared", async () => {
+    const store = new Map<string, string>();
+    mockSecureStore(store);
+    await loadApiBase();
+    await saveSessionToken("synthetic-rejected-session");
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      if (key === "rakazo.session_token") throw new Error("Synthetic storage locked");
+      store.delete(key);
+    });
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      if (key === "rakazo.session_token" && value === "")
+        throw new Error("Synthetic storage locked");
+      store.set(key, value);
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")),
+    );
+    const rejected = vi.fn();
+    const stop = subscribeSessionRejected(rejected);
+    try {
+      await expect(rpc("me")).rejects.toMatchObject({ status: 401 });
+      expect(rejected).toHaveBeenCalledOnce();
+      expect(await SessionModule.loadSessionToken()).toBe("");
+    } finally {
+      stop();
+    }
+  });
+
+  it.each(["new sign-in", "API ABA"] as const)(
+    "does not start a selected-Space probe for a 401 before %s",
+    async (boundary) => {
+      const storage = new Map<string, string>();
+      mockSecureStore(storage);
+      await loadApiBase();
+      await saveSessionToken("synthetic-old-selected-session");
+      await selectSpace("space-a");
+      let respond!: (response: Response) => void;
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              respond = resolve;
+            }),
+        )
+        .mockImplementation(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized"));
+      vi.stubGlobal("fetch", fetchMock);
+      const rejected = vi.fn();
+      const stop = subscribeSessionRejected(rejected);
+      const pending = rpc("me").catch((error) => error);
+      try {
+        await vi.waitFor(() => expect(respond).toBeTypeOf("function"));
+        if (boundary === "new sign-in") await saveSessionToken("synthetic-new-selected-session");
+        else {
+          const apiBase = currentApiBase();
+          storage.set("rakazo.api_base", "https://replacement.example.test");
+          await loadApiBase();
+          storage.delete("rakazo.api_base");
+          await loadApiBase();
+          expect(currentApiBase()).toBe(apiBase);
+        }
+        const generation = SessionModule.currentSessionGeneration();
+        respond(rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized"));
+        await expect(pending).resolves.toMatchObject({ status: 401 });
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(SessionModule.currentSessionGeneration()).toBe(generation);
+        expect(await SessionModule.loadSessionToken()).toBe(
+          boundary === "new sign-in"
+            ? "synthetic-new-selected-session"
+            : "synthetic-old-selected-session",
+        );
+        expect(selectedSpaceId()).toBe("space-a");
+        expect(rejected).not.toHaveBeenCalled();
+      } finally {
+        respond?.(rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized"));
+        await pending;
+        stop();
+      }
+    },
+  );
+
+  it("does not retain an editor when the selected-Space authorization probe succeeds", async () => {
+    const storage = new Map<string, string>();
+    mockSecureStore(storage);
+    await loadApiBase();
+    await saveSessionToken("synthetic-valid-session");
+    await selectSpace("space-a");
+    const scope = {
+      apiBase: currentApiBase(),
+      userId: "draft-owner",
+      spaceId: "space-a",
+      targetKind: "bot" as const,
+      targetId: "bot-a",
+      threadId: "thread-a",
+    };
+    const generation = SessionModule.currentSessionGeneration();
+    const draftText = "Selected-Space editor must stay request-local";
+    const stop = registerRejectedSessionDraftCapture(() =>
+      selectedSpaceId() === scope.spaceId
+        ? { scope, sessionGeneration: generation, content: { text: draftText, attachments: [] } }
+        : null,
+    );
+    const rejected = vi.fn();
+    const stopRejected = subscribeSessionRejected(rejected);
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+      new Headers(init.headers).has("x-rakazo-space-id")
+        ? rpcErrorResponse(401, "UNAUTHORIZED", "Space access revoked")
+        : jsonResponse({ json: { userId: scope.userId, spaceId: "default-space" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(rpc("me")).resolves.toEqual({ userId: scope.userId, spaceId: "default-space" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(rejected).not.toHaveBeenCalled();
+      expect(await SessionModule.loadSessionToken()).toBe("synthetic-valid-session");
+      expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(draftText);
+      await saveSessionToken("synthetic-later-login");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } })),
+      );
+      await rpc("me");
+      const restored = vi.fn(() => true);
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(false);
+      expect(restored).not.toHaveBeenCalled();
+    } finally {
+      stop();
+      stopRejected();
+      discardRejectedSessionDraft();
+    }
+  });
+
+  it.each(["Space ABA", "API ABA"] as const)(
+    "drops a request-local rejected editor after %s while the no-Space probe is pending",
+    async (boundary) => {
+      const storage = new Map<string, string>();
+      mockSecureStore(storage);
+      await loadApiBase();
+      await saveSessionToken("synthetic-probed-session");
+      await selectSpace("space-a");
+      const scope = {
+        apiBase: currentApiBase(),
+        userId: "draft-owner",
+        spaceId: "space-a",
+        targetKind: "bot" as const,
+        targetId: "bot-a",
+        threadId: "thread-a",
+      };
+      const generation = SessionModule.currentSessionGeneration();
+      const draftText = "Request-local editor must not survive a scope ABA";
+      const stop = registerRejectedSessionDraftCapture(() =>
+        selectedSpaceId() === scope.spaceId
+          ? { scope, sessionGeneration: generation, content: { text: draftText, attachments: [] } }
+          : null,
+      );
+      let resolveProbe!: (value: Response) => void;
+      const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+        new Headers(init.headers).has("x-rakazo-space-id")
+          ? rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")
+          : new Promise<Response>((resolve) => {
+              resolveProbe = resolve;
+            }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const rejected = vi.fn();
+      const stopRejected = subscribeSessionRejected(rejected);
+      const pending = rpc("me").catch((error) => error);
+      try {
+        await vi.waitFor(() => expect(resolveProbe).toBeTypeOf("function"));
+        if (boundary === "Space ABA") {
+          await selectSpace("space-b");
+          await selectSpace("space-a");
+        } else {
+          storage.set("rakazo.api_base", "https://replacement.example.test");
+          await loadApiBase();
+          storage.delete("rakazo.api_base");
+          await loadApiBase();
+          expect(currentApiBase()).toBe(scope.apiBase);
+        }
+        resolveProbe(rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized"));
+        await expect(pending).resolves.toMatchObject({ status: 401 });
+        expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(draftText);
+        if (boundary === "API ABA") {
+          expect(rejected).not.toHaveBeenCalled();
+          expect(SessionModule.currentSessionGeneration()).toBe(generation);
+          expect(await SessionModule.loadSessionToken()).toBe("synthetic-probed-session");
+        } else {
+          expect(rejected).toHaveBeenCalledOnce();
+          expect(await SessionModule.loadSessionToken()).toBe("");
+        }
+        await saveSessionToken("synthetic-restored-session");
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () =>
+            jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } }),
+          ),
+        );
+        await rpc("me");
+        const restored = vi.fn(() => true);
+        expect(
+          restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+        ).toBe(false);
+        expect(restored).not.toHaveBeenCalled();
+      } finally {
+        resolveProbe?.(rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized"));
+        await pending;
+        stop();
+        stopRejected();
+        discardRejectedSessionDraft();
+      }
+    },
+  );
+
+  it("drops the quarantined editor when its request aborts during the rejected credential wipe", async () => {
+    const storage = new Map<string, string>();
+    mockSecureStore(storage);
+    await loadApiBase();
+    await saveSessionToken("synthetic-aborted-session");
+    const scope = {
+      apiBase: currentApiBase(),
+      userId: "draft-owner",
+      spaceId: "space-a",
+      targetKind: "bot" as const,
+      targetId: "bot-a",
+      threadId: "thread-a",
+    };
+    const generation = SessionModule.currentSessionGeneration();
+    const stop = registerRejectedSessionDraftCapture(() => ({
+      scope,
+      sessionGeneration: generation,
+      content: { text: "Cancelled request editor", attachments: [] },
+    }));
+    let releaseWipe!: () => void;
+    let held = false;
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      if (key === "rakazo.session_token" && !held) {
+        held = true;
+        await new Promise<void>((resolve) => {
+          releaseWipe = resolve;
+        });
+      }
+      storage.delete(key);
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized")),
+    );
+    const controller = new AbortController();
+    const pending = rpc("me", {}, { signal: controller.signal }).catch((error) => error);
+    try {
+      await vi.waitFor(() => expect(releaseWipe).toBeTypeOf("function"));
+      controller.abort();
+      releaseWipe();
+      await pending;
+      await saveSessionToken("synthetic-later-session");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ json: { userId: scope.userId, spaceId: scope.spaceId } })),
+      );
+      await rpc("me");
+      const restored = vi.fn(() => true);
+      expect(
+        restoreRejectedSessionDraft(scope, SessionModule.currentSessionGeneration(), restored),
+      ).toBe(false);
+      expect(restored).not.toHaveBeenCalled();
+    } finally {
+      releaseWipe?.();
+      await pending;
+      stop();
+      discardRejectedSessionDraft();
+    }
+  });
+
   it("clears a session the server rejects and reports it once", async () => {
     const store = new Map<string, string>([["rakazo.session_token", "revoked-token"]]);
     mockSecureStore(store);
@@ -3742,6 +4376,23 @@ describe("mobile thread event reduction", () => {
     expect(next?.run).toEqual(runB);
     expect(next?.activeRuns).toEqual([runB]);
     expect(next?.cursor).toBe(10);
+  });
+
+  it("keeps full cleaned failure details within the byte budget", () => {
+    const initial: MobileSnapshot = { ...snapshot(), run: { id: "run-a", status: "running" } };
+    const diagnostic = `${"x".repeat(8155)} sk-synthetic-only-credential-value-0123456789 ${"more diagnostics ".repeat(30)}`;
+    const next = applyMobileThreadEvent(initial, {
+      type: "run.failed",
+      seq: 11,
+      runId: "run-a",
+      payload: { error: diagnostic },
+    });
+    expect(next?.run?.status).toBe("failed");
+    const details = next?.run?.error ?? "";
+    expect(details.length).toBeGreaterThan(300);
+    expect(details).not.toContain("sk-synthetic");
+    expect(new TextEncoder().encode(details).length).toBeLessThanOrEqual(8192);
+    expect(details.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
   });
 
   it("keeps a failed member run's error while another member run is still active", () => {

@@ -1,4 +1,47 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Copy diagnostics": "Diagnose kopieren",
+  "Could not check the connection.": "Die Verbindung konnte nicht geprüft werden.",
+  "Could not load chats": "Chats konnten nicht geladen werden",
+  "Could not load run history": "Ausführungsverlauf konnte nicht geladen werden",
+  Details: "Details",
+  "Link code expired. Try again.": "Der Verbindungscode ist abgelaufen. Versuche es erneut.",
+  "Load more": "Mehr laden",
+  "No runs yet": "Noch keine Ausführungen",
+  Refresh: "Aktualisieren",
+  "Run history": "Ausführungsverlauf",
+  "Showing saved chats.": "Gespeicherte Chats werden angezeigt.",
+  "The model provider returned an error.": "Der Modellanbieter hat einen Fehler zurückgegeben.",
+  "The server could not complete the request": "Der Server konnte die Anfrage nicht abschließen",
+  "This Space is unavailable": "Dieser Space ist nicht verfügbar",
+  "View chat": "Chat anzeigen",
+  "Your Anthropic": "Dein Anthropic",
+  "Your OpenAI": "Dein OpenAI",
+  "Your OpenRouter": "Dein OpenRouter",
+  "Your model provider": "Dein Modellanbieter",
+  "{provider} could not find the requested model.":
+    "{provider} konnte das angeforderte Modell nicht finden.",
+  "{provider} is rate limiting requests. Try again shortly.":
+    "{provider} begrenzt die Anfragerate. Versuche es gleich noch einmal.",
+  "{provider} key hit its daily limit.": "{provider}: tägliches Schlüssellimit erreicht.",
+  "{provider} key hit its limit.": "{provider}: Schlüssellimit erreicht.",
+  "{provider} key hit its monthly limit.": "{provider}: monatliches Schlüssellimit erreicht.",
+  "{provider} key hit its weekly limit.": "{provider}: wöchentliches Schlüssellimit erreicht.",
+  "{provider} reached its credit limit.": "{provider}: Guthabenlimit erreicht.",
+  "{provider} reached its daily credit limit.": "{provider}: tägliches Guthabenlimit erreicht.",
+  "{provider} reached its daily spending limit.": "{provider}: tägliches Ausgabenlimit erreicht.",
+  "{provider} reached its monthly credit limit.": "{provider}: monatliches Guthabenlimit erreicht.",
+  "{provider} reached its monthly spending limit.":
+    "{provider}: monatliches Ausgabenlimit erreicht.",
+  "{provider} reached its spending limit.": "{provider}: Ausgabenlimit erreicht.",
+  "{provider} reached its weekly credit limit.":
+    "{provider}: wöchentliches Guthabenlimit erreicht.",
+  "{provider} reached its weekly spending limit.":
+    "{provider}: wöchentliches Ausgabenlimit erreicht.",
+  "{provider} rejected the API key. Check your connection settings.":
+    "{provider} hat den API-Schlüssel abgelehnt. Prüfe deine Verbindungseinstellungen.",
+  "{provider} took too long to respond. Try again.":
+    "{provider} hat zu lange zum Antworten gebraucht. Versuche es erneut.",
+  "{summary} Resets {date}.": "{summary} Zurücksetzung am {date}.",
   "Blank bot": "Leerer Bot",
   "Try example": "Beispiel ausprobieren",
   "Open bot": "Bot öffnen",

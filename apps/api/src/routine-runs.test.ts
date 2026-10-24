@@ -23,6 +23,33 @@ function fixture() {
   return { prisma, routine, runs, messages };
 }
 describe("routine history", () => {
+  it("returns cleaned full failure diagnostics and keeps non-failures silent", async () => {
+    const { prisma, runs } = fixture();
+    const diagnostic = `401: {"message":"${"x".repeat(600)}","token":"synthetic-only-token"}`;
+    runs.mockResolvedValue(
+      ["failed", "completed", "queued"].map((status, i) => ({
+        id: `run-${i}`,
+        botId: "bot-1",
+        threadId: "thread-1",
+        thread: { groupId: null },
+        status,
+        error: diagnostic,
+        createdAt: at,
+        startedAt: at,
+        completedAt: at,
+      })),
+    );
+    const history = await listRoutineRuns(prisma, actor, "routine-1");
+    expect(history.runs[0]).toHaveProperty(
+      "error",
+      `401: {"message":"${"x".repeat(600)}","token":"[Redacted]"}`,
+    );
+    expect(history.runs[1]).toHaveProperty("error", null);
+    expect(history.runs[2]).toHaveProperty("error", null);
+    expect(history.runs.map((run) => run.messageId)).toEqual([null, null, null]);
+    expect(RoutineHistorySchema.parse(history)).toEqual(history);
+  });
+
   it("refuses missing, foreign or archived routines before reading runs", async () => {
     const { prisma, routine, runs, messages } = fixture();
     routine.mockResolvedValue(null);

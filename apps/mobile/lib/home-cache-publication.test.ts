@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { loadFailureKind } from "@rakazo/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileScope } from "./mobile-scope";
@@ -114,6 +115,8 @@ function home(hasSession = true) {
     setMe: vi.fn(),
     setSearchInbox: vi.fn(),
     setError: vi.fn(),
+    setLoadFailure: vi.fn(),
+    loadFailureKind,
     saveInbox: vi.fn(),
     adoptDeviceTimezone: vi.fn(async (_me: unknown, _current: () => boolean) => undefined),
     rpc: vi.fn(async (procedure: string) => (procedure === "me" ? server.me : navigation)),

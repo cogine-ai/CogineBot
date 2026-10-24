@@ -113,6 +113,154 @@ describe("redaction", () => {
     expect(redactSensitiveText(text)).toBe(text);
   });
 
+  it.each([
+    ["Authorization: Basic dXNlcjpzeW50aGV0aWMtcGFzcw==", "Authorization=[Redacted]"],
+    ["Proxy-Authorization: Basic c3ludGhldGljOmNyZWRlbnRpYWw=", "Proxy-Authorization=[Redacted]"],
+    ["Cookie: session=synthetic-session-only; preference=private", "Cookie=[Redacted]"],
+    ["Set-Cookie: session=synthetic-session-only; HttpOnly; Secure", "Set-Cookie=[Redacted]"],
+    ['{"x-api-key":"synthetic-header-key-only"}', '{"x-api-key":"[Redacted]"}'],
+    ["X-API-Key: synthetic-header-key-only", "X-API-Key=[Redacted]"],
+  ])("redacts standard credential headers in free text: %s", (text, expected) => {
+    expect(redactSensitiveText(text)).toBe(expected);
+    expect(redactSensitiveText(expected)).toBe(expected);
+  });
+
+  it("preserves ordinary Basic prose and nonsecret response headers", () => {
+    const text = "Basic usage is documented.\nContent-Type: application/json\nRetry-After: 60";
+    expect(redactSensitiveText(text)).toBe(text);
+  });
+
+  it.each([
+    "client_secret",
+    "client-secret",
+    "client secret",
+    "api_key",
+    "api-key",
+    "api key",
+    "access_token",
+    "access-token",
+    "private_key",
+    "private-key",
+    "session_cookie",
+    "session-cookie",
+  ])("uses consistent compound credential names for bindings, JSON and text: %s", (key) => {
+    const secret = "AIzaSyntheticCredentialOnly0123456789";
+    expect(redactBindings({ [key]: secret })).toEqual({ [key]: "[Redacted]" });
+    const json = redactSensitiveText(JSON.stringify({ [key]: secret }));
+    expect(JSON.parse(json)).toEqual({ [key]: "[Redacted]" });
+    expect(redactSensitiveText(`${key}: ${secret}`)).toBe(`${key}=[Redacted]`);
+    expect(redactSensitiveText(`{'${key}':'${secret}'}`)).not.toContain(secret);
+    expect(redactSensitiveText(`"${key}" = "${secret}"`)).not.toContain(secret);
+    expect(redactSensitiveText(json)).toBe(json);
+    expect(redactSensitiveText(`${key}=[Redacted]`)).toBe(`${key}=[Redacted]`);
+  });
+
+  it("decodes escaped JSON key names while preserving provider error content", () => {
+    const input = String.raw`{"error":{"message":"OpenAI rejected the API key","metadata":{"client\u005fsecret":"AIzaSyntheticOnly","api\u002dkey":"opaque-api-value","private_key":"line1\nline2"}},"retry_after":30}`;
+    const output = redactSensitiveText(input);
+    expect(JSON.parse(output)).toEqual({
+      error: {
+        message: "OpenAI rejected the API key",
+        metadata: {
+          client_secret: "[Redacted]",
+          "api-key": "[Redacted]",
+          private_key: "[Redacted]",
+        },
+      },
+      retry_after: 30,
+    });
+    expect(redactSensitiveText(output)).toBe(output);
+  });
+
+  it("cleans nested raw assignments and quoted values without hiding ordinary text", () => {
+    expect(redactSensitiveText("Provider error: api-key: AIzaSyntheticOnly")).toBe(
+      "Provider error: api-key=[Redacted]",
+    );
+    expect(redactSensitiveText("client-secret='opaque value with spaces' retry_after=30")).toBe(
+      "client-secret=[Redacted] retry_after=30",
+    );
+    const normal =
+      '{"error":{"message":"Provider is overloaded","retry_after":30},"model":"example-model","monkey":"normal","key":"not a credential declaration"}';
+    expect(redactSensitiveText(normal)).toBe(normal);
+    expect(redactSensitiveText("Basic usage. Content-Type: application/json; model=example")).toBe(
+      "Basic usage. Content-Type: application/json; model=example",
+    );
+  });
+
+  it("redacts whole compound credential values and cookie lines", () => {
+    expect(
+      redactSensitiveText(
+        '{"client_credentials":{"value":"opaque-one"},"private_key":["opaque-two"],"access_token":12345,"message":"retain classification"}',
+      ),
+    ).toBe(
+      '{"client_credentials":"[Redacted]","private_key":"[Redacted]","access_token":"[Redacted]","message":"retain classification"}',
+    );
+    expect(
+      redactSensitiveText("session-cookie: sid=opaque-one; other=opaque-two\nretry_after: 30"),
+    ).toBe("session-cookie=[Redacted]\nretry_after: 30");
+  });
+
+  it("preserves a long ordinary diagnostic without speculative credential matching", () => {
+    const text = "ordinary diagnostic context ".repeat(20_000);
+    expect(redactSensitiveText(text)).toBe(text);
+  });
+
+  it("cleans malformed credential containers conservatively", () => {
+    for (const text of [
+      '{"client_credentials":{"value":"opaque-private-value",',
+      '{"private_key":["opaque-private-value"',
+      '{"client_secret":"opaque-private-value',
+    ]) {
+      const cleaned = redactSensitiveText(text);
+      expect(cleaned).not.toContain("opaque-private-value");
+      expect(cleaned).toContain("[Redacted]");
+      expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    }
+  });
+
+  it.each([
+    (secret: string) =>
+      JSON.stringify({
+        error: {
+          message: JSON.stringify({
+            message: "OpenAI rejected the API key",
+            client_secret: secret,
+          }),
+        },
+      }),
+    (secret: string) => JSON.stringify({ response_body: JSON.stringify({ "api-key": secret }) }),
+    (secret: string) =>
+      JSON.stringify({ metadata: { body: JSON.stringify({ "API key": secret }) } }),
+    (secret: string) =>
+      `SDK raw response: ${JSON.stringify({ response_body: JSON.stringify({ private_key: secret }) })}`,
+    (secret: string) =>
+      JSON.stringify({
+        response: JSON.stringify({ response_body: JSON.stringify({ "client-secret": secret }) }),
+      }),
+  ])("cleans SDK JSON strings using the same credential rules", (fixture) => {
+    const secret = "SYNTHETIC_NESTED_CREDENTIAL_ONLY";
+    const output = redactSensitiveText(fixture(secret));
+    expect(output).not.toContain(secret);
+    expect(output).toContain("[Redacted]");
+    expect(redactSensitiveText(output)).toBe(output);
+    if (fixture(secret).includes("OpenAI rejected the API key"))
+      expect(output).toContain("OpenAI rejected the API key");
+  });
+
+  it("bounds encoded-string recursion while leaving ordinary provider messages intact", () => {
+    const secret = "SYNTHETIC_DEEP_CREDENTIAL_ONLY";
+    let encoded = JSON.stringify({ client_secret: secret });
+    for (let depth = 0; depth < 12; depth += 1)
+      encoded = JSON.stringify({ response_body: encoded });
+    const cleaned = redactSensitiveText(encoded);
+    expect(cleaned).not.toContain(secret);
+    expect(() => JSON.parse(cleaned)).not.toThrow();
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    expect(redactSensitiveText('{"error":{"message":"OpenAI rejected the API key"}}')).toBe(
+      '{"error":{"message":"OpenAI rejected the API key"}}',
+    );
+  });
+
   it("redacts quoted JSON credential fields", () => {
     const redacted = redactSensitiveText(
       '{"password":"hunter2","token":"abc","authorization":"Bearer secret"}',

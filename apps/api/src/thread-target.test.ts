@@ -865,35 +865,76 @@ describe("threadSnapshot", () => {
     expect(snapshot.run).toBeNull();
   });
 
-  it("clamps a long persisted group failure error on refresh", async () => {
-    const longError = "x".repeat(400);
-    const run = {
-      id: "run-failed",
-      botId: "bot-2",
-      threadId: "thread-1",
-      taskId: "task-1",
-      status: "failed",
-      trigger: "user",
-      modelProvider: "openrouter",
-      modelId: "openrouter/unknown",
-      error: longError,
-      startedAt: null,
-      completedAt: new Date("2026-08-23T00:00:01.000Z"),
-      createdAt: new Date("2026-08-23T00:00:00.000Z"),
-    };
-    const snapshot = await threadSnapshot(
-      { prisma: groupPrisma(groupRunFindMany({ terminals: [run] })) },
-      groupTarget(),
-    );
-
-    expect(snapshot.run).toEqual(
-      expect.objectContaining({
-        id: "run-failed",
-        status: "failed",
-        error: `${"x".repeat(300)}…`,
-      }),
-    );
-  });
+  it.each([
+    ["bot", "failed"],
+    ["group", "failed"],
+    ["bot", "running"],
+    ["group", "running"],
+  ] as const)(
+    "cleans and bounds persisted %s %s diagnostics after the legacy summary limit",
+    async (kind, status) => {
+      const run = {
+        id: "run-diagnostic",
+        botId: kind === "bot" ? "bot-1" : "bot-2",
+        threadId: "thread-1",
+        taskId: "task-1",
+        status,
+        trigger: "user",
+        modelProvider: "openrouter",
+        modelId: "openrouter/unknown",
+        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300 token=synthetic-tail-private-value\n{"client_secret":"AIzaSyntheticSnapshotValue","api-key":"opaque-snapshot-value"}\n${JSON.stringify({ response_body: JSON.stringify({ message: "provider failure", client_secret: "SYNTHETIC_NESTED_SNAPSHOT_VALUE" }) })}\n${"界😀".repeat(1600)}`,
+        startedAt: null,
+        completedAt: status === "failed" ? new Date("2026-08-23T00:00:01.000Z") : null,
+        createdAt: new Date("2026-08-23T00:00:00.000Z"),
+      };
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+        message: { findMany: vi.fn().mockResolvedValue([]) },
+        event: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+        run: { findFirst: botRunFindFirst([run]) },
+      };
+      const prisma =
+        kind === "group"
+          ? groupPrisma(
+              groupRunFindMany(status === "failed" ? { terminals: [run] } : { active: [run] }),
+            )
+          : ({
+              $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+            } as unknown as PrismaClient);
+      const target =
+        kind === "group"
+          ? groupTarget()
+          : ({
+              kind: "bot",
+              botId: "bot-1",
+              threadId: "thread-1",
+              bot: { computer: null },
+            } as ThreadTarget);
+      const snapshot = await threadSnapshot({ prisma }, target);
+      expect(snapshot.run).toMatchObject({ id: run.id, status });
+      const diagnostic = snapshot.run!.error!;
+      expect(diagnostic).toContain("SAFE_DIAGNOSTIC_AFTER_300");
+      expect(diagnostic).toContain("token=[Redacted]");
+      expect(diagnostic).not.toContain("synthetic-tail-private-value");
+      expect(diagnostic).not.toContain("AIzaSyntheticSnapshotValue");
+      expect(diagnostic).not.toContain("opaque-snapshot-value");
+      expect(diagnostic).not.toContain("SYNTHETIC_NESTED_SNAPSHOT_VALUE");
+      expect(diagnostic).toContain('"client_secret":"[Redacted]"');
+      expect(diagnostic).toContain('"api-key":"[Redacted]"');
+      expect(new TextEncoder().encode(diagnostic).length).toBeLessThanOrEqual(8192);
+      expect(diagnostic.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
+      expect(
+        Array.from(diagnostic).some((character) => {
+          const point = character.codePointAt(0)!;
+          return point >= 0xd800 && point <= 0xdfff;
+        }),
+      ).toBe(false);
+      expect(snapshot.messages).toEqual([]);
+    },
+  );
 
   it("keeps a concurrent member failure in run while another member is still active", async () => {
     const active = {

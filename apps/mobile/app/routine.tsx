@@ -11,6 +11,7 @@ import { ActivityIndicator, ScrollView, Text, View } from "react-native";
 import { glassHeaderOptions } from "../components/glass-title";
 import { MenuPicker } from "../components/menu-picker";
 import { NativeActionButton } from "../components/native-action-button";
+import { RoutineRunHistory } from "../components/routine-run-history";
 import type { ApiRequestContext } from "../lib/api";
 import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
@@ -329,6 +330,15 @@ export default function RoutineDetail() {
                 onPress={() => void saveModel()}
               />
             </>
+          ) : null}
+          {!readOnly && shownScope?.verifiedSpaceId && routineId ? (
+            <RoutineRunHistory
+              key={routeKey}
+              routineId={routineId}
+              owner={shownScope}
+              spaceId={shownScope.verifiedSpaceId}
+              isCurrent={() => current(shownScope)}
+            />
           ) : null}
           {origin !== "profile" && !readOnly ? (
             <NativeActionButton

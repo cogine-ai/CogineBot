@@ -6103,3 +6103,96 @@ msgstr "이메일 계정 연결"
 #: src/pages/shell/bot-panel.tsx
 msgid "Gmail or Outlook (optional)"
 msgstr "Gmail 또는 Outlook (선택 사항)"
+
+msgid "Copy diagnostics"
+msgstr "진단 복사"
+
+msgid "Could not check the connection."
+msgstr "연결을 확인하지 못했습니다."
+
+msgid "Could not load chats"
+msgstr "채팅을 불러오지 못했습니다"
+
+msgid "Details"
+msgstr "세부 정보"
+
+msgid "Link code expired. Try again."
+msgstr "연결 코드가 만료되었습니다. 다시 시도하세요."
+
+msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+msgstr "10분 안에 채팅 앱에서 연결할 회선으로 <0>{0}</0>를 보내세요. 연결되면 확인 답장을 받습니다."
+
+msgid "Showing saved chats."
+msgstr "저장된 채팅을 표시합니다."
+
+msgid "The model provider returned an error."
+msgstr "모델 제공업체에서 오류를 반환했습니다."
+
+msgid "The server could not complete the request"
+msgstr "서버가 요청을 완료하지 못했습니다"
+
+msgid "This Space is unavailable"
+msgstr "이 Space를 사용할 수 없습니다"
+
+msgid "Your Anthropic"
+msgstr "사용 중인 Anthropic"
+
+msgid "Your OpenAI"
+msgstr "사용 중인 OpenAI"
+
+msgid "Your OpenRouter"
+msgstr "사용 중인 OpenRouter"
+
+msgid "Your model provider"
+msgstr "사용 중인 모델 제공업체"
+
+msgid "{provider} could not find the requested model."
+msgstr "{provider}에서 요청한 모델을 찾을 수 없습니다."
+
+msgid "{provider} is rate limiting requests. Try again shortly."
+msgstr "{provider}에서 요청 속도를 제한하고 있습니다. 잠시 후 다시 시도하세요."
+
+msgid "{provider} key hit its daily limit."
+msgstr "{provider}의 일일 키 한도에 도달했습니다."
+
+msgid "{provider} key hit its limit."
+msgstr "{provider}의 키 한도에 도달했습니다."
+
+msgid "{provider} key hit its monthly limit."
+msgstr "{provider}의 월간 키 한도에 도달했습니다."
+
+msgid "{provider} key hit its weekly limit."
+msgstr "{provider}의 주간 키 한도에 도달했습니다."
+
+msgid "{provider} reached its credit limit."
+msgstr "{provider}의 크레딧 한도에 도달했습니다."
+
+msgid "{provider} reached its daily credit limit."
+msgstr "{provider}의 일일 크레딧 한도에 도달했습니다."
+
+msgid "{provider} reached its daily spending limit."
+msgstr "{provider}의 일일 지출 한도에 도달했습니다."
+
+msgid "{provider} reached its monthly credit limit."
+msgstr "{provider}의 월간 크레딧 한도에 도달했습니다."
+
+msgid "{provider} reached its monthly spending limit."
+msgstr "{provider}의 월간 지출 한도에 도달했습니다."
+
+msgid "{provider} reached its spending limit."
+msgstr "{provider}의 지출 한도에 도달했습니다."
+
+msgid "{provider} reached its weekly credit limit."
+msgstr "{provider}의 주간 크레딧 한도에 도달했습니다."
+
+msgid "{provider} reached its weekly spending limit."
+msgstr "{provider}의 주간 지출 한도에 도달했습니다."
+
+msgid "{provider} rejected the API key. Check your connection settings."
+msgstr "{provider}에서 API 키를 거부했습니다. 연결 설정을 확인하세요."
+
+msgid "{provider} took too long to respond. Try again."
+msgstr "{provider}의 응답 시간이 초과되었습니다. 다시 시도하세요."
+
+msgid "{summary} Resets {date}."
+msgstr "{summary} {date}에 초기화됩니다."

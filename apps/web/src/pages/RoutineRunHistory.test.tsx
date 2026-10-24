@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+
+import { i18n } from "@lingui/core";
 import type { RoutineRun } from "@rakazo/contracts";
 import type { ComponentProps, ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ history: vi.fn() }));
 vi.mock("../lib/rpc", () => ({ rpc: { routines: api } }));
@@ -12,7 +14,14 @@ vi.mock("@lingui/core/macro", () => ({
   t: (parts: TemplateStringsArray) => parts.join(""),
 }));
 vi.mock("@lingui/react/macro", () => ({
-  useLingui: () => ({ i18n: { locale: "en" } }),
+  useLingui: () => ({
+    i18n: {
+      locale: "en",
+      _: (message: string, values: Record<string, unknown> = {}) =>
+        message.replace(/\{(\w+)\}/g, (_match, key) => String(values[key] ?? key)),
+    },
+    t: (parts: TemplateStringsArray) => parts.join(""),
+  }),
   Trans: ({ children }: { children: ReactNode }) => children,
 }));
 vi.mock("@rakazo/ui-web", () => ({
@@ -30,12 +39,40 @@ const run: RoutineRun = {
   botId: "bot-1",
   groupId: null,
   status: "completed",
+  error: null,
   createdAt: "2026-01-02T12:00:00Z",
   startedAt: "2026-01-02T12:00:00Z",
   completedAt: "2026-01-02T12:01:22Z",
   messageId: "reply-1",
 };
 const page = (runs: RoutineRun[]) => ({ runs, nextCursor: null });
+beforeEach(() => {
+  i18n.load("en", {});
+  i18n.activate("en");
+});
+it("shows a safe failure summary and cleaned details without creating a silent chat link", async () => {
+  api.history.mockResolvedValue(
+    page([
+      {
+        ...run,
+        status: "failed",
+        messageId: null,
+        error:
+          '401: {"error":{"message":"invalid api key","metadata":{"token":"fake-private-token"}}}',
+      },
+    ]),
+  );
+  const view = await mounted();
+  try {
+    expect(view.container.textContent).toContain("rejected the API key");
+    expect(view.container.textContent).not.toContain("fake-private-token");
+    expect(view.container.querySelector("details")?.open).toBe(false);
+    expect(view.container.querySelector("pre")?.textContent).toContain("[Redacted]");
+    expect(view.container.querySelectorAll("a")).toHaveLength(0);
+  } finally {
+    await view.close();
+  }
+});
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();

@@ -30,7 +30,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { usableModelId } from "@rakazo/contracts";
-import { abortableDelay } from "@rakazo/core";
+import { abortableDelay, MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
 import { automated } from "./automated-messages.js";
@@ -106,11 +106,12 @@ const SILENT_TOOL_CONTINUATION_PROMPT = automated(
 const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT = automated(
   "Continue the original task from the latest tool result. If you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply. Otherwise use any remaining tools needed, then give the user the final answer.",
 );
+
 // Shown as a failed-run error, not an assistant message. Asking the user to
 // continue stores that sentence as the reply, and the next "continue" runs
 // tools and misses a final answer again.
-export const MISSING_TOOL_FINAL_RESPONSE_ERROR =
-  "The tools finished, but the model did not write a final answer. Rephrase the request and try again.";
+export { MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
+
 const DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP = 2;
 // Reasoning-capable models must not start at "off": for OpenRouter, pi-ai maps
 // that to reasoning.effort "none", which 400s on endpoints that mandate

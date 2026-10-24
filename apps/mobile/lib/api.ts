@@ -36,6 +36,7 @@ import {
   reduceLiveMessageBlocks,
   replyMetadata,
   runFailureError,
+  sanitizeRunErrorDetails,
   signupRequiresEmailVerification,
   takeLiveMessage,
   updateCloudAgentMessages,
@@ -48,7 +49,15 @@ import type { EndpointResult } from "./endpoint";
 import { defaultApiBase, normalizeApiBase } from "./endpoint";
 import { t } from "./i18n";
 import { resumeLiveNotifications } from "./live-notifications";
+import type { RejectedDraftCapture } from "./rejected-session-draft";
 import {
+  captureRejectedSessionDraft,
+  discardRejectedSessionDraft,
+  observeRejectedSessionDraftSpace,
+  verifyRejectedSessionDraftOwner,
+} from "./rejected-session-draft";
+import {
+  clearRejectedSessionToken,
   clearSessionToken,
   currentSessionGeneration,
   loadSessionToken,
@@ -67,6 +76,14 @@ const ENDPOINT_KEY = "rakazo.api_base";
 const SPACE_KEY = "rakazo.space_id";
 const SPACE_ROLLBACK_KEY = "rakazo.space_rollback";
 const RPC_TIMEOUT_MS = 8_000;
+const REJECTED_SESSION_DRAFT = Symbol("rejected-session-draft");
+type RejectedSessionDraftContext = {
+  draft: RejectedDraftCapture | null;
+  sessionGeneration: number;
+  apiBase: string;
+  apiGeneration: number;
+  spaceGeneration: number;
+};
 export const MAX_MOBILE_AUTH_RESPONSE_BYTES = 256 * 1024;
 export const MAX_MOBILE_RPC_RESPONSE_BYTES = 16 * 1024 * 1024;
 /** Inbox bootstrap reads safe to replay without a Space header during auth recovery. */
@@ -88,7 +105,10 @@ export function subscribeApiBase(listener: () => void): () => void {
 }
 
 function setCachedApiBase(url: string): void {
-  if (currentApiBase() !== url) apiBaseGeneration += 1;
+  if (currentApiBase() !== url) {
+    apiBaseGeneration += 1;
+    discardRejectedSessionDraft();
+  }
   if (cachedApiBase !== undefined && cachedApiBase !== url) clearUnsentSends();
   cachedApiBase = url;
   for (const listener of apiBaseListeners) listener();
@@ -237,6 +257,12 @@ export type SpaceSelectionOptions = { isCurrent?: () => boolean };
 
 export async function selectSpace(id: string, options: SpaceSelectionOptions = {}) {
   if (options.isCurrent?.() === false) return false;
+  observeRejectedSessionDraftSpace(id, currentSessionGeneration());
+  return claimSpace(id, options);
+}
+
+async function claimSpace(id: string, options: SpaceSelectionOptions = {}) {
+  if (options.isCurrent?.() === false) return false;
   const apiBase = currentApiBase();
   const apiGeneration = currentApiBaseGeneration();
   const sessionGeneration = currentSessionGeneration();
@@ -353,10 +379,11 @@ export async function adoptDeletedSpaceFallback(id: string): Promise<boolean> {
 export async function selectInitialSpace(id: string, options: SpaceSelectionOptions = {}) {
   if (options.isCurrent?.() === false) return false;
   if (selectedSpaceId()) return true;
-  return selectSpace(id, options);
+  return claimSpace(id, options);
 }
 
 export async function clearSpace(): Promise<boolean> {
+  observeRejectedSessionDraftSpace(null, currentSessionGeneration());
   const apiBase = currentApiBase();
   const apiGeneration = currentApiBaseGeneration();
   const sessionGeneration = currentSessionGeneration();
@@ -851,8 +878,27 @@ export function subscribeSessionRejected(listener: () => void): () => void {
   };
 }
 
-async function rejectSession() {
-  await clearSessionToken();
+async function rejectSession(prepared?: RejectedDraftCapture | null, signal?: AbortSignal) {
+  const sessionGeneration = currentSessionGeneration();
+  const apiBase = currentApiBase();
+  const apiGeneration = currentApiBaseGeneration();
+  const clearing = clearRejectedSessionToken(prepared);
+  // Register after the wrapper snapshots its invalidation epoch, including a
+  // synchronous abort triggered by a session observer during the wipe.
+  const discard = () => discardRejectedSessionDraft();
+  signal?.addEventListener("abort", discard, { once: true });
+  if (signal?.aborted) discard();
+  try {
+    await clearing;
+  } finally {
+    signal?.removeEventListener("abort", discard);
+  }
+  if (
+    currentSessionGeneration() !== sessionGeneration + 1 ||
+    currentApiBase() !== apiBase ||
+    currentApiBaseGeneration() !== apiGeneration
+  )
+    return;
   for (const listener of sessionRejectedListeners) listener();
 }
 
@@ -864,6 +910,7 @@ export async function rpc<T>(
     timeoutMs?: number | null;
     requestContext?: ApiRequestContext;
     skipSpaceAuthRecovery?: boolean;
+    [REJECTED_SESSION_DRAFT]?: RejectedSessionDraftContext;
   } = {},
 ): Promise<T> {
   const requestSpaceGeneration = spaceSelectionGeneration;
@@ -969,9 +1016,21 @@ export async function rpc<T>(
         requestHeaders.authorization &&
         !options.requestContext &&
         !passwordChangesInFlight &&
-        requestSessionGeneration === currentSessionGeneration()
+        requestSessionGeneration === currentSessionGeneration() &&
+        requestApiBase === currentApiBase() &&
+        requestApiGeneration === currentApiBaseGeneration()
       ) {
-        await rejectSession();
+        const context = options[REJECTED_SESSION_DRAFT];
+        const prepared = context
+          ? context.sessionGeneration === requestSessionGeneration &&
+            context.apiBase === requestApiBase &&
+            context.apiGeneration === requestApiGeneration &&
+            context.spaceGeneration === spaceSelectionGeneration &&
+            !controller.signal.aborted
+            ? context.draft
+            : null
+          : undefined;
+        await rejectSession(prepared, controller.signal);
       }
       // After a delete where SecureStore could not clear the stale id, restart
       // reloads it and the first RPCs 401. Probe once without a Space header:
@@ -1001,6 +1060,9 @@ export async function rpc<T>(
       };
       if (
         unauthorized &&
+        requestSessionGeneration === currentSessionGeneration() &&
+        requestApiBase === currentApiBase() &&
+        requestApiGeneration === currentApiBaseGeneration() &&
         previousSpaceId &&
         requestSpaceId &&
         selectedSpaceId() === requestSpaceId &&
@@ -1008,6 +1070,17 @@ export async function rpc<T>(
         !options.requestContext &&
         !options.skipSpaceAuthRecovery
       ) {
+        // Capture the currently verified editor before the probe temporarily
+        // clears its Space. This request-local symbol never enters the wire.
+        const preparedDraft: RejectedSessionDraftContext = {
+          draft: controller.signal.aborted
+            ? null
+            : captureRejectedSessionDraft(requestSessionGeneration),
+          sessionGeneration: requestSessionGeneration,
+          apiBase: requestApiBase,
+          apiGeneration: requestApiGeneration,
+          spaceGeneration: requestSpaceGeneration + 1,
+        };
         cachedSpaceId = "";
         bumpSpaceSelectionGeneration();
         const retrySameProc = SPACE_AUTH_RECOVERY_SAFE_PROCS.has(proc);
@@ -1018,11 +1091,13 @@ export async function rpc<T>(
           timeoutMs?: number | null;
           requestContext?: ApiRequestContext;
           skipSpaceAuthRecovery?: boolean;
+          [REJECTED_SESSION_DRAFT]?: RejectedSessionDraftContext;
         } = {
           ...options,
           timeoutMs: null,
           signal: controller.signal,
           skipSpaceAuthRecovery: true,
+          [REJECTED_SESSION_DRAFT]: preparedDraft,
         };
         try {
           if (retrySameProc) {
@@ -1063,6 +1138,12 @@ export async function rpc<T>(
       (!requestSpaceId || verifiedUser.spaceId === requestSpaceId) &&
       identityCurrent()
     ) {
+      verifyRejectedSessionDraftOwner({
+        apiBase: requestApiBase,
+        userId: verifiedUser.userId,
+        spaceId: verifiedUser.spaceId,
+        sessionGeneration: requestSessionGeneration,
+      });
       await saveVerifiedIntegrationsScope(
         requestSessionGeneration,
         {
@@ -1460,7 +1541,8 @@ export function applyMobileThreadEvent(
   }
   if (isRunTerminalEvent(event)) {
     const activeRuns = prev.activeRuns?.filter((candidate) => candidate.id !== event.runId);
-    const failure = runFailureError(event);
+    const diagnostic = runFailureError(event, { preserveDetails: true });
+    const failure = diagnostic === null ? null : sanitizeRunErrorDetails(diagnostic);
     const primaryEnded = prev.run?.id === event.runId ? prev.run : null;
     // A group member run can fail while another is displayed; see reduceThreadSnapshot.
     const endedRun =
