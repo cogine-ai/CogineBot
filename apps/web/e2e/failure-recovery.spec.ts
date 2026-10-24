@@ -28,6 +28,8 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   const syntheticXaiKey = `xai-${"SYNTHETICXAIONLY".padEnd(48, "A")}`;
   const syntheticHfKey = `hf_${"SYNTHETICHFONLY".padEnd(48, "A")}`;
   const syntheticCerebrasKey = `csk-${"SYNTHETICCEREBRASONLY".padEnd(48, "A")}`;
+  const syntheticNvidiaKey = `nvapi-${"SYNTHETICNVIDIAONLY".padEnd(48, "A")}`;
+  const syntheticFireworksKey = `fw_${"SYNTHETICFIREWORKSONLY".padEnd(48, "A")}`;
   const { botId } = await account(page, "snapshot-diagnostics");
   const actor = await rpc<Me>(page, "me", {});
   const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
@@ -65,7 +67,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
         trigger: "user",
         startedAt: new Date(),
         completedAt: new Date(),
-        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nProvider echoed ${syntheticGoogleKey} in prose.\nProvider echoed ${syntheticGroqKey} in prose.\nProvider echoed ${syntheticXaiKey} in prose.\nProvider echoed ${syntheticHfKey} in prose.\nProvider echoed ${syntheticCerebrasKey} in prose.\nSecret Access Key: SYNTHETIC_AWS_SECRET_ACCESS_VALUE\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
+        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nProvider echoed ${syntheticGoogleKey} in prose.\nProvider echoed ${syntheticGroqKey} in prose.\nProvider echoed ${syntheticXaiKey} in prose.\nProvider echoed ${syntheticHfKey} in prose.\nProvider echoed ${syntheticCerebrasKey} in prose.\nProvider echoed ${syntheticNvidiaKey} in prose.\nProvider echoed ${syntheticFireworksKey} in prose.\nSecret Access Key: SYNTHETIC_AWS_SECRET_ACCESS_VALUE\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
       },
     });
   } finally {
@@ -79,6 +81,8 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   expect(fresh.run?.error).not.toContain(syntheticXaiKey);
   expect(fresh.run?.error).not.toContain(syntheticHfKey);
   expect(fresh.run?.error).not.toContain(syntheticCerebrasKey);
+  expect(fresh.run?.error).not.toContain(syntheticNvidiaKey);
+  expect(fresh.run?.error).not.toContain(syntheticFireworksKey);
   expect(fresh.run?.error).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
   expect(Buffer.byteLength(fresh.run!.error!, "utf8")).toBeLessThanOrEqual(8192);
   expect(fresh.run?.error).not.toMatch(
@@ -99,6 +103,8 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   expect(copied).not.toContain(syntheticXaiKey);
   expect(copied).not.toContain(syntheticHfKey);
   expect(copied).not.toContain(syntheticCerebrasKey);
+  expect(copied).not.toContain(syntheticNvidiaKey);
+  expect(copied).not.toContain(syntheticFireworksKey);
   expect(copied).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
   expect(copied).not.toMatch(
     /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND/,

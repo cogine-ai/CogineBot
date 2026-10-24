@@ -225,7 +225,7 @@ describe("redaction", () => {
   });
 
   it.each(
-    ["gsk_", "xai-", "hf_", "csk-"].flatMap((prefix) =>
+    ["gsk_", "xai-", "hf_", "csk-", "nvapi-", "fw_"].flatMap((prefix) =>
       [8, 43, 48, 52].map((length) => [prefix, length] as const),
     ),
   )("redacts a complete bare %s candidate with %s tail characters", (prefix, length) => {
@@ -253,7 +253,7 @@ describe("redaction", () => {
     }
   });
 
-  it.each(["gsk_", "xai-", "hf_", "csk-"])(
+  it.each(["gsk_", "xai-", "hf_", "csk-", "nvapi-", "fw_"])(
     "preserves short %s placeholders and embedded names while concealing long candidates",
     (prefix) => {
       const normal = `${prefix} ${prefix}demo ${prefix}short ${prefix}1234567 prefix${prefix}SYNTHETICPROVIDERONLY prefix_${prefix}SYNTHETICPROVIDERONLY prefix-${prefix}SYNTHETICPROVIDERONLY`;

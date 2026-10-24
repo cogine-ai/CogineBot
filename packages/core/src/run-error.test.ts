@@ -100,7 +100,7 @@ describe("run failure diagnostics", () => {
   );
 
   it.each(
-    ["gsk_", "xai-", "hf_", "csk-"].flatMap((prefix) =>
+    ["gsk_", "xai-", "hf_", "csk-", "nvapi-", "fw_"].flatMap((prefix) =>
       [8, 43, 48, 52].map((length) => [prefix, length] as const),
     ),
   )("cleans a bare %s candidate with %s tail characters before clipping", (prefix, length) => {

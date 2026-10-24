@@ -179,7 +179,7 @@ describePostgres("routine failure history HTTP acceptance", () => {
       const bareGoogleKeys = ["-", "_"].map(
         (suffix) => `AIza${"SYNTHETIC_THREAD_ONLY_".padEnd(34, "A")}${suffix}`,
       );
-      const bareProviderKeys = ["gsk_", "xai-", "hf_", "csk-"].map(
+      const bareProviderKeys = ["gsk_", "xai-", "hf_", "csk-", "nvapi-", "fw_"].map(
         (prefix) => `${prefix}${"SYNTHETICPROVIDERTHREAD".padEnd(48, "A")}`,
       );
       const run = await seedRun(owner, {
