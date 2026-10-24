@@ -180,6 +180,64 @@ describe("run failure diagnostics", () => {
     }
   });
 
+  it.each([
+    [
+      "private PEM",
+      "private_key=-----BEGIN DSA PRIVATE KEY-----\nSYNTHETIC_LOGICAL_SECRET_FIRST\n-----END DSA PRIVATE KEY-----",
+    ],
+    [
+      "authorization",
+      'Authorization: Digest username="SYNTHETIC_LOGICAL_SECRET_FIRST",\r\n nonce="SYNTHETIC_LOGICAL_SECRET_SECOND"',
+    ],
+    [
+      "block scalar",
+      "private_key: >-\n  SYNTHETIC_LOGICAL_SECRET_FIRST\n  SYNTHETIC_LOGICAL_SECRET_SECOND",
+    ],
+    [
+      "plain scalar",
+      "client_secret:\n  SYNTHETIC_LOGICAL_SECRET_FIRST\n\n  SYNTHETIC_LOGICAL_SECRET_SECOND",
+    ],
+    [
+      "YAML escaped quote",
+      "client_secret: 'SYNTHETIC_LOGICAL_SECRET_FIRST\\''SYNTHETIC_LOGICAL_SECRET_SECOND'",
+    ],
+    ["pass phrase", "password=SYNTHETIC_LOGICAL_SECRET_FIRST SYNTHETIC_LOGICAL_SECRET_SECOND"],
+    [
+      "explicit continuation",
+      "api-key=SYNTHETIC_LOGICAL_SECRET_FIRST\\\nSYNTHETIC_LOGICAL_SECRET_SECOND",
+    ],
+    [
+      "triple quote",
+      'private_key="""\nSYNTHETIC_LOGICAL_SECRET_FIRST\nSYNTHETIC_LOGICAL_SECRET_SECOND\n"""',
+    ],
+  ])(
+    "cleans full %s values before nested decoding and every diagnostic budget boundary",
+    (_name, fixture) => {
+      for (const material of [
+        fixture!,
+        JSON.stringify({ response_body: JSON.stringify({ message: fixture }) }),
+      ]) {
+        const normal = normalizeRunError(
+          `401: {"message":"OpenAI rejected the API key"}\n${material}\nretry_after: 30`,
+        );
+        expect(normal.summary).toBe(
+          "Your OpenAI rejected the API key. Check your connection settings.",
+        );
+        expect(normal.details).not.toContain("SYNTHETIC_LOGICAL_SECRET_");
+        expect(normal.details).toContain("retry_after: 30");
+        for (let prefix = 8100; prefix < 8200; prefix += 5) {
+          const cleaned = sanitizeRunErrorDetails(
+            `${"x".repeat(prefix)}\n${material}\n${"😀".repeat(1000)}`,
+          );
+          expect(cleaned).not.toContain("SYNTHETIC_LOGICAL_SECRET_");
+          expect(new TextEncoder().encode(cleaned).length).toBeLessThanOrEqual(8192);
+          expect(cleaned.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
+          expect(sanitizeRunErrorDetails(cleaned), `${_name} at ${prefix}`).toBe(cleaned);
+        }
+      }
+    },
+  );
+
   it("keeps nested SDK-string details and truncation markers safe across repeated cleanup", () => {
     const payload = JSON.stringify({
       error: {
@@ -251,9 +309,9 @@ describe("run failure diagnostics", () => {
   it("caps translated summaries at 500 code points and sanitizes their contents", () => {
     const normalized = normalizeRunError(
       "failure",
-      () => `token=synthetic-secret-value ${"界😀".repeat(600)}`,
+      () => `token="synthetic-secret-value"\n${"界😀".repeat(600)}`,
     );
-    expect(normalized.summary.startsWith("token=[Redacted] ")).toBe(true);
+    expect(normalized.summary.startsWith("token=[Redacted]\n")).toBe(true);
     expect(Array.from(normalized.summary)).toHaveLength(500);
     expect(normalized.summary.endsWith("…")).toBe(true);
     expect(normalized.summary).not.toContain("synthetic-secret-value");

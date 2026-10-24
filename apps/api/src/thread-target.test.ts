@@ -882,7 +882,7 @@ describe("threadSnapshot", () => {
         trigger: "user",
         modelProvider: "openrouter",
         modelId: "openrouter/unknown",
-        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300 token=synthetic-tail-private-value\n{"client_secret":"AIzaSyntheticSnapshotValue","api-key":"opaque-snapshot-value"}\n${JSON.stringify({ response_body: JSON.stringify({ message: "provider failure", client_secret: "SYNTHETIC_NESTED_SNAPSHOT_VALUE" }) })}\n${"界😀".repeat(1600)}`,
+        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300 token=synthetic-tail-private-value\n{"client_secret":"AIzaSyntheticSnapshotValue","api-key":"opaque-snapshot-value"}\n${JSON.stringify({ response_body: JSON.stringify({ message: "provider failure", client_secret: "SYNTHETIC_NESTED_SNAPSHOT_VALUE" }) })}\nAuthorization: Token SYNTHETIC_SNAPSHOT_AUTH_FIRST\r\n SYNTHETIC_SNAPSHOT_AUTH_SECOND\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_SNAPSHOT_PRIVATE_PEM\n-----END PRIVATE KEY-----\nclient_secret: 'SYNTHETIC_SNAPSHOT_YAML_FIRST\\''SYNTHETIC_SNAPSHOT_YAML_SECOND'\n${"界😀".repeat(1600)}`,
         startedAt: null,
         completedAt: status === "failed" ? new Date("2026-08-23T00:00:01.000Z") : null,
         createdAt: new Date("2026-08-23T00:00:00.000Z"),
@@ -922,6 +922,7 @@ describe("threadSnapshot", () => {
       expect(diagnostic).not.toContain("AIzaSyntheticSnapshotValue");
       expect(diagnostic).not.toContain("opaque-snapshot-value");
       expect(diagnostic).not.toContain("SYNTHETIC_NESTED_SNAPSHOT_VALUE");
+      expect(diagnostic).not.toMatch(/SYNTHETIC_SNAPSHOT_(?:AUTH|PRIVATE_PEM|YAML)/);
       expect(diagnostic).toContain('"client_secret":"[Redacted]"');
       expect(diagnostic).toContain('"api-key":"[Redacted]"');
       expect(new TextEncoder().encode(diagnostic).length).toBeLessThanOrEqual(8192);

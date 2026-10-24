@@ -125,9 +125,284 @@ describe("redaction", () => {
     expect(redactSensitiveText(expected)).toBe(expected);
   });
 
+  it("redacts the complete unquoted private PEM key without consuming the next diagnostic", () => {
+    const input =
+      "OpenAI rejected the API key\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY_ONLY\n-----END PRIVATE KEY-----\nRetry-After: 30";
+    const cleaned = redactSensitiveText(input);
+    expect(cleaned).not.toContain("SYNTHETIC_PRIVATE_PEM_BODY_ONLY");
+    expect(cleaned).toContain("OpenAI rejected the API key");
+    expect(cleaned).toContain("Retry-After: 30");
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+  });
+
+  it("redacts an entire authorization header with an arbitrary scheme and folded fields", () => {
+    const input =
+      'OpenAI rejected the API key\nAuthorization: Digest username="SYNTHETIC_AUTH_USER",\r\n nonce="SYNTHETIC_AUTH_NONCE", response="SYNTHETIC_AUTH_RESPONSE"\r\nRetry-After: 30';
+    const cleaned = redactSensitiveText(input);
+    expect(cleaned).not.toMatch(/SYNTHETIC_AUTH_/);
+    expect(cleaned).toContain("OpenAI rejected the API key");
+    expect(cleaned).toContain("Retry-After: 30");
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+  });
+
+  it("redacts every indented line in an explicitly declared credential block", () => {
+    const input =
+      "OpenAI rejected the API key\nprivate_key: |-\n  SYNTHETIC_BLOCK_FIRST_LINE\n  SYNTHETIC_BLOCK_SECOND_LINE\nretry_after: 30";
+    const cleaned = redactSensitiveText(input);
+    expect(cleaned).not.toMatch(/SYNTHETIC_BLOCK_/);
+    expect(cleaned).toContain("OpenAI rejected the API key");
+    expect(cleaned).toContain("retry_after: 30");
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+  });
+
+  it.each([
+    "api-key=SYNTHETIC_CONTINUED_FIRST\\\n  SYNTHETIC_CONTINUED_SECOND\nretry_after: 30",
+    'private_key = """\nSYNTHETIC_CONTINUED_FIRST\nSYNTHETIC_CONTINUED_SECOND\n"""\nretry_after: 30',
+  ])("redacts a complete explicitly continued or triple-quoted credential value", (input) => {
+    const cleaned = redactSensitiveText(input);
+    expect(cleaned).not.toMatch(/SYNTHETIC_CONTINUED_/);
+    expect(cleaned).toContain("retry_after: 30");
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+  });
+
+  it("redacts an explicitly continued authorization header even without folding indentation", () => {
+    const input =
+      "Authorization: Custom SYNTHETIC_HEADER_FIRST\\\nSYNTHETIC_HEADER_SECOND\nRetry-After: 30";
+    const cleaned = redactSensitiveText(input);
+    expect(cleaned).not.toMatch(/SYNTHETIC_HEADER_/);
+    expect(cleaned).toContain("Retry-After: 30");
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+  });
+
   it("preserves ordinary Basic prose and nonsecret response headers", () => {
     const text = "Basic usage is documented.\nContent-Type: application/json\nRetry-After: 60";
     expect(redactSensitiveText(text)).toBe(text);
+  });
+
+  it.each([
+    "client_secret:\n  SYNTHETIC_PLAIN_SECRET_ONLY\nnext: safe",
+    "client_secret:\n  SYNTHETIC_PLAIN_SECRET_FIRST\n  SYNTHETIC_PLAIN_SECRET_SECOND\nnext: safe",
+    "password=SYNTHETIC_PLAIN_SECRET_FIRST SYNTHETIC_PLAIN_SECRET_SECOND\nnext: safe",
+    'metadata:\n  "client-secret":\n    SYNTHETIC_PLAIN_SECRET_FIRST\n\n    SYNTHETIC_PLAIN_SECRET_SECOND\n  next: safe',
+  ])("cleans the full logical value of an explicitly named plain credential", (input) => {
+    const cleaned = redactSensitiveText(input);
+    expect(cleaned).not.toMatch(/SYNTHETIC_PLAIN_SECRET_/);
+    expect(cleaned).toContain("next: safe");
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+  });
+
+  it.each([
+    "PRIVATE KEY",
+    "RSA PRIVATE KEY",
+    "EC PRIVATE KEY",
+    "DSA PRIVATE KEY",
+    "OPENSSH PRIVATE KEY",
+    "ENCRYPTED PRIVATE KEY",
+  ])("cleans the complete %s armor in raw, quoted and encoded diagnostics", (label) => {
+    const secret = "SYNTHETIC_PRIVATE_ARMOR_PAYLOAD_ONLY";
+    const block = `-----BEGIN ${label}-----\n${secret}\n-----END ${label}-----`;
+    for (const input of [
+      block,
+      `private_key=${block}`,
+      `private_key=${block.replaceAll("\n", "\\n")}`,
+      JSON.stringify({ private_key: block }),
+      JSON.stringify({ message: `OpenAI provider failure\n${block}` }),
+      JSON.stringify({ response_body: JSON.stringify({ message: block }) }),
+    ]) {
+      const cleaned = redactSensitiveText(input);
+      expect(cleaned).not.toContain(secret);
+      expect(cleaned).toContain("[Redacted]");
+      expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    }
+    for (const end of ["", "\n-----END PUBLIC KEY-----"]) {
+      const cleaned = redactSensitiveText(
+        `OpenAI failed\n-----BEGIN ${label}-----\n${secret}${end}`,
+      );
+      expect(cleaned).not.toContain(secret);
+      expect(cleaned).toContain("OpenAI failed");
+      expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    }
+  });
+
+  it.each(["PUBLIC KEY", "RSA PUBLIC KEY", "CERTIFICATE", "CERTIFICATE REQUEST"])(
+    "preserves public %s armor outside a declared credential field",
+    (label) => {
+      const text = `-----BEGIN ${label}-----\nSYNTHETIC_PUBLIC_PAYLOAD_ONLY\n-----END ${label}-----`;
+      expect(redactSensitiveText(text)).toBe(text);
+      expect(redactSensitiveText(JSON.stringify({ message: text }))).toBe(
+        JSON.stringify({ message: text }),
+      );
+    },
+  );
+
+  it.each([
+    "Token",
+    "ApiKey",
+    "Digest",
+    "Negotiate",
+    "AWS4-HMAC-SHA256",
+    "Custom",
+    "Unlisted-Scheme",
+  ])("cleans the entire %s authorization value independent of the scheme name", (scheme) => {
+    for (const name of ["Authorization", "Proxy-Authorization", "x_authorization"]) {
+      const value = `${scheme} SYNTHETIC_HEADER_BODY, part="SYNTHETIC_HEADER_PARAMETER"`;
+      for (const input of [
+        `${name}: ${value}\nRetry-After: 30`,
+        `${name}: ${value}\r\n\tSYNTHETIC_HEADER_CONTINUATION\r\nRetry-After: 30`,
+        `${name}: ${value}\\\nSYNTHETIC_HEADER_CONTINUATION\nRetry-After: 30`,
+        `${name}: |\n  ${value}\n  SYNTHETIC_HEADER_CONTINUATION\nRetry-After: 30`,
+        JSON.stringify({
+          [name]: value,
+          message: "OpenAI rejected the API key",
+        }),
+        JSON.stringify({
+          response_body: JSON.stringify({
+            message: `${name}: ${value}\n SYNTHETIC_HEADER_CONTINUATION`,
+          }),
+        }),
+      ]) {
+        const cleaned = redactSensitiveText(input);
+        expect(cleaned).not.toMatch(/SYNTHETIC_HEADER_/);
+        expect(cleaned).toContain("[Redacted]");
+        expect(redactSensitiveText(cleaned)).toBe(cleaned);
+        if (input.includes("Retry-After: 30")) expect(cleaned).toContain("Retry-After: 30");
+      }
+    }
+  });
+
+  it.each(["|", "|-", "|+", ">", ">-", ">+", "|2-", ">+2"])(
+    "consumes every line in a declared %s credential scalar",
+    (indicator) => {
+      for (const name of ["private_key", "api-key", '"client_secret"']) {
+        const input = `metadata:\n  ${name}: ${indicator} # private value\n    SYNTHETIC_SCALAR_FIRST\n\n    SYNTHETIC_SCALAR_SECOND\n  retry_after: 30`;
+        const cleaned = redactSensitiveText(input);
+        expect(cleaned).not.toMatch(/SYNTHETIC_SCALAR_/);
+        expect(cleaned).toContain("retry_after: 30");
+        expect(redactSensitiveText(cleaned)).toBe(cleaned);
+      }
+      const ordinary = `message: ${indicator}\n  ordinary provider diagnostic\nretry_after: 30`;
+      expect(redactSensitiveText(ordinary)).toBe(ordinary);
+    },
+  );
+
+  it.each(['"""', "'''"])("cleans complete and unterminated %s credential strings", (quote) => {
+    const full = `private_key=${quote}\nSYNTHETIC_TRIPLE_FIRST\nSYNTHETIC_TRIPLE_SECOND\n${quote}\nretry_after: 30`;
+    const cleaned = redactSensitiveText(full);
+    expect(cleaned).not.toMatch(/SYNTHETIC_TRIPLE_/);
+    expect(cleaned).toContain("retry_after: 30");
+    expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    expect(redactSensitiveText(`private_key=${quote}\nSYNTHETIC_TRIPLE_FIRST`)).not.toContain(
+      "SYNTHETIC_TRIPLE_",
+    );
+  });
+
+  it.each([
+    "client_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\nnext: safe",
+    "'client_secret': 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\nnext: safe",
+    "client_secret: 'SYNTHETIC_YAML_FIRST''\n  SYNTHETIC_YAML_SECOND'\nnext: safe",
+    "'api''key': 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\nnext: safe",
+    "{client_secret: 'SYNTHETIC_YAML_FIRST\nSYNTHETIC_YAML_SECOND',\nnext: safe}",
+    "{client_secret: 'SYNTHETIC_YAML_FIRST\\''\nSYNTHETIC_YAML_SECOND',\nnext: safe}",
+  ])("cleans the whole YAML quoted credential with doubled-quote escapes", (input) => {
+    for (const diagnostic of [input, JSON.stringify({ response_body: input })]) {
+      const cleaned = redactSensitiveText(diagnostic);
+      expect(cleaned).not.toMatch(/SYNTHETIC_YAML_/);
+      expect(cleaned).toContain("next: safe");
+      expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    }
+  });
+
+  it.each([0, 1, 2, 3, 4, 5])(
+    "cleans declared single-quoted credentials with %i literal backslashes before doubled quotes",
+    (count) => {
+      const escapedQuote = `${"\\".repeat(count)}''`;
+      for (const input of [
+        `client_secret: 'SYNTHETIC_AMBIGUOUS_FIRST${escapedQuote}SYNTHETIC_AMBIGUOUS_SECOND'\nnext: safe`,
+        `'api${escapedQuote}key': 'SYNTHETIC_AMBIGUOUS_FIRST''SYNTHETIC_AMBIGUOUS_SECOND'\nnext: safe`,
+      ]) {
+        for (const diagnostic of [input, JSON.stringify({ response_body: input })]) {
+          const cleaned = redactSensitiveText(diagnostic);
+          expect(cleaned).not.toMatch(/SYNTHETIC_AMBIGUOUS_/);
+          expect(cleaned).toContain("next: safe");
+          expect(redactSensitiveText(cleaned)).toBe(cleaned);
+        }
+      }
+    },
+  );
+
+  it("preserves valid JSON siblings and cannot hide appended secrets behind a cleanup marker", () => {
+    const input = JSON.stringify({
+      client_secret: "SYNTHETIC_JSON_PRIVATE",
+      next: "safe",
+      message: "OpenAI rejected the API key",
+    });
+    expect(JSON.parse(redactSensitiveText(input))).toEqual({
+      client_secret: "[Redacted]",
+      next: "safe",
+      message: "OpenAI rejected the API key",
+    });
+    expect(redactSensitiveText("Authorization=[Redacted]\\")).toBe("Authorization=[Redacted]");
+    expect(
+      redactSensitiveText("Authorization=[Redacted] SYNTHETIC_APPENDED_PRIVATE\nnext: safe"),
+    ).toBe("Authorization=[Redacted]\nnext: safe");
+  });
+
+  it.each(["client_secret", "private_key", "api-key", "password"])(
+    "treats a cleanup marker as untrusted content in every raw %s value",
+    (key) => {
+      for (const name of [key, `'${key}'`, `"${key}"`]) {
+        for (const separator of [":", "="]) {
+          for (const suffix of [
+            "SYNTHETIC_MARKER_PAYLOAD",
+            ",SYNTHETIC_MARKER_PAYLOAD",
+            "\\nSYNTHETIC_MARKER_PAYLOAD",
+          ]) {
+            const raw = `${name}${separator}[Redacted]${suffix}\nnext: safe`;
+            for (const input of [raw, JSON.stringify({ response_body: raw })]) {
+              const cleaned = redactSensitiveText(input);
+              expect(cleaned).not.toContain("SYNTHETIC_MARKER_PAYLOAD");
+              expect(cleaned).toContain("next: safe");
+              expect(redactSensitiveText(cleaned)).toBe(cleaned);
+            }
+            const json = JSON.stringify({ [key]: `[Redacted]${suffix}`, next: "safe" });
+            expect(JSON.parse(redactSensitiveText(json))).toEqual({
+              [key]: "[Redacted]",
+              next: "safe",
+            });
+          }
+        }
+      }
+    },
+  );
+
+  it.each([1, 3, 5])(
+    "reads complete literal and escaped triple-quote boundaries with %i backslashes",
+    (count) => {
+      for (const quote of ["'", '"']) {
+        const delimiter = quote.repeat(3);
+        for (const newline of ["", "\n"]) {
+          const raw = `private_key=${delimiter}SYNTHETIC_TRIPLE_PRIVATE_FIRST${"\\".repeat(count)}${delimiter}${newline}SYNTHETIC_TRIPLE_PRIVATE_SECOND${delimiter}\nnext: safe`;
+          for (const input of [raw, JSON.stringify({ response_body: raw })]) {
+            const cleaned = redactSensitiveText(input);
+            expect(cleaned).not.toContain("SYNTHETIC_TRIPLE_PRIVATE_");
+            expect(cleaned).toContain("next: safe");
+            expect(redactSensitiveText(cleaned)).toBe(cleaned);
+          }
+        }
+      }
+    },
+  );
+
+  it("does not borrow a later field to close an invalid escaped-quote candidate", () => {
+    for (const input of [
+      "private_key='SYNTHETIC_LITERAL_END\\'\nnext: 'safe'",
+      "private_key='''SYNTHETIC_LITERAL_END\\'''\nnext: 'safe'",
+    ]) {
+      const cleaned = redactSensitiveText(input);
+      expect(cleaned).not.toContain("SYNTHETIC_LITERAL_END");
+      expect(cleaned).toContain("next: 'safe'");
+      expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    }
   });
 
   it.each([
@@ -177,7 +452,10 @@ describe("redaction", () => {
       "Provider error: api-key=[Redacted]",
     );
     expect(redactSensitiveText("client-secret='opaque value with spaces' retry_after=30")).toBe(
-      "client-secret=[Redacted] retry_after=30",
+      "client-secret=[Redacted]",
+    );
+    expect(redactSensitiveText("client-secret='opaque value with spaces'\nretry_after=30")).toBe(
+      "client-secret=[Redacted]\nretry_after=30",
     );
     const normal =
       '{"error":{"message":"Provider is overloaded","retry_after":30},"model":"example-model","monkey":"normal","key":"not a credential declaration"}';

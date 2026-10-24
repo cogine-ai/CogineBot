@@ -52,12 +52,11 @@ export function redactBindings(bindings: Record<string, unknown>): Record<string
 
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
-const BASIC_AUTHORIZATION = /\b((?:proxy-)?authorization)\s*[:=]\s*Basic\s+[^\s"',;&]+/gi;
-const COOKIE_HEADER = /\b((?:set-)?cookie)\s*[:=]\s*[^\r\n]*/gi;
 const ASSIGNMENT_SEPARATOR = /[:=][ \t]*/g;
-const QUOTED_FIELD_KEY = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')(\s*[:=]\s*)/g;
+const QUOTED_FIELD_KEY = /("(?:\\.|[^"\\])*"|'(?:\\(?:''|.)|''|[^'\\])*')(\s*[:=]\s*)/g;
 const JSON_STRING = /"(?:\\.|[^"\\])*"/g;
 const MAX_ENCODED_STRING_DEPTH = 8;
+const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----/g;
 const BARE_SECRET =
   /\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
 
@@ -65,11 +64,29 @@ const BARE_SECRET =
 function valueEnd(text: string, start: number): number {
   const first = text[start];
   if (first === '"' || first === "'") {
-    for (let index = start + 1; index < text.length; index += 1) {
-      if (text[index] === "\\") index += 1;
-      else if (text[index] === first) return index + 1;
+    const delimiter = text.startsWith(first.repeat(3), start) ? first.repeat(3) : first;
+    let farthest = 0;
+    for (const backslashEscapes of first === "'" ? [false, true] : [true]) {
+      for (let index = start + delimiter.length; index < text.length; index += 1) {
+        if (backslashEscapes && text[index] === "\\") {
+          index += text[index + 1] === "\r" && text[index + 2] === "\n" ? 2 : 1;
+        } else if (
+          first === "'" &&
+          delimiter.length === 1 &&
+          backslashEscapes &&
+          /[\r\n]/.test(text[index]!)
+        ) {
+          break;
+        } else if (text.startsWith(delimiter, index)) {
+          if (delimiter.length === 1 && first === "'" && text[index + 1] === "'") index += 1;
+          else {
+            farthest = Math.max(farthest, index + delimiter.length);
+            break;
+          }
+        }
+      }
     }
-    return text.length;
+    return farthest || text.length;
   }
   if (first === "{" || first === "[") {
     const closing = [first === "{" ? "}" : "]"];
@@ -84,15 +101,109 @@ function valueEnd(text: string, start: number): number {
     }
     return text.length;
   }
-  return start + (/^[^\s"',;&}\]]+/.exec(text.slice(start))?.[0].length ?? 0);
+  let index = start;
+  while (index < text.length) {
+    if (text[index] === "\\") {
+      const continuation = /^\\(?:\r\n|\r|\n)[ \t]*/.exec(text.slice(index));
+      index += continuation ? continuation[0].length : Math.min(2, text.length - index);
+    } else if (/[\s"',;&}\]]/.test(text[index]!)) break;
+    else index += 1;
+  }
+  return index;
+}
+
+function logicalValueEnd(text: string, start: number, keyStart: number, header: boolean): number {
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", keyStart), text.lastIndexOf("\r", keyStart)) + 1;
+  const parentIndent = header ? 0 : /^[ \t]*/.exec(text.slice(lineStart))![0].length;
+  let end = start;
+  while (end < text.length) {
+    const newline = /\r\n|\r|\n/.exec(text.slice(end));
+    if (!newline) return text.length;
+    const lineEnd = end + newline.index;
+    const nextLine = lineEnd + newline[0].length;
+    let continuationStart = lineEnd;
+    while (continuationStart > start && text[continuationStart - 1] === "\\")
+      continuationStart -= 1;
+    const continued = (lineEnd - continuationStart) % 2 === 1;
+    let nextContent = nextLine;
+    if (!header) {
+      while (nextContent < text.length) {
+        const blank = /^[ \t]*(?:\r\n|\r|\n)/.exec(text.slice(nextContent));
+        if (!blank) break;
+        nextContent += blank[0].length;
+      }
+    }
+    const nextIndent = /^[ \t]*/.exec(text.slice(nextContent))![0].length;
+    if (!continued && nextIndent <= parentIndent) return lineEnd;
+    end = nextContent;
+  }
+  return end;
+}
+
+function blockScalarEnd(text: string, start: number, keyStart: number): number | undefined {
+  const header = /^[|>](?:[+-][1-9]?|[1-9][+-]?)?[ \t]*(?:#[^\r\n]*)?(?:\r\n|\r|\n)/.exec(
+    text.slice(start),
+  );
+  if (!header) return undefined;
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", keyStart), text.lastIndexOf("\r", keyStart)) + 1;
+  const parentIndent = /^[ \t]*/.exec(text.slice(lineStart))![0].length;
+  let cursor = start + header[0].length;
+  let end = cursor;
+  while (cursor < text.length) {
+    const newline = /\r\n|\r|\n/.exec(text.slice(cursor));
+    const lineEnd = newline ? cursor + newline.index : text.length;
+    const line = text.slice(cursor, lineEnd);
+    if (line.trim() && /^[ \t]*/.exec(line)![0].length <= parentIndent) break;
+    end = lineEnd;
+    cursor = newline ? lineEnd + newline[0].length : text.length;
+  }
+  return end;
 }
 
 function redactNamedValues(text: string, json: boolean): string {
+  const encodedStrings: { start: number; end: number }[] = [];
+  for (const token of text.matchAll(JSON_STRING)) {
+    try {
+      JSON.parse(token[0]);
+      encodedStrings.push({ start: token.index, end: token.index + token[0].length });
+    } catch {
+      // Invalid quoted diagnostics remain inspectable as raw text.
+    }
+  }
+  const jsonContainers: { start: number; end: number }[] = [];
+  let stringIndex = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    while (encodedStrings[stringIndex] && encodedStrings[stringIndex]!.end <= index)
+      stringIndex += 1;
+    const encoded = encodedStrings[stringIndex];
+    if (encoded && encoded.start === index) {
+      index = encoded.end - 1;
+      continue;
+    }
+    if (text[index] !== "{" && text[index] !== "[") continue;
+    const containerEnd = valueEnd(text, index);
+    try {
+      JSON.parse(text.slice(index, containerEnd));
+      jsonContainers.push({ start: index, end: containerEnd });
+    } catch {
+      // Unproved structured syntax is treated as a conservative raw diagnostic.
+    }
+    index = containerEnd - 1;
+  }
+  let containerIndex = 0;
+  let encodedIndex = 0;
   let output = "";
   let end = 0;
   for (const match of text.matchAll(json ? QUOTED_FIELD_KEY : ASSIGNMENT_SEPARATOR)) {
     let index = match.index;
     if (index < end) continue;
+    while (encodedStrings[encodedIndex] && encodedStrings[encodedIndex]!.end <= index)
+      encodedIndex += 1;
+    const encoded = encodedStrings[encodedIndex];
+    // Encoded diagnostic content is cleaned after decoding, with its own logical newlines.
+    if (encoded && encoded.start < index && index < encoded.end) continue;
     let key: string;
     if (json) {
       try {
@@ -111,13 +222,25 @@ function redactNamedValues(text: string, json: boolean): string {
     const normalized = normalizeKey(key);
     if (!SECRET_KEY.test(normalized) && !(json && normalized === "email")) continue;
     const start = match.index + match[0].length;
-    let next = valueEnd(text, start);
-    if (!json && normalized.includes("cookie")) {
-      const newline = text.slice(start).search(/[\r\n]/);
-      next = newline < 0 ? text.length : start + newline;
-    } else if (!json && normalized.includes("authorization")) {
-      const scheme = /^(?:Basic|Bearer)[ \t]+[^\s"',;&]+/i.exec(text.slice(start));
-      if (scheme) next = start + scheme[0].length;
+    const blockEnd = blockScalarEnd(text, start, index);
+    let next = blockEnd ?? valueEnd(text, start);
+    while (jsonContainers[containerIndex] && jsonContainers[containerIndex]!.end <= index)
+      containerIndex += 1;
+    const container = jsonContainers[containerIndex];
+    const strictJson =
+      json &&
+      match[1]!.startsWith('"') &&
+      match[2]!.trim() === ":" &&
+      container &&
+      container.start < index &&
+      index < container.end;
+    if (!strictJson && blockEnd === undefined) {
+      const header =
+        (normalized.includes("cookie") || normalized.includes("authorization")) &&
+        text[start] !== "'" &&
+        text[start] !== '"';
+      next = Math.max(next, logicalValueEnd(text, start, index, header));
+      next = Math.max(next, logicalValueEnd(text, next, index, header));
     }
     if (next <= start) continue;
     const delimiter = match[2]?.includes("=") ? "=" : ":";
@@ -134,6 +257,7 @@ function decodeQuotedKey(token: string): string {
   if (token.startsWith('"')) return JSON.parse(token);
   return token
     .slice(1, -1)
+    .replaceAll("''", "'")
     .replace(
       /\\(?:u([0-9a-f]{4})|x([0-9a-f]{2})|(.))/gi,
       (
@@ -151,8 +275,22 @@ function decodeQuotedKey(token: string): string {
     );
 }
 
+function redactPrivateKeyBlocks(text: string): string {
+  let output = "";
+  let end = 0;
+  for (const match of text.matchAll(PRIVATE_KEY_BEGIN)) {
+    if (match.index < end) continue;
+    const closing = `-----END ${match[1]}-----`;
+    const closingStart = text.indexOf(closing, match.index + match[0].length);
+    output += text.slice(end, match.index) + REDACTED;
+    // An incomplete private block has no safe suffix boundary.
+    end = closingStart < 0 ? text.length : closingStart + closing.length;
+  }
+  return output + text.slice(end);
+}
+
 function redactText(text: string, depth: number): string {
-  const named = redactNamedValues(text.replace(EMAIL, REDACTED), true);
+  const named = redactNamedValues(redactPrivateKeyBlocks(text).replace(EMAIL, REDACTED), true);
   const decoded = named.replace(JSON_STRING, (token) => {
     let value: string;
     try {
@@ -164,11 +302,8 @@ function redactText(text: string, depth: number): string {
     const cleaned = depth >= MAX_ENCODED_STRING_DEPTH ? REDACTED : redactText(value, depth + 1);
     return cleaned === value ? token : JSON.stringify(cleaned);
   });
-  const headers = decoded
-    .replace(BASIC_AUTHORIZATION, (_match, key: string) => `${key}=${REDACTED}`)
-    .replace(COOKIE_HEADER, (_match, key: string) => `${key}=${REDACTED}`)
-    .replace(BEARER, `Bearer ${REDACTED}`);
-  return redactNamedValues(headers, false).replace(BARE_SECRET, REDACTED);
+  const headers = redactNamedValues(decoded, false);
+  return headers.replace(BEARER, `Bearer ${REDACTED}`).replace(BARE_SECRET, REDACTED);
 }
 
 export function redactSensitiveText(text: string): string {

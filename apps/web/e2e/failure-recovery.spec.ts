@@ -60,7 +60,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
         trigger: "user",
         startedAt: new Date(),
         completedAt: new Date(),
-        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\n${"多🙂".repeat(3000)}`,
+        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
       },
     });
   } finally {
@@ -70,7 +70,9 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   const fresh = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
   expect(fresh.run?.error).toContain("SAFE_DIAGNOSTIC_AFTER_300");
   expect(Buffer.byteLength(fresh.run!.error!, "utf8")).toBeLessThanOrEqual(8192);
-  expect(fresh.run?.error).not.toMatch(/c3ludGhldGljLW9ubHk=|synthetic-cookie-only/);
+  expect(fresh.run?.error).not.toMatch(
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND/,
+  );
   await page.reload();
   const failure = page.getByTestId("composer-error");
   await expect(failure).toBeVisible();
@@ -81,7 +83,9 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   await failure.getByRole("button", { name: "Copy diagnostics" }).click();
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toContain("SAFE_DIAGNOSTIC_AFTER_300");
-  expect(copied).not.toMatch(/c3ludGhldGljLW9ubHk=|synthetic-cookie-only/);
+  expect(copied).not.toMatch(
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND/,
+  );
   expect(Buffer.byteLength(copied, "utf8")).toBeLessThanOrEqual(8192);
   await captureScreenshot(page, info, "b5-safe-snapshot-diagnostics");
   await page.reload();

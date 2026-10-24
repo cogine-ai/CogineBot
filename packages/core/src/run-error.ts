@@ -23,15 +23,27 @@ export function sanitizeRunErrorDetails(details: string): string {
   }
   if (!wasTruncated && bytes <= RUN_ERROR_DETAILS_MAX_BYTES) return safe;
   const limit = RUN_ERROR_DETAILS_MAX_BYTES - DETAILS_TRUNCATED.length;
+  let clipped = utf8Prefix(safe, limit);
+  // Clipping may break a JSON envelope and change how the same raw diagnostic is parsed.
+  // Settle the bounded representation without trusting a caller-supplied cleanup marker.
+  for (let pass = 0; pass < 4; pass += 1) {
+    const canonical = utf8Prefix(sanitizeUtf16ForJson(redactSensitiveText(clipped)), limit);
+    if (canonical === clipped) return clipped + DETAILS_TRUNCATED;
+    clipped = canonical;
+  }
+  return DETAILS_TRUNCATED;
+}
+
+function utf8Prefix(text: string, limit: number): string {
   let end = 0;
   let used = 0;
-  for (const character of safe) {
+  for (const character of text) {
     const size = utf8Size(character);
     if (used + size > limit) break;
     used += size;
     end += character.length;
   }
-  return safe.slice(0, end) + DETAILS_TRUNCATED;
+  return text.slice(0, end);
 }
 
 function utf8Size(character: string): number {
