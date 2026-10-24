@@ -13,13 +13,15 @@ const DETAILS_TRUNCATED = "\n[Diagnostics truncated at 8 KiB]";
 
 /** Redact before truncating so a budget boundary cannot expose a partial credential. */
 export function sanitizeRunErrorDetails(details: string): string {
-  const safe = sanitizeUtf16ForJson(redactSensitiveText(details));
+  const wasTruncated = details.endsWith(DETAILS_TRUNCATED);
+  const body = wasTruncated ? details.slice(0, -DETAILS_TRUNCATED.length) : details;
+  const safe = sanitizeUtf16ForJson(redactSensitiveText(body));
   let bytes = 0;
   for (const character of safe) {
     bytes += utf8Size(character);
     if (bytes > RUN_ERROR_DETAILS_MAX_BYTES) break;
   }
-  if (bytes <= RUN_ERROR_DETAILS_MAX_BYTES) return safe;
+  if (!wasTruncated && bytes <= RUN_ERROR_DETAILS_MAX_BYTES) return safe;
   const limit = RUN_ERROR_DETAILS_MAX_BYTES - DETAILS_TRUNCATED.length;
   let end = 0;
   let used = 0;

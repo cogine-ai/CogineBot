@@ -8,6 +8,7 @@ import {
 } from "./composer-draft";
 import type { VerifiedComposerRecoveryTarget } from "./composer-rejected-draft";
 import {
+  cancelPreparedRejectedComposerDraft,
   discardRejectedComposerDraft,
   prepareRejectedComposerDraft,
   rememberVerifiedComposerRecoveryTarget,
@@ -68,6 +69,37 @@ afterEach(() => {
 });
 
 describe("explicit rejected-session editable draft recovery", () => {
+  it("cancels the failed copy but allows an explicit retry to capture the current editable draft", () => {
+    writeComposerDraft(key, { text: "Old prepared text" });
+    expect(prepare()).toBe(true);
+    cancelPreparedRejectedComposerDraft();
+    writeComposerDraft(key, { text: "Current text for the explicit retry" });
+    expect(prepare()).toBe(true);
+    signInAgain();
+    expect(restore()).toBe(true);
+    expect(readComposerDraft(key).text).toBe("Current text for the explicit retry");
+  });
+
+  it("does not carry a cancelled copy or its verified descriptor through an unrelated anonymous transition", () => {
+    writeComposerDraft(key, { text: "Private failed recovery" });
+    expect(prepare()).toBe(true);
+    cancelPreparedRejectedComposerDraft();
+    signInAgain();
+    expect(restore()).toBe(false);
+    expect(prepareRejectedComposerDraft(renewed, preview)).toBe(false);
+    expect(readComposerDraft(key).text).toBe("");
+  });
+
+  it("still forgets the verified editor on explicit logout after a failed recovery", () => {
+    writeComposerDraft(key, { text: "Private failed recovery" });
+    expect(prepare()).toBe(true);
+    cancelPreparedRejectedComposerDraft();
+    discardRejectedComposerDraft();
+    expect(prepare()).toBe(false);
+    signInAgain();
+    expect(restore()).toBe(false);
+  });
+
   it("survives the actual anonymous draft/attempt wipe with only plain editable content and copied File bytes", async () => {
     const file = new File(["File bytes: \u{1f4dd}\nsecond line"], "draft.txt", {
       type: "text/plain",

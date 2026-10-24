@@ -8,7 +8,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Load more": "Загрузить ещё",
   "No runs yet": "Запусков пока нет",
   Refresh: "Обновить",
-  "Run history": "История запуска",
+  "Run history": "История запусков",
   "Showing saved chats.": "Показаны сохранённые чаты.",
   "The model provider returned an error.": "Поставщик моделей вернул ошибку.",
   "The server could not complete the request": "Сервер не смог выполнить запрос",

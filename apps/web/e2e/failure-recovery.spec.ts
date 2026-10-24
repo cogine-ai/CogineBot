@@ -261,6 +261,73 @@ test("a scoped 403 recovers through the default Space without changing chat cont
   expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBeNull();
 });
 
+for (const copy of [
+  {
+    id: "de",
+    locale: "Deutsch",
+    manage: "Manage messaging settings",
+    bot: "Bot to link",
+    link: "Link a chat app",
+    instruction:
+      "Sende ABCD-2345 innerhalb von 10 Minuten aus deiner Chat-App an die zu verknüpfende Nummer. Nach der Verknüpfung erhältst du eine Bestätigung.",
+  },
+  {
+    id: "ru",
+    locale: "Русский",
+    manage: "Управление настройками обмена сообщениями",
+    bot: "Бот для ссылки",
+    link: "Связать приложение чата",
+    instruction:
+      "Отправьте ABCD-2345 из приложения для чата на линию, которую хотите привязать, в течение 10 минут. После подключения вы получите подтверждение.",
+  },
+]) {
+  test(`${copy.locale} linking instructions use the compiled member-expression placeholder`, async ({
+    page,
+  }, info) => {
+    await page.route("**/rpc/messaging/status", (route) =>
+      route.fulfill({
+        json: {
+          json: {
+            enabled: true,
+            providers: ["telegram"],
+            openSignup: false,
+            identities: [],
+          },
+        },
+      }),
+    );
+    await page.route("**/rpc/messaging/channels/list", (route) =>
+      route.fulfill({ json: { json: [] } }),
+    );
+    await page.route("**/rpc/messaging/connections/list", (route) =>
+      route.fulfill({ json: { json: [] } }),
+    );
+    await page.route("**/rpc/messaging/link/start", (route) =>
+      route.fulfill({
+        json: {
+          json: {
+            code: "ABCD-2345",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        },
+      }),
+    );
+    const { name, botId } = await account(page, `link-${copy.id}`);
+    const overlay = await settings(page, name);
+    await overlay.getByTestId("ui-locale-select").click();
+    await overlay.getByRole("option", { name: copy.locale, exact: true }).click();
+    await overlay.getByRole("button", { name: copy.manage, exact: true }).click();
+    const messaging = page.getByTestId("messaging-settings");
+    await messaging.getByLabel(copy.bot).selectOption(botId);
+    await messaging.getByRole("button", { name: copy.link, exact: true }).click();
+    const instruction = messaging.getByTestId("messaging-link-code");
+    await expect(instruction).toHaveText(copy.instruction);
+    await expect(instruction).not.toContainText("{0}");
+    await expect(instruction).not.toContainText("{linkCode}");
+    await captureScreenshot(page, info, `b5-link-instruction-${copy.id}`);
+  });
+}
+
 test("an identity reassigned to the selected bot completes its original link code", async ({
   page,
 }, info) => {

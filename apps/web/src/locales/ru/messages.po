@@ -4424,7 +4424,7 @@ msgstr "Запустить в"
 
 #: src/pages/RoutineRunHistory.tsx
 msgid "Run history"
-msgstr "История запуска"
+msgstr "История запусков"
 
 #: src/pages/Shell.tsx
 msgid "Run time must be in the future."
@@ -6120,7 +6120,7 @@ msgid "Link code expired. Try again."
 msgstr "Срок действия кода истёк. Попробуйте снова."
 
 msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
-msgstr "Отправьте <0>{0}</0> в строку из вашего чата в течение 10 минут. После подключения вы получите подтверждение."
+msgstr "Отправьте <0>{0}</0> из приложения для чата на линию, которую хотите привязать, в течение 10 минут. После подключения вы получите подтверждение."
 
 msgid "Showing saved chats."
 msgstr "Показаны сохранённые чаты."

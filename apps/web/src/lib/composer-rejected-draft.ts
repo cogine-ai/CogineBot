@@ -108,6 +108,11 @@ export function prepareRejectedComposerDraft(
   }
 }
 
+/** Cancel this failed recovery copy; an explicit retry may still use the same verified editor. */
+export function cancelPreparedRejectedComposerDraft(): void {
+  if (held?.stage === "prepared") held = undefined;
+}
+
 export function discardRejectedComposerDraft(): void {
   held = undefined;
   verifiedEditor = undefined;

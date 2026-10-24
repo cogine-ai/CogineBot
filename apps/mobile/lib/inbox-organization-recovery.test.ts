@@ -292,6 +292,47 @@ function home() {
 }
 
 describe("confirmed mobile organization recovery", () => {
+  it("keeps the failure category during a background poll and clears it after recovery", async () => {
+    const state = home();
+    state.rpc.mockRejectedValueOnce(
+      Object.assign(new Error("server unavailable"), { status: 503 }),
+    );
+    await state.loadBots();
+    expect(state.setLoadFailure).toHaveBeenLastCalledWith("server");
+    state.setLoadFailure.mockClear();
+    const read = deferred<typeof state.navigation>();
+    state.rpc.mockImplementationOnce(() => read.promise);
+    const loading = state.loadBots();
+    expect(state.setLoadFailure).not.toHaveBeenCalled();
+    read.resolve(state.navigation);
+    await loading;
+    expect(state.setLoadFailure).toHaveBeenCalledExactlyOnceWith(null);
+  });
+
+  it("does not clear a failure when a poll belongs to an obsolete API owner", async () => {
+    const state = home();
+    const read = deferred<typeof state.navigation>();
+    state.rpc.mockImplementationOnce(() => read.promise);
+    const loading = state.loadBots();
+    state.live.apiGeneration++;
+    read.resolve(state.navigation);
+    await loading;
+    expect(state.setLoadFailure).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale category so default-Space persistence errors remain visible", async () => {
+    const state = home();
+    state.live.selection = null;
+    state.selectInitialSpace.mockImplementationOnce(async () => {
+      state.live.selectionSeq++;
+      return false;
+    });
+    await state.loadBots();
+    expect(state.setLoadFailure).toHaveBeenLastCalledWith(null);
+    expect(state.setError).toHaveBeenLastCalledWith("Could not save the default space");
+    expect(state.setBots).not.toHaveBeenCalled();
+  });
+
   it.each([
     [401, "auth"],
     [403, "space"],

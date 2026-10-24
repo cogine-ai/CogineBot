@@ -190,6 +190,7 @@ import {
   readComposerDraft,
 } from "../lib/composer-draft";
 import {
+  cancelPreparedRejectedComposerDraft,
   discardRejectedComposerDraft,
   prepareRejectedComposerDraft,
   rememberVerifiedComposerRecoveryTarget,
@@ -5151,13 +5152,18 @@ export function ShellPage() {
                 // The ordinary session wipe still runs; only verified editable content is held in RAM.
                 void authClient
                   .signOut()
-                  .then(() => {
-                    if (committedSettingsOwner.current === owner)
-                      navigate("/sign-in", { replace: true });
+                  .then((result) => {
+                    if (committedSettingsOwner.current !== owner) return;
+                    if (result?.error) {
+                      cancelPreparedRejectedComposerDraft();
+                      setBootstrapLoad((value) => ({ ...value, pending: false }));
+                      return;
+                    }
+                    navigate("/sign-in", { replace: true });
                   })
                   .catch(() => {
                     if (committedSettingsOwner.current === owner) {
-                      discardRejectedComposerDraft();
+                      cancelPreparedRejectedComposerDraft();
                       setBootstrapLoad((value) => ({ ...value, pending: false }));
                     }
                   });

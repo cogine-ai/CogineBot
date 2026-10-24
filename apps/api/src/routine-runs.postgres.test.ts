@@ -180,7 +180,7 @@ describePostgres("routine failure history HTTP acceptance", () => {
         status: "failed",
         threadId,
         createdAt: new Date(Date.now() + 1_000),
-        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300 token=synthetic-private-thread-value\n${"界😀".repeat(1600)}`,
+        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300 token=synthetic-private-thread-value\n{"client_secret":"AIzaSyntheticThreadCredential","api-key":"opaque-thread-key"}\n${JSON.stringify({ response_body: JSON.stringify({ message: "provider failure", client_secret: "SYNTHETIC_NESTED_THREAD_VALUE" }) })}\n${"界😀".repeat(1600)}`,
       });
       const before = await database.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
       const first = await rpc<ThreadSnapshot>(owner.cookie, "threads/get", target);
@@ -191,6 +191,11 @@ describePostgres("routine failure history HTTP acceptance", () => {
       expect(details).toContain("SAFE_DIAGNOSTIC_AFTER_300");
       expect(details).toContain("token=[Redacted]");
       expect(details).not.toContain("synthetic-private-thread-value");
+      expect(details).not.toContain("AIzaSyntheticThreadCredential");
+      expect(details).not.toContain("opaque-thread-key");
+      expect(details).not.toContain("SYNTHETIC_NESTED_THREAD_VALUE");
+      expect(details).toContain('"client_secret":"[Redacted]"');
+      expect(details).toContain('"api-key":"[Redacted]"');
       expect(new TextEncoder().encode(details).length).toBeLessThanOrEqual(8192);
       expect(details.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
       expect(reloaded.messages.some((message) => message.runId === run.id)).toBe(false);

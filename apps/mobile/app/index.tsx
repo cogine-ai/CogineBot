@@ -301,7 +301,6 @@ function Home() {
     const current = () =>
       mounted.current && requestId === inboxRequestId.current && isMobileScopeCurrent(owner);
     setError(null);
-    setLoadFailure(null);
     try {
       const [navigation, nextMe] = await Promise.all([
         rpc<MobileSpaceNavigation>("spaces/list"),
@@ -337,6 +336,7 @@ function Home() {
         }
         const claimed = captureMobileScope();
         if (!selected && operationCurrent() && claimed.selectionSeq === start.selectionSeq + 1) {
+          setLoadFailure(null);
           setError(t("Could not save the default space"));
           return;
         }
@@ -370,6 +370,7 @@ function Home() {
       setGroups((current) => retainInboxValue(current, navigation.current.groups));
       setSpaces((current) => retainInboxValue(current, navigation.spaces));
       setMe((current) => retainInboxValue(current, nextMe));
+      setLoadFailure(null);
       void adoptDeviceTimezone(nextMe, current);
       saveInbox(
         {

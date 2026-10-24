@@ -115,7 +115,7 @@ describe("run failure diagnostics", () => {
       '401: {"message":"OpenAI rejected [Redacted]","token":"[Redacted]","email":"[Redacted]","authorization":"[Redacted]"}',
     );
     expect(sanitizeRunErrorDetails("Authorization: Bearer synthetic-bearer-value")).toBe(
-      "Authorization=[Redacted] [Redacted]",
+      "Authorization=[Redacted]",
     );
   });
 
@@ -139,6 +139,81 @@ describe("run failure diagnostics", () => {
       expect(sanitizeRunErrorDetails(capped)).toBe(capped);
     },
   );
+
+  it.each([
+    "client_secret",
+    "client-secret",
+    "api_key",
+    "api-key",
+    "api key",
+    "access_token",
+    "private_key",
+    "session_cookie",
+  ])(
+    "cleans compound %s credentials before Unicode budgeting without erasing classification",
+    (key) => {
+      const secret = "AIzaSyntheticCredentialOnly0123456789";
+      const diagnostic = `401: ${JSON.stringify({ error: { message: "OpenAI rejected the API key", metadata: { [key]: secret } } })}`;
+      const normalized = normalizeRunError(diagnostic);
+      expect(normalized.summary).toBe(
+        "Your OpenAI rejected the API key. Check your connection settings.",
+      );
+      expect(normalized.details).toContain("OpenAI rejected the API key");
+      expect(normalized.details).not.toContain(secret);
+      const capped = sanitizeRunErrorDetails(
+        `${"界".repeat(2710)}\n${key}: ${secret}\n${"😀".repeat(1000)}`,
+      );
+      expect(capped).not.toContain("AIzaSynthetic");
+      expect(new TextEncoder().encode(capped).length).toBeLessThanOrEqual(8192);
+      expect(capped.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
+      expect(sanitizeRunErrorDetails(capped)).toBe(capped);
+    },
+  );
+
+  it("keeps repeated cleanup stable when the budget cuts a redacted JSON field", () => {
+    for (let prefix = 8120; prefix < 8200; prefix += 1) {
+      const input = `${"x".repeat(prefix)} {"client_secret":"AIzaSyntheticCredentialOnly"} ${"y".repeat(200)}`;
+      const once = sanitizeRunErrorDetails(input);
+      expect(sanitizeRunErrorDetails(once), `prefix ${prefix}`).toBe(once);
+      expect(once).not.toContain("AIzaSynthetic");
+      expect(new TextEncoder().encode(once).length).toBeLessThanOrEqual(8192);
+    }
+  });
+
+  it("keeps nested SDK-string details and truncation markers safe across repeated cleanup", () => {
+    const payload = JSON.stringify({
+      error: {
+        message: JSON.stringify({
+          message: "OpenAI rejected the API key",
+          client_secret: "SYNTHETIC_NESTED_CREDENTIAL_ONLY",
+        }),
+      },
+    });
+    const normalized = normalizeRunError(`401: ${payload}`);
+    expect(normalized.summary).toBe(
+      "Your OpenAI rejected the API key. Check your connection settings.",
+    );
+    expect(normalized.details).not.toContain("SYNTHETIC_NESTED_CREDENTIAL_ONLY");
+    for (let prefix = 8090; prefix < 8200; prefix += 1) {
+      const once = sanitizeRunErrorDetails(
+        `${"x".repeat(prefix)} ${payload} ${"界😀".repeat(200)}`,
+      );
+      expect(once).not.toContain("SYNTHETIC_NESTED_CREDENTIAL_ONLY");
+      expect(new TextEncoder().encode(once).length).toBeLessThanOrEqual(8192);
+      expect(sanitizeRunErrorDetails(once), `prefix ${prefix}`).toBe(once);
+      expect(once.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
+    }
+  });
+
+  it("does not trust a supplied truncation marker to bypass credential cleanup", () => {
+    const cleaned = sanitizeRunErrorDetails(
+      '{"client_secret":"AIzaSyntheticMarkerBypass"}\n[Diagnostics truncated at 8 KiB]',
+    );
+    expect(cleaned).not.toContain("AIzaSyntheticMarkerBypass");
+    expect(cleaned).toContain('"client_secret":"[Redacted]"');
+    expect(cleaned.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
+    expect(sanitizeRunErrorDetails(cleaned)).toBe(cleaned);
+  });
 
   it("does not truncate a long secret that redaction shrinks within the budget", () => {
     expect(sanitizeRunErrorDetails(`api_key=${"a".repeat(10000)}`)).toBe("api_key=[Redacted]");
