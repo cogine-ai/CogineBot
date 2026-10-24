@@ -53,7 +53,7 @@ export function redactBindings(bindings: Record<string, unknown>): Record<string
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
 const ASSIGNMENT_SEPARATOR = /[:=][ \t]*/g;
-const RAW_KEY_QUALIFIER = /^(?:key|value|header|material|id|identifier|data)s?$/i;
+const RAW_KEY_QUALIFIER = /^(?:access|(?:key|value|header|material|id|identifier|data)s?)$/i;
 const TOKEN_COUNT_KEY =
   /^(?:(?:max(?:imum)?|min(?:imum)?|prompt|completion|input|output|total|reasoning|cached)tokens?(?:count|limit|used|usage)?|tokens|tokens?(?:count|limit|used|usage))$/;
 const NUMERIC_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?=$|[\s,;})\]])/i;

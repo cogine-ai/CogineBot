@@ -653,7 +653,9 @@ for (const failure of ["network", 500] as const) {
       failure === 500 ? internalReadFailure(route) : route.abort("failed");
     state.list = (route) => route.abort("failed");
     await page.goto("/app/chief");
-    await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+    await expect(page.getByTestId("load-failure")).toContainText(
+      failure === 500 ? "The server could not complete the request" : "Could not reach the server",
+    );
     await expect(
       page.locator('[data-testid="composer-bar"] [role="combobox"]:enabled'),
     ).toHaveCount(0);
@@ -666,7 +668,7 @@ for (const failure of ["network", 500] as const) {
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(attempts);
     await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
-    await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+    await expect(page.getByTestId("load-failure")).toHaveCount(0);
     const recovered = page.getByRole("combobox", { name: "Message Chief", exact: true });
     await expect(recovered).toBeEnabled();
     await recovered.fill("@Research");

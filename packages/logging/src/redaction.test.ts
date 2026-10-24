@@ -32,6 +32,45 @@ describe("redaction", () => {
   });
 
   it.each([
+    "Secret Access Key",
+    "secret access key",
+    "SECRET ACCESS KEY",
+    "sEcReT aCcEsS kEy",
+    "Secret Access Key Value",
+    "Secret Access Key Header",
+    "Secret Access Key Material",
+  ])("redacts the complete %s label through raw and encoded diagnostics", (label) => {
+    for (const space of [" ", "  ", "\t"]) {
+      for (const separator of [":", "="]) {
+        const raw = `Provider rejected the request.\n${label.replaceAll(" ", space)} ${separator} SYNTHETIC_SECRET_ACCESS_VALUE\nnext: safe`;
+        for (const input of [
+          raw,
+          JSON.stringify({ message: raw }),
+          JSON.stringify({ response_body: JSON.stringify({ message: raw }) }),
+        ]) {
+          const cleaned = redactSensitiveText(input);
+          expect(cleaned).not.toContain("SYNTHETIC_SECRET_ACCESS_VALUE");
+          expect(cleaned).toContain("[Redacted]");
+          expect(cleaned).toContain("Provider rejected the request.");
+          expect(cleaned).toContain("next: safe");
+          expect(redactSensitiveText(cleaned)).toBe(cleaned);
+        }
+      }
+    }
+  });
+
+  it("keeps ordinary access descriptions and numeric limits next to a named credential", () => {
+    const normal =
+      "Access controls require key rotation. Retry-After: 30\nDaily token quota: 1000; resets tomorrow\nToken access limit: 4096";
+    expect(redactSensitiveText(normal)).toBe(normal);
+    expect(
+      redactSensitiveText(
+        `${normal}\nSecret Access Key: SYNTHETIC_SECRET_ACCESS_VALUE\nnext: safe`,
+      ),
+    ).toBe(`${normal}\nSecret Access Key=[Redacted]\nnext: safe`);
+  });
+
+  it.each([
     "max_tokens",
     "input_tokens",
     "output_tokens",

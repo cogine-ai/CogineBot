@@ -81,6 +81,24 @@ describe("run failure diagnostics", () => {
     },
   );
 
+  it.each(["Secret Access Key", "Secret Access Key Material"])(
+    "cleans a %s after 300 characters before Unicode clipping",
+    (label) => {
+      for (const prefix of [350, 8100, 8155, 8190, 8200]) {
+        const raw = `${"界".repeat(Math.floor(prefix / 3))}\n${label}: SYNTHETIC_SECRET_ACCESS_VALUE\n${"😀".repeat(200)}`;
+        for (const diagnostic of [
+          raw,
+          JSON.stringify({ response_body: JSON.stringify({ message: raw }) }),
+        ]) {
+          const cleaned = sanitizeRunErrorDetails(diagnostic);
+          expect(cleaned).not.toContain("SYNTHETIC_SECRET_ACCESS_VALUE");
+          expect(new TextEncoder().encode(cleaned).length).toBeLessThanOrEqual(8192);
+          expect(sanitizeRunErrorDetails(cleaned)).toBe(cleaned);
+        }
+      }
+    },
+  );
+
   it.each([
     [
       '{"error":{"message":"Insufficient credits","code":402,"metadata":{"provider_name":"OpenAI"}}}',
