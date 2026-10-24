@@ -7,6 +7,38 @@ import {
 import { stuckWorkStatusMessages } from "./stuck-work.js";
 
 describe("run failure diagnostics", () => {
+  it.each([
+    [
+      "Anthropic",
+      "max_tokens: 4096 exceeds the maximum tokens allowed for model claude-example: 2048. Reduce max_tokens.",
+    ],
+    [
+      "OpenAI",
+      "Rate limit reached for gpt-example on tokens per min. Limit: 10000 / min. Requested: 15000. Please try again in 30s.",
+    ],
+  ])(
+    "retains the complete %s limit diagnosis while masking a real credential field",
+    (provider, message) => {
+      const normalized = normalizeRunError(
+        JSON.stringify({
+          error: {
+            type: "rate_limit_error",
+            message,
+            metadata: { provider_name: provider, api_key: "SYNTHETIC_PROVIDER_CREDENTIAL" },
+          },
+        }),
+      );
+      expect(normalized.summary).toBe(
+        `Your ${provider} is rate limiting requests. Try again shortly.`,
+      );
+      const parsed = JSON.parse(normalized.details);
+      expect(parsed.error.message).toBe(message);
+      expect(parsed.error.metadata.api_key).toBe("[Redacted]");
+      expect(normalized.details).not.toContain("SYNTHETIC_PROVIDER_CREDENTIAL");
+      expect(sanitizeRunErrorDetails(normalized.details)).toBe(normalized.details);
+    },
+  );
+
   it("summarizes a provider key limit without placing its diagnostic URL in the summary", () => {
     const details =
       '403: {"message":"Key limit exceeded (weekly); resets 2026-10-12T00:00:00.000Z. Manage https://openrouter.ai/keys/fake-id","metadata":{"limit_source":"openrouter_key_limit"}}';

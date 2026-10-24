@@ -53,6 +53,10 @@ export function redactBindings(bindings: Record<string, unknown>): Record<string
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
 const ASSIGNMENT_SEPARATOR = /[:=][ \t]*/g;
+const RAW_KEY_QUALIFIER = /^(?:key|value|header|material|id|identifier|data)s?$/i;
+const TOKEN_COUNT_KEY =
+  /^(?:(?:max(?:imum)?|min(?:imum)?|prompt|completion|input|output|total|reasoning|cached)tokens?(?:count|limit|used|usage)?|tokens|tokens?(?:count|limit|used|usage))$/;
+const NUMERIC_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?=$|[\s,;})\]])/i;
 const QUOTED_FIELD_KEY = /("(?:\\.|[^"\\])*"|'(?:\\(?:''|.)|''|[^'\\])*')(\s*[:=]\s*)/g;
 const JSON_STRING = /"(?:\\.|[^"\\])*"/g;
 const MAX_ENCODED_STRING_DEPTH = 8;
@@ -162,6 +166,32 @@ function blockScalarEnd(text: string, start: number, keyStart: number): number |
   return end;
 }
 
+function rawKeyStart(text: string, end: number, boundary: number): number {
+  let start = end;
+  while (start > boundary && /[A-Za-z0-9_.-]/.test(text[start - 1]!)) start -= 1;
+  const identifierStart = start;
+  let word = text.slice(start, end);
+  while (RAW_KEY_QUALIFIER.test(word)) {
+    let previousEnd = start;
+    while (previousEnd > boundary && /[ \t]/.test(text[previousEnd - 1]!)) previousEnd -= 1;
+    if (previousEnd === start) break;
+    let previousStart = previousEnd;
+    while (previousStart > boundary && /[A-Za-z0-9_.-]/.test(text[previousStart - 1]!))
+      previousStart -= 1;
+    const previous = text.slice(previousStart, previousEnd);
+    if (!previous) break;
+    const normalized = normalizeKey(previous);
+    if (
+      SECRET_KEY.test(normalized) ||
+      (/^keys?$/i.test(word) && /^(?:api|private)$/i.test(previous))
+    )
+      return previousStart;
+    start = previousStart;
+    word = previous;
+  }
+  return identifierStart;
+}
+
 function redactNamedValues(text: string, json: boolean): string {
   const encodedStrings: { start: number; end: number }[] = [];
   for (const token of text.matchAll(JSON_STRING)) {
@@ -214,14 +244,15 @@ function redactNamedValues(text: string, json: boolean): string {
     } else {
       let keyEnd = index;
       while (keyEnd > end && /[ \t]/.test(text[keyEnd - 1]!)) keyEnd -= 1;
-      index = keyEnd;
-      while (index > end && /[A-Za-z0-9_. \t-]/.test(text[index - 1]!)) index -= 1;
+      index = rawKeyStart(text, keyEnd, end);
       key = text.slice(index, keyEnd);
       if (!key) continue;
     }
     const normalized = normalizeKey(key);
     if (!SECRET_KEY.test(normalized) && !(json && normalized === "email")) continue;
     const start = match.index + match[0].length;
+    if (!json && TOKEN_COUNT_KEY.test(normalized) && NUMERIC_VALUE.test(text.slice(start)))
+      continue;
     const blockEnd = blockScalarEnd(text, start, index);
     let next = blockEnd ?? valueEnd(text, start);
     while (jsonContainers[containerIndex] && jsonContainers[containerIndex]!.end <= index)

@@ -2,6 +2,70 @@ import { describe, expect, it } from "vitest";
 import { redactBindings, redactSensitiveText } from "./redaction.js";
 
 describe("redaction", () => {
+  it.each([
+    "max_tokens: 4096 exceeds the maximum tokens allowed for model claude-example: 2048. Reduce max_tokens.",
+    "Rate limit reached for gpt-example on tokens per min. Limit: 10000 / min. Requested: 15000. Please try again in 30s.",
+    "Rate limit reached for gpt-example on tokens per min. Limit=10000; retry_after=30",
+    "Daily token quota: 1000; resets 2026-10-25",
+    "token limit: 1024",
+    "input_tokens=120 output_tokens=80 total_tokens=200",
+    "OpenAI API token rejected; error_code: 401; check connection settings",
+    "OpenAI token quota reset: 2026-11-01",
+    "The token bucket is empty. Retry-After: 60",
+  ])("preserves numeric token limits and ordinary provider diagnostics: %s", (input) => {
+    expect(redactSensitiveText(input)).toBe(input);
+    expect(redactSensitiveText(JSON.stringify({ response_body: input }))).toBe(
+      JSON.stringify({ response_body: input }),
+    );
+  });
+
+  it.each([
+    "API key value",
+    "private key material",
+    "authorization header value",
+    "access token",
+    "client secret",
+  ])("keeps a complete spaced %s credential private beside ordinary limit prose", (key) => {
+    const input = `Rate limit reached. ${key}: SYNTHETIC_SPACED_CREDENTIAL\nnext: safe`;
+    expect(redactSensitiveText(input)).not.toContain("SYNTHETIC_SPACED_CREDENTIAL");
+    expect(redactSensitiveText(input)).toContain("next: safe");
+  });
+
+  it.each([
+    "max_tokens",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "token_count",
+    "tokens_used",
+  ])(
+    "preserves only actual numeric raw %s counts while keeping credential-shaped values private",
+    (key) => {
+      expect(redactSensitiveText(`${key}=4096; retry_after=30`)).toBe(
+        `${key}=4096; retry_after=30`,
+      );
+      expect(redactSensitiveText(`${key}=SYNTHETIC_OPAQUE_COUNT_VALUE\nnext: safe`)).not.toContain(
+        "SYNTHETIC_OPAQUE_COUNT_VALUE",
+      );
+      expect(
+        redactSensitiveText(`${key}=4096SYNTHETIC_OPAQUE_COUNT_VALUE\nnext: safe`),
+      ).not.toContain("SYNTHETIC_OPAQUE_COUNT_VALUE");
+      expect(redactSensitiveText("token=12345\nnext: safe")).toBe("token=[Redacted]\nnext: safe");
+    },
+  );
+
+  it("retains the existing structured binding policy for token counters", () => {
+    expect(redactBindings({ max_tokens: 4096, token: 12345, safe_count: 60 })).toEqual({
+      max_tokens: "[Redacted]",
+      token: "[Redacted]",
+      safe_count: 60,
+    });
+    expect(JSON.parse(redactSensitiveText('{"max_tokens":4096,"next":"safe"}'))).toEqual({
+      max_tokens: "[Redacted]",
+      next: "safe",
+    });
+  });
+
   it("redacts secrets, credentials, and message bodies", () => {
     const redacted = redactBindings({
       "user.id": "user-1",
