@@ -150,7 +150,9 @@ import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { lazyOverlay } from "../components/ErrorBoundary";
+import { LoadFailureNotice } from "../components/LoadFailureNotice";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
+import { RunErrorDetails } from "../components/RunErrorDetails";
 import {
   LIVE_TOOL_STEP_WINDOW,
   StandaloneToolActivity,
@@ -187,6 +189,12 @@ import {
   moveComposerDraft,
   readComposerDraft,
 } from "../lib/composer-draft";
+import {
+  discardRejectedComposerDraft,
+  prepareRejectedComposerDraft,
+  rememberVerifiedComposerRecoveryTarget,
+  restoreRejectedComposerDraft,
+} from "../lib/composer-rejected-draft";
 import { composerSendAttempts, composerSendSignature } from "../lib/composer-send-attempt";
 import {
   embeddableScreenUrl,
@@ -213,6 +221,10 @@ import {
   revokePendingAttachmentPreviews,
 } from "../lib/pending-attachments";
 import { markAfterPaint, markOnce } from "../lib/performance";
+import {
+  consumePreloadRecoverySnapshot,
+  registerPreloadRecoverySnapshot,
+} from "../lib/preload-recovery-state";
 import { quoteDraftForSelection } from "../lib/quote-selection";
 import { getResponseStreamingEnabled, subscribeResponseStreaming } from "../lib/response-streaming";
 import type { Panel, RightPanelState } from "../lib/right-panel-state";
@@ -953,6 +965,85 @@ export function ShellPage() {
       if (committedSettingsOwner.current === settingsOwner) committedSettingsOwner.current = null;
     };
   }, [settingsOwner]);
+  useLayoutEffect(() => {
+    if (!userId || !creationSpaceId) return;
+    const scope = {
+      apiOrigin: window.location.origin,
+      accountId: userId,
+      spaceId: creationSpaceId,
+    };
+    const targetId = groupId
+      ? `group:${groupId}`
+      : botId
+        ? `bot:${botId}`
+        : `space:${creationSpaceId}`;
+    const saved = consumePreloadRecoverySnapshot(scope);
+    if (saved && !peerConversation) {
+      if (saved.overlayKind === "settings" && saved.targetId.startsWith("space:")) {
+        const settingsTarget = saved.targetId.slice(6);
+        if (spaces.some((space) => space.id === settingsTarget)) {
+          setSettingsSpaceId(settingsTarget);
+          setSettingsSection(saved.section ?? "general");
+          setSettingsOpen(true);
+        }
+      } else if (saved.targetId === targetId) {
+        if (saved.overlayKind === "messaging") setMessagingSettingsOpen(true);
+        if (saved.overlayKind === "plugins") setPluginsOpen(true);
+        if (saved.overlayKind === "mcp") setMcpOpen(true);
+      }
+    }
+    const selection = selectedSpaceId();
+    const generation = currentSpaceSelectionGeneration();
+    const snapshot =
+      peerConversation || panel === "create" || panel === "create-group"
+        ? null
+        : settingsOpen
+          ? {
+              ...scope,
+              version: 1 as const,
+              overlayKind: "settings" as const,
+              targetId: `space:${settingsTargetId ?? creationSpaceId}`,
+              section: settingsSection,
+            }
+          : messagingSettingsOpen || pluginsOpen || mcpOpen
+            ? {
+                ...scope,
+                version: 1 as const,
+                overlayKind: messagingSettingsOpen
+                  ? ("messaging" as const)
+                  : mcpOpen
+                    ? ("mcp" as const)
+                    : ("plugins" as const),
+                targetId,
+                section: null,
+              }
+            : null;
+    return registerPreloadRecoverySnapshot(
+      snapshot,
+      () =>
+        committedSettingsOwner.current === settingsOwner &&
+        window.location.origin === scope.apiOrigin &&
+        selectedSpaceId() === selection &&
+        currentSpaceSelectionGeneration() === generation &&
+        routeBotId.current === botId &&
+        routeGroupId.current === groupId,
+    );
+  }, [
+    userId,
+    creationSpaceId,
+    settingsOwner,
+    botId,
+    groupId,
+    spaces,
+    peerConversation,
+    panel,
+    settingsOpen,
+    settingsSection,
+    settingsTargetId,
+    messagingSettingsOpen,
+    pluginsOpen,
+    mcpOpen,
+  ]);
   const groupEditorBinding = useMemo(
     () => ({
       group: panel === "group-settings" ? activeGroup : undefined,
@@ -2674,6 +2765,65 @@ export function ShellPage() {
       : snapshot?.botId === active?.id
         ? snapshot
         : null;
+  useLayoutEffect(() => {
+    const sessionId = session.data?.session.id;
+    const targetId = groupId ?? botId;
+    if (
+      !userId ||
+      !sessionId ||
+      !targetId ||
+      !draftScopeKey ||
+      !activeSnapshot ||
+      bootstrapMe?.userId !== userId ||
+      bootstrapLoad.pending ||
+      bootstrapLoad.error ||
+      inNewChat ||
+      peerConversation ||
+      (groupId ? activeSnapshot.groupId !== groupId : activeSnapshot.botId !== botId)
+    )
+      return;
+    const selectionId = selectedSpaceId();
+    const selectionGeneration = currentSpaceSelectionGeneration();
+    if (selectionId && selectionId !== bootstrapMe.spaceId) return;
+    const owner = settingsOwner;
+    const target = {
+      apiOrigin: window.location.origin,
+      userId,
+      sessionId,
+      spaceId: bootstrapMe.spaceId,
+      selectionId,
+      selectionGeneration,
+      targetKind: groupId ? ("group" as const) : ("bot" as const),
+      targetId,
+      threadId: activeSnapshot.threadId,
+    };
+    const isCurrent = () =>
+      committedSettingsOwner.current === owner &&
+      selectedSpaceId() === selectionId &&
+      currentSpaceSelectionGeneration() === selectionGeneration &&
+      routeBotId.current === botId &&
+      routeGroupId.current === groupId &&
+      snapshotRef.current?.threadId === target.threadId;
+    const blocked = sendingRef.current || Boolean(call) || Boolean(recordingSkill);
+    if (!isCurrent()) return;
+    rememberVerifiedComposerRecoveryTarget(target, draftScopeKey, blocked);
+    restoreRejectedComposerDraft(target, draftScopeKey, !blocked, isCurrent);
+  }, [
+    activeSnapshot,
+    bootstrapMe,
+    bootstrapLoad,
+    session.data?.session.id,
+    userId,
+    draftScopeKey,
+    botId,
+    groupId,
+    inNewChat,
+    peerConversation,
+    settingsOwner,
+    sending,
+    call,
+    recordingSkill,
+  ]);
   // Keep the armed reply even when its parent leaves the loaded page: the
   // server resolves a paged-out target and degrades a deleted one to a plain
   // reply instead of failing the send.
@@ -4805,6 +4955,7 @@ export function ShellPage() {
                   variant="ghost"
                   className="h-9 w-full justify-start gap-2 text-[12px] font-normal"
                   onClick={() => {
+                    discardRejectedComposerDraft();
                     clearComposerDrafts();
                     composerSendAttempts.clear();
                     void authClient.signOut().then(() => {
@@ -4969,7 +5120,50 @@ export function ShellPage() {
               </>
             )}
           </div>
-          {!bootstrapMe ? (
+          {bootstrapLoad.error ? (
+            <LoadFailureNotice
+              error={bootstrapLoad.error}
+              cached={Boolean(bootstrapMe)}
+              pending={bootstrapLoad.pending}
+              onRetry={() => retryBootstrap.current()}
+              onRecoverSpace={() => {
+                clearSpaceSelection();
+                retryBootstrap.current();
+              }}
+              onSignIn={() => {
+                const owner = settingsOwner;
+                const sessionId = session.data?.session.id;
+                const targetId = groupId ?? botId;
+                if (userId && sessionId && targetId)
+                  prepareRejectedComposerDraft(
+                    {
+                      apiOrigin: window.location.origin,
+                      userId,
+                      sessionId,
+                      selectionId: selectedSpaceId(),
+                      selectionGeneration: currentSpaceSelectionGeneration(),
+                      targetKind: groupId ? "group" : "bot",
+                      targetId,
+                    },
+                    previewMessageText,
+                  );
+                setBootstrapLoad((value) => ({ ...value, pending: true }));
+                // The ordinary session wipe still runs; only verified editable content is held in RAM.
+                void authClient
+                  .signOut()
+                  .then(() => {
+                    if (committedSettingsOwner.current === owner)
+                      navigate("/sign-in", { replace: true });
+                  })
+                  .catch(() => {
+                    if (committedSettingsOwner.current === owner) {
+                      discardRejectedComposerDraft();
+                      setBootstrapLoad((value) => ({ ...value, pending: false }));
+                    }
+                  });
+              }}
+            />
+          ) : !bootstrapMe ? (
             <div
               role="status"
               data-testid="bootstrap-status"
@@ -6030,7 +6224,12 @@ export function ShellPage() {
         ) : null}
         {mcpOpen ? <McpServersOverlay onClose={() => setMcpOpen(false)} /> : null}
         {messagingSettingsOpen ? (
-          <MessagingSettingsOverlay onClose={() => setMessagingSettingsOpen(false)} />
+          <MessagingSettingsOverlay
+            key={`${settingsOwnerKey}:${creationSpaceId}:${currentSpaceSelectionGeneration()}`}
+            ownerKey={userId ? settingsOwnerKey : null}
+            spaceId={creationSpaceId}
+            onClose={() => setMessagingSettingsOpen(false)}
+          />
         ) : null}
       </Suspense>
 
@@ -6049,6 +6248,7 @@ export function ShellPage() {
             usage={usage}
             onUsageOpen={refreshUsage}
             initialSection={settingsSection}
+            onSectionChange={setSettingsSection}
             isDeploymentOwner={bootstrapMe?.isDeploymentOwner === true}
             billingEnabled={bootstrapMe?.billingEnabled === true}
             sandboxProvider={bootstrapMe?.sandboxProvider}
@@ -7310,7 +7510,11 @@ export const Composer = memo(function Composer({
           data-testid="composer-error"
           className="mb-3 flex items-center gap-2 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-2 text-[13px] text-destructive"
         >
-          <span className="min-w-0 flex-1">{sendError ?? runError}</span>
+          {sendError ? (
+            <span className="min-w-0 flex-1">{sendError}</span>
+          ) : runError ? (
+            <RunErrorDetails key={runError} error={runError} />
+          ) : null}
           <button
             type="button"
             aria-label={t`Dismiss error`}

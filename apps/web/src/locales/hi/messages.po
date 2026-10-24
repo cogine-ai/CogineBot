@@ -6103,3 +6103,96 @@ msgstr "ईमेल खाता कनेक्ट करें"
 #: src/pages/shell/bot-panel.tsx
 msgid "Gmail or Outlook (optional)"
 msgstr "Gmail या Outlook (वैकल्पिक)"
+
+msgid "Copy diagnostics"
+msgstr "निदान कॉपी करें"
+
+msgid "Could not check the connection."
+msgstr "कनेक्शन की जाँच नहीं हो सकी।"
+
+msgid "Could not load chats"
+msgstr "चैट लोड नहीं हो सकीं"
+
+msgid "Details"
+msgstr "विवरण"
+
+msgid "Link code expired. Try again."
+msgstr "लिंक कोड की समय सीमा समाप्त हो गई। फिर कोशिश करें।"
+
+msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+msgstr "10 मिनट के अंदर अपनी चैट ऐप से उस नंबर पर <0>{0}</0> भेजें जिसे आप जोड़ना चाहते हैं। जुड़ने पर आपको पुष्टि मिलेगी।"
+
+msgid "Showing saved chats."
+msgstr "सहेजी गई चैट दिखाई जा रही हैं।"
+
+msgid "The model provider returned an error."
+msgstr "मॉडल प्रदाता ने एक त्रुटि लौटाई।"
+
+msgid "The server could not complete the request"
+msgstr "सर्वर अनुरोध पूरा नहीं कर सका"
+
+msgid "This Space is unavailable"
+msgstr "यह Space उपलब्ध नहीं है"
+
+msgid "Your Anthropic"
+msgstr "आपका Anthropic"
+
+msgid "Your OpenAI"
+msgstr "आपका OpenAI"
+
+msgid "Your OpenRouter"
+msgstr "आपका OpenRouter"
+
+msgid "Your model provider"
+msgstr "आपका मॉडल प्रदाता"
+
+msgid "{provider} could not find the requested model."
+msgstr "{provider} को अनुरोधित मॉडल नहीं मिला।"
+
+msgid "{provider} is rate limiting requests. Try again shortly."
+msgstr "{provider} अनुरोधों की दर सीमित कर रहा है। थोड़ी देर में फिर कोशिश करें।"
+
+msgid "{provider} key hit its daily limit."
+msgstr "{provider} की कुंजी की दैनिक सीमा पूरी हो गई।"
+
+msgid "{provider} key hit its limit."
+msgstr "{provider} की कुंजी की सीमा पूरी हो गई।"
+
+msgid "{provider} key hit its monthly limit."
+msgstr "{provider} की कुंजी की मासिक सीमा पूरी हो गई।"
+
+msgid "{provider} key hit its weekly limit."
+msgstr "{provider} की कुंजी की साप्ताहिक सीमा पूरी हो गई।"
+
+msgid "{provider} reached its credit limit."
+msgstr "{provider} की क्रेडिट सीमा पूरी हो गई।"
+
+msgid "{provider} reached its daily credit limit."
+msgstr "{provider} की दैनिक क्रेडिट सीमा पूरी हो गई।"
+
+msgid "{provider} reached its daily spending limit."
+msgstr "{provider} की दैनिक खर्च सीमा पूरी हो गई।"
+
+msgid "{provider} reached its monthly credit limit."
+msgstr "{provider} की मासिक क्रेडिट सीमा पूरी हो गई।"
+
+msgid "{provider} reached its monthly spending limit."
+msgstr "{provider} की मासिक खर्च सीमा पूरी हो गई।"
+
+msgid "{provider} reached its spending limit."
+msgstr "{provider} की खर्च सीमा पूरी हो गई।"
+
+msgid "{provider} reached its weekly credit limit."
+msgstr "{provider} की साप्ताहिक क्रेडिट सीमा पूरी हो गई।"
+
+msgid "{provider} reached its weekly spending limit."
+msgstr "{provider} की साप्ताहिक खर्च सीमा पूरी हो गई।"
+
+msgid "{provider} rejected the API key. Check your connection settings."
+msgstr "{provider} ने API कुंजी अस्वीकार कर दी। अपनी कनेक्शन सेटिंग जाँचें।"
+
+msgid "{provider} took too long to respond. Try again."
+msgstr "{provider} ने जवाब देने में बहुत समय लिया। फिर कोशिश करें।"
+
+msgid "{summary} Resets {date}."
+msgstr "{summary} {date} को रीसेट होगा।"

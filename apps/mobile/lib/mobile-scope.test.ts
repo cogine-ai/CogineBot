@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { loadFailureKind } from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
 import ts from "typescript";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -165,6 +166,8 @@ it.each(["refresh", "unmount", "preclaim"] as const)(
       isMobileSessionCurrent,
       selectInitialSpace,
       setError: vi.fn(),
+      setLoadFailure: vi.fn(),
+      loadFailureKind,
       rpc: vi.fn(async (p: string) => (p === "me" ? me : navigation)),
       verifiedInbox: { current: null },
       publicationRevision: { current: 0 },

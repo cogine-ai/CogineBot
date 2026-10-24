@@ -6103,3 +6103,96 @@ msgstr "Connecter un compte e-mail"
 #: src/pages/shell/bot-panel.tsx
 msgid "Gmail or Outlook (optional)"
 msgstr "Gmail ou Outlook (facultatif)"
+
+msgid "Copy diagnostics"
+msgstr "Copier le diagnostic"
+
+msgid "Could not check the connection."
+msgstr "Impossible de vérifier la connexion."
+
+msgid "Could not load chats"
+msgstr "Impossible de charger les discussions"
+
+msgid "Details"
+msgstr "Détails"
+
+msgid "Link code expired. Try again."
+msgstr "Le code de liaison a expiré. Réessayez."
+
+msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+msgstr "Envoyez <0>{0}</0> au numéro depuis votre application de discussion dans les 10 minutes. Vous recevrez une réponse de confirmation une fois connecté."
+
+msgid "Showing saved chats."
+msgstr "Affichage des discussions enregistrées."
+
+msgid "The model provider returned an error."
+msgstr "Le fournisseur de modèles a renvoyé une erreur."
+
+msgid "The server could not complete the request"
+msgstr "Le serveur n’a pas pu traiter la demande"
+
+msgid "This Space is unavailable"
+msgstr "Ce Space est indisponible"
+
+msgid "Your Anthropic"
+msgstr "Votre Anthropic"
+
+msgid "Your OpenAI"
+msgstr "Votre OpenAI"
+
+msgid "Your OpenRouter"
+msgstr "Votre OpenRouter"
+
+msgid "Your model provider"
+msgstr "Votre fournisseur de modèles"
+
+msgid "{provider} could not find the requested model."
+msgstr "{provider} ne trouve pas le modèle demandé."
+
+msgid "{provider} is rate limiting requests. Try again shortly."
+msgstr "{provider} limite les requêtes. Réessayez dans un instant."
+
+msgid "{provider} key hit its daily limit."
+msgstr "{provider} a atteint sa limite quotidienne de clé."
+
+msgid "{provider} key hit its limit."
+msgstr "{provider} a atteint sa limite de clé."
+
+msgid "{provider} key hit its monthly limit."
+msgstr "{provider} a atteint sa limite mensuelle de clé."
+
+msgid "{provider} key hit its weekly limit."
+msgstr "{provider} a atteint sa limite hebdomadaire de clé."
+
+msgid "{provider} reached its credit limit."
+msgstr "{provider} a atteint sa limite de crédit."
+
+msgid "{provider} reached its daily credit limit."
+msgstr "{provider} a atteint sa limite quotidienne de crédit."
+
+msgid "{provider} reached its daily spending limit."
+msgstr "{provider} a atteint sa limite quotidienne de dépenses."
+
+msgid "{provider} reached its monthly credit limit."
+msgstr "{provider} a atteint sa limite mensuelle de crédit."
+
+msgid "{provider} reached its monthly spending limit."
+msgstr "{provider} a atteint sa limite mensuelle de dépenses."
+
+msgid "{provider} reached its spending limit."
+msgstr "{provider} a atteint sa limite de dépenses."
+
+msgid "{provider} reached its weekly credit limit."
+msgstr "{provider} a atteint sa limite hebdomadaire de crédit."
+
+msgid "{provider} reached its weekly spending limit."
+msgstr "{provider} a atteint sa limite hebdomadaire de dépenses."
+
+msgid "{provider} rejected the API key. Check your connection settings."
+msgstr "{provider} a refusé la clé API. Vérifiez vos paramètres de connexion."
+
+msgid "{provider} took too long to respond. Try again."
+msgstr "{provider} a mis trop de temps à répondre. Réessayez."
+
+msgid "{summary} Resets {date}."
+msgstr "{summary} Réinitialisation le {date}."

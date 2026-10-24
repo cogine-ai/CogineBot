@@ -6103,3 +6103,96 @@ msgstr "连接邮箱账号"
 #: src/pages/shell/bot-panel.tsx
 msgid "Gmail or Outlook (optional)"
 msgstr "Gmail 或 Outlook（可选）"
+
+msgid "Copy diagnostics"
+msgstr "复制诊断"
+
+msgid "Could not check the connection."
+msgstr "无法检查连接。"
+
+msgid "Could not load chats"
+msgstr "无法加载聊天"
+
+msgid "Details"
+msgstr "详情"
+
+msgid "Link code expired. Try again."
+msgstr "绑定码已过期，请重试。"
+
+msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+msgstr "请在 10 分钟内从聊天应用向该线路发送 <0>{0}</0>。关联成功后你会收到确认回复。"
+
+msgid "Showing saved chats."
+msgstr "正在显示已保存的聊天。"
+
+msgid "The model provider returned an error."
+msgstr "模型提供商返回了错误。"
+
+msgid "The server could not complete the request"
+msgstr "服务器未能完成请求"
+
+msgid "This Space is unavailable"
+msgstr "当前 Space 不可用"
+
+msgid "Your Anthropic"
+msgstr "你的 Anthropic"
+
+msgid "Your OpenAI"
+msgstr "你的 OpenAI"
+
+msgid "Your OpenRouter"
+msgstr "你的 OpenRouter"
+
+msgid "Your model provider"
+msgstr "你的模型提供商"
+
+msgid "{provider} could not find the requested model."
+msgstr "{provider}找不到请求的模型。"
+
+msgid "{provider} is rate limiting requests. Try again shortly."
+msgstr "{provider}正在限制请求频率。请稍后重试。"
+
+msgid "{provider} key hit its daily limit."
+msgstr "{provider}的密钥已达到每日限额。"
+
+msgid "{provider} key hit its limit."
+msgstr "{provider}的密钥已达到限额。"
+
+msgid "{provider} key hit its monthly limit."
+msgstr "{provider}的密钥已达到每月限额。"
+
+msgid "{provider} key hit its weekly limit."
+msgstr "{provider}的密钥已达到每周限额。"
+
+msgid "{provider} reached its credit limit."
+msgstr "{provider}已达到额度上限。"
+
+msgid "{provider} reached its daily credit limit."
+msgstr "{provider}已达到每日额度上限。"
+
+msgid "{provider} reached its daily spending limit."
+msgstr "{provider}已达到每日支出限额。"
+
+msgid "{provider} reached its monthly credit limit."
+msgstr "{provider}已达到每月额度上限。"
+
+msgid "{provider} reached its monthly spending limit."
+msgstr "{provider}已达到每月支出限额。"
+
+msgid "{provider} reached its spending limit."
+msgstr "{provider}已达到支出限额。"
+
+msgid "{provider} reached its weekly credit limit."
+msgstr "{provider}已达到每周额度上限。"
+
+msgid "{provider} reached its weekly spending limit."
+msgstr "{provider}已达到每周支出限额。"
+
+msgid "{provider} rejected the API key. Check your connection settings."
+msgstr "{provider}拒绝了 API 密钥。请检查连接设置。"
+
+msgid "{provider} took too long to respond. Try again."
+msgstr "{provider}响应超时。请重试。"
+
+msgid "{summary} Resets {date}."
+msgstr "{summary} 将于{date}重置。"

@@ -52,10 +52,12 @@ export function redactBindings(bindings: Record<string, unknown>): Record<string
 
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
+const BASIC_AUTHORIZATION = /\b((?:proxy-)?authorization)\s*[:=]\s*Basic\s+[^\s"',;&]+/gi;
+const COOKIE_HEADER = /\b((?:set-)?cookie)\s*[:=]\s*[^\r\n]*/gi;
 const SECRET_ASSIGNMENT =
-  /\b([A-Za-z0-9_]*(?:password|secret|token|authorization|apikey|api_key)[A-Za-z0-9_]*)\s*[:=]\s*\S+/gi;
+  /\b(x-api-key|[A-Za-z0-9_]*(?:password|secret|token|authorization|apikey|api_key)[A-Za-z0-9_]*)\s*[:=]\s*\S+/gi;
 const JSON_SECRET_FIELD =
-  /"(password|passwd|secret|token|authorization|apikey|api_key|accesstoken|refreshtoken|email|cookie)"\s*:\s*"(?:\\.|[^"\\])*"/gi;
+  /"(password|passwd|secret|token|authorization|apikey|api_key|accesstoken|refreshtoken|email|cookie|x-api-key)"\s*:\s*"(?:\\.|[^"\\])*"/gi;
 const BARE_SECRET =
   /\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
 
@@ -63,6 +65,8 @@ export function redactSensitiveText(text: string): string {
   return text
     .replace(EMAIL, REDACTED)
     .replace(JSON_SECRET_FIELD, `"$1":"${REDACTED}"`)
+    .replace(BASIC_AUTHORIZATION, (_match, key: string) => `${key}=${REDACTED}`)
+    .replace(COOKIE_HEADER, (_match, key: string) => `${key}=${REDACTED}`)
     .replace(BEARER, `Bearer ${REDACTED}`)
     .replace(SECRET_ASSIGNMENT, (_match, key: string) => `${key}=${REDACTED}`)
     .replace(BARE_SECRET, REDACTED);

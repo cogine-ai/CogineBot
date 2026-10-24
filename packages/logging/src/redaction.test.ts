@@ -113,6 +113,23 @@ describe("redaction", () => {
     expect(redactSensitiveText(text)).toBe(text);
   });
 
+  it.each([
+    ["Authorization: Basic dXNlcjpzeW50aGV0aWMtcGFzcw==", "Authorization=[Redacted]"],
+    ["Proxy-Authorization: Basic c3ludGhldGljOmNyZWRlbnRpYWw=", "Proxy-Authorization=[Redacted]"],
+    ["Cookie: session=synthetic-session-only; preference=private", "Cookie=[Redacted]"],
+    ["Set-Cookie: session=synthetic-session-only; HttpOnly; Secure", "Set-Cookie=[Redacted]"],
+    ['{"x-api-key":"synthetic-header-key-only"}', '{"x-api-key":"[Redacted]"}'],
+    ["X-API-Key: synthetic-header-key-only", "X-API-Key=[Redacted]"],
+  ])("redacts standard credential headers in free text: %s", (text, expected) => {
+    expect(redactSensitiveText(text)).toBe(expected);
+    expect(redactSensitiveText(expected)).toBe(expected);
+  });
+
+  it("preserves ordinary Basic prose and nonsecret response headers", () => {
+    const text = "Basic usage is documented.\nContent-Type: application/json\nRetry-After: 60";
+    expect(redactSensitiveText(text)).toBe(text);
+  });
+
   it("redacts quoted JSON credential fields", () => {
     const redacted = redactSensitiveText(
       '{"password":"hunter2","token":"abc","authorization":"Bearer secret"}',

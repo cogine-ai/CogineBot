@@ -4,6 +4,7 @@ import { Button } from "@rakazo/ui-web";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { RunErrorDetails } from "../components/RunErrorDetails";
 import { rpc } from "../lib/rpc";
 import { formatToolActivityDuration } from "../lib/tool-activity-view";
 import { statusLabel, statusTone } from "./ActivityList";
@@ -225,6 +226,11 @@ export function RoutineRunHistory({ routineId }: { routineId: string }) {
                     </Link>
                   ) : null}
                 </div>
+                {run.error ? (
+                  <div className="mt-2 text-destructive">
+                    <RunErrorDetails key={run.id} error={run.error} />
+                  </div>
+                ) : null}
               </li>
             );
           })}

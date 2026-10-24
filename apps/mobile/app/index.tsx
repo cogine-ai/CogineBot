@@ -1,6 +1,7 @@
 import { MenuView } from "@expo/ui/community/menu";
 import type { RemovedBotSection, RunActivityRow, SpaceBot, SpaceGroup } from "@rakazo/contracts";
-import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
+import type { LoadFailureKind } from "@rakazo/core";
+import { ACTIVE_RUN_STATUSES, loadFailureKind } from "@rakazo/core";
 import { botColors } from "@rakazo/ui-tokens";
 import { Redirect, useFocusEffect, useNavigation, useRouter } from "expo-router";
 import type { ReactNode } from "react";
@@ -28,6 +29,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BotAvatar } from "../components/bot-avatar";
 import { GroupAvatar } from "../components/group-avatar";
+import { HomeErrorState } from "../components/home-error-state";
 import { InboxContextMenu } from "../components/inbox-context-menu";
 import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
@@ -50,6 +52,7 @@ import type {
   MobileSpaceNavigation,
 } from "../lib/api";
 import {
+  clearSpace,
   currentApiBase,
   loadSessionToken,
   rpc,
@@ -58,6 +61,7 @@ import {
   selectSpace,
 } from "../lib/api";
 import { mobileTokens, resolveMobileAppearance } from "../lib/appearance";
+import { replaceWithSignIn } from "../lib/auth-routing";
 import { mobileBotAvatarPresentation } from "../lib/bot-avatar";
 import { t, useI18n } from "../lib/i18n";
 import { botTag, formatThreadTime, userInitials } from "../lib/inbox";
@@ -96,6 +100,7 @@ import { registerPushToken } from "../lib/push";
 import { readSavedInbox, savedChatsScope, saveInbox } from "../lib/saved-chats";
 import { setSearchInbox } from "../lib/search-inbox";
 import {
+  clearRejectedSessionToken,
   currentReadySessionGeneration,
   currentSessionGeneration,
   subscribeSessionGeneration,
@@ -161,6 +166,7 @@ function Home() {
   const [spaces, setSpaces] = useState<MobileSpace[]>([]);
   const [me, setMe] = useState<Pick<MobileMe, "userId" | "spaceId" | "name"> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailure, setLoadFailure] = useState<LoadFailureKind | null>(null);
   const [ready, setReady] = useState(false);
   const [hasSession, setHasSession] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -295,6 +301,7 @@ function Home() {
     const current = () =>
       mounted.current && requestId === inboxRequestId.current && isMobileScopeCurrent(owner);
     setError(null);
+    setLoadFailure(null);
     try {
       const [navigation, nextMe] = await Promise.all([
         rpc<MobileSpaceNavigation>("spaces/list"),
@@ -378,6 +385,7 @@ function Home() {
       );
     } catch (err) {
       if (!current()) return;
+      setLoadFailure(loadFailureKind(err));
       setError(errorText(err, t("Could not load bots")));
     }
   }, []);
@@ -1370,7 +1378,37 @@ function Home() {
         }
         ListHeaderComponent={
           <>
-            {error ? <Text style={styles.error}>{error}</Text> : null}
+            {loadFailure ? (
+              <HomeErrorState
+                kind={loadFailure}
+                cached={Boolean(me)}
+                busy={refreshing}
+                onRetry={() => {
+                  if (loadFailure !== "space") {
+                    void refreshBots();
+                    return;
+                  }
+                  const owner = captureMobileScope();
+                  void clearSpace().then((cleared) => {
+                    if (cleared && isMobileSessionCurrent(owner)) void refreshBots();
+                  });
+                }}
+                onSignIn={() => {
+                  const owner = captureMobileScope();
+                  void clearRejectedSessionToken().then(() => {
+                    if (
+                      isMobileSessionCurrent({
+                        ...owner,
+                        sessionGeneration: owner.sessionGeneration + 1,
+                      })
+                    )
+                      replaceWithSignIn();
+                  });
+                }}
+              />
+            ) : error ? (
+              <Text style={styles.error}>{error}</Text>
+            ) : null}
             {spaceRecoveryId ? (
               <Pressable
                 accessibilityRole="button"

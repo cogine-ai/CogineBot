@@ -221,14 +221,15 @@ export function withLiveStreamingProgress<
 const RUN_FAILURE_ERROR_MAX = 300;
 
 /** Reason a run failed, clamped for display, or null when there is no usable error to show. */
-export function runFailureError(event: {
-  type: string;
-  payload?: Record<string, unknown>;
-}): string | null {
+export function runFailureError(
+  event: { type: string; payload?: Record<string, unknown> },
+  options: { preserveDetails?: true } = {},
+): string | null {
   if (event.type !== "run.failed") return null;
   const error = event.payload?.error;
   if (typeof error !== "string" || !error.trim()) return null;
   const message = error.trim();
+  if (options.preserveDetails) return message;
   // A provider can fail with a stack or a whole response body; the run record keeps the full
   // text while the UI shows a bounded first line.
   return message.length > RUN_FAILURE_ERROR_MAX

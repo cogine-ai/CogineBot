@@ -74,6 +74,9 @@ export function createComposerSendAttemptStore(makeNonce: () => string = newClie
     isCurrent(key: string, attempt: ComposerSendAttempt): boolean {
       return attempts.get(key) === attempt;
     },
+    isInFlight(key: string): boolean {
+      return attempts.get(key)?.inFlight === true;
+    },
     clear(key?: string): void {
       if (key !== undefined) attempts.delete(key);
       else attempts.clear();

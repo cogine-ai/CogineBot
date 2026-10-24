@@ -93,6 +93,30 @@ describe("mobile i18n", () => {
     }
   });
 
+  it("localizes shared provider recovery advice without exposing its diagnostics", async () => {
+    const { normalizeRunError, RUN_ERROR_LIMIT_MESSAGES } = await import("@rakazo/core");
+    const { resetI18nForTests, t } = await import("./i18n");
+    const { ZH_MESSAGES } = await import("./locales/zh");
+    const { RU_MESSAGES } = await import("./locales/ru");
+    const { DE_MESSAGES } = await import("./locales/de");
+    for (const messages of [ZH_MESSAGES, RU_MESSAGES, DE_MESSAGES]) {
+      for (const periods of Object.values(RUN_ERROR_LIMIT_MESSAGES)) {
+        for (const message of Object.values(periods))
+          expect(messages[message]?.trim()).toBeTruthy();
+      }
+    }
+    for (const locale of ["zh-CN", "ru", "de"] as const) {
+      resetI18nForTests(locale);
+      const raw =
+        '429: {"error":{"message":"OpenAI key reached its daily limit; resets at 2026-01-02T00:00:00Z","metadata":{"token":"synthetic-private-token"}}}';
+      const localized = normalizeRunError(raw, t, locale);
+      expect(localized.summary).not.toBe(normalizeRunError(raw).summary);
+      expect(localized.summary).not.toMatch(/\{(?:provider|summary|date)\}/);
+      expect(localized.details).not.toContain("synthetic-private-token");
+      expect(localized.summary).toContain("OpenAI");
+    }
+  });
+
   it("translates every mobile chrome t() id in every non-English catalog", async () => {
     const { ZH_MESSAGES } = await import("./locales/zh");
     const { RU_MESSAGES } = await import("./locales/ru");

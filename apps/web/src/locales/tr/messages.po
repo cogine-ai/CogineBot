@@ -6103,3 +6103,96 @@ msgstr "E-posta hesabı bağla"
 #: src/pages/shell/bot-panel.tsx
 msgid "Gmail or Outlook (optional)"
 msgstr "Gmail veya Outlook (isteğe bağlı)"
+
+msgid "Copy diagnostics"
+msgstr "Tanılamayı kopyala"
+
+msgid "Could not check the connection."
+msgstr "Bağlantı denetlenemedi."
+
+msgid "Could not load chats"
+msgstr "Sohbetler yüklenemedi"
+
+msgid "Details"
+msgstr "Ayrıntılar"
+
+msgid "Link code expired. Try again."
+msgstr "Bağlantı kodunun süresi doldu. Tekrar deneyin."
+
+msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+msgstr "Sohbet uygulamanızdan bağlamak istediğiniz hatta 10 dakika içinde <0>{0}</0> gönderin. Bağlandığında bir onay yanıtı alacaksınız."
+
+msgid "Showing saved chats."
+msgstr "Kaydedilmiş sohbetler gösteriliyor."
+
+msgid "The model provider returned an error."
+msgstr "Model sağlayıcısı bir hata döndürdü."
+
+msgid "The server could not complete the request"
+msgstr "Sunucu isteği tamamlayamadı"
+
+msgid "This Space is unavailable"
+msgstr "Bu Space kullanılamıyor"
+
+msgid "Your Anthropic"
+msgstr "Anthropic sağlayıcınız"
+
+msgid "Your OpenAI"
+msgstr "OpenAI sağlayıcınız"
+
+msgid "Your OpenRouter"
+msgstr "OpenRouter sağlayıcınız"
+
+msgid "Your model provider"
+msgstr "Model sağlayıcınız"
+
+msgid "{provider} could not find the requested model."
+msgstr "{provider} istenen modeli bulamadı."
+
+msgid "{provider} is rate limiting requests. Try again shortly."
+msgstr "{provider} istek hızını sınırlıyor. Kısa bir süre sonra tekrar deneyin."
+
+msgid "{provider} key hit its daily limit."
+msgstr "{provider} için günlük anahtar sınırına ulaşıldı."
+
+msgid "{provider} key hit its limit."
+msgstr "{provider} için anahtar sınırına ulaşıldı."
+
+msgid "{provider} key hit its monthly limit."
+msgstr "{provider} için aylık anahtar sınırına ulaşıldı."
+
+msgid "{provider} key hit its weekly limit."
+msgstr "{provider} için haftalık anahtar sınırına ulaşıldı."
+
+msgid "{provider} reached its credit limit."
+msgstr "{provider} için kredi sınırına ulaşıldı."
+
+msgid "{provider} reached its daily credit limit."
+msgstr "{provider} için günlük kredi sınırına ulaşıldı."
+
+msgid "{provider} reached its daily spending limit."
+msgstr "{provider} için günlük harcama sınırına ulaşıldı."
+
+msgid "{provider} reached its monthly credit limit."
+msgstr "{provider} için aylık kredi sınırına ulaşıldı."
+
+msgid "{provider} reached its monthly spending limit."
+msgstr "{provider} için aylık harcama sınırına ulaşıldı."
+
+msgid "{provider} reached its spending limit."
+msgstr "{provider} için harcama sınırına ulaşıldı."
+
+msgid "{provider} reached its weekly credit limit."
+msgstr "{provider} için haftalık kredi sınırına ulaşıldı."
+
+msgid "{provider} reached its weekly spending limit."
+msgstr "{provider} için haftalık harcama sınırına ulaşıldı."
+
+msgid "{provider} rejected the API key. Check your connection settings."
+msgstr "{provider} API anahtarını reddetti. Bağlantı ayarlarınızı kontrol edin."
+
+msgid "{provider} took too long to respond. Try again."
+msgstr "{provider} çok geç yanıt verdi. Tekrar deneyin."
+
+msgid "{summary} Resets {date}."
+msgstr "{summary} Sıfırlanma tarihi: {date}."

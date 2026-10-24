@@ -61,6 +61,7 @@ export function SettingsOverlay({
   usage,
   onUsageOpen,
   initialSection = "general",
+  onSectionChange,
   isDeploymentOwner = false,
   billingEnabled = false,
   sandboxProvider,
@@ -89,6 +90,7 @@ export function SettingsOverlay({
   } | null;
   onUsageOpen: () => void;
   initialSection?: SettingsSection;
+  onSectionChange?: (section: SettingsSection) => void;
   isDeploymentOwner?: boolean;
   billingEnabled?: boolean;
   sandboxProvider?: string | null;
@@ -104,6 +106,7 @@ export function SettingsOverlay({
   const panelRef = useRef<HTMLDivElement>(null);
   const usageRef = useRef<HTMLDivElement>(null);
   const [section, setSection] = useState<SettingsSection>(initialSection);
+  useLayoutEffect(() => onSectionChange?.(section), [section, onSectionChange]);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [keepComputerRecovery, setKeepComputerRecovery] = useState(false);

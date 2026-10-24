@@ -1,10 +1,65 @@
 import { readFileSync } from "node:fs";
+import { loadFailureKind } from "@rakazo/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { InboxOrganizationState } from "./inbox-organization";
 import { reconcileInboxOrganization } from "./inbox-organization";
 
 const source = readFileSync(new URL("../app/index.tsx", import.meta.url), "utf8");
+
+function homeSignIn(scope: Record<string, unknown>): () => void {
+  const file = ts.createSourceFile(
+    "index.tsx",
+    source,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let expression: string | undefined;
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isJsxAttribute(node) &&
+      node.name.getText(file) === "onSignIn" &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression
+    ) {
+      expression = node.initializer.expression.getText(file);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  if (!expression) throw new Error("Home sign-in action not found");
+  return new Function(
+    ...Object.keys(scope),
+    ts.transpileModule(`return (${expression});`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+  )(...Object.values(scope));
+}
+
+it.each(["wipe", "storage-failure", "new-login", "api-aba"] as const)(
+  "fences the actual Home sign-in continuation after %s",
+  async (mode) => {
+    const state = home();
+    const pending = deferred<boolean>();
+    const replaceWithSignIn = vi.fn();
+    const run = homeSignIn({
+      ...state,
+      clearRejectedSessionToken: () => pending.promise,
+      replaceWithSignIn,
+    });
+    run();
+    state.live.generation += mode === "new-login" ? 2 : 1;
+    if (mode === "api-aba") state.live.apiGeneration += 2;
+    pending.resolve(mode !== "storage-failure");
+    await pending.promise;
+    await Promise.resolve();
+    expect(replaceWithSignIn).toHaveBeenCalledTimes(
+      mode === "wipe" || mode === "storage-failure" ? 1 : 0,
+    );
+  },
+);
 
 it("opens the editable new-Bot route instead of creating from the inbox action", () => {
   const start = source.indexOf("  const runCreateAction = useCallback(");
@@ -127,6 +182,8 @@ function home() {
     currentSessionGeneration: () => live.generation,
     selectedSpaceId: () => live.selection,
     setError,
+    setLoadFailure: vi.fn(),
+    loadFailureKind,
     rpc,
     selectInitialSpace: vi.fn(async (id: string) => {
       if (!live.selection) {
@@ -235,6 +292,19 @@ function home() {
 }
 
 describe("confirmed mobile organization recovery", () => {
+  it.each([
+    [401, "auth"],
+    [403, "space"],
+    [503, "server"],
+  ] as const)("keeps the last roster while classifying a %s read failure", async (status, kind) => {
+    const state = home();
+    state.rpc.mockRejectedValueOnce(Object.assign(new Error("read failed"), { status }));
+    await state.loadBots();
+    expect(state.setLoadFailure).toHaveBeenLastCalledWith(kind);
+    expect(state.setBots).not.toHaveBeenCalled();
+    expect(state.setGroups).not.toHaveBeenCalled();
+    expect(state.setSearchInbox).not.toHaveBeenCalled();
+  });
   it.each(["apiGeneration", "spaceGeneration", "selectionSeq"] as const)(
     "drops a roster response after the %s changes even when IDs match",
     async (field) => {

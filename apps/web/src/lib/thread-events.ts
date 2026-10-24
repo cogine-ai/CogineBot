@@ -19,6 +19,7 @@ import {
   reduceLiveMessageBlocks,
   replyMetadata,
   runFailureError,
+  sanitizeRunErrorDetails,
   subagentBlockFromPayload,
   takeLiveMessage,
   updateCloudAgentMessages,
@@ -377,7 +378,8 @@ export function reduceThreadSnapshot(
   if (isRunTerminalEvent(event)) {
     const activeRuns = prev.activeRuns?.filter((candidate) => candidate.id !== event.runId);
     const nextMemberRun = activeRuns?.find((candidate) => candidate.botId === event.botId);
-    const failure = runFailureError(event);
+    const diagnostic = runFailureError(event, { preserveDetails: true });
+    const failure = diagnostic === null ? null : sanitizeRunErrorDetails(diagnostic);
     const primaryEnded = prev.run?.id === event.runId ? prev.run : null;
     // In a group the failing run may be a member run rather than the displayed one, so look
     // it up in activeRuns as well or its error would be dropped with it.

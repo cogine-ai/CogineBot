@@ -946,6 +946,22 @@ describe("thread event reduction", () => {
     expect(next?.cursor).toBe(10);
   });
 
+  it("keeps full cleaned failure details within the byte budget", () => {
+    const failing = threadRun("run-a");
+    const initial: ThreadSnapshot = { ...snapshot([]), run: failing };
+    const diagnostic = `${"x".repeat(8155)} sk-synthetic-only-credential-value-0123456789 ${"more diagnostics ".repeat(30)}`;
+    const next = reduceThreadSnapshot(
+      initial,
+      event({ type: "run.failed", seq: 11, runId: failing.id, payload: { error: diagnostic } }),
+    );
+    expect(next?.run?.status).toBe("failed");
+    const details = next?.run?.error ?? "";
+    expect(details.length).toBeGreaterThan(300);
+    expect(details).not.toContain("sk-synthetic");
+    expect(new TextEncoder().encode(details).length).toBeLessThanOrEqual(8192);
+    expect(details.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
+  });
+
   it("keeps a failed run and its error so the thread can surface the failure", () => {
     const failing = threadRun("run-a");
     const initial: ThreadSnapshot = {
