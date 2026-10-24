@@ -21,6 +21,7 @@ import {
   projectMessages,
   resolveGroupTargetBotIds,
   runFailureError,
+  sanitizeRunErrorDetails,
 } from "@rakazo/core";
 import { deriveMessageQuote, messageReplyPreview } from "@rakazo/core/message-quote";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -593,6 +594,13 @@ function mapRun(run: {
   completedAt: Date | null;
   createdAt: Date;
 }) {
+  const diagnostic =
+    run.status === "failed"
+      ? runFailureError(
+          { type: "run.failed", payload: { error: run.error } },
+          { preserveDetails: true },
+        )
+      : run.error;
   return {
     id: run.id,
     botId: run.botId,
@@ -604,11 +612,8 @@ function mapRun(run: {
     modelProvider: run.modelProvider,
     modelId: run.modelId,
     modelCredentialId: run.modelCredentialId ?? null,
-    // Same display clamp as live run.failed events so a huge stored error cannot bypass it.
-    error:
-      run.status === "failed"
-        ? runFailureError({ type: "run.failed", payload: { error: run.error } })
-        : run.error,
+    // Clean the complete diagnostic before applying the same budget as live events.
+    error: diagnostic == null ? null : sanitizeRunErrorDetails(diagnostic),
     startedAt: run.startedAt?.toISOString() ?? null,
     completedAt: run.completedAt?.toISOString() ?? null,
     createdAt: run.createdAt.toISOString(),

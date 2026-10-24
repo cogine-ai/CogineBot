@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Actor, Bot, Routine, RoutineHistory, RoutineRunCursor } from "@rakazo/contracts";
+import type {
+  Actor,
+  Bot,
+  Routine,
+  RoutineHistory,
+  RoutineRunCursor,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
 import { RoutineHistorySchema } from "@rakazo/contracts";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -149,6 +156,77 @@ describePostgres("routine failure history HTTP acceptance", () => {
     expect(byId.get(queued.id)?.error).toBeNull();
     expect(value.runs.every((run) => run.messageId === null)).toBe(true);
   });
+
+  it.each(["bot", "group"] as const)(
+    "returns complete cleaned %s thread failure diagnostics through authenticated history reloads",
+    async (kind) => {
+      const owner = await fixture();
+      let threadId = owner.thread.id;
+      let target: { botId?: string; groupId?: string } = { botId: owner.bot.id };
+      if (kind === "group") {
+        const peer = await rpc<Bot>(owner.cookie, "bots/create", { name: "Diagnostic peer" });
+        const group = await rpc<{ id: string }>(owner.cookie, "groups/create", {
+          name: "Diagnostic group",
+          botIds: [owner.bot.id, peer.id],
+          clientNonce: `diagnostic-group:${randomUUID()}`,
+        });
+        threadId = (
+          await database.prisma.thread.findUniqueOrThrow({ where: { groupId: group.id } })
+        ).id;
+        target = { groupId: group.id };
+      }
+      await handles.awaitIdle?.();
+      const run = await seedRun(owner, {
+        status: "failed",
+        threadId,
+        createdAt: new Date(Date.now() + 1_000),
+        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300 token=synthetic-private-thread-value\n${"界😀".repeat(1600)}`,
+      });
+      const before = await database.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+      const first = await rpc<ThreadSnapshot>(owner.cookie, "threads/get", target);
+      const reloaded = await rpc<ThreadSnapshot>(owner.cookie, "threads/get", target);
+      expect(first.run?.id).toBe(run.id);
+      expect(reloaded.run?.error).toBe(first.run?.error);
+      const details = reloaded.run!.error!;
+      expect(details).toContain("SAFE_DIAGNOSTIC_AFTER_300");
+      expect(details).toContain("token=[Redacted]");
+      expect(details).not.toContain("synthetic-private-thread-value");
+      expect(new TextEncoder().encode(details).length).toBeLessThanOrEqual(8192);
+      expect(details.endsWith("\n[Diagnostics truncated at 8 KiB]")).toBe(true);
+      expect(reloaded.messages.some((message) => message.runId === run.id)).toBe(false);
+      const after = await database.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+      expect(after.nextMessageSeq).toBe(before.nextMessageSeq);
+      expect(after.nextEventSeq).toBe(before.nextEventSeq);
+      expect(after.unread).toBe(before.unread);
+      expect((await raw("", "threads/get", target)).status).toBe(401);
+      const other = await account();
+      const space = await rpc<{ id: string }>(owner.cookie, "spaces/create", {
+        name: "Other diagnostic Space",
+      });
+      // Thread target isolation uses the existing opaque RPC error boundary.
+      // Routine history above has its own explicit not-found response.
+      for (const denied of [
+        await raw(other.cookie, "threads/get", target),
+        await raw(owner.cookie, "threads/get", target, space.id),
+      ]) {
+        const body = await denied.text();
+        expect(denied.status).toBe(500);
+        expect(JSON.parse(body)).toEqual({
+          json: {
+            defined: false,
+            code: "INTERNAL_SERVER_ERROR",
+            status: 500,
+            message: "Internal server error",
+          },
+        });
+        expect(body).not.toMatch(
+          /SAFE_DIAGNOSTIC_AFTER_300|synthetic-private-thread-value|"run"|"messages"/,
+        );
+        expect(body).not.toContain(run.id);
+        expect(body).not.toContain(threadId);
+      }
+    },
+  );
 
   it("pages tied timestamps with a 20-row result and 21st-row lookahead without duplication", async () => {
     const owner = await fixture();

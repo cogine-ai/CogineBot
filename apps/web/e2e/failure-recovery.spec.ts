@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import type { Me, Routine, RoutineHistory } from "@rakazo/contracts";
+import type { Me, Routine, RoutineHistory, ThreadSnapshot } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 async function account(page: Page, label: string) {
@@ -17,6 +17,76 @@ async function settings(page: Page, name: string) {
 }
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
+});
+
+test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters after reload", async ({
+  page,
+  context,
+}, info) => {
+  const { botId } = await account(page, "snapshot-diagnostics");
+  const actor = await rpc<Me>(page, "me", {});
+  const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(process.env.AGENT_RUNTIME).toBe("scripted");
+  expect(process.env.DATABASE_URL).toBeTruthy();
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(
+    new URL(process.env.DATABASE_URL!).hostname,
+  );
+  const { createDb } = await import("../../../packages/db/src/client");
+  const db = createDb(process.env.DATABASE_URL!, {
+    poolMax: 2,
+    applicationName: "failure-history-browser-fixture",
+  });
+  try {
+    // Seed only an unseen historical failure in the isolated database. Reload and copy use the real API/UI.
+    const task = await db.prisma.task.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId,
+        threadId: thread.threadId,
+        prompt: "Synthetic historical failure",
+        status: "failed",
+      },
+    });
+    await db.prisma.run.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId,
+        threadId: thread.threadId,
+        taskId: task.id,
+        status: "failed",
+        trigger: "user",
+        startedAt: new Date(),
+        completedAt: new Date(),
+        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\n${"多🙂".repeat(3000)}`,
+      },
+    });
+  } finally {
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
+  const fresh = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(fresh.run?.error).toContain("SAFE_DIAGNOSTIC_AFTER_300");
+  expect(Buffer.byteLength(fresh.run!.error!, "utf8")).toBeLessThanOrEqual(8192);
+  expect(fresh.run?.error).not.toMatch(/c3ludGhldGljLW9ubHk=|synthetic-cookie-only/);
+  await page.reload();
+  const failure = page.getByTestId("composer-error");
+  await expect(failure).toBeVisible();
+  await failure.locator("summary").click();
+  await expect(failure.locator("pre")).toContainText("SAFE_DIAGNOSTIC_AFTER_300");
+  await expect(failure.locator("pre")).toContainText("Diagnostics truncated at 8 KiB");
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await failure.getByRole("button", { name: "Copy diagnostics" }).click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain("SAFE_DIAGNOSTIC_AFTER_300");
+  expect(copied).not.toMatch(/c3ludGhldGljLW9ubHk=|synthetic-cookie-only/);
+  expect(Buffer.byteLength(copied, "utf8")).toBeLessThanOrEqual(8192);
+  await captureScreenshot(page, info, "b5-safe-snapshot-diagnostics");
+  await page.reload();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(failure).toBeHidden();
 });
 
 test("failed and silent Routine rows expose cleaned diagnostics without an empty chat link", async ({
