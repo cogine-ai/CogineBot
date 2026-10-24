@@ -23,6 +23,7 @@ import {
   createRepos,
   createThreadMessageInTransaction,
   expireComputerExecutionLeases,
+  lockBotCreationIntro,
   type Prisma,
   type PrismaClient,
   withTransactionRetry,
@@ -361,22 +362,23 @@ export async function archiveBot(
   bot: LifecycleBot,
   context: AdapterContext,
 ) {
-  const [dedicated, activeRuns, activeRoutines] = await Promise.all([
-    deps.prisma.computer.findUnique({
-      where: { scopeKey: computerScopeKey("dedicated", bot.spaceId, bot.id) },
-    }),
-    deps.prisma.run.findMany({
+  const dedicated = await deps.prisma.computer.findUnique({
+    where: { scopeKey: computerScopeKey("dedicated", bot.spaceId, bot.id) },
+  });
+  const { activeRuns, activeRoutines } = await deps.prisma.$transaction(async (tx) => {
+    // Creation-intent intros take this same transaction mutex. Avoid holding
+    // a Bot row ahead of existing Computer/Run writers' locks.
+    await lockBotCreationIntro(tx, bot.id);
+    const activeRuns = await tx.run.findMany({
       where: { botId: bot.id, status: { in: [...ACTIVE_RUN_STATUSES] } },
       select: { id: true },
-    }),
-    deps.prisma.routine.findMany({
+    });
+    const activeRoutines = await tx.routine.findMany({
       where: { botId: bot.id, active: true },
       select: { id: true },
-    }),
-  ]);
-  const runIds = activeRuns.map((run) => run.id);
-  const now = new Date();
-  await deps.prisma.$transaction(async (tx) => {
+    });
+    const now = new Date();
+    const runIds = activeRuns.map((run) => run.id);
     await tx.run.updateMany({
       where: { id: { in: runIds } },
       data: { status: "cancelled", completedAt: now },
@@ -406,6 +408,7 @@ export async function archiveBot(
       where: { id: bot.id },
       data: { archivedAt: bot.archivedAt ?? now, pinned: false },
     });
+    return { activeRuns, activeRoutines };
   });
   await Promise.allSettled([
     ...activeRuns.map((run) => deps.jobs.cancel(runJobKey(run.id))),

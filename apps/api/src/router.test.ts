@@ -2468,6 +2468,89 @@ describe("bot intro run", () => {
     expect(create).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
   });
+  it("does not awaken or recreate an archived Bot creation intent", async () => {
+    const { deps, create, enqueue } = introDeps();
+    await enqueueBotIntroRun(deps, actor, {
+      ...bot,
+      spawnKey: "bot-create:archived-intent",
+      archivedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(deps.prisma.$transaction).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      code: "P2002",
+      meta: {
+        driverAdapterError: {
+          cause: { originalCode: "23505", constraint: { index: "other_unique_key" } },
+        },
+      },
+    },
+    { code: "P2002" },
+    {
+      code: "P2003",
+      meta: {
+        driverAdapterError: {
+          cause: { originalCode: "23505", constraint: { index: "runs_spaceId_clientNonce_key" } },
+        },
+      },
+    },
+  ])(
+    "preserves an unrelated persistence failure instead of accepting a nonce winner: %j",
+    async (failure) => {
+      const { deps } = introDeps();
+      const findUnique = vi.fn();
+      Object.assign(deps.prisma, {
+        $transaction: vi.fn().mockRejectedValue(failure),
+        run: { findUnique },
+      });
+      await expect(
+        enqueueBotIntroRun(deps, actor, { ...bot, spawnKey: "bot-create:intent" }),
+      ).rejects.toBe(failure);
+      expect(findUnique).not.toHaveBeenCalled();
+    },
+  );
+
+  it("recovers the same queued intro only for the measured Run nonce constraint", async () => {
+    const { deps, enqueue } = introDeps();
+    const failure = {
+      code: "P2002",
+      meta: {
+        driverAdapterError: {
+          cause: { originalCode: "23505", constraint: { index: "runs_spaceId_clientNonce_key" } },
+        },
+      },
+    };
+    const findUnique = vi.fn(async () => ({
+      ...actor,
+      botId: bot.id,
+      threadId: bot.threadId,
+      id: "intro-winner",
+      status: "queued",
+      trigger: "created",
+    }));
+    Object.assign(deps.prisma, {
+      $transaction: vi.fn().mockRejectedValue(failure),
+      run: { findUnique },
+    });
+    await enqueueBotIntroRun(deps, actor, { ...bot, spawnKey: "bot-create:intent" });
+    expect(findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          spaceId_clientNonce: {
+            spaceId: actor.spaceId,
+            clientNonce: "bot-intro:bot-1:bot-create:intent",
+          },
+        },
+      }),
+    );
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ payload: { runId: "intro-winner" } }),
+    );
+  });
 });
 
 describe("codex catalog auth", () => {

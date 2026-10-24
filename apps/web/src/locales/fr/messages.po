@@ -6071,3 +6071,35 @@ msgstr "Impossible de mettre à jour votre fuseau horaire"
 #: src/pages/shell/bot-panel.tsx
 msgid "Instructions must be at most {count} characters"
 msgstr "Les instructions doivent contenir au maximum {count} caractères"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Blank bot"
+msgstr "Bot vierge"
+
+#: src/pages/Shell.tsx
+msgid "Try example"
+msgstr "Essayer l’exemple"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Open bot"
+msgstr "Ouvrir le bot"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Create another bot"
+msgstr "Créer un autre bot"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Bot created. Your edits are kept."
+msgstr "Bot créé. Vos modifications sont conservées."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "This bot is archived."
+msgstr "Ce bot est archivé."
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Connect an email account"
+msgstr "Connecter un compte e-mail"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Gmail or Outlook (optional)"
+msgstr "Gmail ou Outlook (facultatif)"

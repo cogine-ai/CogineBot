@@ -144,11 +144,13 @@ import type {
 import {
   ATTACHMENT_MAX_BYTES,
   appContract,
+  BOT_CREATION_NOT_WRITTEN_REASON,
   BOT_INSTRUCTIONS_CONFLICT_REASON,
   BotSecretAuth,
   ComputerCommandSchema,
   foldComputerCommands,
   IntegrationProviderIdSchema,
+  isBotCreationSpawnKey,
   normalizeCreateBotProfile,
   normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
@@ -202,6 +204,7 @@ import {
   listBoards,
   listSpaceBackupModels,
   listTicketComments,
+  lockBotCreationIntro,
   lockOwnedGroup,
   newestModelCredentialOrder,
   newestVoiceCredentialOrder,
@@ -742,6 +745,21 @@ function botSecretMetadataDto(row: {
   };
 }
 
+function isIntroNonceConflict(error: unknown): boolean {
+  if (!isUniqueViolation(error)) return false;
+  const meta = (
+    error as {
+      meta?: {
+        driverAdapterError?: { cause?: { originalCode?: string; constraint?: { index?: string } } };
+      };
+    }
+  ).meta;
+  const cause = meta?.driverAdapterError?.cause;
+  return (
+    cause?.originalCode === "23505" && cause.constraint?.index === "runs_spaceId_clientNonce_key"
+  );
+}
+
 const BOT_INTRO_PROMPT =
   "You were just created. In one reply, say what you understood your role to be from your title, description and instructions, and ask for anything you need to get started.";
 
@@ -755,36 +773,101 @@ const BOT_INTRO_PROMPT =
 export async function enqueueBotIntroRun(deps: RouterDeps, actor: Actor, bot: Bot): Promise<void> {
   const threadId = bot.threadId;
   if (!threadId) return;
+  const clientNonce = isBotCreationSpawnKey(bot.spawnKey)
+    ? `bot-intro:${bot.id}:${bot.spawnKey}`
+    : undefined;
+  if (clientNonce && bot.archivedAt) return;
   // Scripted is the deterministic test/eval runtime, not a real deployment: an
   // extra automatic run there competes with whatever response a test or eval
   // harness queued next, for a bot it doesn't otherwise get to opt out of.
   if (deps.env.agentRuntime === "scripted") return;
   if ((await modelSetup(deps, actor)).needsModel) return;
-  const run = await deps.prisma.$transaction(async (tx) => {
-    const task = await tx.task.create({
-      data: {
-        spaceId: actor.spaceId,
-        botId: bot.id,
-        threadId,
-        userId: actor.userId,
-        prompt: BOT_INTRO_PROMPT,
-        status: "queued",
-      },
+  const select = {
+    id: true,
+    status: true,
+    spaceId: true,
+    userId: true,
+    botId: true,
+    threadId: true,
+    trigger: true,
+  } as const;
+  const where = clientNonce
+    ? { spaceId_clientNonce: { spaceId: actor.spaceId, clientNonce } }
+    : undefined;
+  const requireSameIntent = <
+    T extends {
+      spaceId: string;
+      userId: string;
+      botId: string;
+      threadId: string;
+      trigger: string;
+    },
+  >(
+    run: T,
+  ): T => {
+    if (
+      run.spaceId !== actor.spaceId ||
+      run.userId !== actor.userId ||
+      run.botId !== bot.id ||
+      run.threadId !== threadId ||
+      run.trigger !== "created"
+    )
+      throw new IsolationError();
+    return run;
+  };
+  let run: { id: string; status: string } | null;
+  try {
+    run = await deps.prisma.$transaction(async (tx) => {
+      if (where) {
+        // Serialize this intent with archive without adding a Bot row lock
+        // ahead of the Computer/Run locks used by other lifecycle operations.
+        await lockBotCreationIntro(tx, bot.id);
+        const current = await tx.bot.findFirst({
+          where: {
+            id: bot.id,
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            spawnKey: bot.spawnKey,
+            archivedAt: null,
+          },
+          select: { thread: { select: { id: true } } },
+        });
+        if (!current || current.thread?.id !== threadId) return null;
+        const existing = await tx.run.findUnique({ where, select });
+        if (existing) return requireSameIntent(existing);
+      }
+      const task = await tx.task.create({
+        data: {
+          spaceId: actor.spaceId,
+          botId: bot.id,
+          threadId,
+          userId: actor.userId,
+          prompt: BOT_INTRO_PROMPT,
+          status: "queued",
+        },
+      });
+      return tx.run.create({
+        data: {
+          spaceId: actor.spaceId,
+          botId: bot.id,
+          threadId,
+          taskId: task.id,
+          userId: actor.userId,
+          status: "queued",
+          trigger: "created",
+          ...(clientNonce ? { clientNonce } : {}),
+        },
+        select,
+      });
     });
-    return tx.run.create({
-      data: {
-        spaceId: actor.spaceId,
-        botId: bot.id,
-        threadId,
-        taskId: task.id,
-        userId: actor.userId,
-        status: "queued",
-        trigger: "created",
-      },
-      select: { id: true },
-    });
-  });
-  await deps.jobs.enqueue(runContinueJob(run.id));
+  } catch (error) {
+    if (!where || !isIntroNonceConflict(error)) throw error;
+    const existing = await deps.prisma.run.findUnique({ where, select });
+    if (!existing) throw error;
+    run = requireSameIntent(existing);
+  }
+  if (run && (!clientNonce || run.status === "queued"))
+    await deps.jobs.enqueue(runContinueJob(run.id));
 }
 
 async function resolveSpaceBoard(
@@ -1636,6 +1719,11 @@ export function createRouter(deps: RouterDeps) {
             ...normalizeCreateBotProfile(input),
           });
         } catch (error) {
+          if (error instanceof ComputerLimitError && isBotCreationSpawnKey(input.spawnKey))
+            throw new ORPCError("BAD_REQUEST", {
+              message: error.message,
+              data: { reason: BOT_CREATION_NOT_WRITTEN_REASON },
+            });
           throw mapSpaceLifecycleError(error);
         }
         await enqueueBotIntroRun(deps, context.actor, bot).catch((error) => {

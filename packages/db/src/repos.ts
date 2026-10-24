@@ -10,12 +10,13 @@ import type {
 import {
   BOT_COLORS,
   BotSectionNameSchema,
+  isBotCreationSpawnKey,
   RestoreBotSectionNameInput as RestoreBotSectionNameSchema,
   RestoreBotSectionInput as RestoreBotSectionSchema,
 } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
-import { ensureComputerRecord, parseComputerMode } from "./computers.js";
+import { ComputerLimitError, ensureComputerRecord, parseComputerMode } from "./computers.js";
 import { createThreadMessageInTransaction } from "./messages.js";
 import { BotSectionNameConflictError, IsolationError } from "./scope.js";
 import { lockSpaceForContentCreation } from "./spaces.js";
@@ -54,6 +55,16 @@ function isSpawnKeyConflict(error: unknown): boolean {
   if (target == null) return true;
   const fields = Array.isArray(target) ? target : [target];
   return fields.some((field) => field === "spawnKey" || field.includes("spawnKey"));
+}
+
+/** Coordinate creation-intent intros and archival without changing row-lock order. */
+export async function lockBotCreationIntro(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  botId: string,
+): Promise<void> {
+  await tx.$queryRaw`
+    SELECT pg_advisory_xact_lock(hashtextextended(${`bot-creation-intro:${botId}`}, 2))::text AS "lock"
+  `;
 }
 
 function rosterRunErrorId(
@@ -724,10 +735,14 @@ export function createRepos(prisma: PrismaClient) {
       try {
         bot = await insertBot();
       } catch (error) {
-        if (!input.spawnKey || !isSpawnKeyConflict(error)) throw error;
+        // A retry can hit quota before the spawn-key conflict if its unused
+        // team Computer was removed. Recover its owned identity first.
+        const recoverCreationQuota =
+          error instanceof ComputerLimitError && isBotCreationSpawnKey(input.spawnKey);
+        if (!input.spawnKey || (!isSpawnKeyConflict(error) && !recoverCreationQuota)) throw error;
         const existing = await findBySpawnKey();
         if (!existing || existing.userId !== actor.userId) throw error;
-        if (!existing.archivedAt) {
+        if (!existing.archivedAt || isBotCreationSpawnKey(input.spawnKey)) {
           bot = existing;
         } else {
           // Free the key from the archived bot so empty-space onboarding

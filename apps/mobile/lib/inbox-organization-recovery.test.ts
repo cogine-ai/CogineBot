@@ -6,6 +6,34 @@ import { reconcileInboxOrganization } from "./inbox-organization";
 
 const source = readFileSync(new URL("../app/index.tsx", import.meta.url), "utf8");
 
+it("opens the editable new-Bot route instead of creating from the inbox action", () => {
+  const start = source.indexOf("  const runCreateAction = useCallback(");
+  const end = source.indexOf("  useLayoutEffect", start);
+  const router = { push: vi.fn() };
+  const createQuickBot = vi.fn();
+  const state = { busy: false, recoveryId: null };
+  const organizationBusy = { current: false };
+  const scope = {
+    useCallback: (fn: unknown) => fn,
+    router,
+    createQuickBot,
+    spaceActionRef: { current: state },
+    organizationBusyRef: organizationBusy,
+  };
+  const run = new Function(
+    ...Object.keys(scope),
+    ts.transpileModule(`${source.slice(start, end)}\nreturn runCreateAction;`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText,
+  )(...Object.values(scope));
+  run("bot");
+  expect(router.push).toHaveBeenCalledExactlyOnceWith("/new");
+  expect(createQuickBot).not.toHaveBeenCalled();
+  organizationBusy.current = true;
+  run("bot");
+  expect(router.push).toHaveBeenCalledOnce();
+});
+
 function callback(name: string, next: string, scope: Record<string, unknown>) {
   const body = source.slice(
     source.indexOf(`  const ${name} = useCallback(`),
@@ -677,7 +705,7 @@ describe("confirmed mobile organization recovery", () => {
       },
     };
     const start = source.indexOf("  useEffect(() => {\n    mounted.current = true;");
-    const end = source.indexOf("  const creatingBotRef", start);
+    const end = source.indexOf("  const spaceActionRef", start);
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     new Function(

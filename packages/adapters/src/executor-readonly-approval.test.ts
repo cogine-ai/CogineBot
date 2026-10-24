@@ -6,6 +6,7 @@ import type {
   ConnectorTool,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
+import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -457,6 +458,18 @@ describe("bot instructions in actual model requests", () => {
       expect(system).not.toContain("PUBLIC_DESCRIPTION_CANARY");
       expect(system).not.toContain("PUBLIC_NAME_CANARY");
       expect(system).not.toContain("PUBLIC_TITLE_CANARY");
+    },
+  );
+
+  it.each(BOT_TEMPLATES)(
+    "uses edited $templateId rules in the actual model request",
+    async (template) => {
+      const instructions = ` \n${template.instructions}\n追加：仅处理本次提供的材料。\n\t `;
+      const { system, request, payload } = await modelRequest(instructions);
+      expect(request.instructions.startsWith(`${instructions}\n\n`)).toBe(true);
+      expect(system.startsWith(`${instructions}\n\n`)).toBe(true);
+      expect(system).not.toContain("PUBLIC_DESCRIPTION_CANARY");
+      expect(JSON.stringify(payload.messages)).not.toContain(template.examplePrompt);
     },
   );
 

@@ -6071,3 +6071,35 @@ msgstr "आपका समय क्षेत्र अपडेट नही�
 #: src/pages/shell/bot-panel.tsx
 msgid "Instructions must be at most {count} characters"
 msgstr "निर्देश अधिकतम {count} वर्णों के होने चाहिए"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Blank bot"
+msgstr "खाली बॉट"
+
+#: src/pages/Shell.tsx
+msgid "Try example"
+msgstr "उदाहरण आज़माएँ"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Open bot"
+msgstr "बॉट खोलें"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Create another bot"
+msgstr "एक और बॉट बनाएँ"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Bot created. Your edits are kept."
+msgstr "बॉट बन गया। आपके बदलाव सुरक्षित हैं।"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "This bot is archived."
+msgstr "यह बॉट संग्रहित है।"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Connect an email account"
+msgstr "ईमेल खाता कनेक्ट करें"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Gmail or Outlook (optional)"
+msgstr "Gmail या Outlook (वैकल्पिक)"
