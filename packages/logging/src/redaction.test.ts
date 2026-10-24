@@ -158,6 +158,33 @@ describe("redaction", () => {
     expect(redacted).toContain("[Redacted]");
   });
 
+  it.each(["A", "-", "_"])("redacts a complete bare Google key ending in %s", (suffix) => {
+    const key = `AIza${"SYNTHETIC_ONLY_".padEnd(34, "A")}${suffix}`;
+    expect(key).toHaveLength(39);
+    for (const text of [
+      key,
+      `Provider returned (${key}), retry later.`,
+      `Returned ${key}\nRetry-After: 30`,
+      `界${key}😀`,
+      `${key} ${key}`,
+      JSON.stringify({ error: { message: `Google rejected (${key}).` } }),
+      JSON.stringify({ response_body: JSON.stringify({ message: `Google rejected (${key}).` }) }),
+    ]) {
+      const cleaned = redactSensitiveText(text);
+      expect(cleaned).not.toContain("SYNTHETIC_ONLY_");
+      expect(cleaned).toContain("[Redacted]");
+      expect(redactSensitiveText(cleaned)).toBe(cleaned);
+    }
+  });
+
+  it("preserves Google key prefix prose and tokens outside the exact bare key shape", () => {
+    const short = `AIza${"A".repeat(34)}`;
+    const long = `AIza${"A".repeat(36)}`;
+    const embedded = `beforeAIza${"A".repeat(35)}after`;
+    const text = `AIza is a prefix; AIzaExample is a placeholder. ${short} ${long} ${embedded}`;
+    expect(redactSensitiveText(text)).toBe(text);
+  });
+
   it.each(["sk_live", "sk_test", "rk_live", "rk_test"])(
     "redacts bare %s payment keys",
     (prefix) => {

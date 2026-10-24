@@ -62,7 +62,7 @@ const JSON_STRING = /"(?:\\.|[^"\\])*"/g;
 const MAX_ENCODED_STRING_DEPTH = 8;
 const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----/g;
 const BARE_SECRET =
-  /\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
+  /(^|[^A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])|\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
 
 /** Read one complete value so quoted and nested credentials cannot leave a suffix behind. */
 function valueEnd(text: string, start: number): number {
@@ -334,7 +334,7 @@ function redactText(text: string, depth: number): string {
     return cleaned === value ? token : JSON.stringify(cleaned);
   });
   const headers = redactNamedValues(decoded, false);
-  return headers.replace(BEARER, `Bearer ${REDACTED}`).replace(BARE_SECRET, REDACTED);
+  return headers.replace(BEARER, `Bearer ${REDACTED}`).replace(BARE_SECRET, `$1${REDACTED}`);
 }
 
 export function redactSensitiveText(text: string): string {

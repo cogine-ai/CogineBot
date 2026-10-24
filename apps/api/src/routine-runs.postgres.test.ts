@@ -176,11 +176,14 @@ describePostgres("routine failure history HTTP acceptance", () => {
         target = { groupId: group.id };
       }
       await handles.awaitIdle?.();
+      const bareGoogleKeys = ["-", "_"].map(
+        (suffix) => `AIza${"SYNTHETIC_THREAD_ONLY_".padEnd(34, "A")}${suffix}`,
+      );
       const run = await seedRun(owner, {
         status: "failed",
         threadId,
         createdAt: new Date(Date.now() + 1_000),
-        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300 token=synthetic-private-thread-value\n{"client_secret":"AIzaSyntheticThreadCredential","api-key":"opaque-thread-key"}\n${JSON.stringify({ response_body: JSON.stringify({ message: "provider failure", client_secret: "SYNTHETIC_NESTED_THREAD_VALUE" }) })}\nAuthorization: Token SYNTHETIC_THREAD_AUTH_FIRST\r\n SYNTHETIC_THREAD_AUTH_SECOND\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_THREAD_PRIVATE_PEM\n-----END PRIVATE KEY-----\nclient_secret: 'SYNTHETIC_THREAD_YAML_FIRST\\''SYNTHETIC_THREAD_YAML_SECOND'\n${"界😀".repeat(1600)}`,
+        error: `${"x".repeat(350)} SAFE_DIAGNOSTIC_AFTER_300\nGoogle returned (${bareGoogleKeys[0]}), try again.\n${JSON.stringify({ response_body: JSON.stringify({ message: `Google returned (${bareGoogleKeys[1]}).` }) })}\ntoken=synthetic-private-thread-value\n{"client_secret":"AIzaSyntheticThreadCredential","api-key":"opaque-thread-key"}\n${JSON.stringify({ response_body: JSON.stringify({ message: "provider failure", client_secret: "SYNTHETIC_NESTED_THREAD_VALUE" }) })}\nAuthorization: Token SYNTHETIC_THREAD_AUTH_FIRST\r\n SYNTHETIC_THREAD_AUTH_SECOND\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_THREAD_PRIVATE_PEM\n-----END PRIVATE KEY-----\nclient_secret: 'SYNTHETIC_THREAD_YAML_FIRST\\''SYNTHETIC_THREAD_YAML_SECOND'\n${"界😀".repeat(1600)}`,
       });
       const before = await database.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
       const first = await rpc<ThreadSnapshot>(owner.cookie, "threads/get", target);
@@ -194,6 +197,8 @@ describePostgres("routine failure history HTTP acceptance", () => {
       expect(details).not.toContain("AIzaSyntheticThreadCredential");
       expect(details).not.toContain("opaque-thread-key");
       expect(details).not.toContain("SYNTHETIC_NESTED_THREAD_VALUE");
+      expect(details).not.toContain("SYNTHETIC_THREAD_ONLY_");
+      for (const key of bareGoogleKeys) expect(details).not.toContain(key);
       expect(details).not.toMatch(/SYNTHETIC_THREAD_(?:AUTH|PRIVATE_PEM|YAML)/);
       expect(details).toContain('"client_secret":"[Redacted]"');
       expect(details).toContain('"api-key":"[Redacted]"');

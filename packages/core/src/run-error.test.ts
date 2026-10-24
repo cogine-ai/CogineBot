@@ -57,6 +57,30 @@ describe("run failure diagnostics", () => {
     expect(normalized.details).toContain("[Diagnostics truncated at 8 KiB]");
   });
 
+  it.each(["A", "-", "_"])(
+    "cleans bare Google keys ending in %s before diagnostic and Unicode clipping",
+    (suffix) => {
+      const key = `AIza${"SYNTHETIC_ONLY_".padEnd(34, "A")}${suffix}`;
+      for (const prefix of [350, 8100, 8140, 8155, 8180, 8200]) {
+        const raw = `${"界".repeat(Math.floor(prefix / 3))} (${key})\n${"😀".repeat(200)}`;
+        for (const diagnostic of [
+          raw,
+          JSON.stringify({ response_body: JSON.stringify({ message: raw }) }),
+        ]) {
+          const normalized = normalizeRunError(diagnostic);
+          expect(normalized.summary).toBe("The model provider returned an error.");
+          expect(normalized.details).not.toContain("AIza");
+          expect(normalized.details).not.toContain("SYNTHETIC_ONLY_");
+          expect(new TextEncoder().encode(normalized.details).length).toBeLessThanOrEqual(8192);
+          expect(normalized.details).not.toMatch(
+            /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u,
+          );
+          expect(sanitizeRunErrorDetails(normalized.details)).toBe(normalized.details);
+        }
+      }
+    },
+  );
+
   it.each([
     [
       '{"error":{"message":"Insufficient credits","code":402,"metadata":{"provider_name":"OpenAI"}}}',

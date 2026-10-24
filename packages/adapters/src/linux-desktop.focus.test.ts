@@ -237,6 +237,9 @@ describe("provider focus command", () => {
   it("fails a focus URI when the launcher exits before the old window is raised", async () => {
     const failapp = path.join(bin, "failapp");
     writeExecutable(failapp, "#!/bin/sh\nexit 1\n");
+    const prepared = spawnSync(failapp, [], { encoding: "utf8", timeout: 5_000 });
+    expect(prepared.error).toBeUndefined();
+    expect(prepared.status, prepared.stderr).toBe(1);
     writeFileSync(windows, "0x00000004  0 4 failapp.Failapp host app\n");
     const command = await focusCommand({
       kind: "focus",
