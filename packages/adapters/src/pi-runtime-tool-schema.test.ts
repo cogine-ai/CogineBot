@@ -1,7 +1,58 @@
 import { describe, expect, it } from "vitest";
 import { builtinAgentTools } from "./builtin-tools.js";
+import { selectBuiltinToolsForRun } from "./executor.js";
 import { parseConnectorToolArgs } from "./lazy-tool-catalog.js";
 import { jsonSchemaParameters, parametersFor } from "./pi-runtime.js";
+
+describe("connector-only history parameters", () => {
+  const options = {
+    historyRetrievalEnabled: false,
+    toolResultHistoryEnabled: true,
+    graphicalToolsAllowed: false,
+    groupId: null,
+    trigger: "user",
+    semanticMemoryEnabled: false,
+    messagingChannelRun: false,
+  };
+
+  it("requires a stored result reference on the actual Pi parameter wire", () => {
+    const tool = selectBuiltinToolsForRun(options).find((entry) => entry.name === "read_history")!;
+    const wire = JSON.parse(JSON.stringify(parametersFor(tool)));
+    expect(Object.keys(wire.properties).sort()).toEqual(["textOffset", "toolResultId", "viewHash"]);
+    expect(wire.required).toEqual(["toolResultId"]);
+    expect(wire.additionalProperties).toBe(false);
+    expect(parseConnectorToolArgs(wire, { toolResultId: "stored" })).toEqual({
+      toolResultId: "stored",
+    });
+    const continuation = { toolResultId: "stored", textOffset: 200, viewHash: "a".repeat(64) };
+    expect(parseConnectorToolArgs(wire, continuation)).toEqual(continuation);
+    for (const args of [
+      {},
+      { messageId: "earlier" },
+      { toolResultId: "stored", messageId: "earlier" },
+      { toolResultId: "stored", linkedRunId: "linked" },
+      { toolResultId: "stored", direction: "older" },
+    ]) {
+      expect(() => parseConnectorToolArgs(wire, args)).toThrow();
+    }
+  });
+
+  it("preserves full history parameters when message retrieval is enabled", () => {
+    const original = builtinAgentTools.find((entry) => entry.name === "read_history")!;
+    const tool = selectBuiltinToolsForRun({ ...options, historyRetrievalEnabled: true }).find(
+      (entry) => entry.name === "read_history",
+    )!;
+    expect(tool).toBe(original);
+    const wire = JSON.parse(JSON.stringify(parametersFor(tool)));
+    expect(wire.properties).toHaveProperty("messageId");
+    expect(wire.properties).toHaveProperty("linkedRunId");
+    expect(wire.properties).toHaveProperty("direction");
+    expect(parseConnectorToolArgs(wire, { messageId: "earlier", direction: "older" })).toEqual({
+      messageId: "earlier",
+      direction: "older",
+    });
+  });
+});
 
 describe("jsonSchemaParameters", () => {
   it("exposes fields from a locally referenced allOf branch", () => {

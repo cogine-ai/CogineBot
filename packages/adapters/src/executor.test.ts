@@ -3,6 +3,7 @@ import { CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE } from "@rakazo/contracts";
 import { ONCE_ROUTINE_CRON } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { builtinAgentTools } from "./builtin-tools.js";
 import {
   appendToolCompletionAudit,
   createRunExecutor,
@@ -64,9 +65,26 @@ describe("bot tool permissions", () => {
       semanticMemoryEnabled: false,
       messagingChannelRun: false,
     };
-    const tools = selectBuiltinToolsForRun(options).map((tool) => tool.name);
-    expect(tools).toContain("read_history");
-    expect(tools).not.toContain("search_history");
+    const original = builtinAgentTools.find((tool) => tool.name === "read_history")!;
+    const originalSchema = JSON.stringify(original.inputSchema);
+    const tools = selectBuiltinToolsForRun(options);
+    const read = tools.find((tool) => tool.name === "read_history")!;
+    expect(tools.map((tool) => tool.name)).not.toContain("search_history");
+    expect(read).not.toBe(original);
+    expect(Object.keys(read.inputSchema.properties as object).sort()).toEqual([
+      "textOffset",
+      "toolResultId",
+      "viewHash",
+    ]);
+    expect(read.inputSchema.required).toEqual(["toolResultId"]);
+    expect(read.inputSchema.additionalProperties).toBe(false);
+    expect(read.description).not.toContain("message");
+    expect(JSON.stringify(original.inputSchema)).toBe(originalSchema);
+    expect(
+      selectBuiltinToolsForRun({ ...options, historyRetrievalEnabled: true }).find(
+        (tool) => tool.name === "read_history",
+      ),
+    ).toBe(original);
     expect(
       selectBuiltinToolsForRun({ ...options, disabledBuiltinTools: ["read_history"] }).map(
         (tool) => tool.name,

@@ -1,5 +1,6 @@
 import type {
   AdapterContext,
+  AgentContextStrategy,
   AgentRunRequest,
   MemoryCommitRequest,
   MemoryReadRequest,
@@ -45,7 +46,10 @@ type ToolCall = {
   executionId: string;
 };
 
-function fixture(runId = "run-1", options: { catchToolErrors?: boolean } = {}) {
+function fixture(
+  runId = "run-1",
+  options: { catchToolErrors?: boolean; contextStrategy?: AgentContextStrategy } = {},
+) {
   const effects: Effect[] = [];
   const results: unknown[] = [];
   const scratchpadRows: Array<{
@@ -142,6 +146,7 @@ function fixture(runId = "run-1", options: { catchToolErrors?: boolean } = {}) {
     ),
   };
   const prisma = {
+    $queryRaw: vi.fn(async () => []),
     run: {
       findUnique: vi.fn(async () => run),
       findUniqueOrThrow: vi.fn(async () => run),
@@ -242,6 +247,7 @@ function fixture(runId = "run-1", options: { catchToolErrors?: boolean } = {}) {
   });
   const executor = createRunExecutor({
     prisma,
+    contextStrategy: options.contextStrategy,
     runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
     connector: {
       discoverTools: async () => [],
@@ -264,6 +270,7 @@ function fixture(runId = "run-1", options: { catchToolErrors?: boolean } = {}) {
   } as unknown as Parameters<typeof createRunExecutor>[0]);
 
   return {
+    prisma,
     effects,
     results,
     scratchpadRows,
@@ -289,6 +296,71 @@ function fixture(runId = "run-1", options: { catchToolErrors?: boolean } = {}) {
     },
   };
 }
+
+describe("history context capabilities", () => {
+  it("rejects current-strategy message reads before querying stored history", async () => {
+    const f = fixture("run-current-history", {
+      contextStrategy: "current",
+      catchToolErrors: true,
+    });
+    f.setCalls([
+      {
+        name: "read_history",
+        args: { messageId: "earlier", direction: "older", linkedRunId: "linked" },
+        executionId: "message",
+      },
+      {
+        name: "read_history",
+        args: { messageId: "earlier", contextStrategy: "cache-aware" },
+        executionId: "untrusted-strategy",
+      },
+      {
+        name: "read_history",
+        args: { messageId: "earlier", toolResultId: "stored" },
+        executionId: "mixed-reference",
+      },
+      {
+        name: "read_history",
+        args: { toolResultId: "stored", direction: "older" },
+        executionId: "invalid-result-pagination",
+      },
+      {
+        name: "read_history",
+        args: { historyReference: { tool: "read_history", arguments: { toolResultId: "stored" } } },
+        executionId: "nested-reference",
+      },
+    ]);
+    await f.run();
+    expect(f.results.slice(0, 2)).toEqual([
+      { untrusted: true, error: "Use toolResultId to read a stored connector result." },
+      { untrusted: true, error: "Use toolResultId to read a stored connector result." },
+    ]);
+    expect(f.results[2]).toHaveProperty("error", expect.stringContaining("Provide either"));
+    expect(f.results[3]).toHaveProperty(
+      "error",
+      expect.stringContaining("Tool results support only textOffset pagination"),
+    );
+    expect(f.results[4]).toHaveProperty("error", expect.stringContaining("Provide either"));
+    expect(f.prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it.each(["retrieval", "snapshots", "cache-aware"] as const)(
+    "retains message history reads for the %s strategy",
+    async (contextStrategy) => {
+      const f = fixture(`run-${contextStrategy}-history`, { contextStrategy });
+      f.setCalls([
+        {
+          name: "read_history",
+          args: { messageId: "earlier", direction: "older", linkedRunId: "linked" },
+          executionId: "message",
+        },
+      ]);
+      await f.run();
+      expect(f.prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(f.results).toEqual([expect.objectContaining({ untrusted: true, messages: [] })]);
+    },
+  );
+});
 
 describe("mutating tool effect idempotency keys", () => {
   it("appends facts with normalized paths, revisions and run provenance", async () => {

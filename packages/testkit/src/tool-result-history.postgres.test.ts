@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
-import { eventsAfter, readHistory } from "@rakazo/db";
+import { createThreadMessage, eventsAfter, readHistory } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { redactConnectorPayload } from "../../adapters/src/connector-safety.js";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
@@ -21,9 +21,14 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
     { disabled: false, small: false, invalidView: false },
     { disabled: true, small: false, invalidView: false },
     { disabled: false, small: false, invalidView: true },
+    { disabled: false, small: false, invalidView: false, messageProbe: "current" },
+    { disabled: false, small: false, invalidView: false, messageProbe: "retrieval" },
   ])(
-    "keeps current-strategy references safe with read_history disabled=$disabled small=$small invalidView=$invalidView",
-    async ({ disabled, small, invalidView }) => {
+    "keeps result references scoped with disabled=$disabled small=$small invalidView=$invalidView messageProbe=$messageProbe",
+    async ({ disabled, small, invalidView, messageProbe }) => {
+      const strategy = messageProbe === "retrieval" ? "retrieval" : "current";
+      const messageCanary = "older-message-scope-canary";
+      let messageId = "";
       const secret = 'synthetic"quoted-history-key';
       const source = {
         id: "exact-record-id",
@@ -57,7 +62,22 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
           expect(request) {
             const names = request.tools?.map((tool) => tool.function.name) ?? [];
             expect(names.includes("read_history")).toBe(!disabled);
-            expect(names).not.toContain("search_history");
+            expect(names.includes("search_history")).toBe(strategy === "retrieval");
+            if (!disabled) {
+              const schema = request.tools!.find((tool) => tool.function.name === "read_history")!
+                .function.parameters as {
+                properties: Record<string, unknown>;
+                required?: string[];
+              };
+              if (strategy === "current") {
+                expect(Object.keys(schema.properties).sort()).toEqual([
+                  "textOffset",
+                  "toolResultId",
+                  "viewHash",
+                ]);
+                expect(schema.required).toContain("toolResultId");
+              } else expect(schema.properties).toHaveProperty("messageId");
+            }
             expect(names).toContain("synthetic_read_records");
           },
           response: {
@@ -86,19 +106,39 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
             }
           },
           response: () =>
-            disabled
-              ? { type: "text", text: "Connector result checked." }
-              : {
+            messageProbe
+              ? {
                   type: "tool",
-                  id: "result-history-read",
+                  id: "message-history-probe",
                   name: "read_history",
-                  arguments: { toolResultId: storedId },
-                },
+                  arguments: { messageId, direction: "around", limit: 1 },
+                }
+              : disabled
+                ? { type: "text", text: "Connector result checked." }
+                : {
+                    type: "tool",
+                    id: "result-history-read",
+                    name: "read_history",
+                    arguments: { toolResultId: storedId },
+                  },
         },
         ...(!disabled
           ? [
               {
                 expect(request: ModelEmulatorRequest) {
+                  if (messageProbe) {
+                    const text = String(
+                      request.messages.findLast((message) => message.role === "tool")?.content,
+                    );
+                    if (strategy === "current") {
+                      expect(text).toContain("toolResultId");
+                      expect(text).not.toContain(messageCanary);
+                    } else {
+                      expect(text).toContain(messageCanary);
+                      expect(lastResult(request).untrusted).toBe(true);
+                    }
+                    return;
+                  }
                   if (invalidView) {
                     const text = String(
                       request.messages.findLast((message) => message.role === "tool")?.content,
@@ -153,7 +193,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
           composio: new ComposioEmulator(),
           encryptionKey: "offline-history-encryption-key",
           deploymentModelKey: secret,
-          contextStrategy: "current",
+          contextStrategy: strategy,
         });
         stop = handles.stop;
         invalidateStoredView = async (id) => {
@@ -226,6 +266,17 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
           expectedRevision: credential.connectionRevision,
           disabledBuiltinTools: disabled ? ["read_history"] : [],
         });
+        if (messageProbe) {
+          const thread = await handles.prisma.thread.findUniqueOrThrow({
+            where: { botId: bot.id },
+          });
+          const earlier = await createThreadMessage(handles.prisma, {
+            threadId: thread.id,
+            role: "user",
+            blocks: [{ kind: "text", text: messageCanary }],
+          });
+          messageId = earlier.id;
+        }
         const sent = await rpc<{ runId: string }>("threads/send", {
           botId: bot.id,
           text: "Read the synthetic connector records.",
