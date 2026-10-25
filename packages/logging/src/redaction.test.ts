@@ -3,6 +3,70 @@ import { redactBindings, redactSensitiveText } from "./redaction.js";
 
 describe("redaction", () => {
   it.each([
+    "API key",
+    "Secret Access Key",
+    "client_secret",
+    "private key material",
+    "authorization header value",
+    "password",
+    "access token",
+    "apiKey",
+  ])("cleans a recognized %s label with a natural assignment separator", (label) => {
+    for (const separator of [
+      " is ",
+      "\tIS\t",
+      " is: ",
+      "\tis=\t",
+      " is : ",
+      " IS= ",
+      " -> ",
+      "->",
+      "    is    ",
+      "\t \t-> \t",
+    ]) {
+      for (const key of [label, JSON.stringify(label), `'${label}'`]) {
+        const raw = `Provider rejected the request.\n${key}${separator}SYNTHETIC_PROSE_CREDENTIAL\nnext: safe`;
+        for (const input of [
+          raw,
+          JSON.stringify({ message: raw, safe: "retained" }),
+          JSON.stringify({ response_body: JSON.stringify({ message: raw, safe: "retained" }) }),
+        ]) {
+          const cleaned = redactSensitiveText(input);
+          expect(cleaned).not.toContain("SYNTHETIC_PROSE_CREDENTIAL");
+          expect(cleaned).toContain("Provider rejected the request.");
+          expect(cleaned).toContain("next: safe");
+          expect(redactSensitiveText(cleaned)).toBe(cleaned);
+          if (input.startsWith("{")) expect(JSON.parse(cleaned)).toBeTypeOf("object");
+        }
+      }
+    }
+  });
+
+  it("preserves ordinary prose and numeric token counts beside natural assignments", () => {
+    const normal = [
+      "The token bucket is empty. Retry-After: 60",
+      "Daily token quota is 1000; resets tomorrow",
+      "max_tokens is 4096 exceeds the maximum tokens allowed: 2048. Reduce max_tokens.",
+      "tokens is 1000; Retry-After: 30",
+      "tokens -> 1000; Retry-After: 30",
+      "max_tokens is: 4096; tokens is=1000; Token balance is: 4096",
+      "input_tokens is 120; output_tokens -> 80; total_tokens is 200",
+      "API key rotation is required. Retry-After: 30",
+      "The tokenizer is ready. The secretariat is closed. Model is unavailable.",
+      "The tokenizer is: ready. The secretariat is=closed. Model is: unavailable.",
+    ].join("\n");
+    expect(redactSensitiveText(normal)).toBe(normal);
+    expect(redactSensitiveText(" ".repeat(16_000))).toBe(" ".repeat(16_000));
+    expect(
+      redactSensitiveText(`${normal}\nAPI key is SYNTHETIC_PROSE_CREDENTIAL\nnext: safe`),
+    ).toBe(`${normal}\nAPI key=[Redacted]\nnext: safe`);
+    expect(redactSensitiveText("token is 12345\nnext: safe")).toBe("token=[Redacted]\nnext: safe");
+    expect(redactSensitiveText("tokens is SYNTHETIC_OPAQUE_COUNT_VALUE\nnext: safe")).toBe(
+      "tokens=[Redacted]\nnext: safe",
+    );
+  });
+
+  it.each([
     "max_tokens: 4096 exceeds the maximum tokens allowed for model claude-example: 2048. Reduce max_tokens.",
     "Rate limit reached for gpt-example on tokens per min. Limit: 10000 / min. Requested: 15000. Please try again in 30s.",
     "Rate limit reached for gpt-example on tokens per min. Limit=10000; retry_after=30",

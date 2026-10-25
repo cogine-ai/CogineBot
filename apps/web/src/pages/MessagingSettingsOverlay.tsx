@@ -68,6 +68,7 @@ export function MessagingSettingsOverlay({
   const committed = useRef<typeof binding | null>(null);
   const refreshSequence = useRef(0);
   const actionController = useRef<AbortController | null>(null);
+  const linkActionController = useRef<AbortController | null>(null);
   const pollController = useRef<AbortController | null>(null);
   const linkVersion = useRef(0);
   const [actionBusy, setActionBusy] = useState(false);
@@ -95,6 +96,7 @@ export function MessagingSettingsOverlay({
       if (committed.current === binding) committed.current = null;
       const controller = actionController.current;
       actionController.current = null;
+      if (linkActionController.current === controller) linkActionController.current = null;
       controller?.abort();
     };
   }, [binding]);
@@ -197,10 +199,11 @@ export function MessagingSettingsOverlay({
     };
   }, [linkCode, pollRevision, binding]);
 
-  async function act(action: () => Promise<unknown>) {
+  async function act(action: () => Promise<unknown>, kind: "link" | "settings" = "settings") {
     if (!isCurrent() || actionController.current) return;
     const controller = new AbortController();
     actionController.current = controller;
+    if (kind === "link") linkActionController.current = controller;
     linkVersion.current += 1;
     pollController.current?.abort();
     setActionBusy(true);
@@ -215,6 +218,7 @@ export function MessagingSettingsOverlay({
       if (isCurrent() && !controller.signal.aborted)
         setError(t`Couldn't update messaging settings`);
     } finally {
+      if (linkActionController.current === controller) linkActionController.current = null;
       if (actionController.current === controller) {
         actionController.current = null;
         if (isCurrent()) setActionBusy(false);
@@ -307,7 +311,7 @@ export function MessagingSettingsOverlay({
               value={linkBotId}
               onChange={(event) => {
                 linkVersion.current += 1;
-                actionController.current?.abort();
+                linkActionController.current?.abort();
                 pollController.current?.abort();
                 setLinkBotId(event.target.value);
                 setLinkCode(null);
@@ -346,7 +350,7 @@ export function MessagingSettingsOverlay({
                           .map((identity) => identity.id) ?? [],
                     });
                   }
-                })
+                }, "link")
               }
             >
               <Trans>Link a chat app</Trans>

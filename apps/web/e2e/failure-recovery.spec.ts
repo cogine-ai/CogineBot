@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import type { Me, Routine, RoutineHistory, ThreadSnapshot } from "@rakazo/contracts";
+import type { Bot, Me, Routine, RoutineHistory, ThreadSnapshot } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 async function account(page: Page, label: string) {
@@ -67,7 +67,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
         trigger: "user",
         startedAt: new Date(),
         completedAt: new Date(),
-        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nProvider echoed ${syntheticGoogleKey} in prose.\nProvider echoed ${syntheticGroqKey} in prose.\nProvider echoed ${syntheticXaiKey} in prose.\nProvider echoed ${syntheticHfKey} in prose.\nProvider echoed ${syntheticCerebrasKey} in prose.\nProvider echoed ${syntheticNvidiaKey} in prose.\nProvider echoed ${syntheticFireworksKey} in prose.\nSecret Access Key: SYNTHETIC_AWS_SECRET_ACCESS_VALUE\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
+        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nProvider echoed ${syntheticGoogleKey} in prose.\nProvider echoed ${syntheticGroqKey} in prose.\nProvider echoed ${syntheticXaiKey} in prose.\nProvider echoed ${syntheticHfKey} in prose.\nProvider echoed ${syntheticCerebrasKey} in prose.\nProvider echoed ${syntheticNvidiaKey} in prose.\nProvider echoed ${syntheticFireworksKey} in prose.\nSecret Access Key: SYNTHETIC_AWS_SECRET_ACCESS_VALUE\nAPI key is: SYNTHETIC_PROSE_SECRET_VALUE\nSecret Access Key -> SYNTHETIC_ARROW_SECRET_VALUE\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
       },
     });
   } finally {
@@ -86,7 +86,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   expect(fresh.run?.error).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
   expect(Buffer.byteLength(fresh.run!.error!, "utf8")).toBeLessThanOrEqual(8192);
   expect(fresh.run?.error).not.toMatch(
-    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND/,
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE/,
   );
   await page.reload();
   const failure = page.getByTestId("composer-error");
@@ -107,7 +107,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   expect(copied).not.toContain(syntheticFireworksKey);
   expect(copied).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
   expect(copied).not.toMatch(
-    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND/,
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE/,
   );
   expect(Buffer.byteLength(copied, "utf8")).toBeLessThanOrEqual(8192);
   await captureScreenshot(page, info, "b5-safe-snapshot-diagnostics");
@@ -414,4 +414,91 @@ test("an identity reassigned to the selected bot completes its original link cod
   await expect(messaging).toContainText("→ Chief");
   expect(codes).toBe(1);
   await captureScreenshot(page, info, "b5-linked-identity-refreshed");
+});
+
+test("changing the link Bot preserves a completed messaging mutation refresh", async ({
+  page,
+}, info) => {
+  const { botId, name } = await account(page, "messaging-mutation");
+  const bots = await rpc<Bot[]>(page, "bots/list", {});
+  const original = bots.find((bot) => bot.id === botId);
+  expect(original).toBeDefined();
+  const second = await rpc<Bot>(page, "bots/create", {
+    name: "Other recovery Bot",
+    color: original!.color,
+    title: "",
+    description: "",
+    notifyOnFinish: false,
+  });
+  let linked = true;
+  let unlinks = 0;
+  let linkStarts = 0;
+  let mutationStarted!: () => void;
+  let finishMutation!: () => void;
+  const started = new Promise<void>((resolve) => {
+    mutationStarted = resolve;
+  });
+  const completed = new Promise<void>((resolve) => {
+    finishMutation = resolve;
+  });
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/messaging/link/start")) linkStarts += 1;
+  });
+  await page.route("**/rpc/messaging/status", (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          enabled: true,
+          providers: ["telegram"],
+          openSignup: false,
+          identities: linked
+            ? [
+                {
+                  id: "synthetic-identity",
+                  botId,
+                  botName: original!.name,
+                  provider: "telegram",
+                  address: "synthetic-line",
+                },
+              ]
+            : [],
+        },
+      },
+    }),
+  );
+  await page.route("**/rpc/messaging/channels/list", (route) =>
+    route.fulfill({ json: { json: [] } }),
+  );
+  await page.route("**/rpc/messaging/connections/list", (route) =>
+    route.fulfill({ json: { json: [] } }),
+  );
+  await page.route("**/rpc/messaging/identities/unlink", async (route) => {
+    unlinks += 1;
+    mutationStarted();
+    await completed;
+    linked = false;
+    await route.fulfill({ json: { json: { ok: true } } });
+  });
+  try {
+    await page.reload();
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    const overlay = await settings(page, name);
+    await overlay.getByRole("button", { name: "Manage messaging settings", exact: true }).click();
+    const messaging = page.getByTestId("messaging-settings");
+    await expect(messaging.getByText("Telegram · synthetic-line")).toBeVisible();
+    await messaging.getByLabel("Bot to link").selectOption(botId);
+    await messaging.getByRole("button", { name: "Unlink", exact: true }).click();
+    await started;
+    await messaging.getByLabel("Bot to link").selectOption(second.id);
+    await expect(messaging.getByRole("button", { name: "Link a chat app" })).toBeDisabled();
+    finishMutation();
+    await expect(messaging.getByText("No chat apps linked yet.")).toBeVisible();
+    await expect(messaging.getByLabel("Bot to link")).toHaveValue(second.id);
+    await expect(messaging.getByRole("button", { name: "Link a chat app" })).toBeEnabled();
+    expect(unlinks).toBe(1);
+    expect(linkStarts).toBe(0);
+    await captureScreenshot(page, info, "b5-link-bot-mutation-refresh");
+  } finally {
+    finishMutation();
+  }
 });

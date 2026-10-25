@@ -8,6 +8,34 @@ import { stuckWorkStatusMessages } from "./stuck-work.js";
 
 describe("run failure diagnostics", () => {
   it.each([
+    ["API key", "is"],
+    ["API key", "is:"],
+    ["Secret Access Key", "->"],
+    ["Secret Access Key", "is="],
+    ["client_secret", "IS"],
+    ["private key material", "->"],
+  ])("cleans a natural %s %s credential before clipping", (label, separator) => {
+    for (const prefixBytes of [350, 8100, 8155, 8190, 8200]) {
+      const raw = `401: OpenAI rejected the request.\n${"界".repeat(Math.floor(prefixBytes / 3))}\n${label} ${separator} SYNTHETIC_PROSE_CREDENTIAL\n${"😀".repeat(200)}`;
+      for (const diagnostic of [
+        raw,
+        JSON.stringify({ response_body: JSON.stringify({ message: raw, safe: "retained" }) }),
+      ]) {
+        const cleaned = sanitizeRunErrorDetails(diagnostic);
+        expect(cleaned).not.toContain("SYNTHETIC_PROSE_CREDENTIAL");
+        expect(new TextEncoder().encode(cleaned).length).toBeLessThanOrEqual(8192);
+        expect(cleaned).not.toMatch(
+          /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u,
+        );
+        expect(sanitizeRunErrorDetails(cleaned)).toBe(cleaned);
+      }
+      expect(normalizeRunError(raw).summary).toBe(
+        "Your OpenAI rejected the API key. Check your connection settings.",
+      );
+    }
+  });
+
+  it.each([
     [
       "Anthropic",
       "max_tokens: 4096 exceeds the maximum tokens allowed for model claude-example: 2048. Reduce max_tokens.",

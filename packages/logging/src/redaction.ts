@@ -52,12 +52,15 @@ export function redactBindings(bindings: Record<string, unknown>): Record<string
 
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
-const ASSIGNMENT_SEPARATOR = /[:=][ \t]*/g;
+const ASSIGNMENT_SEPARATOR = /[:=][ \t]*|->[ \t]*|[ \t]is(?:[ \t]*[:=][ \t]*|[ \t]+)/gi;
 const RAW_KEY_QUALIFIER = /^(?:access|(?:key|value|header|material|id|identifier|data)s?)$/i;
+const NATURAL_CREDENTIAL_KEY =
+  /(?:password|passwd|secret|token|authorization|cookie|credential|apikey|privatekey)s?(?:(?:access|key|value|header|material|id|identifier|data)s?)*$/;
 const TOKEN_COUNT_KEY =
   /^(?:(?:max(?:imum)?|min(?:imum)?|prompt|completion|input|output|total|reasoning|cached)tokens?(?:count|limit|used|usage)?|tokens|tokens?(?:count|limit|used|usage))$/;
 const NUMERIC_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?=$|[\s,;})\]])/i;
-const QUOTED_FIELD_KEY = /("(?:\\.|[^"\\])*"|'(?:\\(?:''|.)|''|[^'\\])*')(\s*[:=]\s*)/g;
+const QUOTED_FIELD_KEY =
+  /("(?:\\.|[^"\\])*"|'(?:\\(?:''|.)|''|[^'\\])*')(\s*[:=]\s*|[ \t]*->[ \t]*|[ \t]+is(?:[ \t]*[:=][ \t]*|[ \t]+))/gi;
 const JSON_STRING = /"(?:\\.|[^"\\])*"/g;
 const MAX_ENCODED_STRING_DEPTH = 8;
 const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----/g;
@@ -250,6 +253,13 @@ function redactNamedValues(text: string, json: boolean): string {
     }
     const normalized = normalizeKey(key);
     if (!SECRET_KEY.test(normalized) && !(json && normalized === "email")) continue;
+    const separator = (json ? match[2]! : match[0]).trim();
+    if (
+      /^(?:is\b|->)/i.test(separator) &&
+      !NATURAL_CREDENTIAL_KEY.test(normalized) &&
+      !TOKEN_COUNT_KEY.test(normalized)
+    )
+      continue;
     const start = match.index + match[0].length;
     if (!json && TOKEN_COUNT_KEY.test(normalized) && NUMERIC_VALUE.test(text.slice(start)))
       continue;
