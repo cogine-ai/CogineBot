@@ -1,5 +1,6 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
+import { sanitizeConnectorError } from "./connector-safety.js";
 import {
   assertConnectorToolArgs,
   catalogEntries,
@@ -310,7 +311,7 @@ describe("lazy tool catalog", () => {
       "mcp__gmail__send",
     );
     expect(loadCatalogEntry(entries, { id: "srv-gmail:send" }).tool.name).toBe("mcp__gmail__send");
-    expect(loadCatalogEntry(entries, { id: "send" }).tool.name).toBe("mcp__gmail__send");
+    expect(() => loadCatalogEntry(entries, { id: "send" })).toThrow(/unknown/i);
     expect(() => loadCatalogEntry(entries, { id: "missing" })).toThrow(/unknown/i);
   });
 
@@ -450,5 +451,162 @@ describe("lazy tool catalog", () => {
         { group: "hubspot", names: ["get_deal", "list_contacts"] },
       ]),
     ).toBe("gmail:\n  list, read, send\nhubspot:\n  get_deal, list_contacts");
+  });
+});
+
+describe("catalog aliases and account identity", () => {
+  function entryTool(
+    name = "mcp__source__read/file",
+    group = "資料 / Ops__Team",
+    resourceId = "source",
+  ): ConnectorTool {
+    return {
+      name,
+      description: "Read a record",
+      inputSchema: { type: "object", properties: {} },
+      route: { connectorId: "mcp", resourceId, toolName: "read:file", catalogGroup: group },
+    };
+  }
+
+  it("uses native account identity while preserving other provider and accountless IDs", () => {
+    const base = entryTool();
+    const tools = [
+      ...["account:a", "account:b"].map((connectionId) => ({
+        ...base,
+        name: `native_${connectionId}`,
+        route: { ...base.route!, connectorId: "native", connectionId },
+      })),
+      {
+        ...base,
+        name: "pipedream",
+        route: { ...base.route!, connectorId: "pipedream", connectionId: "account:a" },
+      },
+      { ...base, name: "accountless", route: { ...base.route!, connectorId: "native" } },
+    ];
+    expect(catalogEntries(tools).map((entry) => entry.id)).toEqual([
+      "source:account%3Aa:read%3Afile",
+      "source:account%3Ab:read%3Afile",
+      "source:read%3Afile",
+      "source:read%3Afile",
+    ]);
+  });
+
+  it("fails closed for duplicate exact IDs before considering names", () => {
+    const entries = catalogEntries([entryTool("first"), entryTool("second")]);
+    expect(() => loadCatalogEntry(entries, { id: "source:read%3Afile" })).toThrow(/ambiguous/i);
+  });
+
+  it("gives a unique exact ID priority over an exposed-name collision", () => {
+    const first = entryTool("first");
+    const second = entryTool("source:read%3Afile", "other", "second");
+    expect(
+      loadCatalogEntry(catalogEntries([first, second]), { id: "source:read%3Afile" }).tool,
+    ).toBe(first);
+  });
+
+  it.each([":", "/", "__"])("loads qualified short and full names with %s", (separator) => {
+    const tool = entryTool();
+    const entries = catalogEntries([tool]);
+    for (const suffix of ["read:file", encodeURIComponent("read:file"), tool.name]) {
+      expect(
+        loadCatalogEntry(entries, { id: `  資料 / oPS__tEAM${separator}${suffix}  ` }).tool,
+      ).toBe(tool);
+    }
+    expect(() =>
+      loadCatalogEntry(entries, {
+        id: `${entries[0]!.group}${separator}${encodeURIComponent(tool.name)}`,
+      }),
+    ).toThrow(/unknown/i);
+  });
+
+  it("does not add bare short names, dot qualification, or direct-name normalization", () => {
+    const tool = entryTool();
+    const entries = catalogEntries([tool]);
+    for (const id of [
+      "read:file",
+      `${entries[0]!.group}.read:file`,
+      ` ${tool.name} `,
+      `${entries[0]!.group}:read%ZZ`,
+    ]) {
+      expect(() => loadCatalogEntry(entries, { id })).toThrow(/unknown/i);
+    }
+    const literal = entryTool("literal.name", "literal");
+    expect(loadCatalogEntry(catalogEntries([literal]), { id: "literal.name" }).tool).toBe(literal);
+    expect(() =>
+      loadCatalogEntry(catalogEntries([entryTool("accented", "Café")]), {
+        id: "Cafe\u0301:read:file",
+      }),
+    ).toThrow(/unknown/i);
+  });
+
+  it("combines exposed-name and qualified-name matches instead of preferring one", () => {
+    const entries = catalogEntries([
+      entryTool("Source:read:file", "other", "one"),
+      entryTool("second", "Source", "two"),
+    ]);
+    expect(() => loadCatalogEntry(entries, { id: "Source:read:file" })).toThrow(/ambiguous/i);
+  });
+
+  it("treats case-folded qualified group matches as one ambiguous candidate set", () => {
+    const entries = catalogEntries([
+      entryTool("first", "Source", "one"),
+      entryTool("second", "source", "two"),
+    ]);
+    expect(() => loadCatalogEntry(entries, { id: "SOURCE:read:file" })).toThrow(/ambiguous/i);
+    expect(searchCatalog(entries, { group: "Source" })).toEqual({
+      group: "Source",
+      names: ["read:file"],
+    });
+  });
+
+  it("combines literal and decoded short-name aliases before deciding uniqueness", () => {
+    const literal = entryTool("literal", "Source", "one");
+    literal.route!.toolName = "read%2Ffile";
+    const decoded = entryTool("decoded", "Source", "two");
+    decoded.route!.toolName = "read/file";
+    expect(() =>
+      loadCatalogEntry(catalogEntries([literal, decoded]), { id: "Source:read%2Ffile" }),
+    ).toThrow(/ambiguous/i);
+    const same = entryTool("read:file", "Source");
+    expect(loadCatalogEntry(catalogEntries([same]), { id: "Source:read:file" }).tool).toBe(same);
+  });
+
+  it("returns canonical identity when loading through a qualified alias", async () => {
+    const entries = catalogEntries([entryTool()]);
+    const events = [];
+    for await (const event of executeLazyCatalogControl(
+      {
+        tool: "connectors_load_tool",
+        route: { connectorId: "mcp", toolName: "__catalog_load" },
+        args: { id: "資料 / Ops__Team/read:file" },
+        executionId: "load",
+      },
+      entries,
+      async function* () {},
+    ))
+      events.push(event);
+    expect(events).toEqual([
+      expect.objectContaining({ data: expect.objectContaining({ id: "source:read%3Afile" }) }),
+    ]);
+  });
+
+  it("keeps authorized ambiguity IDs complete through the final error sanitizer", () => {
+    const entries = catalogEntries(
+      Array.from({ length: 7 }, (_, index) =>
+        entryTool(`tool_${index}`, "Shared", `resource-${index}-${"r".repeat(450)}`),
+      ),
+    );
+    let error: unknown;
+    try {
+      loadCatalogEntry(entries, { id: "Shared:read:file" });
+    } catch (caught) {
+      error = caught;
+    }
+    const message = sanitizeConnectorError(error);
+    expect(message).toMatch(/ambiguous/i);
+    const ids = message.split("ids: ")[1]!.split(", ");
+    expect(ids).toHaveLength(3);
+    for (const id of ids) expect(entries.map((entry) => entry.id)).toContain(id);
+    expect(message.length).toBeLessThan(2000);
   });
 });

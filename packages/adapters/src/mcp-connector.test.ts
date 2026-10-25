@@ -664,7 +664,7 @@ describe("MCP connector session cache", () => {
     await connector.close();
   });
 
-  it("searches, loads, validates, authorizes, and executes one large-catalog tool", async () => {
+  it.each([":", "/", "__"])("uses %s aliases in the live MCP catalog", async (separator) => {
     const state = {
       failNext: false,
       initializations: 0,
@@ -770,7 +770,7 @@ describe("MCP connector session cache", () => {
 
     const loaded = await collect({
       tool: load!.name,
-      args: { id: "server-1:tool_29" },
+      args: { id: `demo${separator}tool_29` },
       executionId: "load",
       route: load!.route,
     });
@@ -810,7 +810,7 @@ describe("MCP connector session cache", () => {
     const resolved = await connector.resolveCall(
       {
         tool: execute!.name,
-        args: { id: "server-1:tool_29", arguments: { value: "ok" } },
+        args: { id: `demo${separator}tool_29`, arguments: { value: "ok" } },
         executionId: "execute",
         route: execute!.route,
       },

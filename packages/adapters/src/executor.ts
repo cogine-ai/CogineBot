@@ -143,13 +143,13 @@ import {
   approvedReplayArgs,
   boundDirectApprovalDetails,
   boundDirectApprovalRequest,
+  catalogApprovalArguments,
   catalogApprovalConnectorId,
   catalogApprovalDetails,
   catalogApprovalInnerArgs,
   catalogApprovalMatchesLiveRoute,
   catalogApprovalRequest,
   catalogExecuteToolName,
-  catalogIdForRoute,
   claimApprovedEffect,
   claimIntendedEffect,
   completeExternalEffect,
@@ -270,6 +270,7 @@ import {
   CATALOG_EXECUTE,
   CATALOG_LOAD,
   CATALOG_SEARCH,
+  catalogIdForRoute,
   uniquifyInstalledToolName,
 } from "./lazy-tool-catalog.js";
 import {
@@ -2965,7 +2966,7 @@ export function buildApprovalContinuation(
             ? renamedMcpWrapper
             : catalog.toolName;
         if (!exposed || exposed.has(wrapper)) {
-          return `${wrapper}: ${formatRequest(catalog.args)}`;
+          return `${wrapper}: ${formatRequest(catalogApprovalArguments(catalog))}`;
         }
         // Catalog shrank: wrapper is gone — resume as the matching direct tool.
         const innerArgs = catalogApprovalInnerArgs(catalog) ?? {};
@@ -4274,14 +4275,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 args = resolved.call.args;
                 catalogRemapped = onCatalogExecuteRoute;
                 resolvedTool = resolved.tool;
-                if (catalogRemapped)
-                  effectRequest = catalogApprovalRequest(
-                    connectorCall.tool,
-                    connectorCall.args,
-                    CATALOG_APPROVAL_TOOL,
+                if (catalogRemapped) {
+                  const route =
                     resolved.tool.route?.resourceId &&
-                      resolved.tool.route.connectorId &&
-                      resolved.tool.route.toolName
+                    resolved.tool.route.connectorId &&
+                    resolved.tool.route.toolName
                       ? {
                           connectorId: resolved.tool.route.connectorId,
                           resourceId: resolved.tool.route.resourceId,
@@ -4289,8 +4287,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                           connectionId: resolved.tool.route.connectionId,
                           toolName: resolved.tool.route.toolName,
                         }
-                      : undefined,
+                      : undefined;
+                  effectRequest = catalogApprovalRequest(
+                    connectorCall.tool,
+                    route
+                      ? { id: catalogIdForRoute(route), arguments: resolved.call.args }
+                      : connectorCall.args,
+                    CATALOG_APPROVAL_TOOL,
+                    route,
                   );
+                }
                 connectorCall = resolved.call;
               }
             } catch (error) {

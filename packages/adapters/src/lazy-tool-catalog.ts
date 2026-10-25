@@ -217,22 +217,64 @@ export function loadCatalogEntry(
   args: Record<string, unknown>,
 ): CatalogEntry {
   const id = String(args.id ?? "");
-  const byId = entries.find((candidate) => candidate.id === id);
-  if (byId) {
-    assertSchemaSize(byId);
-    return byId;
+  const byId = entries.filter((candidate) => candidate.id === id);
+  if (byId.length === 1) {
+    assertSchemaSize(byId[0]!);
+    return byId[0]!;
   }
-  const byName = entries.filter((candidate) => candidate.tool.name === id);
-  if (byName.length === 1) {
-    assertSchemaSize(byName[0]!);
-    return byName[0]!;
+  if (byId.length > 1) {
+    throw new Error("Tool ID is ambiguous; use a unique exposed tool name returned by search.");
   }
-  const byShort = entries.filter((candidate) => catalogShortName(candidate) === id);
-  if (byShort.length === 1) {
-    assertSchemaSize(byShort[0]!);
-    return byShort[0]!;
+  const candidates = entries.filter(
+    (candidate) => candidate.tool.name === id || matchesGroupQualifiedName(candidate, id),
+  );
+  if (candidates.length === 1) {
+    assertSchemaSize(candidates[0]!);
+    return candidates[0]!;
   }
-  throw new Error("Tool is unknown or not authorized for this bot");
+  if (candidates.length > 1) {
+    const counts = new Map<string, number>();
+    for (const candidate of candidates)
+      counts.set(candidate.id, (counts.get(candidate.id) ?? 0) + 1);
+    // At most three complete 500-character IDs survive the final 2000-character sanitizer.
+    const ids = [...counts.entries()]
+      .filter(([, count]) => count === 1)
+      .map(([candidateId]) => candidateId)
+      .sort()
+      .slice(0, 3);
+    throw new Error(
+      ids.length
+        ? `Tool name is ambiguous; use one of these ids: ${ids.join(", ")}`
+        : "Tool identity is ambiguous; use a unique exposed tool name returned by search.",
+    );
+  }
+  throw new Error(
+    "Tool is unknown or not authorized for this bot. Use the exact id returned by search.",
+  );
+}
+
+const GROUP_SEPARATORS = [":", "/", "__"];
+
+function matchesGroupQualifiedName(entry: CatalogEntry, id: string): boolean {
+  const group = entry.group.toLowerCase();
+  const qualified = id.trim();
+  const shortName = catalogShortName(entry);
+  for (const separator of GROUP_SEPARATORS) {
+    let index = qualified.indexOf(separator);
+    while (index !== -1) {
+      if (qualified.slice(0, index).toLowerCase() === group) {
+        const name = qualified.slice(index + separator.length);
+        if (name === shortName || name === entry.tool.name) return true;
+        try {
+          if (decodeURIComponent(name) === shortName) return true;
+        } catch {
+          // A malformed escape is not an alias.
+        }
+      }
+      index = qualified.indexOf(separator, index + 1);
+    }
+  }
+  return false;
 }
 
 function assertSchemaSize(entry: CatalogEntry): void {
@@ -302,7 +344,7 @@ export async function* executeLazyCatalogControl(
     yield {
       type: "result",
       data: {
-        id: call.args.id,
+        id: entry.id,
         name: entry.tool.name,
         description: entry.tool.description.slice(0, MAX_DESCRIPTION_LENGTH),
         inputSchema: entry.tool.inputSchema,
@@ -343,7 +385,17 @@ export function fitsNameIndexBudget(groups: Array<{ group: string; names: string
 function catalogEntryId(tool: ConnectorTool): string {
   const route = tool.route;
   if (!route?.resourceId) return tool.name;
-  return `${route.resourceId}:${encodeURIComponent(route.toolName)}`;
+  return catalogIdForRoute({ ...route, resourceId: route.resourceId });
+}
+
+export function catalogIdForRoute(
+  route: Pick<ConnectorRoute, "connectorId" | "toolName" | "connectionId"> & { resourceId: string },
+): string {
+  const account =
+    route.connectorId === "native" && route.connectionId
+      ? `${encodeURIComponent(route.connectionId)}:`
+      : "";
+  return `${route.resourceId}:${account}${encodeURIComponent(route.toolName)}`;
 }
 
 function catalogGroupOf(tool: ConnectorTool): string {

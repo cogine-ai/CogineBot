@@ -14,7 +14,7 @@ import {
 } from "./installed-connectors.js";
 
 describe("OpenAPI connector import", () => {
-  it("uses the bounded catalog for a real large installed OpenAPI source", async () => {
+  it.each([":", "/", "__"])("loads and executes %s aliases", async (separator) => {
     const install = {
       id: "api-1",
       kind: "api",
@@ -119,7 +119,7 @@ describe("OpenAPI connector import", () => {
       provider.resolveCall(
         {
           tool: execute!.name,
-          args: { id: "api-1:operation_20", arguments: { limit: 5 } },
+          args: { id: `Contacts API${separator}operation_20`, arguments: { limit: 5 } },
           executionId: "execute",
           route: execute!.route,
         },
@@ -133,6 +133,18 @@ describe("OpenAPI connector import", () => {
         route: { connectorId: "installed", resourceId: "api-1", toolName: "operation_20" },
       },
     });
+    const loaded = [];
+    for await (const event of provider.execute(
+      {
+        tool: load!.name,
+        route: load!.route,
+        args: { id: `Contacts API${separator}operation_20` },
+        executionId: "load",
+      },
+      context,
+    ))
+      loaded.push(event);
+    expect(loaded).toMatchObject([{ data: { id: "api-1:operation_20" } }]);
   });
 
   it("executes an approved lazy call with authoritative normalized arguments", async () => {
