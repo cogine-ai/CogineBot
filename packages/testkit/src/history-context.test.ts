@@ -100,7 +100,7 @@ describe("structured results through real Pi context selection", () => {
       };
       let finalText = "";
       for await (const event of new PiAgentRuntime().run(request))
-        if (event.type === "done") finalText = event.text;
+        if (event.type === "done") finalText = event.text ?? "";
       server.assertComplete();
       expect(calls).toBe(2);
       expect(finalText).toContain("ORBIT-731");
@@ -182,7 +182,7 @@ describe("structured results through real Pi context selection", () => {
         for await (const event of new PiAgentRuntime({
           onContextDecision: (decision) => decisions.push(decision),
         }).run(request)) {
-          if (event.type === "done") finalText = event.text;
+          if (event.type === "done") finalText = event.text ?? "";
         }
         server.assertComplete();
         expect(calls).toBe(12);
