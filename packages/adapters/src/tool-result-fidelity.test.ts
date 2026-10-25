@@ -232,6 +232,27 @@ describe("tool result fidelity", () => {
     });
   });
 
+  it("retains a readable reference when an initially small result exceeds a later context budget", () => {
+    const raw = { nextCursor: "c".repeat(1_800), body: "b".repeat(1_000) };
+    const initial = serializeToolResult(raw, "current", "connector", {}, reference);
+    expect(parse(initial)).toMatchObject({ ...raw, historyReference: reference });
+    expect(JSON.parse(initial).contextTruncated).not.toBe(true);
+    expect(parse(boundToolResultText(initial, 1_024), 1_024)).toEqual({
+      contextTruncated: true,
+      error: "budget_error",
+      historyReference: reference,
+    });
+  });
+
+  it("offers the stored reference alongside an image-only connector result", () => {
+    const image = { type: "image", data: "synthetic", mimeType: "image/png" };
+    const result = clipToolResultContent([image], 12_000, reference);
+    expect(JSON.parse((result[0] as unknown as { text: string }).text)).toMatchObject({
+      historyReference: reference,
+    });
+    expect(result[1]).toBe(image);
+  });
+
   it("keeps soft-target MCP controls intact before applying the final bound", () => {
     const result = JSON.parse(
       shortenToolResultText(

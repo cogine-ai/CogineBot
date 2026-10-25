@@ -379,6 +379,9 @@ export function shortenToolResultText(
     `${source.slice(0, Math.floor(size / 2))}\n[Tool result truncated to fit context; inspect original evidence before claiming omitted details.]\n${source.slice(-Math.floor(size / 2))}`
   );
 }
+// Context selection can shorten evidence above this minimum, including initially small results.
+export const TOOL_RESULT_HISTORY_MIN_LENGTH = 256;
+
 // Bounded metadata only, matching exact server-generated views. Provider JSON cannot
 // manufacture a durable reference by returning a field with the same name.
 const toolResultReferences = new Map<string, ToolResultHistoryReference>();
@@ -410,7 +413,7 @@ export function boundToolResultText(
   historyReference?: ToolResultHistoryReference,
 ): string {
   if (!Number.isSafeInteger(size) || size < 1) throw new Error("Invalid tool result budget");
-  if (source.length <= size) return source;
+  if (source.length <= size && !historyReference) return source;
   let original: unknown;
   try {
     original = JSON.parse(source);
@@ -468,6 +471,13 @@ export function boundToolResultText(
     value && typeof value === "object" && !Array.isArray(value)
       ? { ...value, contextTruncated: true, ...evidence }
       : { contextTruncated: true, ...evidence, result: value };
+  if (source.length <= size && reference) {
+    const complete =
+      original && typeof original === "object" && !Array.isArray(original)
+        ? { ...original, ...evidence }
+        : { result: original, ...evidence };
+    if (JSON.stringify(complete).length <= size) return encode(complete);
+  }
   const overhead = JSON.stringify(wrap({})).length;
   try {
     const shortened = shortenToolResultText(source, Math.max(0, size - overhead), tool);
@@ -644,7 +654,7 @@ export function selectContext<T extends ContextMessage>(
           : typeof message.content === "string"
             ? message.content
             : JSON.stringify(message.content);
-        if (!serialized || serialized.length <= 256) return message;
+        if (!serialized || serialized.length <= TOOL_RESULT_HISTORY_MIN_LENGTH) return message;
         const size = Math.max(
           128,
           Math.min(Math.floor(serialized.length / 2), Math.floor(available / 4)),

@@ -41,10 +41,12 @@ export function clipToolResultContent<T>(
         typeof part.text === "string",
     );
   const texts = content.filter(isText);
-  if (texts.reduce((total, part) => total + part.text.length, 0) <= limit) return content;
+  if (!historyReference && texts.reduce((total, part) => total + part.text.length, 0) <= limit)
+    return content;
   // Preserve multipart boundaries inside a valid JSON envelope. Joining JSON text parts
   // as prose before truncation would discard the controls in every part after the first.
   const text = boundToolResultText(JSON.stringify({ content: texts }), limit, {}, historyReference);
+  if (texts.length === 0) return [{ type: "text", text } as T, ...content];
   let inserted = false;
   return content.flatMap((part) => {
     if (!isText(part)) return [part];

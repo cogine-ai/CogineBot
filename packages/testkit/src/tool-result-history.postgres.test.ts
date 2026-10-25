@@ -16,9 +16,13 @@ const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATAB
 const origin = "http://127.0.0.1:5173";
 
 describe.skipIf(!enabled)("connector result history through executor and Pi", () => {
-  it.each([false, true])(
-    "keeps current-strategy references readable with read_history disabled=%s",
-    async (disabled) => {
+  it.each([
+    { disabled: false, small: true },
+    { disabled: false, small: false },
+    { disabled: true, small: false },
+  ])(
+    "keeps current-strategy references readable with read_history disabled=$disabled small=$small",
+    async ({ disabled, small }) => {
       const secret = 'synthetic"quoted-history-key';
       const source = {
         id: "exact-record-id",
@@ -26,13 +30,17 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
         credential: secret,
         futureCredential: 'future"quoted\nsecret',
         count: 37,
-        body: "synthetic record ".repeat(1500),
+        body: "synthetic record ".repeat(small ? 80 : 1500),
       };
       const redactedSource = { ...source, credential: "[redacted]" };
       const raw = {
         content: [{ type: "text", text: JSON.stringify(source) }],
         structuredContent: source,
       };
+      if (small) {
+        expect(JSON.stringify(raw).length).toBeGreaterThan(2000);
+        expect(JSON.stringify(raw).length).toBeLessThan(12000);
+      }
       const expected = {
         content: [{ type: "text", text: JSON.stringify(redactedSource) }],
         structuredContent: redactedSource,
@@ -60,7 +68,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
         {
           expect(request) {
             const result = lastResult(request);
-            expect(result.contextTruncated).toBe(true);
+            if (!small) expect(result.contextTruncated).toBe(true);
             expect(
               String(request.messages.findLast((message) => message.role === "tool")?.content)
                 .length,

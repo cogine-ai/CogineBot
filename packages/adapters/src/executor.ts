@@ -246,6 +246,7 @@ import {
   selectExplicitConnectorAccounts,
 } from "./connector-account-binding.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
+import { TOOL_RESULT_HISTORY_MIN_LENGTH } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
@@ -2864,7 +2865,7 @@ export function redactToolResultHistory(value: unknown, secrets: string[]): unkn
   return visit(JSON.parse(original));
 }
 
-/** Durable retrieval is limited to large connector outputs, never built-in control prompts. */
+/** Preserve connector outputs that context selection may shorten, never built-in control prompts. */
 export async function storeConnectorToolResultHistory(
   prisma: PrismaClient,
   scope: { spaceId: string; userId: string; threadId: string; botId: string; activeRunId: string },
@@ -2879,7 +2880,7 @@ export async function storeConnectorToolResultHistory(
     return;
   try {
     const original = JSON.stringify(input.result);
-    if (!original || original.length <= 12_000) return;
+    if (!original || original.length <= TOOL_RESULT_HISTORY_MIN_LENGTH) return;
     if (Buffer.byteLength(original, "utf8") > TOOL_RESULT_HISTORY_MAX_BYTES) return;
     const text = JSON.stringify(redactToolResultHistory(input.result, secrets));
     if (!text) return;

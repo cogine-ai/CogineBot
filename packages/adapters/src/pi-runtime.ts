@@ -37,7 +37,7 @@ import { automated } from "./automated-messages.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
-import { boundToolResultText } from "./context-selection.js";
+import { boundToolResultText, TOOL_RESULT_HISTORY_MIN_LENGTH } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { estimateModelContextTokens } from "./model-context.js";
@@ -1273,7 +1273,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
             let historyReference: ToolResultHistoryReference | undefined;
             if (!VERBATIM_TOOL_RESULTS.has(tool.name) && host.request.storeToolResult) {
               try {
-                if ((JSON.stringify(result)?.length ?? 0) > 12_000) {
+                if ((JSON.stringify(result)?.length ?? 0) > TOOL_RESULT_HISTORY_MIN_LENGTH) {
                   const deadline = new AbortController();
                   try {
                     historyReference = await Promise.race([
@@ -2105,7 +2105,7 @@ export function serializeToolResult(
     const text = JSON.stringify(result);
     if (!text) return "ok";
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
-    if (text.length <= 12_000 || VERBATIM_TOOL_RESULTS.has(name)) return text;
+    if (VERBATIM_TOOL_RESULTS.has(name)) return text;
     return boundToolResultText(text, 12_000, { name, arguments: args }, historyReference);
   } catch {
     return JSON.stringify({ error: "result_serialization_error", historyUnavailable: true });

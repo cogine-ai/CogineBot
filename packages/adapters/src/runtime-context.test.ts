@@ -2,7 +2,11 @@ import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
-import { ContextBudgetError, ContextCacheTracker } from "./context-selection.js";
+import {
+  boundToolResultText,
+  ContextBudgetError,
+  ContextCacheTracker,
+} from "./context-selection.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 
 const model = {
@@ -309,6 +313,53 @@ describe("runtime context policy", () => {
     expect(prepared.messages.at(-1)).toEqual(context.messages.at(-1));
     expect(policy.getDecision()!.estimatedInputTokens).toBeLessThanOrEqual(8192 - 1024);
   });
+  it.each(["current", "retrieval", "snapshots", "cache-aware"] as const)(
+    "keeps a real result reference when a small prior result reaches the %s policy",
+    (strategy) => {
+      const { request, context } = fixture(0);
+      const reference = {
+        tool: "read_history" as const,
+        arguments: { toolResultId: "stored-small-result" },
+      };
+      const original = { nextCursor: "c".repeat(1_800), body: "b".repeat(1_000) };
+      const initial = boundToolResultText(JSON.stringify(original), 12_000, {}, reference);
+      expect(JSON.parse(initial)).toMatchObject({ ...original, historyReference: reference });
+      const call = (id: string) =>
+        ({
+          role: "assistant",
+          content: [{ type: "toolCall", id, name: "connector", arguments: {} }],
+          timestamp: 1,
+        }) as unknown as Message;
+      const result = (id: string, text: string) =>
+        ({
+          role: "toolResult",
+          toolCallId: id,
+          toolName: "connector",
+          content: [{ type: "text", text }],
+          isError: false,
+          timestamp: 2,
+        }) as Message;
+      context.messages.push(
+        call("old"),
+        result("old", initial),
+        call("new"),
+        result("new", "done"),
+      );
+      const prepared = createRuntimeContextPolicy({
+        ...request,
+        contextStrategy: strategy,
+      }).prepareContext(context, model);
+      const prior = prepared.messages.find(
+        (message) => message.role === "toolResult" && message.toolCallId === "old",
+      ) as Extract<Message, { role: "toolResult" }>;
+      const text = prior.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+      expect(JSON.parse(text)).toMatchObject({ historyReference: reference });
+      if (strategy === "current") expect(JSON.parse(text)).toMatchObject(original);
+      else
+        expect(JSON.parse(text)).toMatchObject({ error: "budget_error", contextTruncated: true });
+    },
+  );
+
   it("keeps an earlier skill read verbatim while shortening other old tool evidence", () => {
     const { request, context } = fixture(2);
     const call = (id: string, name: string) =>
