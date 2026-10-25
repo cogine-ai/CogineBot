@@ -274,12 +274,10 @@ describe("bounded context selection", () => {
     const content = selected.messages.at(-1)!.content as Array<{ text: string }>;
     const decoded = JSON.parse(content[0]!.text);
     expect(decoded).toMatchObject({
-      nextCursor: "segment-2",
-      segment: 1,
-      approval: "pending",
       contextTruncated: true,
+      result: { nextCursor: "segment-2", segment: 1, approval: "pending" },
     });
-    expect(decoded.diagnostic).toContain("Tool result truncated");
+    expect(decoded.result.diagnostic).toContain("Tool result truncated");
   });
   it("fails explicitly if mandatory content cannot fit rather than silently losing the request", () => {
     expect(() =>

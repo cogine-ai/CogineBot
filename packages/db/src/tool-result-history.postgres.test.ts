@@ -165,6 +165,75 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
     await pool.query(`DELETE FROM messages WHERE id = 'background-output'`);
     expect((await read(id)).toolResult).toBeNull();
   });
+  it("rolls back private results and event sequence on storage cancellation", async () => {
+    const controller = new AbortController();
+    const before = await pool.query('SELECT "nextEventSeq" FROM threads WHERE id = $1', [
+      scope.threadId,
+    ]);
+    const aborting = prisma.$extends({
+      query: {
+        event: {
+          async update({ args, query }) {
+            const result = await query(args);
+            controller.abort(new Error("storage cancelled"));
+            return result;
+          },
+        },
+      },
+    });
+    await expect(
+      storeToolResultHistory(aborting as unknown as PrismaClient, scope, {
+        name: "connector.read",
+        executionId: "abort-private-write",
+        text: '{"value":"must-roll-back"}',
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("storage cancelled");
+    expect(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM events WHERE payload->>'executionId' = $1",
+          ["abort-private-write"],
+        )
+      ).rows[0].count,
+    ).toBe(0);
+    expect(
+      (await pool.query('SELECT "nextEventSeq" FROM threads WHERE id = $1', [scope.threadId])).rows,
+    ).toEqual(before.rows);
+  });
+
+  it("bounds slow SQL on the server and rolls back partial storage writes", async () => {
+    const before = await pool.query('SELECT "nextEventSeq" FROM threads WHERE id = $1', [
+      scope.threadId,
+    ]);
+    await pool.query(`CREATE FUNCTION pg_temp.slow_tool_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(3); RETURN NEW; END $$;
+      CREATE TRIGGER slow_tool_result BEFORE INSERT ON events FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_tool_result();`);
+    try {
+      await expect(
+        storeToolResultHistory(prisma, scope, {
+          name: "connector.read",
+          executionId: "slow-private-write",
+          text: '{"value":"must-not-commit"}',
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await pool.query(
+        "DROP TRIGGER slow_tool_result ON events; DROP FUNCTION pg_temp.slow_tool_result()",
+      );
+    }
+    expect(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM events WHERE payload->>'executionId' = $1",
+          ["slow-private-write"],
+        )
+      ).rows[0].count,
+    ).toBe(0);
+    expect(
+      (await pool.query('SELECT "nextEventSeq" FROM threads WHERE id = $1', [scope.threadId])).rows,
+    ).toEqual(before.rows);
+  });
+
   it("does not read a result after its source message has been cleared", async () => {
     const id = (await store('{"value":"clear-canary"}'))!.arguments.toolResultId;
     await pool.query(`DELETE FROM messages WHERE id = 'source'`);

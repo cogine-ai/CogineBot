@@ -6,7 +6,7 @@ import { ComposioEmulator } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
 import { eventsAfter, readHistory } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { redactToolResultHistory } from "../../adapters/src/executor.js";
+import { redactConnectorPayload } from "../../adapters/src/connector-safety.js";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 import type { ModelEmulatorRequest, ModelEmulatorStep } from "./model-emulator.js";
@@ -248,7 +248,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
             userId: run.userId,
             botId: run.botId,
             threadId: run.threadId,
-            transformToolResult: (value: unknown) => redactToolResultHistory(value, newSecrets),
+            transformToolResult: (value: unknown) => redactConnectorPayload(value, newSecrets),
           };
           const first = await readHistory(handles.prisma, readingScope, { toolResultId: storedId });
           expect(first.toolResult!.viewHash).not.toBe(viewHash);
@@ -257,7 +257,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
             {
               ...readingScope,
               transformToolResult: (value: unknown) =>
-                redactToolResultHistory(value, [...newSecrets, "synthetic"]),
+                redactConnectorPayload(value, [...newSecrets, "synthetic"]),
             },
             first.nextRead!,
           );
@@ -274,7 +274,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
             transformed += page.toolResult!.text;
             nextRead = page.nextRead;
           }
-          expect(JSON.parse(transformed)).toEqual(redactToolResultHistory(expected, newSecrets));
+          expect(JSON.parse(transformed)).toEqual(redactConnectorPayload(expected, newSecrets));
           const decodedView = JSON.parse(transformed);
           expect(decodedView.structuredContent.count).toBe("[redacted]");
           expect(JSON.parse(decodedView.content[0].text).futureCredential).toBe("[redacted]");

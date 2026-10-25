@@ -1282,6 +1282,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
                         executionId,
                         result,
                         route: tool.route,
+                        signal: AbortSignal.any([host.signal, deadline.signal]),
                       }),
                       abortableDelay(2_000, AbortSignal.any([host.signal, deadline.signal])).then(
                         () => undefined,

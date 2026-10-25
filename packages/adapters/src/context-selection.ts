@@ -220,40 +220,53 @@ function shortenStructuredResult(source: string, size: number): string | undefin
   }
   const holder: Record<string, unknown> = { payload };
   const leaves: Array<{ parent: Record<string, unknown> | unknown[]; key: string | number }> = [];
+  const embedded: Array<{ parent: Record<string, unknown>; value: unknown }> = [];
+  const encode = () => {
+    for (let index = embedded.length - 1; index >= 0; index--)
+      embedded[index]!.parent.text = JSON.stringify(embedded[index]!.value);
+    return JSON.stringify(holder.payload);
+  };
   const pending: unknown[] = typeof payload === "string" ? [] : [payload];
   if (typeof payload === "string") leaves.push({ parent: holder, key: "payload" });
   while (pending.length) {
     const value = pending.pop();
     if (!value || typeof value !== "object") continue;
     for (const [key, child] of Object.entries(value)) {
+      if (key === "text" && typeof child === "string" && "type" in value && value.type === "text") {
+        try {
+          const parsed = JSON.parse(child);
+          if (parsed && typeof parsed === "object") {
+            embedded.push({ parent: value as Record<string, unknown>, value: parsed });
+            pending.push(parsed);
+            continue;
+          }
+        } catch {
+          /* Non-JSON text is ordinary evidence. */
+        }
+      }
       if (
         typeof child === "string" &&
-        !/(?:id|cursor|token|url|path|name|status|type|query|hash)$/i.test(key)
+        !/(?:id|cursor|token|url|path|name|status|type|query|hash|approval)$/i.test(key)
       )
         leaves.push({ parent: value as Record<string, unknown>, key });
       else if (child && typeof child === "object") pending.push(child);
     }
   }
-  if (payload && typeof payload === "object" && !Array.isArray(payload))
-    (payload as Record<string, unknown>).contextTruncated = true;
-  let encoded = JSON.stringify(holder.payload);
-  while (encoded.length > size) {
-    const largest = leaves.reduce<(typeof leaves)[number] | undefined>((best, leaf) => {
+  let encoded = encode();
+  // Batch leaf changes so large tables cannot trigger one full serialization per row.
+  for (let pass = 0; pass < 16 && encoded.length > size; pass++) {
+    let changed = false;
+    for (const leaf of leaves) {
       const value = (leaf.parent as Record<string, unknown>)[leaf.key];
-      const prior = best ? (best.parent as Record<string, unknown>)[best.key] : undefined;
-      return typeof value === "string" &&
-        value.length > 128 &&
-        (!best || typeof prior !== "string" || value.length > prior.length)
-        ? leaf
-        : best;
-    }, undefined);
-    if (!largest) break; // Required metadata alone may still need explicit budget failure.
-    const value = (largest.parent as Record<string, unknown>)[largest.key] as string;
-    const keep = Math.max(8, Math.floor(value.length / 4));
-    const shortened = `${value.slice(0, keep)}\n[Tool result truncated to fit context; omitted evidence is unavailable.]\n${value.slice(-keep)}`;
-    if (shortened.length >= value.length) break;
-    (largest.parent as Record<string, unknown>)[largest.key] = shortened;
-    encoded = JSON.stringify(holder.payload);
+      if (typeof value !== "string" || value.length <= 128) continue;
+      const keep = Math.max(8, Math.floor(value.length / 4));
+      const shortened = `${value.slice(0, keep)}\n[Tool result truncated to fit context; omitted evidence is unavailable.]\n${value.slice(-keep)}`;
+      if (shortened.length >= value.length) continue;
+      (leaf.parent as Record<string, unknown>)[leaf.key] = shortened;
+      changed = true;
+    }
+    if (!changed) break;
+    encoded = encode();
   }
   return encoded;
 }
@@ -302,7 +315,6 @@ function shortenMcpEnvelope(source: string, size: number): string | undefined {
     const shortenedOuter = shortenStructuredResult(outerSource, Math.max(64, Math.floor(size / 4)));
     if (shortenedOuter !== undefined) {
       Object.assign(payload, JSON.parse(shortenedOuter));
-      if (shortenedOuter !== outerSource) payload.contextTruncated = true;
       outerSource = shortenedOuter;
     }
   }
@@ -355,7 +367,6 @@ function shortenMcpEnvelope(source: string, size: number): string | undefined {
         changed = true;
       }
     }
-    if (changed) payload.contextTruncated = true;
     encoded = wrap(parts);
     if (encoded.length <= size) break;
     if (!changed) break;
@@ -384,7 +395,7 @@ export const TOOL_RESULT_HISTORY_MIN_LENGTH = 256;
 
 // Bounded metadata only, matching exact server-generated views. Provider JSON cannot
 // manufacture a durable reference by returning a field with the same name.
-const toolResultReferences = new Map<string, ToolResultHistoryReference>();
+const toolResultReferences = new Map<string, ToolResultHistoryReference | null>();
 const resultTextHash = (text: string) => createHash("sha256").update(text).digest("hex");
 function rememberedToolResultReference(
   source: string,
@@ -394,13 +405,13 @@ function rememberedToolResultReference(
   if (exact) return exact;
   if (!value || typeof value !== "object" || !("content" in value) || !Array.isArray(value.content))
     return;
-  const refs = value.content.flatMap((part) =>
-    part?.type === "text" && typeof part.text === "string"
-      ? [toolResultReferences.get(resultTextHash(part.text))].filter((ref) => ref !== undefined)
-      : [],
+  const texts = value.content.filter((part) => part?.type === "text");
+  const refs = texts.map((part) =>
+    typeof part.text === "string" ? toolResultReferences.get(resultTextHash(part.text)) : undefined,
   );
   return refs.length &&
-    refs.every((ref) => ref.arguments.toolResultId === refs[0]!.arguments.toolResultId)
+    refs[0] &&
+    refs.every((ref) => ref?.arguments.toolResultId === refs[0]!.arguments.toolResultId)
     ? refs[0]
     : undefined;
 }
@@ -450,7 +461,14 @@ export function boundToolResultText(
           },
         }
       : undefined;
-  const reference = supplied ?? rememberedToolResultReference(source, original) ?? readReference;
+  const remembered = rememberedToolResultReference(source, original);
+  const reference = supplied ?? remembered ?? readReference;
+  const trustedView = Boolean(
+    toolResultReferences.has(resultTextHash(source)) ||
+      remembered ||
+      tool.name === "read_history" ||
+      tool.name === "search_history",
+  );
   const evidence = {
     historyReference: reference,
     historyUnavailable: reference ? undefined : true,
@@ -458,22 +476,20 @@ export function boundToolResultText(
   const encode = (value: unknown) => {
     const encoded = JSON.stringify(value);
     if (encoded.length > size) throw new ContextBudgetError(Buffer.byteLength(encoded), size);
-    if (reference) {
-      const hash = resultTextHash(encoded);
-      toolResultReferences.delete(hash);
-      toolResultReferences.set(hash, reference);
-      if (toolResultReferences.size > 1_024)
-        toolResultReferences.delete(toolResultReferences.keys().next().value!);
-    }
+    const hash = resultTextHash(encoded);
+    toolResultReferences.delete(hash);
+    toolResultReferences.set(hash, reference ?? null);
+    if (toolResultReferences.size > 1_024)
+      toolResultReferences.delete(toolResultReferences.keys().next().value!);
     return encoded;
   };
   const wrap = (value: unknown) =>
-    value && typeof value === "object" && !Array.isArray(value)
+    trustedView && value && typeof value === "object" && !Array.isArray(value)
       ? { ...value, contextTruncated: true, ...evidence }
       : { contextTruncated: true, ...evidence, result: value };
   if (source.length <= size && reference) {
     const complete =
-      original && typeof original === "object" && !Array.isArray(original)
+      trustedView && original && typeof original === "object" && !Array.isArray(original)
         ? { ...original, ...evidence }
         : { result: original, ...evidence };
     if (JSON.stringify(complete).length <= size) return encode(complete);
@@ -504,7 +520,8 @@ export function boundToolResultText(
 function toolResultControlMetadata(value: unknown, key = "", depth = 0): unknown {
   if (depth > 64) return value;
   if (typeof value === "string") {
-    if (/(?:id|cursor|token|url|path|name|status|type|query|hash)$/i.test(key)) return value;
+    if (/(?:id|cursor|token|url|path|name|status|type|query|hash|approval)$/i.test(key))
+      return value;
     if (key === "text") {
       try {
         const parsed = JSON.parse(value);
@@ -521,7 +538,6 @@ function toolResultControlMetadata(value: unknown, key = "", depth = 0): unknown
     return value.map((item) => toolResultControlMetadata(item, key, depth + 1) ?? null);
   return Object.fromEntries(
     Object.entries(value).flatMap(([childKey, child]) => {
-      if (childKey === "historyReference") return [];
       const kept = toolResultControlMetadata(child, childKey, depth + 1);
       return kept === undefined ? [] : [[childKey, kept]];
     }),

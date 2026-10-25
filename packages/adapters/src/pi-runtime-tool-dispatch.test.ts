@@ -787,6 +787,7 @@ describe("Pi connector tool dispatch", () => {
         executionId: JSON.stringify(["pi-tool", "main", "call-1"]),
         result: raw,
         route: destinationTool.route,
+        signal: expect.any(AbortSignal),
       });
       const result = fakeAgentState.toolResult as {
         content: Array<{ type: string; text?: string }>;
@@ -799,12 +800,13 @@ describe("Pi connector tool dispatch", () => {
         historyReference: reference,
       });
       if (multipart) {
-        expect(JSON.parse(JSON.parse(bounded).content[0].text)).toMatchObject({
+        expect(JSON.parse(JSON.parse(bounded).result.content[0].text)).toMatchObject({
           id: "exact-id",
           nextCursor: "cursor",
         });
         expect(result.content[1]).toBe(image);
-      } else expect(JSON.parse(bounded)).toMatchObject({ id: "exact-id", nextCursor: "cursor" });
+      } else
+        expect(JSON.parse(bounded).result).toMatchObject({ id: "exact-id", nextCursor: "cursor" });
     },
   );
 
@@ -830,7 +832,7 @@ describe("Pi connector tool dispatch", () => {
     }
     const result = fakeAgentState.toolResult as { content: Array<{ text: string }> };
     expect(JSON.parse(result.content[0]!.text)).toMatchObject({
-      id: "kept",
+      result: { id: "kept" },
       contextTruncated: true,
       historyUnavailable: true,
     });

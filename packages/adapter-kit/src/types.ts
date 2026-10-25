@@ -222,6 +222,8 @@ export interface AgentToolResultForHistory {
   executionId: string;
   result: unknown;
   route?: ConnectorRoute;
+  /** Cancels the optional storage transaction when execution stops or its deadline expires. */
+  signal?: AbortSignal;
 }
 
 export interface ControlLeaseRef {

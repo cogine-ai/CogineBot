@@ -435,7 +435,7 @@ export function limitRemoteMcpPayload(value: unknown): unknown {
   let bounded: Record<string, unknown>;
   do {
     const text = boundToolResultText(serialized, size);
-    bounded = { result: JSON.parse(text), transportTruncated: true, originalUnavailable: true };
+    bounded = { ...JSON.parse(text), transportTruncated: true, originalUnavailable: true };
     size = Math.floor(size / 2);
   } while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > MAX_RESULT_BYTES);
   return bounded;

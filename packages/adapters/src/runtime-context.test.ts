@@ -323,7 +323,7 @@ describe("runtime context policy", () => {
       };
       const original = { nextCursor: "c".repeat(1_800), body: "b".repeat(1_000) };
       const initial = boundToolResultText(JSON.stringify(original), 12_000, {}, reference);
-      expect(JSON.parse(initial)).toMatchObject({ ...original, historyReference: reference });
+      expect(JSON.parse(initial)).toMatchObject({ result: original, historyReference: reference });
       const call = (id: string) =>
         ({
           role: "assistant",
@@ -354,7 +354,7 @@ describe("runtime context policy", () => {
       ) as Extract<Message, { role: "toolResult" }>;
       const text = prior.content.map((part) => (part.type === "text" ? part.text : "")).join("");
       expect(JSON.parse(text)).toMatchObject({ historyReference: reference });
-      if (strategy === "current") expect(JSON.parse(text)).toMatchObject(original);
+      if (strategy === "current") expect(JSON.parse(text).result).toMatchObject(original);
       else
         expect(JSON.parse(text)).toMatchObject({ error: "budget_error", contextTruncated: true });
     },

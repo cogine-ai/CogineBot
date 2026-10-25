@@ -2823,48 +2823,6 @@ export async function appendToolCompletionAudit(
   }
 }
 
-/** Redact full JSON values, including JSON-encoded MCP text, before persistence or paging. */
-export function redactToolResultHistory(value: unknown, secrets: string[]): unknown {
-  if (secrets.length === 0) return value;
-  const original = JSON.stringify(value);
-  if (original === undefined) return value;
-  const redactions = new Set(secrets.filter(Boolean));
-  for (const secret of secrets.filter(Boolean)) {
-    let encoded = secret;
-    for (;;) {
-      const next = JSON.stringify(encoded).slice(1, -1);
-      if (next === encoded || next.length > original.length) break;
-      redactions.add(next);
-      encoded = next;
-    }
-  }
-  const known = [...redactions];
-  const visit = (item: unknown): unknown => {
-    if (typeof item === "string") {
-      try {
-        const parsed: unknown = JSON.parse(item);
-        const redacted = visit(parsed);
-        // Keep unchanged JSON text byte-for-byte; changed numeric leaves need JSON quoting.
-        return JSON.stringify(redacted) === JSON.stringify(parsed)
-          ? item
-          : JSON.stringify(redacted);
-      } catch {
-        return redactConnectorPayload(item, known);
-      }
-    }
-    if (Array.isArray(item)) return item.map(visit);
-    if (item && typeof item === "object")
-      return Object.fromEntries(
-        Object.entries(item).map(([key, child]) => [
-          redactConnectorPayload(key, known),
-          visit(child),
-        ]),
-      );
-    return redactConnectorPayload(item, known);
-  };
-  return visit(JSON.parse(original));
-}
-
 /** Preserve connector outputs that context selection may shorten, never built-in control prompts. */
 export async function storeConnectorToolResultHistory(
   prisma: PrismaClient,
@@ -2882,12 +2840,13 @@ export async function storeConnectorToolResultHistory(
     const original = JSON.stringify(input.result);
     if (!original || original.length <= TOOL_RESULT_HISTORY_MIN_LENGTH) return;
     if (Buffer.byteLength(original, "utf8") > TOOL_RESULT_HISTORY_MAX_BYTES) return;
-    const text = JSON.stringify(redactToolResultHistory(input.result, secrets));
+    const text = JSON.stringify(redactConnectorPayload(input.result, secrets));
     if (!text) return;
     return await storeToolResultHistory(prisma, scope, {
       name: redactSecrets(input.name, secrets),
       executionId: redactSecrets(input.executionId, secrets),
       text,
+      signal: input.signal,
     });
   } catch (error) {
     // A failed storage operation never turns a successful connector call into a failure.
@@ -5832,7 +5791,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               channelId,
               searchBeforeSeq: historySearchBeforeSeq,
               activeRunId: runId,
-              transformToolResult: (value: unknown) => redactToolResultHistory(value, runSecrets),
+              transformToolResult: (value: unknown) => redactConnectorPayload(value, runSecrets),
             };
             const response =
               name === "search_history"
