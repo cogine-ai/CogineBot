@@ -12,6 +12,10 @@ export interface HistoryScope {
   channelId?: string;
   /** Server-captured history boundary. Search excludes the active request and later messages. */
   searchBeforeSeq?: number;
+  /** Server-owned active run; permits its source-less results before an output exists. */
+  activeRunId?: string;
+  /** Server-only redaction of a full stored JSON value, before offsets are calculated. */
+  transformToolResult?: (value: unknown) => unknown;
 }
 interface HistoryRow {
   id: string;
@@ -23,8 +27,7 @@ interface HistoryRow {
   blocks: Prisma.JsonValue;
   groupId?: string | null;
 }
-// Bound complete JSON pages, including cursors. Current retains Pi's legacy 12k
-// result clipping; newer strategies preserve structured results within their context budget.
+// Bound complete JSON pages, including cursors, below the final model result budget.
 const MAX_RESPONSE_BYTES = 10_000;
 const LINK_PAGE_SIZE = 5;
 function bounded<T extends { messages: ReturnType<typeof reference>[] }>(response: T): T {
@@ -52,8 +55,7 @@ const searchableText = Prisma.sql`jsonb_path_query_array(m.blocks,
   '$[*] ? (@.kind == "text" || @.kind == "channel_message" || @.kind == "bot_message_received" || @.kind == "bot_message_sent" || @.kind == "handoff").text')::text || jsonb_path_query_array(m.blocks, '$[*] ? (@.kind == "subagent").task')::text || jsonb_path_query_array(m.blocks, '$[*] ? (@.kind == "subagent").result')::text`;
 const columns = Prisma.sql`m.id, m.seq, m.role, m."runId", m."replyToMessageId", m."createdAt", m.blocks, t."groupId" AS "groupId"`;
 
-function visible(scope: HistoryScope): Prisma.Sql {
-  const channel = scope.channelId;
+function visibleThread(scope: HistoryScope): Prisma.Sql {
   return Prisma.sql`
     t.id = ${scope.threadId} AND t."spaceId" = ${scope.spaceId}
     AND t."userId" = ${scope.userId}
@@ -65,6 +67,12 @@ function visible(scope: HistoryScope): Prisma.Sql {
     AND EXISTS (SELECT 1 FROM bots b WHERE b.id = ${scope.botId}
       AND b."spaceId" = ${scope.spaceId} AND b."userId" = ${scope.userId}
       AND b."archivedAt" IS NULL)
+  `;
+}
+function visible(scope: HistoryScope): Prisma.Sql {
+  const channel = scope.channelId;
+  return Prisma.sql`
+    ${visibleThread(scope)}
     ${
       channel
         ? Prisma.sql`AND (
@@ -203,6 +211,7 @@ export async function readHistory(
   scope: HistoryScope,
   input: HistoryReadInput,
 ) {
+  if (input.toolResultId) return readToolResult(prisma, scope, input);
   const limit = Math.min(pageSize(input.limit), 5);
   const direction = input.direction ?? "around";
   if (
@@ -228,6 +237,8 @@ export async function readHistory(
       nextOutcomeSeq: null,
       olderMessageId: null,
       newerMessageId: null,
+      toolResult: null,
+      nextRead: null,
     };
   const bound =
     direction === "older"
@@ -328,6 +339,8 @@ export async function readHistory(
   const artifacts = artifactRows.slice(0, LINK_PAGE_SIZE);
   return bounded({
     untrusted: true as const,
+    toolResult: null,
+    nextRead: null,
     nextRunId: runRows.length > LINK_PAGE_SIZE ? runs.at(-1)!.id : null,
     nextArtifactId: artifactRows.length > LINK_PAGE_SIZE ? artifacts.at(-1)!.id : null,
     nextOutcomeSeq: outcomeRows.length > LINK_PAGE_SIZE ? outcomes.at(-1)!.seq : null,
@@ -363,4 +376,105 @@ export async function readHistory(
     olderMessageId: rows[0]?.id ?? null,
     newerMessageId: rows.at(-1)?.id ?? null,
   });
+}
+
+/** Explicit references only. Ordinary message search never indexes connector bodies. */
+async function readToolResult(prisma: PrismaClient, scope: HistoryScope, input: HistoryReadInput) {
+  const textOffset = input.textOffset ?? 0;
+  if (!Number.isInteger(textOffset) || textOffset < 0)
+    throw new Error("Invalid history text offset");
+  const rows = await prisma.$queryRaw<
+    Array<{
+      id: string;
+      runId: string;
+      createdAt: Date;
+      payload: { name: string; executionId: string };
+      toolResult: { text: string; storedBytes: number };
+    }>
+  >(Prisma.sql`
+    SELECT e.id, e."runId", e."createdAt", e.payload, e."toolResult"
+    FROM events e JOIN runs r ON r.id = e."runId"
+    JOIN threads t ON t.id = e."threadId"
+    WHERE ${visibleThread(scope)} AND e.id = ${input.toolResultId}
+      AND e.type = 'agent.tool.result.stored' AND e."toolResult" IS NOT NULL
+      AND e."spaceId" = ${scope.spaceId} AND e."botId" = ${scope.botId}
+      AND r."threadId" = t.id AND r."spaceId" = ${scope.spaceId}
+      AND r."userId" = ${scope.userId} AND r."botId" = ${scope.botId}
+      AND (
+        EXISTS (SELECT 1 FROM messages source WHERE source.id = r."sourceMessageId"
+          AND source."threadId" = t.id AND source.role = 'user'
+          ${scope.channelId ? Prisma.sql`AND source.blocks @> ${JSON.stringify([{ kind: "channel_message", channelId: scope.channelId }])}::jsonb` : Prisma.empty})
+        ${
+          scope.channelId
+            ? Prisma.empty
+            : Prisma.sql`OR (r."sourceMessageId" IS NULL AND (
+          r.id = ${scope.activeRunId ?? ""} OR EXISTS (
+            SELECT 1 FROM messages output WHERE output."threadId" = t.id
+              AND output.role = 'bot' AND output."runId" = r.id
+          )))`
+        }
+      )
+    LIMIT 1
+  `);
+  const row = rows[0];
+  const text =
+    row && scope.transformToolResult
+      ? JSON.stringify(scope.transformToolResult(JSON.parse(row.toolResult.text)))
+      : row?.toolResult.text;
+  const viewHash = text === undefined ? null : createHash("sha256").update(text).digest("hex");
+  const cursorConflict = Boolean(
+    row && ((textOffset > 0 && !input.viewHash) || (input.viewHash && input.viewHash !== viewHash)),
+  );
+  const response = {
+    untrusted: true as const,
+    messages: [],
+    runs: [],
+    snapshots: [],
+    nextRunId: null,
+    nextArtifactId: null,
+    nextOutcomeSeq: null,
+    olderMessageId: null,
+    newerMessageId: null,
+    error: cursorConflict ? ("cursor_conflict" as const) : null,
+    retry: cursorConflict ? { toolResultId: row!.id, textOffset: 0 } : null,
+    toolResult:
+      row && !cursorConflict && text !== undefined
+        ? {
+            toolResultId: row.id,
+            runId: row.runId,
+            name: scope.transformToolResult
+              ? scope.transformToolResult(row.payload.name)
+              : row.payload.name,
+            executionId: scope.transformToolResult
+              ? scope.transformToolResult(row.payload.executionId)
+              : row.payload.executionId,
+            createdAt: row.createdAt.toISOString(),
+            text: text.slice(textOffset, textOffset + 2_000),
+            viewHash,
+            textOffset,
+            nextTextOffset: null as number | null,
+            storedBytes: row.toolResult.storedBytes,
+            // Complete relative to the executor result; earlier provider transport caps still apply.
+            storageTruncated: false,
+          }
+        : null,
+    nextRead: null as { toolResultId: string; textOffset: number; viewHash: string } | null,
+  };
+  if (!row || !response.toolResult) return response;
+  for (;;) {
+    const nextOffset = textOffset + response.toolResult.text.length;
+    response.toolResult.nextTextOffset = nextOffset < text!.length ? nextOffset : null;
+    response.nextRead =
+      response.toolResult.nextTextOffset === null
+        ? null
+        : { toolResultId: row.id, textOffset: nextOffset, viewHash: viewHash! };
+    if (Buffer.byteLength(JSON.stringify(response), "utf8") <= MAX_RESPONSE_BYTES) break;
+    if (response.toolResult.text.length < 2)
+      throw new Error("History metadata exceeds response budget");
+    response.toolResult.text = response.toolResult.text.slice(
+      0,
+      Math.floor(response.toolResult.text.length / 2),
+    );
+  }
+  return response;
 }

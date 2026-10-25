@@ -7,6 +7,7 @@ import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { isCloudMetadataHost, isLocalMcpHost, isPrivateNetworkHost } from "@rakazo/contracts";
 import { Agent } from "undici";
 import { combineSignals } from "./connector-safety.js";
+import { boundToolResultText } from "./context-selection.js";
 import {
   createAddressCheckedLookup,
   isCloudMetadataAddress,
@@ -419,25 +420,23 @@ function assertPublicAddresses(addresses: ResolvedAddress[], hostname?: string):
 }
 
 export function limitRemoteMcpPayload(value: unknown): unknown {
-  const serialized = JSON.stringify(value);
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return { error: "result_serialization_error", originalUnavailable: true };
+  }
   if (serialized === undefined) return value;
   const bytes = Buffer.from(serialized, "utf8");
   if (bytes.byteLength <= MAX_RESULT_BYTES) return value;
-  return {
-    truncated: true,
-    content: decodeUtf8Prefix(bytes, MAX_RESULT_BYTES),
-  };
-}
-
-function decodeUtf8Prefix(bytes: Uint8Array, maxBytes: number): string {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let end = Math.min(bytes.byteLength, maxBytes);
-  while (end > 0) {
-    try {
-      return decoder.decode(bytes.subarray(0, end));
-    } catch {
-      end -= 1;
-    }
-  }
-  return "";
+  // The transport cap also preserves controls. The full remote body is unavailable
+  // beyond this boundary; a later history reference can only recover this bounded value.
+  let size = MAX_RESULT_BYTES - 128;
+  let bounded: Record<string, unknown>;
+  do {
+    const text = boundToolResultText(serialized, size);
+    bounded = { ...JSON.parse(text), transportTruncated: true, originalUnavailable: true };
+    size = Math.floor(size / 2);
+  } while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > MAX_RESULT_BYTES);
+  return bounded;
 }

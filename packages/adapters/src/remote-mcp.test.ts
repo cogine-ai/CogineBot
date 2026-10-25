@@ -559,13 +559,44 @@ describe("remote MCP URL policy", () => {
 });
 
 describe("remote MCP result limits", () => {
+  it("reports unrepresentable deep results explicitly", () => {
+    const deep = JSON.parse(`${'{"nested":'.repeat(10_000)}{}${"}".repeat(10_000)}`);
+    expect(limitRemoteMcpPayload(deep)).toEqual({
+      error: "result_serialization_error",
+      originalUnavailable: true,
+    });
+  });
+
+  it("preserves controls beyond the transport limit with explicit original unavailability", () => {
+    const value = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            id: "tail-id",
+            nextCursor: "tail-cursor",
+            body: "x".repeat(1_100_000),
+          }),
+        },
+      ],
+    };
+    const limited = limitRemoteMcpPayload(value) as {
+      result: { content: Array<{ text: string }> };
+    };
+    expect(limited).toMatchObject({ transportTruncated: true, originalUnavailable: true });
+    expect(JSON.parse(limited.result.content[0]!.text)).toMatchObject({
+      id: "tail-id",
+      nextCursor: "tail-cursor",
+    });
+    expect(Buffer.byteLength(JSON.stringify(limited), "utf8")).toBeLessThanOrEqual(1_000_000);
+  });
+
   it("applies the result budget in UTF-8 bytes instead of JavaScript characters", () => {
     const value = { content: "界".repeat(400_000) };
-    const limited = limitRemoteMcpPayload(value) as { truncated: boolean; content: string };
-
-    expect(limited.truncated).toBe(true);
-    expect(Buffer.byteLength(limited.content, "utf8")).toBeLessThanOrEqual(1_000_000);
-    expect(limited.content).not.toContain("\uFFFD");
+    const limited = limitRemoteMcpPayload(value);
+    expect(limited).toMatchObject({ transportTruncated: true, originalUnavailable: true });
+    expect(Buffer.byteLength(JSON.stringify(limited), "utf8")).toBeLessThanOrEqual(1_000_000);
+    expect(JSON.stringify(limited)).not.toContain("\uFFFD");
   });
 });
 

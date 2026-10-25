@@ -15,15 +15,51 @@ export const HistorySearchInputSchema = z.object({
   beforeSeq: z.number().int().nonnegative().optional(),
   limit: z.number().int().min(1).max(20).optional(),
 });
-export const HistoryReadInputSchema = z.object({
-  messageId: Id,
-  linkedRunId: Id.optional(),
-  runAfterId: Id.optional(),
-  artifactAfterId: Id.optional(),
-  outcomeAfterSeq: z.number().int().nonnegative().optional(),
-  textOffset: z.number().int().nonnegative().optional(),
-  direction: z.enum(["around", "older", "newer"]).optional(),
-  limit: z.number().int().min(1).max(20).optional(),
-});
+export const HistoryReadInputSchema = z
+  .object({
+    messageId: Id.optional(),
+    toolResultId: Id.optional(),
+    linkedRunId: Id.optional(),
+    runAfterId: Id.optional(),
+    artifactAfterId: Id.optional(),
+    outcomeAfterSeq: z.number().int().nonnegative().optional(),
+    textOffset: z.number().int().nonnegative().optional(),
+    viewHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    direction: z.enum(["around", "older", "newer"]).optional(),
+    limit: z.number().int().min(1).max(20).optional(),
+  })
+  .superRefine((input, context) => {
+    if (Boolean(input.messageId) === Boolean(input.toolResultId)) {
+      context.addIssue({ code: "custom", message: "Provide either messageId or toolResultId" });
+    }
+    if (
+      (!input.toolResultId && input.viewHash) ||
+      (input.toolResultId && (input.textOffset ?? 0) > 0 && !input.viewHash)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Tool result continuation requires its viewHash",
+      });
+    }
+    if (
+      input.toolResultId &&
+      [
+        input.linkedRunId,
+        input.runAfterId,
+        input.artifactAfterId,
+        input.outcomeAfterSeq,
+        input.direction,
+        input.limit,
+      ].some((value) => value !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Tool results support only textOffset pagination",
+      });
+    }
+  });
 export type HistorySearchInput = z.infer<typeof HistorySearchInputSchema>;
 export type HistoryReadInput = z.infer<typeof HistoryReadInputSchema>;

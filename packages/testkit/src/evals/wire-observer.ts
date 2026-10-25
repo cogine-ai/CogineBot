@@ -23,7 +23,23 @@ const cursor = (value: unknown): value is string => typeof value === "string" &&
 const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The upstream receives the exact input/init; only whitelisted synthetic controls survive parsing. */
+/** Read diagnostic controls from raw results or the recovery metadata envelope. */
+export function diagnosticResultData(value: unknown): Record<string, unknown> | undefined {
+  if (!object(value)) return;
+  if (
+    value.contextTruncated === true ||
+    "historyReference" in value ||
+    "historyUnavailable" in value
+  )
+    return object(value.result)
+      ? value.result
+      : object(value.controlMetadata)
+        ? value.controlMetadata
+        : value;
+  return value;
+}
+
+/** The fetch receives exact input/init; only whitelisted synthetic controls survive parsing. */
 export function diagnosticWireFetch(
   upstream: typeof fetch,
   modelId: string,
@@ -91,7 +107,7 @@ export function diagnosticWireFetch(
                 } catch {
                   /* JSON validity is evidence; text is never retained. */
                 }
-                const parsed = object(result) ? result : undefined;
+                const parsed = diagnosticResultData(result);
                 const valid = parsed !== undefined;
                 const nextCursorPresent = valid && Object.hasOwn(parsed, "nextCursor");
                 const next =
@@ -115,7 +131,7 @@ export function diagnosticWireFetch(
                   ...(segment !== undefined ? { segment } : {}),
                   nextCursorPresent,
                   ...(next !== undefined ? { nextCursor: next } : {}),
-                  contextTruncated: valid && parsed.contextTruncated === true,
+                  contextTruncated: object(result) && result.contextTruncated === true,
                   controlsValidated:
                     valid &&
                     segment !== undefined &&

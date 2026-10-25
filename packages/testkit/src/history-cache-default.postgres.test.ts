@@ -59,7 +59,8 @@ describe.skipIf(!enabled)("saved connection context selection", () => {
             expect(wire).toContain(fixture.messages.at(-1)!.text);
             const tools = request.tools?.map((tool) => tool.function.name) ?? [];
             if (expected === "current") {
-              expect(tools).not.toContain("read_history");
+              // Current strategy can recover stored connector results without enabling history search.
+              expect(tools).toContain("read_history");
               expect(tools).not.toContain("search_history");
             } else
               expect(tools).toEqual(expect.arrayContaining(["read_history", "search_history"]));

@@ -27,8 +27,8 @@ import type {
   AgentUsage,
   ConnectorTool,
   ModelCallObserver,
+  ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
-import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { usableModelId } from "@rakazo/contracts";
 import { abortableDelay, MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
@@ -37,7 +37,14 @@ import { automated } from "./automated-messages.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
-import { shortenToolResultText } from "./context-selection.js";
+import {
+  boundToolResult,
+  copyToolResultProvenance,
+  markToolResultContent,
+  TOOL_RESULT_HISTORY_MIN_LENGTH,
+  toolResultContentProvenance,
+  validatedToolResultHistoryReference,
+} from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { estimateModelContextTokens } from "./model-context.js";
@@ -1270,17 +1277,49 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
                 },
               },
             );
+            let historyReference: ToolResultHistoryReference | undefined;
+            if (!VERBATIM_TOOL_RESULTS.has(tool.name) && host.request.storeToolResult) {
+              try {
+                if ((JSON.stringify(result)?.length ?? 0) > TOOL_RESULT_HISTORY_MIN_LENGTH) {
+                  const deadline = new AbortController();
+                  try {
+                    historyReference = await Promise.race([
+                      host.request.storeToolResult({
+                        name: tool.name,
+                        executionId,
+                        result,
+                        route: tool.route,
+                        signal: AbortSignal.any([host.signal, deadline.signal]),
+                      }),
+                      abortableDelay(2_000, AbortSignal.any([host.signal, deadline.signal])).then(
+                        () => undefined,
+                      ),
+                    ]);
+                  } finally {
+                    deadline.abort();
+                  }
+                }
+              } catch {
+                // Unavailable evidence is explicit in the bounded result; execution still succeeds.
+              }
+            }
             if (isAgentToolExecutionResult(result)) {
               if (isToolPauseResult(result)) host.pausePending = true;
-              return boundAgentToolResult(result);
+              return boundAgentToolResult(result, historyReference, true);
             }
+            const serialized = serializeToolResultView(
+              result,
+              host.request.contextStrategy,
+              tool.name,
+              args,
+              historyReference,
+              Boolean(tool.route) || !["read_history", "search_history"].includes(tool.name),
+            );
             return {
-              content: [
-                {
-                  type: "text",
-                  text: serializeToolResult(result, host.request.contextStrategy, tool.name, args),
-                },
-              ],
+              content: markToolResultContent([{ type: "text", text: serialized.text }], {
+                historyReference,
+                wrapped: serialized.wrapped,
+              }),
               details: result,
             };
           }
@@ -1877,7 +1916,10 @@ export function pruneComputerScreenshotContext(
     transformed ??= [...messages];
     transformed[index] = {
       ...message,
-      content: message.content.filter((part) => part.type !== "image"),
+      content: copyToolResultProvenance(
+        message.content,
+        message.content.filter((part) => part.type !== "image"),
+      ),
     };
   }
   return transformed ?? messages;
@@ -2065,28 +2107,80 @@ export function jsonField(spec: unknown): ReturnType<typeof Type.String> {
 
 export function serializeToolResult(
   result: unknown,
-  strategy: AgentRunRequest["contextStrategy"],
+  _strategy: AgentRunRequest["contextStrategy"],
   name: string,
   args: Record<string, unknown>,
+  historyReference?: ToolResultHistoryReference,
+  fresh = !["read_history", "search_history"].includes(name),
 ) {
+  return serializeToolResultView(result, _strategy, name, args, historyReference, fresh).text;
+}
+
+function serializeToolResultView(
+  result: unknown,
+  _strategy: AgentRunRequest["contextStrategy"],
+  name: string,
+  args: Record<string, unknown>,
+  historyReference?: ToolResultHistoryReference,
+  fresh = !["read_history", "search_history"].includes(name),
+): { text: string; wrapped: boolean } {
   try {
     const text = JSON.stringify(result);
-    if (!text) return "ok";
+    if (!text) return { text: "ok", wrapped: false };
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
-    if (text.length <= 12_000 || VERBATIM_TOOL_RESULTS.has(name)) return text;
-    return (strategy ?? DEFAULT_CONTEXT_STRATEGY) === "current"
-      ? clipToolResultText(text)
-      : shortenToolResultText(text, 12_000, { name, arguments: args });
-  } catch {
-    return "ok";
+    if (VERBATIM_TOOL_RESULTS.has(name)) return { text, wrapped: false };
+    if (fresh && !historyReference && text.length <= 12_000) {
+      const value: unknown = JSON.parse(text);
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("historyReference" in value || "historyUnavailable" in value)
+      )
+        return { text, wrapped: false };
+    }
+    const bounded = boundToolResult(
+      text,
+      12_000,
+      { name, arguments: args, fresh },
+      historyReference,
+    );
+    return {
+      ...bounded,
+      wrapped: bounded.wrapped || (!fresh && ["read_history", "search_history"].includes(name)),
+    };
+  } catch (error) {
+    if (error instanceof RangeError) {
+      const reference = validatedToolResultHistoryReference(historyReference);
+      return {
+        text: JSON.stringify({
+          contextTruncated: true,
+          error: "budget_error",
+          ...(reference ? { historyReference: reference } : { historyUnavailable: true }),
+        }),
+        wrapped: true,
+      };
+    }
+    return {
+      text: JSON.stringify({ error: "result_serialization_error", historyUnavailable: true }),
+      wrapped: true,
+    };
   }
 }
 
-function boundAgentToolResult<T>(result: AgentToolResult<T>): AgentToolResult<T> {
+function boundAgentToolResult<T>(
+  result: AgentToolResult<T>,
+  historyReference?: ToolResultHistoryReference,
+  fresh = false,
+): AgentToolResult<T> {
   if (!result || !Array.isArray(result.content)) return result;
   return {
     ...result,
-    content: clipToolResultContent(result.content),
+    content: clipToolResultContent(
+      result.content,
+      12_000,
+      historyReference,
+      fresh || !toolResultContentProvenance(result.content),
+    ),
   };
 }
 

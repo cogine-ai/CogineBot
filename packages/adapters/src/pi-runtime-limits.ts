@@ -1,4 +1,11 @@
+import type { ToolResultHistoryReference } from "@rakazo/adapter-kit";
 import { DEFAULT_MODEL_MAX_TOKENS } from "@rakazo/contracts";
+import {
+  boundToolResult,
+  boundToolResultText,
+  markToolResultContent,
+  toolResultContentProvenance,
+} from "./context-selection.js";
 
 /** Hung completions must fail before the typical 5-minute run lease. */
 export const MODEL_STREAM_TIMEOUT_MS = 120_000;
@@ -20,41 +27,70 @@ export function modelStreamMaxRetries(): number {
 export const TOOL_RESULT_TEXT_LIMIT = 12_000;
 
 export function clipToolResultText(text: string, limit: number = TOOL_RESULT_TEXT_LIMIT): string {
-  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+  return boundToolResultText(text, limit);
 }
 
-/**
- * Share one remaining character budget across all text parts.
- * Later text is omitted once the aggregate limit is exhausted; non-text parts stay.
- */
+/** Share one text budget without cutting JSON parts; image parts remain unchanged. */
 export function clipToolResultContent<T>(
   content: T[],
   limit: number = TOOL_RESULT_TEXT_LIMIT,
+  historyReference?: ToolResultHistoryReference,
+  fresh = historyReference !== undefined,
 ): T[] {
-  let remaining = limit;
-  const clipped: T[] = [];
-  for (const part of content) {
-    if (
-      !part ||
-      typeof part !== "object" ||
-      !("type" in part) ||
-      (part as { type?: unknown }).type !== "text" ||
-      !("text" in part)
-    ) {
-      clipped.push(part);
-      continue;
-    }
-    if (remaining <= 0) continue;
-    const text = String((part as { text: unknown }).text);
-    if (text.length <= remaining) {
-      clipped.push(part);
-      remaining -= text.length;
-      continue;
-    }
-    clipped.push({ ...part, text: clipToolResultText(text, remaining) });
-    remaining = 0;
-  }
-  return clipped;
+  const provenance = fresh ? undefined : toolResultContentProvenance(content);
+  const actualReference = historyReference ?? provenance?.historyReference;
+  const isText = (part: T): part is T & { type: "text"; text: string } =>
+    Boolean(
+      part &&
+        typeof part === "object" &&
+        "type" in part &&
+        part.type === "text" &&
+        "text" in part &&
+        typeof part.text === "string",
+    );
+  const texts = content.filter(isText);
+  const withinLimit = texts.reduce((total, part) => total + part.text.length, 0) <= limit;
+  if (!fresh && provenance && historyReference === undefined && withinLimit) return content;
+  const ambiguous =
+    fresh &&
+    texts.some((part) => {
+      try {
+        const value = JSON.parse(part.text);
+        return (
+          value &&
+          typeof value === "object" &&
+          ("historyReference" in value || "historyUnavailable" in value)
+        );
+      } catch {
+        return false;
+      }
+    });
+  if (!actualReference && !ambiguous && withinLimit)
+    return fresh ? markToolResultContent([...content], { wrapped: false }) : content;
+  // Preserve multipart boundaries inside a valid JSON envelope. Joining JSON text parts
+  // as prose before truncation would discard the controls in every part after the first.
+  const bounded = boundToolResult(
+    provenance && texts.length === 1 ? texts[0]!.text : JSON.stringify({ content: texts }),
+    limit,
+    { fresh, retained: Boolean(provenance), wrapped: provenance?.wrapped },
+    actualReference,
+  );
+  if (texts.length === 0)
+    return markToolResultContent([{ type: "text", text: bounded.text } as T, ...content], {
+      historyReference: actualReference,
+      wrapped: bounded.wrapped,
+    });
+  let inserted = false;
+  const result = content.flatMap((part) => {
+    if (!isText(part)) return [part];
+    if (inserted) return [];
+    inserted = true;
+    return [{ ...part, text: bounded.text }];
+  });
+  return markToolResultContent(result, {
+    historyReference: actualReference,
+    wrapped: bounded.wrapped,
+  });
 }
 
 /**

@@ -1,5 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { HistorySearchInputSchema } from "./history.js";
+import { HistoryReadInputSchema, HistorySearchInputSchema } from "./history.js";
+
+describe("history read references", () => {
+  it("retains message reads and accepts exclusive paged result references", () => {
+    expect(HistoryReadInputSchema.parse({ messageId: "message", limit: 1 })).toEqual({
+      messageId: "message",
+      limit: 1,
+    });
+    expect(
+      HistoryReadInputSchema.parse({
+        toolResultId: "result",
+        textOffset: 2000,
+        viewHash: "a".repeat(64),
+      }),
+    ).toEqual({
+      toolResultId: "result",
+      textOffset: 2000,
+      viewHash: "a".repeat(64),
+    });
+  });
+  it.each([
+    {},
+    { messageId: "message", toolResultId: "result" },
+    { toolResultId: "result", linkedRunId: "run" },
+    { toolResultId: "result", direction: "older" },
+    { toolResultId: "result", limit: 1 },
+    { toolResultId: "result", textOffset: -1 },
+    { toolResultId: "result", textOffset: 1 },
+    { toolResultId: "result", viewHash: "invalid" },
+    { messageId: "message", viewHash: "a".repeat(64) },
+  ])("rejects mixed or invalid result navigation %j", (input) => {
+    expect(HistoryReadInputSchema.safeParse(input).success).toBe(false);
+  });
+});
 
 describe("history date boundaries", () => {
   it.each([

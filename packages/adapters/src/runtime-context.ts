@@ -5,11 +5,14 @@ import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { automatedToolMessages } from "./automated-messages.js";
 import type { CacheRequest, ContextBudget } from "./context-selection.js";
 import {
+  boundToolResult,
   ContextCacheTracker,
+  copyToolResultProvenance,
   estimateContextTokens,
+  markToolResultContent,
   providerContextPrefix,
   selectContext,
-  shortenToolResultText,
+  toolResultContentProvenance,
 } from "./context-selection.js";
 
 const accountSalt = randomBytes(32);
@@ -38,10 +41,10 @@ interface OriginalMetadata {
 }
 function text(message: Message): string {
   if (typeof message.content === "string") return message.content;
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n");
+  const parts = message.content.filter((block) => block.type === "text");
+  return message.role === "toolResult" && parts.length > 1
+    ? JSON.stringify({ content: parts })
+    : parts.map((block) => block.text).join("\n");
 }
 function snapshot(content: string, maxLength = 400): string {
   if (content.length <= maxLength) return content;
@@ -102,6 +105,11 @@ export function createRuntimeContextPolicy(
   const rawContexts = new WeakMap<Context, Context>();
   function modelView(ctx: Context): Context {
     const messages = automatedToolMessages(ctx.messages);
+    for (const [index, message] of messages.entries()) {
+      const raw = ctx.messages[index];
+      if (message !== raw && message.role === "toolResult" && raw?.role === "toolResult")
+        copyToolResultProvenance(raw.content, message.content);
+    }
     if (messages.every((message, index) => message === ctx.messages[index])) return ctx;
     const view = { ...ctx, messages };
     rawContexts.set(view, ctx);
@@ -383,14 +391,23 @@ export function createRuntimeContextPolicy(
           return message;
         const source = text(message);
         if (source.length <= 1024) return message;
-        const shortened = shortenToolResultText(source, 1024, { name: message.toolName });
-        if (shortened.length >= source.length) return message;
+        const provenance = toolResultContentProvenance(message.content);
+        const shortened = boundToolResult(
+          source,
+          1024,
+          { name: message.toolName, retained: Boolean(provenance), wrapped: provenance?.wrapped },
+          provenance?.historyReference,
+        );
+        if (shortened.text.length >= source.length) return message;
         return {
           ...message,
-          content: [
-            { type: "text" as const, text: shortened },
-            ...message.content.filter((part) => part.type === "image"),
-          ],
+          content: markToolResultContent(
+            [
+              { type: "text" as const, text: shortened.text },
+              ...message.content.filter((part) => part.type === "image"),
+            ],
+            { historyReference: provenance?.historyReference, wrapped: shortened.wrapped },
+          ),
         };
       });
       const selected = selectContext(messages, {

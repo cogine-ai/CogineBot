@@ -24,6 +24,7 @@ export * from "./scope.js";
 export * from "./sessions.js";
 export * from "./spaces.js";
 export { loadThreadAttention } from "./thread-listing.js";
+export * from "./tool-result-history.js";
 export * from "./transaction-retry.js";
 export * from "./usage.js";
 export * from "./voice-credentials.js";

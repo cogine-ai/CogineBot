@@ -1478,6 +1478,18 @@ export async function eventsAfter(
     where: { threadId, seq: { gt: cursor } },
     orderBy: { seq: "asc" },
     ...(limit ? { take: limit } : {}),
+    // Private tool-result bodies are accessible only through scoped read_history references.
+    select: {
+      id: true,
+      spaceId: true,
+      threadId: true,
+      botId: true,
+      seq: true,
+      type: true,
+      payload: true,
+      runId: true,
+      createdAt: true,
+    },
   });
 }
 

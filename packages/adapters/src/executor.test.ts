@@ -3,6 +3,7 @@ import { CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE } from "@rakazo/contracts";
 import { ONCE_ROUTINE_CRON } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { builtinAgentTools } from "./builtin-tools.js";
 import {
   appendToolCompletionAudit,
   createRunExecutor,
@@ -52,6 +53,48 @@ describe("bot tool permissions", () => {
         disabledBuiltinTools: ["search_history", "read_history", "unknown"],
       }).map((tool) => tool.name),
     ).toEqual(baseline.filter((name) => name !== "search_history" && name !== "read_history"));
+  });
+
+  it("offers only read_history for connector result references in the current strategy", () => {
+    const options = {
+      historyRetrievalEnabled: false,
+      toolResultHistoryEnabled: true,
+      graphicalToolsAllowed: false,
+      groupId: null,
+      trigger: "user",
+      semanticMemoryEnabled: false,
+      messagingChannelRun: false,
+    };
+    const original = builtinAgentTools.find((tool) => tool.name === "read_history")!;
+    const originalSchema = JSON.stringify(original.inputSchema);
+    const tools = selectBuiltinToolsForRun(options);
+    const read = tools.find((tool) => tool.name === "read_history")!;
+    expect(tools.map((tool) => tool.name)).not.toContain("search_history");
+    expect(read).not.toBe(original);
+    expect(Object.keys(read.inputSchema.properties as object).sort()).toEqual([
+      "textOffset",
+      "toolResultId",
+      "viewHash",
+    ]);
+    expect(read.inputSchema.required).toEqual(["toolResultId"]);
+    expect(read.inputSchema.additionalProperties).toBe(false);
+    expect(read.description).not.toContain("message");
+    expect(JSON.stringify(original.inputSchema)).toBe(originalSchema);
+    expect(
+      selectBuiltinToolsForRun({ ...options, historyRetrievalEnabled: true }).find(
+        (tool) => tool.name === "read_history",
+      ),
+    ).toBe(original);
+    expect(
+      selectBuiltinToolsForRun({ ...options, disabledBuiltinTools: ["read_history"] }).map(
+        (tool) => tool.name,
+      ),
+    ).not.toContain("read_history");
+    expect(
+      selectBuiltinToolsForRun({ ...options, toolResultHistoryEnabled: false }).map(
+        (tool) => tool.name,
+      ),
+    ).not.toContain("read_history");
   });
 });
 
