@@ -11,7 +11,8 @@ const REDACT_KEYS = new Set([
   "passwd",
   "apikey",
 ]);
-const SECRET_KEY = /password|passwd|secret|token|authorization|cookie|credential|apikey|privatekey/;
+const SECRET_KEY =
+  /password|passwd|secret|token|authorization|cookie|credential|apikey|privatekey|^(?:aws)?accesskeyid$/;
 
 function redactValue(value: unknown, seen = new WeakSet<object>()): unknown {
   if (value === null || value === undefined) return value;
@@ -55,7 +56,7 @@ const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
 const ASSIGNMENT_SEPARATOR = /[:=][ \t]*|->[ \t]*|[ \t]is(?:[ \t]*[:=][ \t]*|[ \t]+)/gi;
 const RAW_KEY_QUALIFIER = /^(?:access|(?:key|value|header|material|id|identifier|data)s?)$/i;
 const NATURAL_CREDENTIAL_KEY =
-  /(?:password|passwd|secret|token|authorization|cookie|credential|apikey|privatekey)s?(?:(?:access|key|value|header|material|id|identifier|data)s?)*$/;
+  /(?:password|passwd|secret|token|authorization|cookie|credential|apikey|privatekey|accesskeyid)s?(?:(?:access|key|value|header|material|id|identifier|data)s?)*$/;
 const TOKEN_COUNT_KEY =
   /^(?:(?:max(?:imum)?|min(?:imum)?|prompt|completion|input|output|total|reasoning|cached)tokens?(?:count|limit|used|usage)?|tokens|tokens?(?:count|limit|used|usage))$/;
 const NUMERIC_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?=$|[\s,;})\]])/i;
@@ -173,6 +174,7 @@ function rawKeyStart(text: string, end: number, boundary: number): number {
   let start = end;
   while (start > boundary && /[A-Za-z0-9_.-]/.test(text[start - 1]!)) start -= 1;
   const identifierStart = start;
+  let candidateWords = 1;
   let word = text.slice(start, end);
   while (RAW_KEY_QUALIFIER.test(word)) {
     let previousEnd = start;
@@ -184,8 +186,10 @@ function rawKeyStart(text: string, end: number, boundary: number): number {
     const previous = text.slice(previousStart, previousEnd);
     if (!previous) break;
     const normalized = normalizeKey(previous);
+    candidateWords += 1;
     if (
       SECRET_KEY.test(normalized) ||
+      (candidateWords <= 3 && normalizeKey(text.slice(previousStart, end)) === "accesskeyid") ||
       (/^keys?$/i.test(word) && /^(?:api|private)$/i.test(previous))
     )
       return previousStart;

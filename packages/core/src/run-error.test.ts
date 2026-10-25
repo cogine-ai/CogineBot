@@ -7,6 +7,24 @@ import {
 import { stuckWorkStatusMessages } from "./stuck-work.js";
 
 describe("run failure diagnostics", () => {
+  it.each(["AWS_ACCESS_KEY_ID=", "Access Key ID is: "])(
+    "cleans a named %s credential identifier before clipping",
+    (label) => {
+      for (const prefixBytes of [350, 8100, 8155, 8190, 8200]) {
+        const raw = `${"界".repeat(Math.floor(prefixBytes / 3))}\n${label}SYNTHETIC_ACCESS_IDENTIFIER\n${"😀".repeat(200)}`;
+        for (const input of [
+          raw,
+          JSON.stringify({ response_body: JSON.stringify({ message: raw }) }),
+        ]) {
+          const cleaned = sanitizeRunErrorDetails(input);
+          expect(cleaned).not.toContain("SYNTHETIC_ACCESS_IDENTIFIER");
+          expect(new TextEncoder().encode(cleaned).length).toBeLessThanOrEqual(8192);
+          expect(sanitizeRunErrorDetails(cleaned)).toBe(cleaned);
+        }
+      }
+    },
+  );
+
   it.each([
     ["API key", "is"],
     ["API key", "is:"],

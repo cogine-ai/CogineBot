@@ -3,6 +3,35 @@ import { redactBindings, redactSensitiveText } from "./redaction.js";
 
 describe("redaction", () => {
   it.each([
+    "AWS_ACCESS_KEY_ID",
+    "awsAccessKeyId",
+    "access_key_id",
+    "Access Key ID",
+    "access-key-id",
+  ])("cleans the named %s credential identifier without a bare-key assumption", (label) => {
+    const identifier = "SYNTHETIC_ACCESS_IDENTIFIER";
+    expect(redactBindings({ [label]: identifier, normal_access_count: 20 })).toEqual({
+      [label]: "[Redacted]",
+      normal_access_count: 20,
+    });
+    for (const separator of ["=", ": ", " is ", " is: ", " -> "]) {
+      const raw = `${label}${separator}${identifier}\nnext: safe`;
+      for (const input of [
+        raw,
+        JSON.stringify({ response_body: JSON.stringify({ message: raw }) }),
+      ]) {
+        const cleaned = redactSensitiveText(input);
+        expect(cleaned).not.toContain(identifier);
+        expect(cleaned).toContain("next: safe");
+        expect(redactSensitiveText(cleaned)).toBe(cleaned);
+      }
+    }
+    const normal =
+      "normal_access_count=20\nkey_id=visible\naccess_key_identity=visible\naccess_key=visible";
+    expect(redactSensitiveText(normal)).toBe(normal);
+  });
+
+  it.each([
     "API key",
     "Secret Access Key",
     "client_secret",
@@ -322,6 +351,8 @@ describe("redaction", () => {
     (prefix) => {
       const normal = `${prefix} ${prefix}demo ${prefix}short ${prefix}1234567 prefix${prefix}SYNTHETICPROVIDERONLY prefix_${prefix}SYNTHETICPROVIDERONLY prefix-${prefix}SYNTHETICPROVIDERONLY`;
       expect(redactSensitiveText(normal)).toBe(normal);
+      const qualifiers = `${"key ".repeat(4096)}: visible`;
+      expect(redactSensitiveText(qualifiers)).toBe(qualifiers);
       expect(
         redactSensitiveText(`A long placeholder ${prefix}placeholder_name is concealed.`),
       ).toBe("A long placeholder [Redacted] is concealed.");

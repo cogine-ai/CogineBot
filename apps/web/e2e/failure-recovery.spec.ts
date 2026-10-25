@@ -67,7 +67,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
         trigger: "user",
         startedAt: new Date(),
         completedAt: new Date(),
-        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nProvider echoed ${syntheticGoogleKey} in prose.\nProvider echoed ${syntheticGroqKey} in prose.\nProvider echoed ${syntheticXaiKey} in prose.\nProvider echoed ${syntheticHfKey} in prose.\nProvider echoed ${syntheticCerebrasKey} in prose.\nProvider echoed ${syntheticNvidiaKey} in prose.\nProvider echoed ${syntheticFireworksKey} in prose.\nSecret Access Key: SYNTHETIC_AWS_SECRET_ACCESS_VALUE\nAPI key is: SYNTHETIC_PROSE_SECRET_VALUE\nSecret Access Key -> SYNTHETIC_ARROW_SECRET_VALUE\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
+        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nProvider echoed ${syntheticGoogleKey} in prose.\nProvider echoed ${syntheticGroqKey} in prose.\nProvider echoed ${syntheticXaiKey} in prose.\nProvider echoed ${syntheticHfKey} in prose.\nProvider echoed ${syntheticCerebrasKey} in prose.\nProvider echoed ${syntheticNvidiaKey} in prose.\nProvider echoed ${syntheticFireworksKey} in prose.\nSecret Access Key: SYNTHETIC_AWS_SECRET_ACCESS_VALUE\nAWS_ACCESS_KEY_ID=SYNTHETIC_ACCESS_IDENTIFIER_VALUE\nAccess Key ID: SYNTHETIC_SPACED_IDENTIFIER_VALUE\nAPI key is: SYNTHETIC_PROSE_SECRET_VALUE\nSecret Access Key -> SYNTHETIC_ARROW_SECRET_VALUE\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
       },
     });
   } finally {
@@ -86,7 +86,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   expect(fresh.run?.error).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
   expect(Buffer.byteLength(fresh.run!.error!, "utf8")).toBeLessThanOrEqual(8192);
   expect(fresh.run?.error).not.toMatch(
-    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE/,
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE|SYNTHETIC_ACCESS_IDENTIFIER_VALUE|SYNTHETIC_SPACED_IDENTIFIER_VALUE/,
   );
   await page.reload();
   const failure = page.getByTestId("composer-error");
@@ -107,7 +107,7 @@ test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters a
   expect(copied).not.toContain(syntheticFireworksKey);
   expect(copied).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
   expect(copied).not.toMatch(
-    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE/,
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE|SYNTHETIC_ACCESS_IDENTIFIER_VALUE|SYNTHETIC_SPACED_IDENTIFIER_VALUE/,
   );
   expect(Buffer.byteLength(copied, "utf8")).toBeLessThanOrEqual(8192);
   await captureScreenshot(page, info, "b5-safe-snapshot-diagnostics");
