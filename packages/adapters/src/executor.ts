@@ -8,6 +8,7 @@ import type {
   AgentRuntime,
   AgentToolCompletion,
   AgentToolExecutionObserver,
+  AgentToolResultForHistory,
   ArtifactStore,
   AutoReviewProvider,
   BrowserProvider,
@@ -25,6 +26,7 @@ import type {
   SandboxProvider,
   SecretStore,
   SemanticMemoryProvider,
+  ToolResultHistoryReference,
   WebProvider,
 } from "@rakazo/adapter-kit";
 import {
@@ -116,6 +118,8 @@ import {
   retireModelCredential,
   SpaceLimitError,
   searchHistory,
+  storeToolResultHistory,
+  TOOL_RESULT_HISTORY_MAX_BYTES,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
@@ -259,6 +263,8 @@ import {
 import {
   assertConnectorToolArgs,
   CATALOG_EXECUTE,
+  CATALOG_LOAD,
+  CATALOG_SEARCH,
   uniquifyInstalledToolName,
 } from "./lazy-tool-catalog.js";
 import {
@@ -2816,6 +2822,80 @@ export async function appendToolCompletionAudit(
   }
 }
 
+/** Redact full JSON values, including JSON-encoded MCP text, before persistence or paging. */
+export function redactToolResultHistory(value: unknown, secrets: string[]): unknown {
+  if (secrets.length === 0) return value;
+  const original = JSON.stringify(value);
+  if (original === undefined) return value;
+  const redactions = new Set(secrets.filter(Boolean));
+  for (const secret of secrets.filter(Boolean)) {
+    let encoded = secret;
+    for (;;) {
+      const next = JSON.stringify(encoded).slice(1, -1);
+      if (next === encoded || next.length > original.length) break;
+      redactions.add(next);
+      encoded = next;
+    }
+  }
+  const known = [...redactions];
+  const visit = (item: unknown): unknown => {
+    if (typeof item === "string") {
+      try {
+        const parsed: unknown = JSON.parse(item);
+        const redacted = visit(parsed);
+        // Keep unchanged JSON text byte-for-byte; changed numeric leaves need JSON quoting.
+        return JSON.stringify(redacted) === JSON.stringify(parsed)
+          ? item
+          : JSON.stringify(redacted);
+      } catch {
+        return redactConnectorPayload(item, known);
+      }
+    }
+    if (Array.isArray(item)) return item.map(visit);
+    if (item && typeof item === "object")
+      return Object.fromEntries(
+        Object.entries(item).map(([key, child]) => [
+          redactConnectorPayload(key, known),
+          visit(child),
+        ]),
+      );
+    return redactConnectorPayload(item, known);
+  };
+  return visit(JSON.parse(original));
+}
+
+/** Durable retrieval is limited to large connector outputs, never built-in control prompts. */
+export async function storeConnectorToolResultHistory(
+  prisma: PrismaClient,
+  scope: { spaceId: string; userId: string; threadId: string; botId: string; activeRunId: string },
+  input: AgentToolResultForHistory,
+  secrets: string[],
+): Promise<ToolResultHistoryReference | undefined> {
+  if (
+    !input.route ||
+    BUILTIN_AGENT_TOOL_NAMES.has(input.name) ||
+    [CATALOG_SEARCH, CATALOG_LOAD].includes(input.route.toolName)
+  )
+    return;
+  try {
+    const original = JSON.stringify(input.result);
+    if (!original || original.length <= 12_000) return;
+    if (Buffer.byteLength(original, "utf8") > TOOL_RESULT_HISTORY_MAX_BYTES) return;
+    const text = JSON.stringify(redactToolResultHistory(input.result, secrets));
+    if (!text) return;
+    return await storeToolResultHistory(prisma, scope, {
+      name: redactSecrets(input.name, secrets),
+      executionId: redactSecrets(input.executionId, secrets),
+      text,
+    });
+  } catch (error) {
+    // A failed storage operation never turns a successful connector call into a failure.
+    getLogger().warn("tool result history storage failed", {
+      error: sanitizeConnectorError(error, secrets),
+    });
+  }
+}
+
 export async function deferFutureRoutine(
   jobs: JobPublisher,
   routineId: string,
@@ -3891,10 +3971,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        const toolResultHistoryEnabled = discovered.some(
+          (tool) =>
+            tool.route &&
+            !BUILTIN_AGENT_TOOL_NAMES.has(tool.name) &&
+            ![CATALOG_SEARCH, CATALOG_LOAD].includes(tool.route.toolName),
+        );
         const builtins = [
           ...selectBuiltinToolsForRun({
             ticketBoardEnabled: deps.ticketBoardEnabled,
             historyRetrievalEnabled: contextStrategy !== "current",
+            toolResultHistoryEnabled,
             graphicalToolsAllowed,
             pageBrowserAllowed,
             groupId: thread.groupId,
@@ -5743,12 +5830,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: run.botId,
               channelId,
               searchBeforeSeq: historySearchBeforeSeq,
+              activeRunId: runId,
+              transformToolResult: (value: unknown) => redactToolResultHistory(value, runSecrets),
             };
             const response =
               name === "search_history"
                 ? await searchHistory(deps.prisma, scope, HistorySearchInputSchema.parse(args))
                 : await readHistory(deps.prisma, scope, HistoryReadInputSchema.parse(args));
-            const redacted = redactConnectorPayload(response, runSecrets);
+            // Result bodies and display metadata were redacted as a complete view before paging.
+            // Redacting page text or opaque cursors again would invalidate its offsets/hash.
+            const redacted =
+              name === "read_history" && args.toolResultId
+                ? response
+                : redactConnectorPayload(response, runSecrets);
             // Redaction can expand short synthetic credentials; never let Pi clip the JSON.
             if (Buffer.byteLength(JSON.stringify(redacted), "utf8") > 11_000) {
               return finish({
@@ -6841,6 +6935,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   completion,
                   runSecrets,
                 ),
+              storeToolResult: (result) =>
+                !disabledBuiltinTools.has("read_history") && connectorTools.has(result.name)
+                  ? storeConnectorToolResultHistory(
+                      deps.prisma,
+                      {
+                        spaceId: run.spaceId,
+                        userId: run.userId,
+                        threadId: thread.id,
+                        botId: bot.id,
+                        activeRunId: runId,
+                      },
+                      result,
+                      runSecrets,
+                    )
+                  : Promise.resolve(undefined),
               claimSteering: scripted
                 ? undefined
                 : async (seenIds) => {
@@ -7667,6 +7776,7 @@ function computerRetryDelay(fence: number): number {
 export function selectBuiltinToolsForRun(options: {
   ticketBoardEnabled?: boolean;
   historyRetrievalEnabled?: boolean;
+  toolResultHistoryEnabled?: boolean;
   graphicalToolsAllowed: boolean;
   /** Page browser tools need a graphical computer (Chrome), not model vision. */
   pageBrowserAllowed?: boolean;
@@ -7705,6 +7815,7 @@ export function selectBuiltinToolsForRun(options: {
         !["message_user", "message_bot", "handoff_to_bot", "message_agent"].includes(tool.name)) &&
       (options.voiceCall || tool.name !== "end_call") &&
       (options.historyRetrievalEnabled ||
+        (options.toolResultHistoryEnabled && tool.name === "read_history") ||
         !["search_history", "read_history"].includes(tool.name)) &&
       (!options.messagingChannelRun ||
         (![

@@ -751,6 +751,120 @@ describe("Pi connector tool dispatch", () => {
     );
   });
 
+  it.each([false, true])(
+    "stores raw connector results before final clipping (multipart=%s)",
+    async (multipart) => {
+      const data = { id: "exact-id", nextCursor: "cursor", body: "x".repeat(40_000) };
+      const image = { type: "image", data: "fake-image", mimeType: "image/png" };
+      const raw = multipart
+        ? {
+            kind: "agent_tool_result",
+            content: [{ type: "text", text: JSON.stringify(data) }, image],
+            details: { original: true },
+          }
+        : data;
+      const reference = { tool: "read_history" as const, arguments: { toolResultId: "result-id" } };
+      const storeToolResult = vi.fn(async () => reference);
+      for await (const _event of new PiAgentRuntime().run(
+        {
+          botId: "b",
+          threadId: "t",
+          runId: "r",
+          prompt: "read data",
+          instructions: "Use tools.",
+          history: [],
+          tools: [destinationTool],
+          model: { provider: "test", id: "dispatch-test-model" },
+          executeTool: async () => raw,
+          storeToolResult,
+        },
+        { signal: new AbortController().signal },
+      )) {
+        /* Exhaust the offline stream. */
+      }
+      expect(storeToolResult).toHaveBeenCalledExactlyOnceWith({
+        name: "destination.write",
+        executionId: JSON.stringify(["pi-tool", "main", "call-1"]),
+        result: raw,
+        route: destinationTool.route,
+      });
+      const result = fakeAgentState.toolResult as {
+        content: Array<{ type: string; text?: string }>;
+        details: unknown;
+      };
+      const bounded = result.content.find((part) => part.type === "text")!.text!;
+      expect(bounded.length).toBeLessThanOrEqual(12_000);
+      expect(JSON.parse(bounded)).toMatchObject({
+        contextTruncated: true,
+        historyReference: reference,
+      });
+      if (multipart) {
+        expect(JSON.parse(JSON.parse(bounded).content[0].text)).toMatchObject({
+          id: "exact-id",
+          nextCursor: "cursor",
+        });
+        expect(result.content[1]).toBe(image);
+      } else expect(JSON.parse(bounded)).toMatchObject({ id: "exact-id", nextCursor: "cursor" });
+    },
+  );
+
+  it("keeps execution successful and marks history unavailable after storage failure", async () => {
+    for await (const _event of new PiAgentRuntime().run(
+      {
+        botId: "b",
+        threadId: "t",
+        runId: "r",
+        prompt: "read data",
+        instructions: "Use tools.",
+        history: [],
+        tools: [destinationTool],
+        model: { provider: "test", id: "dispatch-test-model" },
+        executeTool: async () => ({ id: "kept", body: "x".repeat(40_000) }),
+        storeToolResult: async () => {
+          throw new Error("Storage unavailable");
+        },
+      },
+      { signal: new AbortController().signal },
+    )) {
+      /* Exhaust the offline stream. */
+    }
+    const result = fakeAgentState.toolResult as { content: Array<{ text: string }> };
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      id: "kept",
+      contextTruncated: true,
+      historyUnavailable: true,
+    });
+  });
+
+  it("does not strand an aborted run in a pending result store", async () => {
+    const controller = new AbortController();
+    const storeToolResult = vi.fn(() => {
+      controller.abort();
+      return new Promise<undefined>(() => {});
+    });
+    const consume = async () => {
+      for await (const _event of new PiAgentRuntime().run(
+        {
+          botId: "b",
+          threadId: "t",
+          runId: "r",
+          prompt: "read data",
+          instructions: "Use tools.",
+          history: [],
+          tools: [destinationTool],
+          model: { provider: "test", id: "dispatch-test-model" },
+          executeTool: async () => ({ id: "kept", body: "x".repeat(40_000) }),
+          storeToolResult,
+        },
+        { signal: controller.signal },
+      )) {
+        /* Exhaust the offline stream. */
+      }
+    };
+    await expect(consume()).rejects.toThrow(/aborted/i);
+    expect(storeToolResult).toHaveBeenCalledOnce();
+  });
+
   it("does not claim a tool-only turn finished work the model never described", async () => {
     const runtime = new PiAgentRuntime();
     const events: unknown[] = [];
@@ -1970,10 +2084,13 @@ describe("Pi connector tool dispatch", () => {
     const result = fakeAgentState.toolResult as {
       content: Array<{ type: string; text?: string }>;
     };
-    expect(result.content).toHaveLength(3);
-    expect(result.content[0]).toEqual({ type: "text", text: first });
-    expect(result.content[1]).toEqual(image);
-    expect(result.content[2]).toEqual({ type: "text", text: "bbbbb…" });
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toBe(image);
+    expect(result.content[0]!.text!.length).toBeLessThanOrEqual(12_000);
+    expect(JSON.parse(result.content[0]!.text!)).toMatchObject({
+      contextTruncated: true,
+      historyUnavailable: true,
+    });
   });
 
   it("delivers a skill read larger than the tool result bound verbatim", async () => {

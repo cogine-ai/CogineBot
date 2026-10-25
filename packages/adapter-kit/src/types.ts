@@ -211,6 +211,19 @@ export interface AgentToolCompletion {
   paused?: boolean;
 }
 
+/** A reference returned only after the executor has durably stored a redacted result. */
+export interface ToolResultHistoryReference {
+  tool: "read_history";
+  arguments: { toolResultId: string };
+}
+
+export interface AgentToolResultForHistory {
+  name: string;
+  executionId: string;
+  result: unknown;
+  route?: ConnectorRoute;
+}
+
 export interface ControlLeaseRef {
   leaseId: string;
   holder: "user" | "bot";
@@ -521,6 +534,10 @@ export interface AgentRunRequest {
   ) => Promise<unknown>;
   /** Called after a tool returns; implementations must not persist raw result contents. */
   onToolCompleted?: (completion: AgentToolCompletion) => Promise<void> | void;
+  /** Called before model-facing clipping. Undefined means no readable result was stored. */
+  storeToolResult?: (
+    result: AgentToolResultForHistory,
+  ) => Promise<ToolResultHistoryReference | undefined>;
   /** Atomically claim durable user steering at the runtime's next safe turn boundary. */
   claimSteering?: (seenIds: string[]) => Promise<AgentSteeringMessage[]>;
 }

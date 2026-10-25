@@ -27,8 +27,8 @@ import type {
   AgentUsage,
   ConnectorTool,
   ModelCallObserver,
+  ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
-import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { usableModelId } from "@rakazo/contracts";
 import { abortableDelay, MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
@@ -37,7 +37,7 @@ import { automated } from "./automated-messages.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
-import { shortenToolResultText } from "./context-selection.js";
+import { boundToolResultText } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { estimateModelContextTokens } from "./model-context.js";
@@ -1270,15 +1270,46 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
                 },
               },
             );
+            let historyReference: ToolResultHistoryReference | undefined;
+            if (!VERBATIM_TOOL_RESULTS.has(tool.name) && host.request.storeToolResult) {
+              try {
+                if ((JSON.stringify(result)?.length ?? 0) > 12_000) {
+                  const deadline = new AbortController();
+                  try {
+                    historyReference = await Promise.race([
+                      host.request.storeToolResult({
+                        name: tool.name,
+                        executionId,
+                        result,
+                        route: tool.route,
+                      }),
+                      abortableDelay(2_000, AbortSignal.any([host.signal, deadline.signal])).then(
+                        () => undefined,
+                      ),
+                    ]);
+                  } finally {
+                    deadline.abort();
+                  }
+                }
+              } catch {
+                // Unavailable evidence is explicit in the bounded result; execution still succeeds.
+              }
+            }
             if (isAgentToolExecutionResult(result)) {
               if (isToolPauseResult(result)) host.pausePending = true;
-              return boundAgentToolResult(result);
+              return boundAgentToolResult(result, historyReference);
             }
             return {
               content: [
                 {
                   type: "text",
-                  text: serializeToolResult(result, host.request.contextStrategy, tool.name, args),
+                  text: serializeToolResult(
+                    result,
+                    host.request.contextStrategy,
+                    tool.name,
+                    args,
+                    historyReference,
+                  ),
                 },
               ],
               details: result,
@@ -2065,28 +2096,30 @@ export function jsonField(spec: unknown): ReturnType<typeof Type.String> {
 
 export function serializeToolResult(
   result: unknown,
-  strategy: AgentRunRequest["contextStrategy"],
+  _strategy: AgentRunRequest["contextStrategy"],
   name: string,
   args: Record<string, unknown>,
+  historyReference?: ToolResultHistoryReference,
 ) {
   try {
     const text = JSON.stringify(result);
     if (!text) return "ok";
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
     if (text.length <= 12_000 || VERBATIM_TOOL_RESULTS.has(name)) return text;
-    return (strategy ?? DEFAULT_CONTEXT_STRATEGY) === "current"
-      ? clipToolResultText(text)
-      : shortenToolResultText(text, 12_000, { name, arguments: args });
+    return boundToolResultText(text, 12_000, { name, arguments: args }, historyReference);
   } catch {
-    return "ok";
+    return JSON.stringify({ error: "result_serialization_error", historyUnavailable: true });
   }
 }
 
-function boundAgentToolResult<T>(result: AgentToolResult<T>): AgentToolResult<T> {
+function boundAgentToolResult<T>(
+  result: AgentToolResult<T>,
+  historyReference?: ToolResultHistoryReference,
+): AgentToolResult<T> {
   if (!result || !Array.isArray(result.content)) return result;
   return {
     ...result,
-    content: clipToolResultContent(result.content),
+    content: clipToolResultContent(result.content, 12_000, historyReference),
   };
 }
 

@@ -53,6 +53,31 @@ describe("bot tool permissions", () => {
       }).map((tool) => tool.name),
     ).toEqual(baseline.filter((name) => name !== "search_history" && name !== "read_history"));
   });
+
+  it("offers only read_history for connector result references in the current strategy", () => {
+    const options = {
+      historyRetrievalEnabled: false,
+      toolResultHistoryEnabled: true,
+      graphicalToolsAllowed: false,
+      groupId: null,
+      trigger: "user",
+      semanticMemoryEnabled: false,
+      messagingChannelRun: false,
+    };
+    const tools = selectBuiltinToolsForRun(options).map((tool) => tool.name);
+    expect(tools).toContain("read_history");
+    expect(tools).not.toContain("search_history");
+    expect(
+      selectBuiltinToolsForRun({ ...options, disabledBuiltinTools: ["read_history"] }).map(
+        (tool) => tool.name,
+      ),
+    ).not.toContain("read_history");
+    expect(
+      selectBuiltinToolsForRun({ ...options, toolResultHistoryEnabled: false }).map(
+        (tool) => tool.name,
+      ),
+    ).not.toContain("read_history");
+  });
 });
 
 describe("tool completion audit", () => {

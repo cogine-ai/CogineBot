@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { AgentContextStrategy, CacheCapabilities } from "@rakazo/adapter-kit";
+import type {
+  AgentContextStrategy,
+  CacheCapabilities,
+  ToolResultHistoryReference,
+} from "@rakazo/adapter-kit";
 
 export type ContextStrategy = AgentContextStrategy;
 export interface ContextMessage {
@@ -137,6 +141,8 @@ function shortenHistoryResult(
     runs?: Array<{ outcomes?: HistoryTextReference[] }>;
     snapshots?: Array<{ topic?: string; outcome?: string }>;
     contextTruncated?: boolean;
+    toolResult?: HistoryTextReference & { toolResultId: string; viewHash?: string };
+    nextRead?: { toolResultId: string; textOffset: number; viewHash?: string } | null;
   };
   try {
     payload = JSON.parse(source);
@@ -146,6 +152,7 @@ function shortenHistoryResult(
   if (payload?.untrusted !== true || !Array.isArray(payload.messages)) return;
   const refs: HistoryTextReference[] = [
     ...payload.messages,
+    ...(payload.toolResult ? [payload.toolResult] : []),
     ...(Array.isArray(payload.runs)
       ? payload.runs.flatMap((run) => (Array.isArray(run?.outcomes) ? run.outcomes : []))
       : []),
@@ -164,6 +171,20 @@ function shortenHistoryResult(
       undefined,
     );
     if (!longest || longest.text.length < 2) {
+      if (payload.toolResult)
+        return JSON.stringify({
+          untrusted: true,
+          contextTruncated: true,
+          error: "budget_error",
+          historyReference: {
+            tool: "read_history",
+            arguments: {
+              toolResultId: payload.toolResult.toolResultId,
+              textOffset: payload.toolResult.textOffset,
+              ...(payload.toolResult.viewHash ? { viewHash: payload.toolResult.viewHash } : {}),
+            },
+          },
+        });
       return JSON.stringify({
         untrusted: true,
         contextTruncated: true,
@@ -179,6 +200,12 @@ function shortenHistoryResult(
     longest.text = longest.text.slice(0, Math.floor(longest.text.length / 2));
     longest.nextTextOffset = longest.textOffset + longest.text.length;
     longest.truncated = true;
+    if (longest === payload.toolResult)
+      payload.nextRead = {
+        toolResultId: payload.toolResult.toolResultId,
+        textOffset: longest.nextTextOffset,
+        ...(payload.toolResult.viewHash ? { viewHash: payload.toolResult.viewHash } : {}),
+      };
     encoded = JSON.stringify(payload);
   }
   return encoded;
@@ -193,20 +220,20 @@ function shortenStructuredResult(source: string, size: number): string | undefin
   }
   const holder: Record<string, unknown> = { payload };
   const leaves: Array<{ parent: Record<string, unknown> | unknown[]; key: string | number }> = [];
-  const visit = (value: unknown) => {
-    if (!value || typeof value !== "object") return;
+  const pending: unknown[] = typeof payload === "string" ? [] : [payload];
+  if (typeof payload === "string") leaves.push({ parent: holder, key: "payload" });
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== "object") continue;
     for (const [key, child] of Object.entries(value)) {
-      // IDs, cursors and routing/action metadata must remain usable exactly as returned.
       if (
         typeof child === "string" &&
-        !/(?:id|cursor|token|url|path|name|status|type|query)$/i.test(key)
+        !/(?:id|cursor|token|url|path|name|status|type|query|hash)$/i.test(key)
       )
         leaves.push({ parent: value as Record<string, unknown>, key });
-      else if (child && typeof child === "object") visit(child);
+      else if (child && typeof child === "object") pending.push(child);
     }
-  };
-  if (typeof payload === "string") leaves.push({ parent: holder, key: "payload" });
-  else visit(payload);
+  }
   if (payload && typeof payload === "object" && !Array.isArray(payload))
     (payload as Record<string, unknown>).contextTruncated = true;
   let encoded = JSON.stringify(holder.payload);
@@ -231,6 +258,114 @@ function shortenStructuredResult(source: string, size: number): string | undefin
   return encoded;
 }
 
+/**
+ * MCP results put JSON in a text content part (sometimes beside other parts). Treating that inner
+ * JSON as one prose leaf cuts IDs and cursors out of it, so shorten JSON text parts with their own
+ * control-preserving rules, shrink sibling parts and outer metadata the same way, and re-wrap.
+ * Non-JSON envelopes fall through to the generic path.
+ */
+function isJsonTextPart(part: { type?: string; text?: unknown } | undefined): part is {
+  type: "text";
+  text: string;
+} {
+  if (part?.type !== "text" || typeof part.text !== "string") return false;
+  const trimmed = part.text.trimStart();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return false;
+  try {
+    JSON.parse(part.text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function shortenMcpEnvelope(source: string, size: number): string | undefined {
+  let payload: { content?: Array<{ type?: string; text?: unknown }> } & Record<string, unknown>;
+  try {
+    payload = JSON.parse(source);
+  } catch {
+    return;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+  const originalParts = payload.content;
+  if (!Array.isArray(originalParts) || !originalParts.some(isJsonTextPart)) return;
+
+  const wrap = (nextParts: typeof originalParts) =>
+    JSON.stringify({ ...payload, content: nextParts });
+
+  // Shrink outer metadata first so the inner budget is not crushed by a large _meta blob.
+  const outer = { ...payload };
+  delete outer.content;
+  delete outer.structuredContent;
+  let outerSource = JSON.stringify(outer);
+  if (outerSource.length > Math.max(64, Math.floor(size / 4))) {
+    const shortenedOuter = shortenStructuredResult(outerSource, Math.max(64, Math.floor(size / 4)));
+    if (shortenedOuter !== undefined) {
+      Object.assign(payload, JSON.parse(shortenedOuter));
+      if (shortenedOuter !== outerSource) payload.contextTruncated = true;
+      outerSource = shortenedOuter;
+    }
+  }
+
+  const structuredSource =
+    payload.structuredContent === undefined ? undefined : JSON.stringify(payload.structuredContent);
+  let parts = originalParts.map((part) => ({ ...part }));
+  const emptyJsonShell = parts.map((part) => (isJsonTextPart(part) ? { ...part, text: "" } : part));
+  let budget = Math.max(
+    128,
+    Math.floor(
+      (size - wrap(emptyJsonShell).length) /
+        (parts.filter(isJsonTextPart).length + Number(structuredSource !== undefined)),
+    ),
+  );
+  let encoded = wrap(parts);
+
+  for (let attempt = 0; attempt < 6 && encoded.length > size; attempt++) {
+    let changed = false;
+    parts = parts.map((part) => {
+      if (isJsonTextPart(part)) {
+        const shortened = shortenToolResultText(part.text, budget);
+        if (shortened === undefined || shortened === part.text) return part;
+        changed = true;
+        return { ...part, text: shortened };
+      }
+      const serialized = JSON.stringify(part);
+      if (serialized.length <= 128) return part;
+      const shortened = shortenStructuredResult(
+        serialized,
+        Math.min(budget, Math.max(128, Math.floor(size / 4))),
+      );
+      if (shortened === undefined || shortened === serialized) return part;
+      try {
+        const parsed = JSON.parse(shortened) as typeof part;
+        if (!parsed || typeof parsed !== "object") return part;
+        changed = true;
+        return parsed;
+      } catch {
+        return part;
+      }
+    });
+    if (structuredSource !== undefined) {
+      const shortenedStructured = shortenToolResultText(structuredSource, budget);
+      try {
+        payload.structuredContent = JSON.parse(shortenedStructured ?? "");
+        if (shortenedStructured !== structuredSource) changed = true;
+      } catch {
+        delete payload.structuredContent;
+        changed = true;
+      }
+    }
+    if (changed) payload.contextTruncated = true;
+    encoded = wrap(parts);
+    if (encoded.length <= size) break;
+    if (!changed) break;
+    budget = Math.max(128, Math.floor(budget * (size / encoded.length)) - 1);
+  }
+  // Soft target may still be exceeded by protected ids. Keep the envelope on this path even when
+  // nothing could shrink: the generic shortener would cut the JSON text and drop its ids.
+  return encoded;
+}
+
 /** Shorten evidence cheaply while keeping structured controls and original-history offsets. */
 export function shortenToolResultText(
   source: string,
@@ -239,10 +374,150 @@ export function shortenToolResultText(
 ): string {
   return (
     shortenHistoryResult(source, size, tool) ??
+    shortenMcpEnvelope(source, size) ??
     shortenStructuredResult(source, size) ??
     `${source.slice(0, Math.floor(size / 2))}\n[Tool result truncated to fit context; inspect original evidence before claiming omitted details.]\n${source.slice(-Math.floor(size / 2))}`
   );
 }
+// Bounded metadata only, matching exact server-generated views. Provider JSON cannot
+// manufacture a durable reference by returning a field with the same name.
+const toolResultReferences = new Map<string, ToolResultHistoryReference>();
+const resultTextHash = (text: string) => createHash("sha256").update(text).digest("hex");
+function rememberedToolResultReference(
+  source: string,
+  value: unknown,
+): ToolResultHistoryReference | undefined {
+  const exact = toolResultReferences.get(resultTextHash(source));
+  if (exact) return exact;
+  if (!value || typeof value !== "object" || !("content" in value) || !Array.isArray(value.content))
+    return;
+  const refs = value.content.flatMap((part) =>
+    part?.type === "text" && typeof part.text === "string"
+      ? [toolResultReferences.get(resultTextHash(part.text))].filter((ref) => ref !== undefined)
+      : [],
+  );
+  return refs.length &&
+    refs.every((ref) => ref.arguments.toolResultId === refs[0]!.arguments.toolResultId)
+    ? refs[0]
+    : undefined;
+}
+
+/** A final model-facing bound. Structured results are never cut into partial JSON. */
+export function boundToolResultText(
+  source: string,
+  size: number,
+  tool: { name?: string; arguments?: unknown } = {},
+  historyReference?: ToolResultHistoryReference,
+): string {
+  if (!Number.isSafeInteger(size) || size < 1) throw new Error("Invalid tool result budget");
+  if (source.length <= size) return source;
+  let original: unknown;
+  try {
+    original = JSON.parse(source);
+  } catch {
+    const marker = "\n[Tool result truncated to fit context; omitted evidence is unavailable.]";
+    return source.slice(0, Math.max(0, size - marker.length)) + marker.slice(0, size);
+  }
+  const supplied =
+    historyReference &&
+    historyReference.tool === "read_history" &&
+    typeof historyReference.arguments?.toolResultId === "string" &&
+    historyReference.arguments.toolResultId.length > 0 &&
+    historyReference.arguments.toolResultId.length <= 200 &&
+    JSON.stringify(historyReference).length <= 512
+      ? historyReference
+      : undefined;
+  const readArgs =
+    tool.name === "read_history" && tool.arguments && typeof tool.arguments === "object"
+      ? (tool.arguments as Record<string, unknown>)
+      : undefined;
+  const readReference =
+    readArgs &&
+    typeof readArgs.toolResultId === "string" &&
+    readArgs.toolResultId.length > 0 &&
+    readArgs.toolResultId.length <= 200
+      ? {
+          tool: "read_history" as const,
+          arguments: {
+            toolResultId: readArgs.toolResultId,
+            ...(typeof readArgs.textOffset === "number" ? { textOffset: readArgs.textOffset } : {}),
+            ...(typeof readArgs.viewHash === "string" && readArgs.viewHash.length === 64
+              ? { viewHash: readArgs.viewHash }
+              : {}),
+          },
+        }
+      : undefined;
+  const reference = supplied ?? rememberedToolResultReference(source, original) ?? readReference;
+  const evidence = {
+    historyReference: reference,
+    historyUnavailable: reference ? undefined : true,
+  };
+  const encode = (value: unknown) => {
+    const encoded = JSON.stringify(value);
+    if (encoded.length > size) throw new ContextBudgetError(Buffer.byteLength(encoded), size);
+    if (reference) {
+      const hash = resultTextHash(encoded);
+      toolResultReferences.delete(hash);
+      toolResultReferences.set(hash, reference);
+      if (toolResultReferences.size > 1_024)
+        toolResultReferences.delete(toolResultReferences.keys().next().value!);
+    }
+    return encoded;
+  };
+  const wrap = (value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? { ...value, contextTruncated: true, ...evidence }
+      : { contextTruncated: true, ...evidence, result: value };
+  const overhead = JSON.stringify(wrap({})).length;
+  try {
+    const shortened = shortenToolResultText(source, Math.max(0, size - overhead), tool);
+    const candidate = wrap(JSON.parse(shortened));
+    if (JSON.stringify(candidate).length <= size) return encode(candidate);
+  } catch {
+    // Parsed source remains recoverable through the reference; never slice its JSON.
+  }
+  try {
+    const summary = {
+      contextTruncated: true,
+      ...evidence,
+      controlMetadata: toolResultControlMetadata(original),
+    };
+    if (JSON.stringify(summary).length <= size) return encode(summary);
+  } catch {
+    /* Deep or oversized metadata requires an explicit budget failure. */
+  }
+  // A genuinely tiny context cannot contain even its evidence reference.
+  return encode({ contextTruncated: true, error: "budget_error", ...evidence });
+}
+
+/** Preserve exact controls and their structure, including JSON embedded in MCP text parts. */
+function toolResultControlMetadata(value: unknown, key = "", depth = 0): unknown {
+  if (depth > 64) return value;
+  if (typeof value === "string") {
+    if (/(?:id|cursor|token|url|path|name|status|type|query|hash)$/i.test(key)) return value;
+    if (key === "text") {
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object")
+          return JSON.stringify(toolResultControlMetadata(parsed, "", depth + 1));
+      } catch {
+        /* Prose is evidence, not a routing control. */
+      }
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value))
+    return value.map((item) => toolResultControlMetadata(item, key, depth + 1) ?? null);
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([childKey, child]) => {
+      if (childKey === "historyReference") return [];
+      const kept = toolResultControlMetadata(child, childKey, depth + 1);
+      return kept === undefined ? [] : [[childKey, kept]];
+    }),
+  );
+}
+
 interface Group {
   indexes: number[];
   tokens: number;
@@ -360,10 +635,12 @@ export function selectContext<T extends ContextMessage>(
           (part) =>
             part && typeof part === "object" && (part.type === "text" || part.type === "image"),
         )
-          ? parts
-              .filter((part) => part.type === "text" && typeof part.text === "string")
-              .map((part) => part.text)
-              .join("\n")
+          ? (() => {
+              const texts = parts.filter(
+                (part) => part.type === "text" && typeof part.text === "string",
+              );
+              return texts.length > 1 ? JSON.stringify({ content: texts }) : texts[0]?.text;
+            })()
           : typeof message.content === "string"
             ? message.content
             : JSON.stringify(message.content);
@@ -379,7 +656,7 @@ export function selectContext<T extends ContextMessage>(
               (part) => part?.type === "toolCall" && part.id === message.toolCallId,
             )
           : undefined;
-        const text = shortenToolResultText(
+        const text = boundToolResultText(
           serialized,
           size,
           nativeCall ?? { name: message.toolName },

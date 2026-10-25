@@ -128,8 +128,8 @@ describe("clipToolResultText", () => {
   it("bounds oversized tool output for the in-turn transcript", () => {
     const text = "x".repeat(TOOL_RESULT_TEXT_LIMIT + 50);
     const clipped = clipToolResultText(text);
-    expect(clipped.endsWith("…")).toBe(true);
-    expect(clipped.length).toBe(TOOL_RESULT_TEXT_LIMIT + 1);
+    expect(clipped).toContain("truncated");
+    expect(clipped.length).toBe(TOOL_RESULT_TEXT_LIMIT);
   });
 });
 
@@ -144,17 +144,13 @@ describe("clipToolResultContent", () => {
       { type: "text" as const, text: second },
       { type: "text" as const, text: "later omitted" },
     ]);
-    expect(clipped).toHaveLength(3);
-    expect(clipped[0]).toEqual({ type: "text", text: first });
-    expect(clipped[1]).toEqual(image);
-    const overflow = clipped[2] as { type: "text"; text: string };
-    expect(overflow.type).toBe("text");
-    expect(overflow.text.endsWith("…")).toBe(true);
-    expect(overflow.text.startsWith("b")).toBe(true);
-    expect(overflow.text.length).toBe(11);
-    const textChars = clipped
-      .filter((part) => part.type === "text")
-      .reduce((sum, part) => sum + part.text.replace(/…$/, "").length, 0);
-    expect(textChars).toBe(TOOL_RESULT_TEXT_LIMIT);
+    expect(clipped).toHaveLength(2);
+    expect(clipped[1]).toBe(image);
+    const bounded = clipped[0] as { type: "text"; text: string };
+    expect(bounded.text.length).toBeLessThanOrEqual(TOOL_RESULT_TEXT_LIMIT);
+    expect(JSON.parse(bounded.text)).toMatchObject({
+      contextTruncated: true,
+      historyUnavailable: true,
+    });
   });
 });

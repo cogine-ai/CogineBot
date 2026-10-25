@@ -593,6 +593,8 @@ model Event {
   seq       Int
   type      String
   payload   Json
+  // Private result storage; never part of the replayed ProductEvent payload.
+  toolResult Json?
   runId     String?
   createdAt DateTime @default(now())
 
