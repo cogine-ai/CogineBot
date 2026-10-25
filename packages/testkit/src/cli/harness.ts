@@ -95,6 +95,7 @@ async function main() {
         "packages/db/src/tool-result-history.postgres.test.ts",
         "packages/testkit/src/history-retrieval.postgres.test.ts",
         "packages/testkit/src/tool-result-history.postgres.test.ts",
+        "packages/testkit/src/catalog-alias-approval.postgres.test.ts",
         "packages/testkit/src/history-short-product.postgres.test.ts",
         "packages/testkit/src/history-cache-default.postgres.test.ts",
         "packages/testkit/src/history-followup-product.postgres.test.ts",
