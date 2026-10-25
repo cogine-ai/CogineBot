@@ -16,54 +16,213 @@ import {
   NativeSelectOption,
 } from "@rakazo/ui-web";
 import { XIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { providerLabel } from "../lib/messaging";
-import { rpc } from "../lib/rpc";
+import { createSpaceRpc, currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
 import { ExternalConversationSettings } from "./ExternalConversationSettings";
 
-export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
+export function MessagingSettingsOverlay({
+  onClose,
+  ownerKey,
+  spaceId,
+}: {
+  onClose: () => void;
+  ownerKey: string | null;
+  spaceId: string | null;
+}) {
   const { t } = useLingui();
-  const [status, setStatus] = useState<MessagingStatus | null>(null);
-  const [channels, setChannels] = useState<MessagingChannelMembership[]>([]);
-  const [connections, setConnections] = useState<MessagingAgentConnection[]>([]);
-  const [bots, setBots] = useState<Bot[]>([]);
-  const [externalConversations, setExternalConversations] = useState<ExternalConversation[]>([]);
+  const [loaded, setLoaded] = useState<{
+    binding: object;
+    status: MessagingStatus;
+    channels: MessagingChannelMembership[];
+    connections: MessagingAgentConnection[];
+    bots: Bot[];
+    externalConversations: ExternalConversation[];
+  } | null>(null);
   const [settingsConversationId, setSettingsConversationId] = useState<string | null>(null);
   const [linkBotId, setLinkBotId] = useState("");
-  const [linkCode, setLinkCode] = useState<string | null>(null);
+  const [storedLinkCode, setLinkCode] = useState<{
+    code: string;
+    expiresAt: string;
+    botId: string;
+    identityIds: string[];
+    binding: object;
+  } | null>(null);
+  const [pollError, setPollError] = useState(false);
+  const [pollRevision, setPollRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const selection = selectedSpaceId();
+  const generation = currentSpaceSelectionGeneration();
+  const origin = window.location.origin;
+  const binding = useMemo(
+    () => ({ ownerKey, spaceId, selection, generation, origin }),
+    [ownerKey, spaceId, selection, generation, origin],
+  );
+  const status = loaded?.binding === binding ? loaded.status : null;
+  const channels = loaded?.binding === binding ? loaded.channels : [];
+  const connections = loaded?.binding === binding ? loaded.connections : [];
+  const bots = loaded?.binding === binding ? loaded.bots : [];
+  const externalConversations = loaded?.binding === binding ? loaded.externalConversations : [];
+  const linkCode = storedLinkCode?.binding === binding ? storedLinkCode : null;
+  const committed = useRef<typeof binding | null>(null);
+  const refreshSequence = useRef(0);
+  const actionController = useRef<AbortController | null>(null);
+  const linkActionController = useRef<AbortController | null>(null);
+  const pollController = useRef<AbortController | null>(null);
+  const linkVersion = useRef(0);
+  const [actionBusy, setActionBusy] = useState(false);
+  const isCurrent = () =>
+    committed.current === binding &&
+    Boolean(binding.ownerKey && binding.spaceId) &&
+    selectedSpaceId() === binding.selection &&
+    currentSpaceSelectionGeneration() === binding.generation &&
+    window.location.origin === binding.origin;
+  const rpc = useMemo(
+    () =>
+      createSpaceRpc(
+        spaceId,
+        () =>
+          committed.current === binding &&
+          selectedSpaceId() === binding.selection &&
+          currentSpaceSelectionGeneration() === binding.generation &&
+          window.location.origin === binding.origin,
+      ),
+    [binding, spaceId],
+  );
+  useLayoutEffect(() => {
+    committed.current = binding;
+    return () => {
+      if (committed.current === binding) committed.current = null;
+      const controller = actionController.current;
+      actionController.current = null;
+      if (linkActionController.current === controller) linkActionController.current = null;
+      controller?.abort();
+    };
+  }, [binding]);
 
-  async function refresh() {
+  async function refresh(signal?: AbortSignal) {
+    if (!isCurrent()) return;
+    const request = ++refreshSequence.current;
     const [nextStatus, nextChannels, nextConnections, nextBots, navigation] = await Promise.all([
-      rpc.messaging.status(),
-      rpc.messaging.channels.list(),
-      rpc.messaging.connections.list(),
-      rpc.bots.list(),
-      rpc.spaces.list(),
+      rpc.messaging.status(undefined, { signal }),
+      rpc.messaging.channels.list(undefined, { signal }),
+      rpc.messaging.connections.list(undefined, { signal }),
+      rpc.bots.list(undefined, { signal }),
+      rpc.spaces.list(undefined, { signal }),
     ]);
-    setStatus(nextStatus);
-    setChannels(nextChannels);
-    setConnections(nextConnections);
-    setBots(nextBots);
-    setExternalConversations(navigation.current.externalConversations);
+    if (
+      !isCurrent() ||
+      signal?.aborted ||
+      request !== refreshSequence.current ||
+      navigation.current.id !== spaceId
+    )
+      return;
+    setLoaded({
+      binding,
+      status: nextStatus,
+      channels: nextChannels,
+      connections: nextConnections,
+      bots: nextBots,
+      externalConversations: navigation.current.externalConversations,
+    });
   }
 
   useEffect(() => {
-    void refresh().catch(() => setError(t`Couldn't load messaging settings`));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const controller = new AbortController();
+    setLinkCode(null);
+    setLinkBotId("");
+    setActionBusy(false);
+    setError(null);
+    void refresh(controller.signal).catch(() => {
+      if (isCurrent() && !controller.signal.aborted) setError(t`Couldn't load messaging settings`);
+    });
+    return () => controller.abort();
+  }, [binding]);
 
-  async function act(action: () => Promise<unknown>) {
+  useEffect(() => {
+    if (!linkCode) return;
+    const controller = new AbortController();
+    pollController.current = controller;
+    const version = linkVersion.current;
+    let timer: number | undefined;
+    const expiresAt = Date.parse(linkCode.expiresAt);
+    const current = () =>
+      isCurrent() && !controller.signal.aborted && version === linkVersion.current;
+    const expire = () => {
+      if (!current()) return;
+      setLinkCode(null);
+      setPollError(false);
+      setError(t`Link code expired. Try again.`);
+    };
+    const deadline = window.setTimeout(
+      () => {
+        expire();
+        controller.abort();
+      },
+      Math.max(0, expiresAt - Date.now()),
+    );
+    async function poll() {
+      if (!current()) return;
+      if (Date.now() >= expiresAt) {
+        expire();
+        return;
+      }
+      try {
+        const next = await rpc.messaging.status(undefined, { signal: controller.signal });
+        if (!current() || Date.now() >= expiresAt) return;
+        if (
+          next.identities.some(
+            (identity) =>
+              identity.botId === linkCode!.botId && !linkCode!.identityIds.includes(identity.id),
+          )
+        ) {
+          await refresh(controller.signal);
+          if (current()) {
+            setLinkCode(null);
+            setPollError(false);
+          }
+          return;
+        }
+        setPollError(false);
+      } catch {
+        if (current()) setPollError(true);
+      }
+      if (current()) timer = window.setTimeout(() => void poll(), 3000);
+    }
+    timer = window.setTimeout(() => void poll(), 3000);
+    return () => {
+      controller.abort();
+      if (pollController.current === controller) pollController.current = null;
+      window.clearTimeout(timer);
+      window.clearTimeout(deadline);
+    };
+  }, [linkCode, pollRevision, binding]);
+
+  async function act(action: () => Promise<unknown>, kind: "link" | "settings" = "settings") {
+    if (!isCurrent() || actionController.current) return;
+    const controller = new AbortController();
+    actionController.current = controller;
+    if (kind === "link") linkActionController.current = controller;
+    linkVersion.current += 1;
+    pollController.current?.abort();
+    setActionBusy(true);
     setError(null);
     // A displayed code must always match the current selection and link
     // state; the link action re-sets it after issuing.
     setLinkCode(null);
     try {
       await action();
-      await refresh();
+      if (isCurrent() && !controller.signal.aborted) await refresh(controller.signal);
     } catch {
-      setError(t`Couldn't update messaging settings`);
+      if (isCurrent() && !controller.signal.aborted)
+        setError(t`Couldn't update messaging settings`);
+    } finally {
+      if (linkActionController.current === controller) linkActionController.current = null;
+      if (actionController.current === controller) {
+        actionController.current = null;
+        if (isCurrent()) setActionBusy(false);
+      }
     }
   }
 
@@ -151,6 +310,9 @@ export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
               aria-label={t`Bot to link`}
               value={linkBotId}
               onChange={(event) => {
+                linkVersion.current += 1;
+                linkActionController.current?.abort();
+                pollController.current?.abort();
                 setLinkBotId(event.target.value);
                 setLinkCode(null);
               }}
@@ -164,12 +326,31 @@ export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
             </NativeSelect>
             <Button
               className="rounded-full"
-              disabled={!linkBotId}
+              disabled={!linkBotId || !status || actionBusy}
               onClick={() =>
                 void act(async () => {
-                  const issued = await rpc.messaging.link.start({ botId: linkBotId });
-                  setLinkCode(issued.code);
-                })
+                  const version = linkVersion.current;
+                  const issued = await rpc.messaging.link.start(
+                    { botId: linkBotId },
+                    { signal: actionController.current?.signal },
+                  );
+                  if (
+                    isCurrent() &&
+                    version === linkVersion.current &&
+                    !actionController.current?.signal.aborted
+                  ) {
+                    setPollError(false);
+                    setLinkCode({
+                      ...issued,
+                      binding,
+                      botId: linkBotId,
+                      identityIds:
+                        status?.identities
+                          .filter((identity) => identity.botId === linkBotId)
+                          .map((identity) => identity.id) ?? [],
+                    });
+                  }
+                }, "link")
               }
             >
               <Trans>Link a chat app</Trans>
@@ -178,10 +359,22 @@ export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
           {linkCode ? (
             <p className="mt-3 text-[14px] text-foreground/75" data-testid="messaging-link-code">
               <Trans>
-                Send <span className="font-mono text-foreground">{linkCode}</span> to the line from
-                your chat app within 10 minutes. You'll get a confirmation reply once linked.
+                Send <span className="font-mono text-foreground">{linkCode.code}</span> to the line
+                from your chat app within 10 minutes. You'll get a confirmation reply once linked.
               </Trans>
             </p>
+          ) : null}
+          {linkCode && pollError ? (
+            <div role="status" className="mt-2 text-[13px] text-muted-foreground">
+              <Trans>Could not check the connection.</Trans>{" "}
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => setPollRevision((value) => value + 1)}
+              >
+                <Trans>Retry</Trans>
+              </Button>
+            </div>
           ) : null}
         </section>
 

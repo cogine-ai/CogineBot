@@ -120,7 +120,7 @@ export class EncryptedSecretStore extends SecretChanges implements SecretStore {
     if (typeof context !== "string") context.signal?.throwIfAborted();
     if (ciphertext.startsWith("infisical:")) {
       const message =
-        "Infisical secret references require SECRET_STORE=infisical; run the reverse migration before switching to encrypted storage (docs/infisical-secrets.md)";
+        "Infisical secret references require SECRET_STORE=infisical\nRun the reverse migration before switching to encrypted storage (docs/infisical-secrets.md)";
       if (!this.warnedRemoteRef) {
         this.warnedRemoteRef = true;
         getLogger().warn(message);

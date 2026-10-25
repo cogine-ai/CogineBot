@@ -27,8 +27,10 @@ import { NativeSymbol } from "./native-symbol";
 
 export type ThreadComposerHandle = {
   snapshot: () => ComposerSnapshot;
+  editableText: () => string | null;
   reset: () => void;
   insertTextIfEmpty: (text: string, botId: string, isCurrent: () => boolean) => boolean;
+  restoreEditableTextIfEmpty: (text: string, isCurrent: () => boolean) => boolean;
 };
 
 /** Event-time values close the gap before React commits a typed or inserted draft. */
@@ -120,6 +122,28 @@ export function ThreadComposer({
       committed.current.active = false;
     };
   });
+
+  function insertEditableTextIfEmpty(text: string, isCurrent: () => boolean): boolean {
+    if (!isCurrent()) return false;
+    const state = committed.current;
+    if (
+      !state.active ||
+      state.onCall ||
+      state.sending ||
+      draftValue.current.length > 0 ||
+      mentionsValue.current.length > 0 ||
+      skillValue.current !== null ||
+      state.attachmentIds.length > 0 ||
+      state.replyTargetId !== undefined ||
+      state.replyQuote !== null
+    )
+      return false;
+    setDraft(text);
+    setMentionQuery(null);
+    setSlashQuery(null);
+    return true;
+  }
+
   useImperativeHandle(ref, () => ({
     snapshot: () => ({
       promptText: serializeComposerPrompt(
@@ -133,6 +157,16 @@ export function ThreadComposer({
       replyQuote,
       attachmentIds,
     }),
+    editableText: () => {
+      const state = committed.current;
+      if (!state.active || state.onCall || state.sending) return null;
+      // Names remain editable prose; no old chip id, connection or routing authority survives.
+      const context = [
+        ...(skillValue.current ? [`/${skillValue.current.name}`] : []),
+        ...mentionsValue.current.map((mention) => `@${mention.name}`),
+      ];
+      return context.length ? `${context.join("\n")}\n${draftValue.current}` : draftValue.current;
+    },
     reset: () => {
       setDraft("");
       setMentionQuery(null);
@@ -141,29 +175,16 @@ export function ThreadComposer({
       setSelectedMentions([]);
     },
     insertTextIfEmpty: (text, targetBotId, isCurrent) => {
-      if (!isCurrent()) return false;
-      const state = committed.current;
       if (
-        !state.active ||
+        !text ||
         !targetBotId ||
-        state.botId !== targetBotId ||
-        state.onCall ||
-        state.working ||
-        state.sending ||
-        draftValue.current.length > 0 ||
-        mentionsValue.current.length > 0 ||
-        skillValue.current !== null ||
-        state.attachmentIds.length > 0 ||
-        state.replyTargetId !== undefined ||
-        state.replyQuote !== null ||
-        !text
+        committed.current.botId !== targetBotId ||
+        committed.current.working
       )
         return false;
-      setDraft(text);
-      setMentionQuery(null);
-      setSlashQuery(null);
-      return true;
+      return insertEditableTextIfEmpty(text, isCurrent);
     },
+    restoreEditableTextIfEmpty: insertEditableTextIfEmpty,
   }));
   const mentionOptions = useMemo(() => {
     if (mentionQuery === null || composerMentionTargets.length === 0) return [];

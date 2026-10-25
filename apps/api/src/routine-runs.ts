@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import type { Actor, RoutineHistory, RoutineRun, RoutineRunCursor } from "@rakazo/contracts";
+import { runFailureError, sanitizeRunErrorDetails } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { Prisma } from "@rakazo/db";
 
@@ -41,6 +42,7 @@ export async function listRoutineRuns(
       threadId: true,
       thread: { select: { groupId: true } },
       status: true,
+      error: true,
       createdAt: true,
       startedAt: true,
       completedAt: true,
@@ -69,15 +71,22 @@ export async function listRoutineRuns(
   const replyByRun = new Map(messages.map((message) => [message.runId, message.id]));
   return {
     nextCursor,
-    runs: runs.map((run) => ({
-      id: run.id,
-      botId: run.botId,
-      groupId: run.thread.groupId,
-      status: run.status as RoutineRun["status"],
-      createdAt: run.createdAt.toISOString(),
-      startedAt: run.startedAt?.toISOString() ?? null,
-      completedAt: run.completedAt?.toISOString() ?? null,
-      messageId: replyByRun.get(run.id) ?? null,
-    })),
+    runs: runs.map((run) => {
+      const failure = runFailureError(
+        { type: `run.${run.status}`, payload: { error: run.error } },
+        { preserveDetails: true },
+      );
+      return {
+        id: run.id,
+        botId: run.botId,
+        groupId: run.thread.groupId,
+        status: run.status as RoutineRun["status"],
+        error: failure === null ? null : sanitizeRunErrorDetails(failure),
+        createdAt: run.createdAt.toISOString(),
+        startedAt: run.startedAt?.toISOString() ?? null,
+        completedAt: run.completedAt?.toISOString() ?? null,
+        messageId: replyByRun.get(run.id) ?? null,
+      };
+    }),
   };
 }

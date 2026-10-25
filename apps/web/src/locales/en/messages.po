@@ -6103,3 +6103,96 @@ msgstr "Connect an email account"
 #: src/pages/shell/bot-panel.tsx
 msgid "Gmail or Outlook (optional)"
 msgstr "Gmail or Outlook (optional)"
+
+msgid "Copy diagnostics"
+msgstr "Copy diagnostics"
+
+msgid "Could not check the connection."
+msgstr "Could not check the connection."
+
+msgid "Could not load chats"
+msgstr "Could not load chats"
+
+msgid "Details"
+msgstr "Details"
+
+msgid "Link code expired. Try again."
+msgstr "Link code expired. Try again."
+
+msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+msgstr "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+
+msgid "Showing saved chats."
+msgstr "Showing saved chats."
+
+msgid "The model provider returned an error."
+msgstr "The model provider returned an error."
+
+msgid "The server could not complete the request"
+msgstr "The server could not complete the request"
+
+msgid "This Space is unavailable"
+msgstr "This Space is unavailable"
+
+msgid "Your Anthropic"
+msgstr "Your Anthropic"
+
+msgid "Your OpenAI"
+msgstr "Your OpenAI"
+
+msgid "Your OpenRouter"
+msgstr "Your OpenRouter"
+
+msgid "Your model provider"
+msgstr "Your model provider"
+
+msgid "{provider} could not find the requested model."
+msgstr "{provider} could not find the requested model."
+
+msgid "{provider} is rate limiting requests. Try again shortly."
+msgstr "{provider} is rate limiting requests. Try again shortly."
+
+msgid "{provider} key hit its daily limit."
+msgstr "{provider} key hit its daily limit."
+
+msgid "{provider} key hit its limit."
+msgstr "{provider} key hit its limit."
+
+msgid "{provider} key hit its monthly limit."
+msgstr "{provider} key hit its monthly limit."
+
+msgid "{provider} key hit its weekly limit."
+msgstr "{provider} key hit its weekly limit."
+
+msgid "{provider} reached its credit limit."
+msgstr "{provider} reached its credit limit."
+
+msgid "{provider} reached its daily credit limit."
+msgstr "{provider} reached its daily credit limit."
+
+msgid "{provider} reached its daily spending limit."
+msgstr "{provider} reached its daily spending limit."
+
+msgid "{provider} reached its monthly credit limit."
+msgstr "{provider} reached its monthly credit limit."
+
+msgid "{provider} reached its monthly spending limit."
+msgstr "{provider} reached its monthly spending limit."
+
+msgid "{provider} reached its spending limit."
+msgstr "{provider} reached its spending limit."
+
+msgid "{provider} reached its weekly credit limit."
+msgstr "{provider} reached its weekly credit limit."
+
+msgid "{provider} reached its weekly spending limit."
+msgstr "{provider} reached its weekly spending limit."
+
+msgid "{provider} rejected the API key. Check your connection settings."
+msgstr "{provider} rejected the API key. Check your connection settings."
+
+msgid "{provider} took too long to respond. Try again."
+msgstr "{provider} took too long to respond. Try again."
+
+msgid "{summary} Resets {date}."
+msgstr "{summary} Resets {date}."

@@ -4424,7 +4424,7 @@ msgstr "Запустить в"
 
 #: src/pages/RoutineRunHistory.tsx
 msgid "Run history"
-msgstr "История запуска"
+msgstr "История запусков"
 
 #: src/pages/Shell.tsx
 msgid "Run time must be in the future."
@@ -6103,3 +6103,96 @@ msgstr "Подключить почту"
 #: src/pages/shell/bot-panel.tsx
 msgid "Gmail or Outlook (optional)"
 msgstr "Gmail или Outlook (необязательно)"
+
+msgid "Copy diagnostics"
+msgstr "Копировать диагностику"
+
+msgid "Could not check the connection."
+msgstr "Не удалось проверить подключение."
+
+msgid "Could not load chats"
+msgstr "Не удалось загрузить чаты"
+
+msgid "Details"
+msgstr "Подробности"
+
+msgid "Link code expired. Try again."
+msgstr "Срок действия кода истёк. Попробуйте снова."
+
+msgid "Send <0>{0}</0> to the line from your chat app within 10 minutes. You'll get a confirmation reply once linked."
+msgstr "Отправьте <0>{0}</0> из приложения для чата на линию, которую хотите привязать, в течение 10 минут. После подключения вы получите подтверждение."
+
+msgid "Showing saved chats."
+msgstr "Показаны сохранённые чаты."
+
+msgid "The model provider returned an error."
+msgstr "Поставщик моделей вернул ошибку."
+
+msgid "The server could not complete the request"
+msgstr "Сервер не смог выполнить запрос"
+
+msgid "This Space is unavailable"
+msgstr "Этот Space недоступен"
+
+msgid "Your Anthropic"
+msgstr "Ваш Anthropic"
+
+msgid "Your OpenAI"
+msgstr "Ваш OpenAI"
+
+msgid "Your OpenRouter"
+msgstr "Ваш OpenRouter"
+
+msgid "Your model provider"
+msgstr "Ваш поставщик моделей"
+
+msgid "{provider} could not find the requested model."
+msgstr "{provider} не смог найти запрошенную модель."
+
+msgid "{provider} is rate limiting requests. Try again shortly."
+msgstr "{provider} ограничивает частоту запросов. Повторите попытку чуть позже."
+
+msgid "{provider} key hit its daily limit."
+msgstr "{provider}: достигнут дневной лимит ключа."
+
+msgid "{provider} key hit its limit."
+msgstr "{provider}: достигнут лимит ключа."
+
+msgid "{provider} key hit its monthly limit."
+msgstr "{provider}: достигнут месячный лимит ключа."
+
+msgid "{provider} key hit its weekly limit."
+msgstr "{provider}: достигнут недельный лимит ключа."
+
+msgid "{provider} reached its credit limit."
+msgstr "{provider}: достигнут кредитный лимит."
+
+msgid "{provider} reached its daily credit limit."
+msgstr "{provider}: достигнут дневной кредитный лимит."
+
+msgid "{provider} reached its daily spending limit."
+msgstr "{provider}: достигнут дневной лимит расходов."
+
+msgid "{provider} reached its monthly credit limit."
+msgstr "{provider}: достигнут месячный кредитный лимит."
+
+msgid "{provider} reached its monthly spending limit."
+msgstr "{provider}: достигнут месячный лимит расходов."
+
+msgid "{provider} reached its spending limit."
+msgstr "{provider}: достигнут лимит расходов."
+
+msgid "{provider} reached its weekly credit limit."
+msgstr "{provider}: достигнут недельный кредитный лимит."
+
+msgid "{provider} reached its weekly spending limit."
+msgstr "{provider}: достигнут недельный лимит расходов."
+
+msgid "{provider} rejected the API key. Check your connection settings."
+msgstr "{provider} отклонил API-ключ. Проверьте настройки подключения."
+
+msgid "{provider} took too long to respond. Try again."
+msgstr "{provider} не ответил вовремя. Повторите попытку."
+
+msgid "{summary} Resets {date}."
+msgstr "{summary} Сброс: {date}."

@@ -136,8 +136,8 @@ function SessionApp() {
   if (nextHolding !== holdingUnreachable) setHoldingUnreachable(nextHolding);
 
   useLayoutEffect(() => {
-    synchronizeComposerSession(gate, session.data?.user.id);
-  }, [gate, session.data?.user.id]);
+    synchronizeComposerSession(gate, session.data?.user.id, session.data?.session?.id);
+  }, [gate, session.data?.user.id, session.data?.session?.id]);
 
   useLayoutEffect(() => {
     if (session.isPending) return;

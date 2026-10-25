@@ -259,7 +259,7 @@ async function mockChat(page: Page) {
         botSections: [],
         archivedBots: [],
         archivedGroups: [],
-        thread: snapshot(input.botId ?? current.current.bots[0].id, input.groupId),
+        thread: snapshot(input.botId ?? current.current.bots[0]!.id, input.groupId),
         routines: [],
         spaces: current.spaces,
       };
@@ -550,7 +550,7 @@ test("mention highlight retains the same Bot across equivalent refresh and roste
   await highlighted(page, "Research Two");
   await refresh(page, state);
   await highlighted(page, "Research Two");
-  state.bots = [state.bots[0], state.bots[2], state.bots[1]];
+  state.bots = [state.bots[0]!, state.bots[2]!, state.bots[1]!];
   await refresh(page, state);
   await highlighted(page, "Research Two");
   await composer.press("Enter");
@@ -604,7 +604,7 @@ test("connected account highlight survives refreshed candidates without altering
   await composer.press("ArrowDown");
   await highlighted(page, accountName);
   state.bots = [...state.bots, bot("observer", "Observer")];
-  state.connections = [state.connections[1], state.connections[0]];
+  state.connections = [state.connections[1]!, state.connections[0]!];
   const before = state.connectionRequests;
   await refresh(page, state);
   await expect.poll(() => state.connectionRequests).toBeGreaterThan(before);
@@ -629,15 +629,15 @@ test("connected account highlight survives refreshed candidates without altering
   await captureScreenshot(page, testInfo, "stable-account-and-two-bot-chips");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect.poll(() => state.sends.length).toBe(1);
-  expect(state.sends[0].mentions).toEqual([
+  expect(state.sends[0]!.mentions).toEqual([
     { kind: "bot", id: "research-one" },
     { kind: "bot", id: "research-two" },
     { kind: "connector", id: "mail-secondary" },
   ]);
-  expect(state.sends[0].text).toBe(
+  expect(state.sends[0]!.text).toBe(
     `@Research One @${companionName} A message with two Bots and one account.\nThe second line stays intact.`,
   );
-  expect(state.sends[0].artifactIds).toEqual(["synthetic-attachment"]);
+  expect(state.sends[0]!.artifactIds).toEqual(["synthetic-attachment"]);
   await expect(composer).toHaveValue("");
   await expect(page.getByTestId("mention-chip")).toHaveCount(0);
   await expect(page.getByTestId("composer-error")).toHaveCount(0);
@@ -653,7 +653,9 @@ for (const failure of ["network", 500] as const) {
       failure === 500 ? internalReadFailure(route) : route.abort("failed");
     state.list = (route) => route.abort("failed");
     await page.goto("/app/chief");
-    await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+    await expect(page.getByTestId("load-failure")).toContainText(
+      failure === 500 ? "The server could not complete the request" : "Could not reach the server",
+    );
     await expect(
       page.locator('[data-testid="composer-bar"] [role="combobox"]:enabled'),
     ).toHaveCount(0);
@@ -666,7 +668,7 @@ for (const failure of ["network", 500] as const) {
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(attempts);
     await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
-    await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+    await expect(page.getByTestId("load-failure")).toHaveCount(0);
     const recovered = page.getByRole("combobox", { name: "Message Chief", exact: true });
     await expect(recovered).toBeEnabled();
     await recovered.fill("@Research");
@@ -688,9 +690,9 @@ for (const failure of ["network", 500] as const) {
       mentions: [{ kind: "bot", id: "research-two" }],
       artifactIds: ["synthetic-attachment"],
     });
-    expect(state.sends[0].text).toContain("Recovered in the correct Space.");
+    expect(state.sends[0]!.text).toContain("Recovered in the correct Space.");
     expect(state.sendSpaces).toEqual(["space-primary"]);
-    expect(state.uploads[0].botId).toBe("chief");
+    expect(state.uploads[0]!.botId).toBe("chief");
     await expect(recovered).toHaveValue("");
     await expect(page.getByTestId("attachment-preview")).toHaveCount(0);
     await expect(page.getByTestId("composer-error")).toHaveCount(0);
@@ -709,8 +711,8 @@ test("Chinese initial connection feedback fits the 800px desktop layout", async 
   state.bootstrap = (route) => route.abort("internetdisconnected");
   state.list = (route) => route.abort("internetdisconnected");
   await page.goto("/app/chief");
-  const status = page.getByTestId("bootstrap-status");
-  await expect(status).toContainText("等待连接");
+  const status = page.getByTestId("load-failure");
+  await expect(status).toContainText("无法连接服务器");
   await expect(status.getByRole("button", { name: "重试", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(800);
   await captureScreenshot(page, testInfo, "initial-waiting-zh-CN-light-800");
@@ -734,7 +736,7 @@ test("initialization retries on its timer even while the fallback roster request
   try {
     await page.goto("/app/chief");
     await listStarted.promise;
-    await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+    await expect(page.getByTestId("load-failure")).toContainText("Could not reach the server");
     const initialRequests = state.bootstrapRequests;
     state.bootstrap = null;
     // No focus event or manual Retry: initialization must not depend on a stuck roster read.
@@ -742,7 +744,7 @@ test("initialization retries on its timer even while the fallback roster request
     await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(initialRequests);
     await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
     await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeEnabled();
-    await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+    await expect(page.getByTestId("load-failure")).toHaveCount(0);
     expect(state.sends).toHaveLength(0);
     expect(errors).toEqual([]);
   } finally {
@@ -836,15 +838,17 @@ test("returning from Files preserves scoped text, Bot mentions and attachments t
   state.bootstrap = (route) => route.abort("internetdisconnected");
   await page.goBack();
   await expect.poll(() => state.bootstrapRequests).toBeGreaterThan(attempts);
-  await expect(page.getByTestId("bootstrap-status")).toBeVisible();
+  await expect(page.getByTestId("load-failure")).toBeVisible();
+  await expect(page.getByTestId("load-failure")).toContainText("Could not reach the server");
   expect(state.sends).toHaveLength(0);
   expect(state.uploads).toHaveLength(0);
   state.bootstrap = null;
   await page
-    .getByTestId("bootstrap-status")
+    .getByTestId("load-failure")
     .getByRole("button", { name: "Retry", exact: true })
     .click();
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(page.getByTestId("load-failure")).toHaveCount(0);
   await expect(composer).toHaveValue(text);
   await expect(page.getByTestId("mention-chip")).toHaveText(["Research One"]);
   await expect(page.getByRole("button", { name: "Remove unsent-notes.txt" })).toBeVisible();
@@ -1052,7 +1056,7 @@ test("an explicit initialization permission error waits for user retry without a
       json: { json: { defined: false, code: "FORBIDDEN", status: 403, message: "Access denied" } },
     });
   await page.goto("/app/chief");
-  await expect(page.getByTestId("bootstrap-status")).toContainText("Access denied");
+  await expect(page.getByTestId("load-failure")).toContainText("This Space is unavailable");
   const initialRequests = state.bootstrapRequests;
   await page.clock.fastForward(30_000);
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -1060,10 +1064,11 @@ test("an explicit initialization permission error waits for user retry without a
   expect(state.sends).toHaveLength(0);
   state.bootstrap = null;
   await page
-    .getByTestId("bootstrap-status")
+    .getByTestId("load-failure")
     .getByRole("button", { name: "Retry", exact: true })
     .click();
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(page.getByTestId("load-failure")).toHaveCount(0);
   expect(state.bootstrapRequests).toBe(initialRequests + 1);
   expect(errors).toEqual([]);
 });
@@ -2014,7 +2019,7 @@ test("a failed bootstrap fallback still applies live messages before draft initi
     json(route, { threadId: `thread-${route.request().postDataJSON().json.botId}`, cursor: 149 }),
   );
   await page.goto("/app/chief");
-  await expect(page.getByTestId("bootstrap-status")).toContainText("Bootstrap access interrupted");
+  await expect(page.getByTestId("load-failure")).toContainText("This Space is unavailable");
   await expect.poll(stream.cursors).toContain(149);
   await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeDisabled();
   const event: ProductEvent = {
@@ -2142,15 +2147,15 @@ test("finishing bootstrap resets an older-page load from the uninitialized scope
     });
   };
   await page.goto("/app/chief");
-  await expect(page.getByTestId("bootstrap-status")).toContainText("Bootstrap access interrupted");
+  await expect(page.getByTestId("load-failure")).toContainText("This Space is unavailable");
   await expect.poll(stream.cursors).toContain(19);
   const earlier = page.getByRole("button", { name: "Load earlier messages", exact: true });
   await earlier.click();
   await started.promise;
   state.bootstrap = (route, data) => json(route, { ...data, thread: latest(data.thread!) });
-  await page.getByTestId("bootstrap-status").getByRole("button", { name: "Retry" }).click();
+  await page.getByTestId("load-failure").getByRole("button", { name: "Retry" }).click();
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
-  await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+  await expect(page.getByTestId("load-failure")).toHaveCount(0);
   await expect(earlier).toBeEnabled();
   const response = page.waitForResponse((item) => item.url().endsWith("/rpc/threads/messages"));
   release.resolve();

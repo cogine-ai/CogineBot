@@ -31,17 +31,17 @@ test("bootstrap failure recovers the trusted Space before sending a preserved at
     return unavailable ? route.abort("internetdisconnected") : route.continue();
   });
   await page.reload();
-  await expect(page.getByTestId("bootstrap-status")).toContainText("Waiting for connection");
+  await expect(page.getByTestId("load-failure")).toContainText("Could not reach the server");
   await expect(page.getByTestId("composer-bar").getByRole("combobox")).toBeDisabled();
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "false");
   const failedAttempts = attempts;
   unavailable = false;
   await page
-    .getByTestId("bootstrap-status")
+    .getByTestId("load-failure")
     .getByRole("button", { name: "Retry", exact: true })
     .click();
   await expect.poll(() => attempts).toBeGreaterThan(failedAttempts);
-  await expect(page.getByTestId("bootstrap-status")).toHaveCount(0);
+  await expect(page.getByTestId("load-failure")).toHaveCount(0);
   await expect(composer).toBeEnabled();
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
   await composer.fill("Recovered with the original Space.\nKeep the attachment with this message.");

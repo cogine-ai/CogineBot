@@ -1,0 +1,504 @@
+import type { Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import type { Bot, Me, Routine, RoutineHistory, ThreadSnapshot } from "@rakazo/contracts";
+import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+
+async function account(page: Page, label: string) {
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  const name = `Recovery ${label}`;
+  await signup(page, `${label}-${Date.now()}@example.test`, "password12", name);
+  await completeOnboarding(page);
+  return { botId: activeBotId(page), name };
+}
+async function settings(page: Page, name: string) {
+  await page.getByRole("button", { name: new RegExp(name) }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  return page.getByTestId("user-settings");
+}
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
+test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters after reload", async ({
+  page,
+  context,
+}, info) => {
+  const syntheticGoogleKey = `AIza${"SYNTHETIC_ONLY_".padEnd(34, "A")}-`;
+  const syntheticGroqKey = `gsk_${"SYNTHETICGROQONLY".padEnd(48, "A")}`;
+  const syntheticXaiKey = `xai-${"SYNTHETICXAIONLY".padEnd(48, "A")}`;
+  const syntheticHfKey = `hf_${"SYNTHETICHFONLY".padEnd(48, "A")}`;
+  const syntheticCerebrasKey = `csk-${"SYNTHETICCEREBRASONLY".padEnd(48, "A")}`;
+  const syntheticNvidiaKey = `nvapi-${"SYNTHETICNVIDIAONLY".padEnd(48, "A")}`;
+  const syntheticFireworksKey = `fw_${"SYNTHETICFIREWORKSONLY".padEnd(48, "A")}`;
+  const { botId } = await account(page, "snapshot-diagnostics");
+  const actor = await rpc<Me>(page, "me", {});
+  const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(process.env.AGENT_RUNTIME).toBe("scripted");
+  expect(process.env.DATABASE_URL).toBeTruthy();
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(
+    new URL(process.env.DATABASE_URL!).hostname,
+  );
+  const { createDb } = await import("../../../packages/db/src/client");
+  const db = createDb(process.env.DATABASE_URL!, {
+    poolMax: 2,
+    applicationName: "failure-history-browser-fixture",
+  });
+  try {
+    // Seed only an unseen historical failure in the isolated database. Reload and copy use the real API/UI.
+    const task = await db.prisma.task.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId,
+        threadId: thread.threadId,
+        prompt: "Synthetic historical failure",
+        status: "failed",
+      },
+    });
+    await db.prisma.run.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId,
+        threadId: thread.threadId,
+        taskId: task.id,
+        status: "failed",
+        trigger: "user",
+        startedAt: new Date(),
+        completedAt: new Date(),
+        error: `503: provider failed\n${"synthetic context ".repeat(30)}\nSAFE_DIAGNOSTIC_AFTER_300\nProvider echoed ${syntheticGoogleKey} in prose.\nProvider echoed ${syntheticGroqKey} in prose.\nProvider echoed ${syntheticXaiKey} in prose.\nProvider echoed ${syntheticHfKey} in prose.\nProvider echoed ${syntheticCerebrasKey} in prose.\nProvider echoed ${syntheticNvidiaKey} in prose.\nProvider echoed ${syntheticFireworksKey} in prose.\nSecret Access Key: SYNTHETIC_AWS_SECRET_ACCESS_VALUE\nAWS_ACCESS_KEY_ID=SYNTHETIC_ACCESS_IDENTIFIER_VALUE\nAccess Key ID: SYNTHETIC_SPACED_IDENTIFIER_VALUE\nAPI key is: SYNTHETIC_PROSE_SECRET_VALUE\nSecret Access Key -> SYNTHETIC_ARROW_SECRET_VALUE\nAuthorization: Basic c3ludGhldGljLW9ubHk=\nCookie: session=synthetic-cookie-only\nprivate_key=-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\nAuthorization: Digest username="synthetic-user", response="synthetic-digest-secret"\nclient_secret: 'SYNTHETIC_YAML_FIRST''SYNTHETIC_YAML_SECOND'\n${"多🙂".repeat(3000)}`,
+      },
+    });
+  } finally {
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
+  const fresh = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(fresh.run?.error).toContain("SAFE_DIAGNOSTIC_AFTER_300");
+  expect(fresh.run?.error).not.toContain(syntheticGoogleKey);
+  expect(fresh.run?.error).not.toContain(syntheticGroqKey);
+  expect(fresh.run?.error).not.toContain(syntheticXaiKey);
+  expect(fresh.run?.error).not.toContain(syntheticHfKey);
+  expect(fresh.run?.error).not.toContain(syntheticCerebrasKey);
+  expect(fresh.run?.error).not.toContain(syntheticNvidiaKey);
+  expect(fresh.run?.error).not.toContain(syntheticFireworksKey);
+  expect(fresh.run?.error).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
+  expect(Buffer.byteLength(fresh.run!.error!, "utf8")).toBeLessThanOrEqual(8192);
+  expect(fresh.run?.error).not.toMatch(
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE|SYNTHETIC_ACCESS_IDENTIFIER_VALUE|SYNTHETIC_SPACED_IDENTIFIER_VALUE/,
+  );
+  await page.reload();
+  const failure = page.getByTestId("composer-error");
+  await expect(failure).toBeVisible();
+  await failure.locator("summary").click();
+  await expect(failure.locator("pre")).toContainText("SAFE_DIAGNOSTIC_AFTER_300");
+  await expect(failure.locator("pre")).toContainText("Diagnostics truncated at 8 KiB");
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await failure.getByRole("button", { name: "Copy diagnostics" }).click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain("SAFE_DIAGNOSTIC_AFTER_300");
+  expect(copied).not.toContain(syntheticGoogleKey);
+  expect(copied).not.toContain(syntheticGroqKey);
+  expect(copied).not.toContain(syntheticXaiKey);
+  expect(copied).not.toContain(syntheticHfKey);
+  expect(copied).not.toContain(syntheticCerebrasKey);
+  expect(copied).not.toContain(syntheticNvidiaKey);
+  expect(copied).not.toContain(syntheticFireworksKey);
+  expect(copied).not.toContain("SYNTHETIC_AWS_SECRET_ACCESS_VALUE");
+  expect(copied).not.toMatch(
+    /c3ludGhldGljLW9ubHk=|synthetic-cookie-only|SYNTHETIC_PRIVATE_PEM_BODY|synthetic-digest-secret|SYNTHETIC_YAML_FIRST|SYNTHETIC_YAML_SECOND|SYNTHETIC_PROSE_SECRET_VALUE|SYNTHETIC_ARROW_SECRET_VALUE|SYNTHETIC_ACCESS_IDENTIFIER_VALUE|SYNTHETIC_SPACED_IDENTIFIER_VALUE/,
+  );
+  expect(Buffer.byteLength(copied, "utf8")).toBeLessThanOrEqual(8192);
+  await captureScreenshot(page, info, "b5-safe-snapshot-diagnostics");
+  await page.reload();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  await expect(failure).toBeHidden();
+});
+
+test("failed and silent Routine rows expose cleaned diagnostics without an empty chat link", async ({
+  page,
+  context,
+}, info) => {
+  const { botId } = await account(page, "diagnostics");
+  const routine = await rpc<Routine>(page, "routines/create", {
+    botId,
+    name: "Recovery history",
+    prompt: "Check for changes",
+    crons: ["0 9 * * *"],
+    timezone: "UTC",
+    active: false,
+    notify: false,
+  });
+  const rows: RoutineHistory = {
+    nextCursor: null,
+    runs: [
+      {
+        id: "failed-example",
+        botId,
+        groupId: null,
+        status: "failed",
+        messageId: null,
+        error:
+          '401: {"error":{"message":"invalid api key","metadata":{"token":"fake-private-token"}}}',
+        createdAt: "2026-01-02T12:00:00Z",
+        startedAt: "2026-01-02T12:00:00Z",
+        completedAt: "2026-01-02T12:00:03Z",
+      },
+      {
+        id: "silent-example",
+        botId,
+        groupId: null,
+        status: "completed",
+        messageId: null,
+        error: null,
+        createdAt: "2026-01-01T12:00:00Z",
+        startedAt: "2026-01-01T12:00:00Z",
+        completedAt: "2026-01-01T12:00:03Z",
+      },
+    ],
+  };
+  await page.route("**/rpc/routines/history", (route) => route.fulfill({ json: { json: rows } }));
+  await page.reload();
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: new RegExp(routine.name) }).click();
+  const history = page.getByTestId("routine-run-history");
+  await expect(
+    history.getByText("Your model provider rejected the API key. Check your connection settings."),
+  ).toBeVisible();
+  await history.getByRole("button", { name: "Run history", exact: true }).click();
+  await expect(history.getByTestId("routine-run-row")).toHaveCount(2);
+  await expect(history.getByRole("link", { name: "View chat" })).toHaveCount(0);
+  await history.locator("summary").click();
+  await expect(history.locator("pre")).toContainText("[Redacted]");
+  await expect(history).not.toContainText("fake-private-token");
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await history.getByRole("button", { name: "Copy diagnostics" }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).not.toContain(
+    "fake-private-token",
+  );
+  await captureScreenshot(page, info, "b5-safe-run-diagnostics");
+});
+
+test("a recovery reload restores only the verified read-only settings location", async ({
+  page,
+}, info) => {
+  const { name } = await account(page, "preload");
+  const overlay = await settings(page, name);
+  await overlay.getByRole("button", { name: "Models", exact: true }).click();
+  await expect(overlay).toHaveAttribute("data-settings-section", "models");
+  const loaded = page.waitForEvent("domcontentloaded");
+  await page.evaluate(() => {
+    window.setTimeout(
+      () => window.dispatchEvent(new Event("vite:preloadError", { cancelable: true })),
+      0,
+    );
+  });
+  await loaded;
+  await expect(page.getByTestId("user-settings")).toBeVisible();
+  await expect(page.getByTestId("user-settings")).toHaveAttribute(
+    "data-settings-section",
+    "models",
+  );
+  expect(await page.evaluate(() => sessionStorage.getItem("rk:preload-recovery-state"))).toBeNull();
+  await captureScreenshot(page, info, "b5-safe-panel-recovery");
+});
+
+test("sensitive, executable and cross-account panel snapshots are consumed without replay", async ({
+  page,
+}) => {
+  await account(page, "snapshot-rejection");
+  const me = await rpc<Me>(page, "me", {});
+  for (const change of [
+    { accountId: "different-owner" },
+    { version: 2 },
+    { overlayKind: "create" },
+    { apiKey: "fake-never-store-key" },
+  ]) {
+    await page.evaluate(
+      ({ me, change }) => {
+        sessionStorage.setItem("rk:preload-recovery", "1");
+        sessionStorage.setItem(
+          "rk:preload-recovery-state",
+          JSON.stringify({
+            version: 1,
+            apiOrigin: location.origin,
+            accountId: me.userId,
+            spaceId: me.spaceId,
+            overlayKind: "settings",
+            targetId: `space:${me.spaceId}`,
+            section: "models",
+            ...change,
+          }),
+        );
+      },
+      { me, change },
+    );
+    await page.reload();
+    await expect(page.getByTestId("composer-bar")).toBeVisible();
+    await expect(page.getByTestId("user-settings")).toHaveCount(0);
+    expect(
+      await page.evaluate(() => sessionStorage.getItem("rk:preload-recovery-state")),
+    ).toBeNull();
+  }
+});
+
+test("a server failure offers an explicit read retry and recovers the first screen", async ({
+  page,
+}, info) => {
+  await account(page, "first-screen");
+  let fail = true;
+  await page.route("**/rpc/bootstrap", async (route) => {
+    if (fail)
+      await route.fulfill({
+        status: 503,
+        json: { json: { code: "SERVICE_UNAVAILABLE", status: 503, message: "synthetic outage" } },
+      });
+    else await route.continue();
+  });
+  await page.reload();
+  const notice = page.getByTestId("load-failure");
+  await expect(notice).toContainText("The server could not complete the request");
+  await captureScreenshot(page, info, "b5-first-screen-retry");
+  fail = false;
+  await notice.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByTestId("composer-bar")).toBeVisible();
+});
+
+test("a scoped 403 recovers through the default Space without changing chat content", async ({
+  page,
+}) => {
+  await account(page, "space-recovery");
+  await page.route("**/rpc/bootstrap", async (route) => {
+    if (route.request().headers()["x-rakazo-space-id"] === "unavailable-space")
+      await route.fulfill({
+        status: 403,
+        json: { json: { code: "FORBIDDEN", status: 403, message: "Space denied" } },
+      });
+    else await route.continue();
+  });
+  await page.evaluate(() => localStorage.setItem("rakazo:space-id", "unavailable-space"));
+  await page.reload();
+  const notice = page.getByTestId("load-failure");
+  await expect(notice).toContainText("This Space is unavailable");
+  await notice.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByTestId("composer-bar")).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBeNull();
+});
+
+for (const copy of [
+  {
+    id: "de",
+    locale: "Deutsch",
+    manage: "Manage messaging settings",
+    bot: "Bot to link",
+    link: "Link a chat app",
+    instruction:
+      "Sende ABCD-2345 innerhalb von 10 Minuten aus deiner Chat-App an die zu verknüpfende Nummer. Nach der Verknüpfung erhältst du eine Bestätigung.",
+  },
+  {
+    id: "ru",
+    locale: "Русский",
+    manage: "Управление настройками обмена сообщениями",
+    bot: "Бот для ссылки",
+    link: "Связать приложение чата",
+    instruction:
+      "Отправьте ABCD-2345 из приложения для чата на линию, которую хотите привязать, в течение 10 минут. После подключения вы получите подтверждение.",
+  },
+]) {
+  test(`${copy.locale} linking instructions use the compiled member-expression placeholder`, async ({
+    page,
+  }, info) => {
+    await page.route("**/rpc/messaging/status", (route) =>
+      route.fulfill({
+        json: {
+          json: {
+            enabled: true,
+            providers: ["telegram"],
+            openSignup: false,
+            identities: [],
+          },
+        },
+      }),
+    );
+    await page.route("**/rpc/messaging/channels/list", (route) =>
+      route.fulfill({ json: { json: [] } }),
+    );
+    await page.route("**/rpc/messaging/connections/list", (route) =>
+      route.fulfill({ json: { json: [] } }),
+    );
+    await page.route("**/rpc/messaging/link/start", (route) =>
+      route.fulfill({
+        json: {
+          json: {
+            code: "ABCD-2345",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        },
+      }),
+    );
+    const { name, botId } = await account(page, `link-${copy.id}`);
+    const overlay = await settings(page, name);
+    await overlay.getByTestId("ui-locale-select").click();
+    await overlay.getByRole("option", { name: copy.locale, exact: true }).click();
+    await overlay.getByRole("button", { name: copy.manage, exact: true }).click();
+    const messaging = page.getByTestId("messaging-settings");
+    await messaging.getByLabel(copy.bot).selectOption(botId);
+    await messaging.getByRole("button", { name: copy.link, exact: true }).click();
+    const instruction = messaging.getByTestId("messaging-link-code");
+    await expect(instruction).toHaveText(copy.instruction);
+    await expect(instruction).not.toContainText("{0}");
+    await expect(instruction).not.toContainText("{linkCode}");
+    await captureScreenshot(page, info, `b5-link-instruction-${copy.id}`);
+  });
+}
+
+test("an identity reassigned to the selected bot completes its original link code", async ({
+  page,
+}, info) => {
+  let linked = false;
+  let codes = 0;
+  await page.route("**/rpc/messaging/status", (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          enabled: true,
+          providers: ["telegram"],
+          openSignup: false,
+          identities: linked
+            ? [
+                {
+                  id: "identity-existing",
+                  provider: "telegram",
+                  address: "example",
+                  botId: activeBotId(page),
+                  botName: "Chief",
+                },
+              ]
+            : [
+                {
+                  id: "identity-existing",
+                  provider: "telegram",
+                  address: "example",
+                  botId: "previous-bot",
+                  botName: "Previous",
+                },
+              ],
+        },
+      },
+    }),
+  );
+  await page.route("**/rpc/messaging/channels/list", (route) =>
+    route.fulfill({ json: { json: [] } }),
+  );
+  await page.route("**/rpc/messaging/connections/list", (route) =>
+    route.fulfill({ json: { json: [] } }),
+  );
+  await page.route("**/rpc/messaging/link/start", (route) => {
+    codes += 1;
+    return route.fulfill({
+      json: { json: { code: "ABCD-2345", expiresAt: new Date(Date.now() + 60_000).toISOString() } },
+    });
+  });
+  const { name, botId } = await account(page, "link-recovery");
+  const overlay = await settings(page, name);
+  await overlay.getByRole("button", { name: "Manage messaging settings" }).click();
+  const messaging = page.getByTestId("messaging-settings");
+  await messaging.getByLabel("Bot to link").selectOption(botId);
+  await messaging.getByRole("button", { name: "Link a chat app" }).click();
+  await expect(messaging.getByTestId("messaging-link-code")).toContainText("ABCD-2345");
+  linked = true;
+  await expect(messaging.getByTestId("messaging-link-code")).toHaveCount(0, { timeout: 10_000 });
+  await expect(messaging).toContainText("→ Chief");
+  expect(codes).toBe(1);
+  await captureScreenshot(page, info, "b5-linked-identity-refreshed");
+});
+
+test("changing the link Bot preserves a completed messaging mutation refresh", async ({
+  page,
+}, info) => {
+  const { botId, name } = await account(page, "messaging-mutation");
+  const bots = await rpc<Bot[]>(page, "bots/list", {});
+  const original = bots.find((bot) => bot.id === botId);
+  expect(original).toBeDefined();
+  const second = await rpc<Bot>(page, "bots/create", {
+    name: "Other recovery Bot",
+    color: original!.color,
+    title: "",
+    description: "",
+    notifyOnFinish: false,
+  });
+  let linked = true;
+  let unlinks = 0;
+  let linkStarts = 0;
+  let mutationStarted!: () => void;
+  let finishMutation!: () => void;
+  const started = new Promise<void>((resolve) => {
+    mutationStarted = resolve;
+  });
+  const completed = new Promise<void>((resolve) => {
+    finishMutation = resolve;
+  });
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/messaging/link/start")) linkStarts += 1;
+  });
+  await page.route("**/rpc/messaging/status", (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          enabled: true,
+          providers: ["telegram"],
+          openSignup: false,
+          identities: linked
+            ? [
+                {
+                  id: "synthetic-identity",
+                  botId,
+                  botName: original!.name,
+                  provider: "telegram",
+                  address: "synthetic-line",
+                },
+              ]
+            : [],
+        },
+      },
+    }),
+  );
+  await page.route("**/rpc/messaging/channels/list", (route) =>
+    route.fulfill({ json: { json: [] } }),
+  );
+  await page.route("**/rpc/messaging/connections/list", (route) =>
+    route.fulfill({ json: { json: [] } }),
+  );
+  await page.route("**/rpc/messaging/identities/unlink", async (route) => {
+    unlinks += 1;
+    mutationStarted();
+    await completed;
+    linked = false;
+    await route.fulfill({ json: { json: { ok: true } } });
+  });
+  try {
+    await page.reload();
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    const overlay = await settings(page, name);
+    await overlay.getByRole("button", { name: "Manage messaging settings", exact: true }).click();
+    const messaging = page.getByTestId("messaging-settings");
+    await expect(messaging.getByText("Telegram · synthetic-line")).toBeVisible();
+    await messaging.getByLabel("Bot to link").selectOption(botId);
+    await messaging.getByRole("button", { name: "Unlink", exact: true }).click();
+    await started;
+    await messaging.getByLabel("Bot to link").selectOption(second.id);
+    await expect(messaging.getByRole("button", { name: "Link a chat app" })).toBeDisabled();
+    finishMutation();
+    await expect(messaging.getByText("No chat apps linked yet.")).toBeVisible();
+    await expect(messaging.getByLabel("Bot to link")).toHaveValue(second.id);
+    await expect(messaging.getByRole("button", { name: "Link a chat app" })).toBeEnabled();
+    expect(unlinks).toBe(1);
+    expect(linkStarts).toBe(0);
+    await captureScreenshot(page, info, "b5-link-bot-mutation-refresh");
+  } finally {
+    finishMutation();
+  }
+});

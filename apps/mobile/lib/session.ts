@@ -4,6 +4,14 @@ import { invalidateArtifactCacheSession } from "./artifact-cache-session";
 import { clearAvatarStyle, saveAvatarStyle } from "./avatar-style";
 import { stopLiveNotifications } from "./live-notifications";
 import { clearNetworkCache } from "./network-cache";
+import type { RejectedDraftCapture } from "./rejected-session-draft";
+import {
+  authenticateRejectedSessionDraft,
+  captureRejectedSessionDraft,
+  discardRejectedSessionDraft,
+  rejectedSessionDraftInvalidation,
+  retainRejectedSessionDraft,
+} from "./rejected-session-draft";
 import { clearFailedSends } from "./thread-feedback";
 
 const SESSION_KEY = "rakazo.session_token";
@@ -157,6 +165,7 @@ export async function loadSessionToken() {
 
 export async function saveSessionToken(token: string) {
   const generation = ++sessionGeneration;
+  authenticateRejectedSessionDraft(generation);
   publishSessionGeneration(false);
   sessionInvalidated = true;
   sessionFallback = undefined;
@@ -171,6 +180,7 @@ export async function saveSessionToken(token: string) {
 
 /** Clears the session. Returns false only when SecureStore could neither delete nor overwrite. */
 export async function clearSessionToken(): Promise<boolean> {
+  discardRejectedSessionDraft();
   const generation = ++sessionGeneration;
   publishSessionGeneration(false);
   sessionInvalidated = true;
@@ -184,6 +194,22 @@ export async function clearSessionToken(): Promise<boolean> {
   await clearAvatarStyle();
   if (generation === sessionGeneration) publishSessionGeneration();
   return tokenCleared;
+}
+
+/** Preserve only the active unsent editor after the rejected session is logically invalidated. */
+export async function clearRejectedSessionToken(
+  prepared?: RejectedDraftCapture | null,
+): Promise<boolean> {
+  const generation = sessionGeneration;
+  if (prepared && prepared.sessionGeneration !== generation) return false;
+  const draft = prepared === undefined ? captureRejectedSessionDraft(generation) : prepared;
+  const clearing = clearSessionToken();
+  const invalidation = rejectedSessionDraftInvalidation();
+  const cleared = await clearing;
+  if (sessionGeneration === generation + 1 && rejectedSessionDraftInvalidation() === invalidation) {
+    retainRejectedSessionDraft(draft, sessionGeneration);
+  }
+  return cleared;
 }
 
 /** Saves a style response only when it still belongs to the current session. */
@@ -216,6 +242,7 @@ async function clearStoredSessionToken(generation: number): Promise<boolean> {
 
 /** Restores the current-server session in memory even when persistence is unavailable. */
 export async function restoreSessionToken(token: string) {
+  discardRejectedSessionDraft();
   const generation = ++sessionGeneration;
   publishSessionGeneration(false);
   const clearingScope = invalidateSessionCaches();

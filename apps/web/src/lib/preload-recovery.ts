@@ -19,14 +19,37 @@ type PreloadRecoveryWindow = Pick<
  * failure is left to the app's error boundaries, which offer a retry.
  */
 export function installPreloadRecovery(target: PreloadRecoveryWindow = window): () => void {
-  const clearRecovery = target.setTimeout(
-    () => target.sessionStorage.removeItem(PRELOAD_RECOVERY_KEY),
-    PRELOAD_RECOVERY_COOLDOWN_MS,
-  );
+  let storage: Storage;
+  try {
+    storage = target.sessionStorage;
+    preparePreloadRecoverySnapshot(storage);
+  } catch {
+    // Restricted storage must not crash the app or create a reload loop.
+    return () => {};
+  }
+  const clearRecovery = target.setTimeout(() => {
+    try {
+      storage.removeItem(PRELOAD_RECOVERY_KEY);
+    } catch {
+      /* Storage can become unavailable. */
+    }
+  }, PRELOAD_RECOVERY_COOLDOWN_MS);
   const onPreloadError = (event: Event) => {
-    if (!target.navigator.onLine || target.sessionStorage.getItem(PRELOAD_RECOVERY_KEY)) return;
+    if (!target.navigator.onLine) return;
+    try {
+      if (storage.getItem(PRELOAD_RECOVERY_KEY)) return;
+      storage.setItem(PRELOAD_RECOVERY_KEY, "1");
+    } catch {
+      return;
+    }
     event.preventDefault();
-    target.sessionStorage.setItem(PRELOAD_RECOVERY_KEY, "1");
+    try {
+      const snapshot = currentPreloadRecoverySnapshot();
+      if (snapshot) storage.setItem(PRELOAD_RECOVERY_STATE_KEY, JSON.stringify(snapshot));
+      else storage.removeItem(PRELOAD_RECOVERY_STATE_KEY);
+    } catch {
+      // A failed panel snapshot does not prevent the one permitted recovery reload.
+    }
     target.location.reload();
   };
 
@@ -36,3 +59,9 @@ export function installPreloadRecovery(target: PreloadRecoveryWindow = window): 
     target.removeEventListener("vite:preloadError", onPreloadError);
   };
 }
+
+import {
+  currentPreloadRecoverySnapshot,
+  PRELOAD_RECOVERY_STATE_KEY,
+  preparePreloadRecoverySnapshot,
+} from "./preload-recovery-state";

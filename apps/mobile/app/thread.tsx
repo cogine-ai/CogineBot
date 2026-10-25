@@ -105,6 +105,7 @@ import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
 import { ReplyDismissButton } from "../components/reply-dismiss-button";
 import { ReplyLine } from "../components/reply-line";
+import { RunErrorNotice } from "../components/run-error-notice";
 import { SelectTextSheet } from "../components/select-text-sheet";
 import { trailingHeaderOptions } from "../components/sheet-header";
 import type { ThreadComposerHandle } from "../components/thread-composer";
@@ -188,6 +189,13 @@ import {
 import type { PickedAttachment } from "../lib/pick-attachments";
 import { pickDocuments, pickFromLibrary, takePhoto } from "../lib/pick-attachments";
 import { threadRefreshDelayMs } from "../lib/refresh";
+import type { RejectedDraftCapture, RejectedDraftScope } from "../lib/rejected-session-draft";
+import {
+  registerRejectedSessionDraftCapture,
+  rejectedSessionDraftRevision,
+  restoreRejectedSessionDraft,
+  subscribeRejectedSessionDraft,
+} from "../lib/rejected-session-draft";
 import {
   getCachedResponseStreamingEnabled,
   subscribeResponseStreaming,
@@ -297,6 +305,7 @@ export default function ThreadRoute() {
   const ready = useSyncExternalStore(subscribeSessionGeneration, currentReadySessionGeneration);
   const [owner, setOwner] = useState<{
     key: string;
+    userId: string;
     generation: number;
     apiBase: string;
     apiGeneration: number;
@@ -321,6 +330,7 @@ export default function ThreadRoute() {
           )
             setOwner({
               key: JSON.stringify([apiBase, scope.userId]),
+              userId: scope.userId,
               generation,
               apiBase,
               apiGeneration,
@@ -493,7 +503,12 @@ export default function ThreadRoute() {
         {owner?.generation !== generation ? <ActivityIndicator color={tokens.foreground} /> : null}
         <View style={{ flex: 1, display: owner?.generation === generation ? "flex" : "none" }}>
           {owner ? (
-            <Thread key={owner.key} sessionEpoch={ready} profileScope={profileScope} />
+            <Thread
+              key={owner.key}
+              ownerUserId={owner.userId}
+              sessionEpoch={ready}
+              profileScope={profileScope}
+            />
           ) : null}
         </View>
       </>
@@ -629,9 +644,11 @@ function useThreadProfileNavigation({
 }
 
 function Thread({
+  ownerUserId,
   sessionEpoch,
   profileScope,
 }: {
+  ownerUserId: string;
   sessionEpoch: number;
   profileScope: MobileScope | null;
 }) {
@@ -2145,6 +2162,112 @@ function Thread({
 
   const answerableAskMessageId = latestAnswerableAskMessageId(snap);
   const runError = snap?.run?.status === "failed" ? (snap.run.error ?? null) : null;
+  useSyncExternalStore(
+    subscribeRejectedSessionDraft,
+    rejectedSessionDraftRevision,
+    rejectedSessionDraftRevision,
+  );
+  const rejectedDraftCapture = useRef<(() => RejectedDraftCapture | null) | null>(null);
+
+  function verifiedDraftScope(): RejectedDraftScope | null {
+    const origin = snapshotOrigin.current;
+    const snapshot = snapRef.current;
+    if (
+      !profileScope ||
+      !isMobileScopeCurrent(profileScope) ||
+      !navigation.isFocused() ||
+      readOnly ||
+      showingSaved ||
+      restoring ||
+      !origin ||
+      !snapshot ||
+      origin.apiBase !== profileScope.apiBase ||
+      origin.userId !== ownerUserId ||
+      origin.sessionGeneration !== profileScope.sessionGeneration ||
+      origin.selectionId !== profileScope.spaceId ||
+      !isIntegrationsScopeCurrent(origin) ||
+      (groupId
+        ? snapshot.groupId !== groupId
+        : !botId || snapshot.groupId || snapshot.botId !== botId)
+    )
+      return null;
+    return {
+      apiBase: origin.apiBase,
+      userId: ownerUserId,
+      spaceId: origin.spaceId,
+      targetKind: groupId ? "group" : "bot",
+      targetId: groupId ?? botId!,
+      threadId: snapshot.threadId,
+    };
+  }
+
+  useLayoutEffect(() => {
+    rejectedDraftCapture.current = () => {
+      const scope = verifiedDraftScope();
+      const text = composerRef.current?.editableText();
+      if (
+        !scope ||
+        text === null ||
+        text === undefined ||
+        sending ||
+        preparingSend.current ||
+        onCall
+      )
+        return null;
+      // Reply and chip names are editable prose after reauthentication, not restored authority.
+      const quote = replyQuote ?? (replyTarget ? previewMessageText(replyTarget) : null);
+      return {
+        scope,
+        sessionGeneration: currentSessionGeneration(),
+        content: {
+          text:
+            quote === null
+              ? text
+              : `${quote
+                  .split("\n")
+                  .map((line) => `> ${line}`)
+                  .join("\n")}\n\n${text}`,
+          // These are local pre-upload bytes. Do not retain upload receipts, IDs or preview URIs.
+          attachments: activePendingAttachments.map(({ name, mimeType, contentBase64 }) => ({
+            name,
+            mimeType,
+            contentBase64,
+          })),
+        },
+      };
+    };
+    return () => {
+      rejectedDraftCapture.current = null;
+    };
+  });
+
+  useFocusEffect(
+    useCallback(
+      () => registerRejectedSessionDraftCapture(() => rejectedDraftCapture.current?.() ?? null),
+      [],
+    ),
+  );
+
+  useLayoutEffect(() => {
+    const scope = verifiedDraftScope();
+    if (!scope) return;
+    restoreRejectedSessionDraft(scope, currentSessionGeneration(), (content) => {
+      const composer = composerRef.current;
+      if (
+        preparingSend.current ||
+        !composer?.restoreEditableTextIfEmpty(content.text, () => verifiedDraftScope() !== null)
+      )
+        return false;
+      setPendingAttachments(
+        content.attachments.map((attachment) => ({
+          ...attachment,
+          id: newClientNonce(),
+          threadKey: threadKey!,
+        })),
+      );
+      return true;
+    });
+  });
   const separatorIds = useMemo(() => timeSeparatorIds(visibleMessages), [visibleMessages]);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2514,9 +2637,18 @@ function Thread({
         </Text>
       ) : null}
       {runError ? (
-        <Text style={{ color: tokens.destructive, marginTop: error ? 12 : headerHeight + 28 }}>
-          {runError}
-        </Text>
+        <RunErrorNotice
+          key={JSON.stringify([
+            ownerUserId,
+            sessionEpoch,
+            profileScope?.apiBase,
+            profileScope?.spaceId,
+            snap?.threadId,
+            snap?.run?.id,
+          ])}
+          error={runError}
+          style={{ marginTop: error ? 12 : headerHeight + 28 }}
+        />
       ) : null}
       {/* The floor keeps a tall suggestion list from sliding under the transparent header. */}
       <View style={{ flex: 1, minHeight: headerHeight, position: "relative" }}>

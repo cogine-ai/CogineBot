@@ -1,4 +1,5 @@
 import { clearComposerDrafts } from "./composer-draft";
+import { observeRejectedComposerSession } from "./composer-rejected-draft";
 import { composerSendAttempts } from "./composer-send-attempt";
 import type { SessionGate } from "./session-gate";
 
@@ -17,7 +18,16 @@ export function createComposerSessionGuard(clear: () => void) {
 }
 
 // Module lifetime survives leaving Shell for the file library or a sign-in route.
-export const synchronizeComposerSession = createComposerSessionGuard(() => {
+const synchronize = createComposerSessionGuard(() => {
   clearComposerDrafts();
   composerSendAttempts.clear();
 });
+
+export function synchronizeComposerSession(
+  gate: SessionGate,
+  userId: string | undefined,
+  sessionId?: string,
+): void {
+  observeRejectedComposerSession(gate, userId, sessionId, window.location.origin);
+  synchronize(gate, userId);
+}
