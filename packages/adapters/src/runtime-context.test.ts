@@ -6,6 +6,8 @@ import {
   boundToolResultText,
   ContextBudgetError,
   ContextCacheTracker,
+  markToolResultContent,
+  toolResultContentProvenance,
 } from "./context-selection.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 
@@ -335,7 +337,10 @@ describe("runtime context policy", () => {
           role: "toolResult",
           toolCallId: id,
           toolName: "connector",
-          content: [{ type: "text", text }],
+          content: markToolResultContent([{ type: "text", text }], {
+            historyReference: id === "old" ? reference : undefined,
+            wrapped: id === "old",
+          }),
           isError: false,
           timestamp: 2,
         }) as Message;
@@ -354,6 +359,10 @@ describe("runtime context policy", () => {
       ) as Extract<Message, { role: "toolResult" }>;
       const text = prior.content.map((part) => (part.type === "text" ? part.text : "")).join("");
       expect(JSON.parse(text)).toMatchObject({ historyReference: reference });
+      expect(toolResultContentProvenance(prior.content)).toEqual({
+        historyReference: reference,
+        wrapped: true,
+      });
       if (strategy === "current") expect(JSON.parse(text).result).toMatchObject(original);
       else
         expect(JSON.parse(text)).toMatchObject({ error: "budget_error", contextTruncated: true });

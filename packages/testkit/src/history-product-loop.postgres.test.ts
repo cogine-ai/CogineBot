@@ -5,6 +5,7 @@ import { PiAgentRuntime } from "@rakazo/adapters";
 import { describe, expect, it } from "vitest";
 import { HISTORY_EVAL_CASES } from "./evals/cases.js";
 import { runTrial } from "./evals/runner.js";
+import { diagnosticResultData } from "./evals/wire-observer.js";
 import type { ModelEmulatorRequest } from "./model-emulator.js";
 import { startModelEmulator } from "./model-emulator.js";
 
@@ -32,7 +33,7 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
       const tools = request.messages.filter((row) => row.role === "tool");
       const parsed = tools.map(
         (row) =>
-          JSON.parse(String(row.content)) as {
+          diagnosticResultData(JSON.parse(String(row.content))) as {
             segment: number;
             nextCursor: string | null;
             diagnostic: string;
@@ -54,7 +55,8 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
       }
       const message = tools.at(-1);
       const content = String(message?.content);
-      const result = JSON.parse(content) as {
+      const envelope = JSON.parse(content) as { contextTruncated?: boolean };
+      const result = diagnosticResultData(envelope) as {
         segment: number;
         nextCursor: string | null;
         diagnostic: string;
@@ -64,12 +66,12 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
         segment: result.segment,
         bytes: Buffer.byteLength(content),
         keys: Object.keys(result),
-        omitted: Boolean(result.contextTruncated),
+        omitted: Boolean(envelope.contextTruncated),
         outgoingBytes: Buffer.byteLength(JSON.stringify(request)),
         toolResults: request.messages.filter((row) => row.role === "tool").length,
       });
       expect(Buffer.byteLength(content)).toBeLessThanOrEqual(12_000);
-      if (result.segment < 12) expect(result.contextTruncated).toBe(true);
+      if (result.segment < 12) expect(envelope.contextTruncated).toBe(true);
       expect(result.segment).toBe(observations.length);
       expect(result).toHaveProperty("nextCursor");
       expect(typeof result.diagnostic).toBe("string");

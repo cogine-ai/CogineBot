@@ -393,39 +393,89 @@ export function shortenToolResultText(
 // Context selection can shorten evidence above this minimum, including initially small results.
 export const TOOL_RESULT_HISTORY_MIN_LENGTH = 256;
 
-// Bounded metadata only, matching exact server-generated views. Provider JSON cannot
-// manufacture a durable reference by returning a field with the same name.
-const toolResultReferences = new Map<string, ToolResultHistoryReference | null>();
-const resultTextHash = (text: string) => createHash("sha256").update(text).digest("hex");
-function rememberedToolResultReference(source: string): ToolResultHistoryReference | undefined {
-  return toolResultReferences.get(resultTextHash(source)) ?? undefined;
+export interface ToolResultProvenance {
+  historyReference?: ToolResultHistoryReference;
+  /** This array holds an adapter-owned envelope or a built-in history response. */
+  wrapped: boolean;
+}
+
+// Ownership follows actual content arrays, never matching text or provider-supplied fields.
+// Values contain no tool bodies, and live views cannot be evicted by unrelated executions.
+const toolResultProvenance = new WeakMap<readonly unknown[], ToolResultProvenance>();
+
+export function validatedToolResultHistoryReference(
+  reference: ToolResultHistoryReference | undefined,
+): ToolResultHistoryReference | undefined {
+  try {
+    return reference &&
+      reference.tool === "read_history" &&
+      typeof reference.arguments?.toolResultId === "string" &&
+      reference.arguments.toolResultId.length > 0 &&
+      reference.arguments.toolResultId.length <= 200 &&
+      JSON.stringify(reference).length <= 512
+      ? reference
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function markToolResultContent<T>(content: T[], metadata: ToolResultProvenance): T[] {
+  toolResultProvenance.set(content, {
+    historyReference: validatedToolResultHistoryReference(metadata.historyReference),
+    wrapped: metadata.wrapped,
+  });
+  return content;
+}
+
+export function toolResultContentProvenance(content: unknown): ToolResultProvenance | undefined {
+  return Array.isArray(content) ? toolResultProvenance.get(content) : undefined;
+}
+
+export function copyToolResultProvenance<T>(source: unknown, content: T[]): T[] {
+  const metadata = toolResultContentProvenance(source);
+  return metadata ? markToolResultContent(content, metadata) : content;
+}
+
+interface ToolResultBoundOptions {
+  name?: string;
+  arguments?: unknown;
+  fresh?: boolean;
+  retained?: boolean;
+  wrapped?: boolean;
 }
 
 /** A final model-facing bound. Structured results are never cut into partial JSON. */
 export function boundToolResultText(
   source: string,
   size: number,
-  tool: { name?: string; arguments?: unknown; fresh?: boolean } = {},
+  tool: ToolResultBoundOptions = {},
   historyReference?: ToolResultHistoryReference,
 ): string {
+  return boundToolResult(source, size, tool, historyReference).text;
+}
+
+/** Internal ownership state accompanies the text so callers can mark the resulting array. */
+export function boundToolResult(
+  source: string,
+  size: number,
+  tool: ToolResultBoundOptions = {},
+  historyReference?: ToolResultHistoryReference,
+): { text: string; wrapped: boolean } {
   if (!Number.isSafeInteger(size) || size < 1) throw new Error("Invalid tool result budget");
-  if (source.length <= size && !historyReference && !tool.fresh) return source;
+  if (source.length <= size && !historyReference && !tool.fresh)
+    return { text: source, wrapped: Boolean(tool.retained && tool.wrapped) };
   let original: unknown;
   try {
     original = JSON.parse(source);
   } catch {
     const marker = "\n[Tool result truncated to fit context; omitted evidence is unavailable.]";
-    return source.slice(0, Math.max(0, size - marker.length)) + marker.slice(0, size);
+    return {
+      text: source.slice(0, Math.max(0, size - marker.length)) + marker.slice(0, size),
+      wrapped: false,
+    };
   }
-  const supplied =
-    historyReference &&
-    historyReference.tool === "read_history" &&
-    typeof historyReference.arguments?.toolResultId === "string" &&
-    historyReference.arguments.toolResultId.length > 0 &&
-    historyReference.arguments.toolResultId.length <= 200 &&
-    JSON.stringify(historyReference).length <= 512
-      ? historyReference
-      : undefined;
+  const supplied = validatedToolResultHistoryReference(historyReference);
   const readArgs =
     tool.name === "read_history" && tool.arguments && typeof tool.arguments === "object"
       ? (tool.arguments as Record<string, unknown>)
@@ -446,12 +496,10 @@ export function boundToolResultText(
           },
         }
       : undefined;
-  const remembered = tool.fresh ? undefined : rememberedToolResultReference(source);
-  const reference = supplied ?? remembered ?? readReference;
+  const reference = supplied ?? readReference;
   const trustedView = Boolean(
     !tool.fresh &&
-      (toolResultReferences.has(resultTextHash(source)) ||
-        remembered ||
+      ((tool.retained && tool.wrapped) ||
         tool.name === "read_history" ||
         tool.name === "search_history"),
   );
@@ -462,12 +510,7 @@ export function boundToolResultText(
   const encode = (value: unknown) => {
     const encoded = JSON.stringify(value);
     if (encoded.length > size) throw new ContextBudgetError(Buffer.byteLength(encoded), size);
-    const hash = resultTextHash(encoded);
-    toolResultReferences.delete(hash);
-    toolResultReferences.set(hash, reference ?? null);
-    if (toolResultReferences.size > 1_024)
-      toolResultReferences.delete(toolResultReferences.keys().next().value!);
-    return encoded;
+    return { text: encoded, wrapped: true };
   };
   const wrap = (value: unknown) =>
     trustedView && value && typeof value === "object" && !Array.isArray(value)
@@ -479,7 +522,7 @@ export function boundToolResultText(
       typeof original === "object" &&
       !Array.isArray(original) &&
       ("historyReference" in original || "historyUnavailable" in original);
-    if (!reference && !reserved && !tool.fresh) return source;
+    if (!reference && !reserved && !tool.fresh) return { text: source, wrapped: trustedView };
     const complete =
       trustedView && original && typeof original === "object" && !Array.isArray(original)
         ? { ...original, ...evidence }
@@ -674,14 +717,27 @@ export function selectContext<T extends ContextMessage>(
               (part) => part?.type === "toolCall" && part.id === message.toolCallId,
             )
           : undefined;
-        const text = boundToolResultText(
+        const provenance = toolResultContentProvenance(message.content);
+        const bounded = boundToolResult(
           serialized,
           size,
-          nativeCall ?? { name: message.toolName },
+          {
+            name: nativeCall?.name ?? message.toolName,
+            arguments: nativeCall?.arguments,
+            retained: Boolean(provenance),
+            wrapped: provenance?.wrapped,
+          },
+          provenance?.historyReference,
         );
-        if (text.length >= serialized.length) return message;
+        if (bounded.text.length >= serialized.length) return message;
         shortenedCount += 1;
-        return { ...message, content: [{ type: "text", text }, ...images] } as T;
+        return {
+          ...message,
+          content: markToolResultContent([{ type: "text", text: bounded.text }, ...images], {
+            historyReference: provenance?.historyReference,
+            wrapped: bounded.wrapped,
+          }),
+        } as T;
       });
       if (shortenedCount) {
         const retry = selectContext(shortened, options);

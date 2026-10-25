@@ -1,6 +1,11 @@
 import type { ToolResultHistoryReference } from "@rakazo/adapter-kit";
 import { DEFAULT_MODEL_MAX_TOKENS } from "@rakazo/contracts";
-import { boundToolResultText } from "./context-selection.js";
+import {
+  boundToolResult,
+  boundToolResultText,
+  markToolResultContent,
+  toolResultContentProvenance,
+} from "./context-selection.js";
 
 /** Hung completions must fail before the typical 5-minute run lease. */
 export const MODEL_STREAM_TIMEOUT_MS = 120_000;
@@ -32,6 +37,8 @@ export function clipToolResultContent<T>(
   historyReference?: ToolResultHistoryReference,
   fresh = historyReference !== undefined,
 ): T[] {
+  const provenance = fresh ? undefined : toolResultContentProvenance(content);
+  const actualReference = historyReference ?? provenance?.historyReference;
   const isText = (part: T): part is T & { type: "text"; text: string } =>
     Boolean(
       part &&
@@ -42,6 +49,8 @@ export function clipToolResultContent<T>(
         typeof part.text === "string",
     );
   const texts = content.filter(isText);
+  const withinLimit = texts.reduce((total, part) => total + part.text.length, 0) <= limit;
+  if (!fresh && provenance && historyReference === undefined && withinLimit) return content;
   const ambiguous =
     fresh &&
     texts.some((part) => {
@@ -56,27 +65,31 @@ export function clipToolResultContent<T>(
         return false;
       }
     });
-  if (
-    !historyReference &&
-    !ambiguous &&
-    texts.reduce((total, part) => total + part.text.length, 0) <= limit
-  )
-    return content;
+  if (!actualReference && !ambiguous && withinLimit)
+    return fresh ? markToolResultContent([...content], { wrapped: false }) : content;
   // Preserve multipart boundaries inside a valid JSON envelope. Joining JSON text parts
   // as prose before truncation would discard the controls in every part after the first.
-  const text = boundToolResultText(
-    JSON.stringify({ content: texts }),
+  const bounded = boundToolResult(
+    provenance && texts.length === 1 ? texts[0]!.text : JSON.stringify({ content: texts }),
     limit,
-    { fresh },
-    historyReference,
+    { fresh, retained: Boolean(provenance), wrapped: provenance?.wrapped },
+    actualReference,
   );
-  if (texts.length === 0) return [{ type: "text", text } as T, ...content];
+  if (texts.length === 0)
+    return markToolResultContent([{ type: "text", text: bounded.text } as T, ...content], {
+      historyReference: actualReference,
+      wrapped: bounded.wrapped,
+    });
   let inserted = false;
-  return content.flatMap((part) => {
+  const result = content.flatMap((part) => {
     if (!isText(part)) return [part];
     if (inserted) return [];
     inserted = true;
-    return [{ ...part, text }];
+    return [{ ...part, text: bounded.text }];
+  });
+  return markToolResultContent(result, {
+    historyReference: actualReference,
+    wrapped: bounded.wrapped,
   });
 }
 

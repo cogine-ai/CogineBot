@@ -110,7 +110,9 @@ describe("tool result fidelity", () => {
 
   it("retains the actual reference and exact controls when a prior result is shortened again", () => {
     const first = boundToolResultText(JSON.stringify(large), 12_000, {}, reference);
-    expect(parse(boundToolResultText(first, 1_024), 1_024)).toMatchObject({
+    expect(
+      parse(boundToolResultText(first, 1_024, { retained: true, wrapped: true }, reference), 1_024),
+    ).toMatchObject({
       result: controls,
       historyReference: reference,
     });
@@ -239,7 +241,12 @@ describe("tool result fidelity", () => {
     const initial = serializeToolResult(raw, "current", "connector", {}, reference);
     expect(parse(initial)).toMatchObject({ result: raw, historyReference: reference });
     expect(JSON.parse(initial).contextTruncated).not.toBe(true);
-    expect(parse(boundToolResultText(initial, 1_024), 1_024)).toEqual({
+    expect(
+      parse(
+        boundToolResultText(initial, 1_024, { retained: true, wrapped: true }, reference),
+        1_024,
+      ),
+    ).toEqual({
       contextTruncated: true,
       error: "budget_error",
       historyReference: reference,
@@ -292,7 +299,10 @@ describe("tool result fidelity", () => {
       content: [{ type: "text", text: JSON.stringify(inner) }],
     });
     const final = boundToolResultText(JSON.stringify(transported), 12_000, {}, reference);
-    for (const text of [final, boundToolResultText(final, 1_024)]) {
+    for (const text of [
+      final,
+      boundToolResultText(final, 1_024, { retained: true, wrapped: true }, reference),
+    ]) {
       expect(text).toContain("middle-id-exact");
       expect(text).toContain("middle-cursor-exact");
       const value = JSON.parse(text);
