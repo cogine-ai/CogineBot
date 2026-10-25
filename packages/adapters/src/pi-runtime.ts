@@ -1298,7 +1298,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
             }
             if (isAgentToolExecutionResult(result)) {
               if (isToolPauseResult(result)) host.pausePending = true;
-              return boundAgentToolResult(result, historyReference);
+              return boundAgentToolResult(result, historyReference, true);
             }
             return {
               content: [
@@ -1310,6 +1310,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
                     tool.name,
                     args,
                     historyReference,
+                    Boolean(tool.route) || !["read_history", "search_history"].includes(tool.name),
                   ),
                 },
               ],
@@ -2101,13 +2102,23 @@ export function serializeToolResult(
   name: string,
   args: Record<string, unknown>,
   historyReference?: ToolResultHistoryReference,
+  fresh = !["read_history", "search_history"].includes(name),
 ) {
   try {
     const text = JSON.stringify(result);
     if (!text) return "ok";
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
     if (VERBATIM_TOOL_RESULTS.has(name)) return text;
-    return boundToolResultText(text, 12_000, { name, arguments: args }, historyReference);
+    if (fresh && !historyReference && text.length <= 12_000) {
+      const value: unknown = JSON.parse(text);
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("historyReference" in value || "historyUnavailable" in value)
+      )
+        return text;
+    }
+    return boundToolResultText(text, 12_000, { name, arguments: args, fresh }, historyReference);
   } catch {
     return JSON.stringify({ error: "result_serialization_error", historyUnavailable: true });
   }
@@ -2116,11 +2127,12 @@ export function serializeToolResult(
 function boundAgentToolResult<T>(
   result: AgentToolResult<T>,
   historyReference?: ToolResultHistoryReference,
+  fresh = false,
 ): AgentToolResult<T> {
   if (!result || !Array.isArray(result.content)) return result;
   return {
     ...result,
-    content: clipToolResultContent(result.content, 12_000, historyReference),
+    content: clipToolResultContent(result.content, 12_000, historyReference, fresh),
   };
 }
 

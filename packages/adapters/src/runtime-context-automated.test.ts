@@ -104,11 +104,10 @@ describe("automated source context policy", () => {
     const [source, body] = texts(prepared.messages.at(-1));
     expect(source).toContain(label);
     expect(JSON.parse(body!)).toMatchObject({
-      id: "exact-id",
-      status: "pending",
       contextTruncated: true,
+      result: { id: "exact-id", status: "pending" },
     });
-    expect(JSON.parse(body!).evidence).toContain("Tool result truncated");
+    expect(JSON.parse(body!).result.evidence).toContain("Tool result truncated");
     expect(
       estimateContextTokens(
         providerContextPrefix(prepared.systemPrompt!, prepared.tools!, prepared.messages),

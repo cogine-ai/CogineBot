@@ -30,6 +30,7 @@ export function clipToolResultContent<T>(
   content: T[],
   limit: number = TOOL_RESULT_TEXT_LIMIT,
   historyReference?: ToolResultHistoryReference,
+  fresh = historyReference !== undefined,
 ): T[] {
   const isText = (part: T): part is T & { type: "text"; text: string } =>
     Boolean(
@@ -41,11 +42,34 @@ export function clipToolResultContent<T>(
         typeof part.text === "string",
     );
   const texts = content.filter(isText);
-  if (!historyReference && texts.reduce((total, part) => total + part.text.length, 0) <= limit)
+  const ambiguous =
+    fresh &&
+    texts.some((part) => {
+      try {
+        const value = JSON.parse(part.text);
+        return (
+          value &&
+          typeof value === "object" &&
+          ("historyReference" in value || "historyUnavailable" in value)
+        );
+      } catch {
+        return false;
+      }
+    });
+  if (
+    !historyReference &&
+    !ambiguous &&
+    texts.reduce((total, part) => total + part.text.length, 0) <= limit
+  )
     return content;
   // Preserve multipart boundaries inside a valid JSON envelope. Joining JSON text parts
   // as prose before truncation would discard the controls in every part after the first.
-  const text = boundToolResultText(JSON.stringify({ content: texts }), limit, {}, historyReference);
+  const text = boundToolResultText(
+    JSON.stringify({ content: texts }),
+    limit,
+    { fresh },
+    historyReference,
+  );
   if (texts.length === 0) return [{ type: "text", text } as T, ...content];
   let inserted = false;
   return content.flatMap((part) => {

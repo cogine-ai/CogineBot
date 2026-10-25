@@ -306,8 +306,8 @@ describe("tool result fidelity", () => {
           "text" in part &&
           typeof part.text === "string"
         ) {
-          expect(() => JSON.parse(part.text)).not.toThrow();
-          expect(JSON.parse(part.text)).toMatchObject({
+          const decodedText = JSON.parse(part.text);
+          expect(decodedText).toMatchObject({
             id: inner.id,
             nextCursor: inner.nextCursor,
           });
@@ -354,6 +354,44 @@ describe("tool result fidelity", () => {
     } finally {
       stringify.mockRestore();
     }
+  });
+
+  it("always treats fresh echoed server views as provider data", () => {
+    const firstRef = {
+      tool: "read_history" as const,
+      arguments: { toolResultId: "original-record" },
+    };
+    const nextRef = { tool: "read_history" as const, arguments: { toolResultId: "echo-record" } };
+    const first = boundToolResultText(
+      JSON.stringify({ id: "original", body: "b".repeat(1_000) }),
+      12_000,
+      { fresh: true },
+      firstRef,
+    );
+    for (const next of [nextRef, undefined]) {
+      const echo = parse(serializeToolResult(JSON.parse(first), "current", "connector", {}, next));
+      expect(echo.result).toEqual(JSON.parse(first));
+      if (next) expect(echo.historyReference).toEqual(next);
+      else expect(echo).toMatchObject({ historyUnavailable: true });
+    }
+    const parts = clipToolResultContent([{ type: "text", text: first }], 12_000, undefined, true);
+    expect(JSON.parse(parts[0]!.text).result.content[0].text).toBe(first);
+    expect(JSON.parse(parts[0]!.text).historyReference).toBeUndefined();
+  });
+
+  it("never associates new outer or nontext evidence with a registered child view", () => {
+    const known = boundToolResultText(JSON.stringify(large), 12_000, {}, reference);
+    const mixed = JSON.stringify({
+      content: [
+        { type: "text", text: known },
+        { type: "image", data: "new-image" },
+      ],
+      _meta: { id: "new-outer-evidence", body: "x".repeat(20_000) },
+    });
+    const result = parse(boundToolResultText(mixed, 12_000));
+    expect(result.historyReference).toBeUndefined();
+    expect(result.historyUnavailable).toBe(true);
+    expect(JSON.stringify(result)).toContain("new-outer-evidence");
   });
 
   it("keeps soft-target MCP controls intact before applying the final bound", () => {

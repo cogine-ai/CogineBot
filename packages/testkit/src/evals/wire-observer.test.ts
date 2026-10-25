@@ -5,7 +5,11 @@ import type { ModelEmulatorRequest } from "../model-emulator.js";
 import { startModelEmulator } from "../model-emulator.js";
 import { EvalServices } from "./services.js";
 import type { DiagnosticWireObservation } from "./wire-observer.js";
-import { diagnosticWireFetch, installDiagnosticWireObserver } from "./wire-observer.js";
+import {
+  diagnosticResultData,
+  diagnosticWireFetch,
+  installDiagnosticWireObserver,
+} from "./wire-observer.js";
 
 function body(nextCursor: unknown = "segment-3572054") {
   return JSON.stringify({
@@ -130,9 +134,9 @@ it("observes actual Pi post-selection JSON controls through twelve dependent com
       ...Array.from({ length: 12 }, () => ({
         expect() {},
         response(request: ModelEmulatorRequest) {
-          const result = JSON.parse(
-            String(request.messages.findLast((m) => m.role === "tool")?.content),
-          );
+          const result = diagnosticResultData(
+            JSON.parse(String(request.messages.findLast((m) => m.role === "tool")?.content)),
+          )!;
           return result.nextCursor === null
             ? { type: "text" as const, text: "ledger-indexer pending" }
             : {

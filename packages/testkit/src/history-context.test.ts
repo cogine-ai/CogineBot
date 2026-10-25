@@ -1,6 +1,7 @@
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { PiAgentRuntime } from "@rakazo/adapters";
 import { describe, expect, it } from "vitest";
+import { diagnosticResultData } from "./evals/wire-observer.js";
 import { startModelEmulator } from "./model-emulator.js";
 
 describe("structured results through real Pi context selection", () => {
@@ -121,7 +122,7 @@ describe("structured results through real Pi context selection", () => {
             expect(serialized).not.toContain("obsolete-old-0");
             if (index > 0) {
               const tool = request.messages.findLast((message) => message.role === "tool");
-              const result = JSON.parse(String(tool?.content));
+              const result = diagnosticResultData(JSON.parse(String(tool?.content)))!;
               expect(result.segment).toBe(index - 1);
               expect(result.nextCursor).toBe(index === 12 ? null : `segment-${index}`);
               expect(result.approval).toBe("pending");

@@ -397,34 +397,19 @@ export const TOOL_RESULT_HISTORY_MIN_LENGTH = 256;
 // manufacture a durable reference by returning a field with the same name.
 const toolResultReferences = new Map<string, ToolResultHistoryReference | null>();
 const resultTextHash = (text: string) => createHash("sha256").update(text).digest("hex");
-function rememberedToolResultReference(
-  source: string,
-  value: unknown,
-): ToolResultHistoryReference | undefined {
-  const exact = toolResultReferences.get(resultTextHash(source));
-  if (exact) return exact;
-  if (!value || typeof value !== "object" || !("content" in value) || !Array.isArray(value.content))
-    return;
-  const texts = value.content.filter((part) => part?.type === "text");
-  const refs = texts.map((part) =>
-    typeof part.text === "string" ? toolResultReferences.get(resultTextHash(part.text)) : undefined,
-  );
-  return refs.length &&
-    refs[0] &&
-    refs.every((ref) => ref?.arguments.toolResultId === refs[0]!.arguments.toolResultId)
-    ? refs[0]
-    : undefined;
+function rememberedToolResultReference(source: string): ToolResultHistoryReference | undefined {
+  return toolResultReferences.get(resultTextHash(source)) ?? undefined;
 }
 
 /** A final model-facing bound. Structured results are never cut into partial JSON. */
 export function boundToolResultText(
   source: string,
   size: number,
-  tool: { name?: string; arguments?: unknown } = {},
+  tool: { name?: string; arguments?: unknown; fresh?: boolean } = {},
   historyReference?: ToolResultHistoryReference,
 ): string {
   if (!Number.isSafeInteger(size) || size < 1) throw new Error("Invalid tool result budget");
-  if (source.length <= size && !historyReference) return source;
+  if (source.length <= size && !historyReference && !tool.fresh) return source;
   let original: unknown;
   try {
     original = JSON.parse(source);
@@ -461,13 +446,14 @@ export function boundToolResultText(
           },
         }
       : undefined;
-  const remembered = rememberedToolResultReference(source, original);
+  const remembered = tool.fresh ? undefined : rememberedToolResultReference(source);
   const reference = supplied ?? remembered ?? readReference;
   const trustedView = Boolean(
-    toolResultReferences.has(resultTextHash(source)) ||
-      remembered ||
-      tool.name === "read_history" ||
-      tool.name === "search_history",
+    !tool.fresh &&
+      (toolResultReferences.has(resultTextHash(source)) ||
+        remembered ||
+        tool.name === "read_history" ||
+        tool.name === "search_history"),
   );
   const evidence = {
     historyReference: reference,
@@ -487,7 +473,13 @@ export function boundToolResultText(
     trustedView && value && typeof value === "object" && !Array.isArray(value)
       ? { ...value, contextTruncated: true, ...evidence }
       : { contextTruncated: true, ...evidence, result: value };
-  if (source.length <= size && reference) {
+  if (source.length <= size) {
+    const reserved =
+      original &&
+      typeof original === "object" &&
+      !Array.isArray(original) &&
+      ("historyReference" in original || "historyUnavailable" in original);
+    if (!reference && !reserved && !tool.fresh) return source;
     const complete =
       trustedView && original && typeof original === "object" && !Array.isArray(original)
         ? { ...original, ...evidence }
