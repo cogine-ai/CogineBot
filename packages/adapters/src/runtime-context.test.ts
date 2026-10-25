@@ -40,15 +40,231 @@ function fixture(count = 30) {
   const context: Context = { systemPrompt: request.instructions, tools: [], messages };
   return { request, context };
 }
+function enableHistoryRetrieval(request: AgentRunRequest) {
+  request.tools = ["read_history", "search_history"].map((name) => ({
+    name,
+    description: name,
+    inputSchema: { type: "object" },
+  }));
+  request.executeTool = async () => ({});
+}
 describe("runtime context policy", () => {
-  it("matches the qualified explicit strategy when backend history retrieval is usable", () => {
+  it.each(["account", "connection"] as const)(
+    "automatically preserves a selected prefix while a declared %s cache is warm",
+    (scope) => {
+      let now = 0;
+      const tracker = new ContextCacheTracker(() => now);
+      const { request, context } = fixture(60);
+      const original = JSON.stringify({ history: request.history, context });
+      request.threadId = `automatic-prefix-${scope}`;
+      enableHistoryRetrieval(request);
+      request.model.cacheCapabilities = { scope, retentionMs: 300000 };
+      const first = createRuntimeContextPolicy(request, undefined, { cacheTracker: tracker });
+      const initial = first.prepareContext(context, model);
+      expect(first.getDecision()).toMatchObject({
+        strategy: "cache-aware",
+        predictedCache: "likely-cold",
+      });
+      expect(initial.messages.length).toBeLessThan(context.messages.length);
+      const navigation = String(initial.messages[0]!.content);
+      expect(navigation).toContain("Historical navigation snapshots");
+      const referencedIds = [...navigation.matchAll(/\[message (message-\d+) at /g)].map(
+        (match) => match[1],
+      );
+      expect(referencedIds.length).toBeGreaterThan(0);
+      for (const id of referencedIds)
+        expect(request.history.some((item) => item.id === id)).toBe(true);
+      expect(initial.messages.at(-1)).toBe(context.messages.at(-1));
+      expect(initial.messages.at(-2)).toBe(context.messages.at(-2));
+      first.onUsage({ inputTokens: 1000, outputTokens: 10, cacheReadTokens: 0 });
+      now = 1000;
+      const next = createRuntimeContextPolicy(request, undefined, { cacheTracker: tracker });
+      const continued = next.prepareContext(
+        {
+          ...context,
+          messages: [
+            ...context.messages,
+            { role: "user", content: "Next question", timestamp: now },
+          ],
+        },
+        model,
+      );
+      expect(next.getDecision()).toMatchObject({
+        strategy: "cache-aware",
+        predictedCache: "likely-warm",
+      });
+      expect(continued.messages.slice(0, initial.messages.length)).toEqual(initial.messages);
+      expect(continued.messages).toHaveLength(initial.messages.length + 1);
+      now = 300000;
+      next.prepareContext(context, model);
+      expect(next.getDecision()!.predictedCache).toBe("likely-cold");
+      expect(JSON.stringify({ history: request.history, context })).toBe(original);
+    },
+  );
+  it.each([undefined, "short", "long"] as const)(
+    "uses the declared window with retention mode %s",
+    (retentionMode) => {
+      const { request, context } = fixture();
+      enableHistoryRetrieval(request);
+      request.model.cacheCapabilities = { scope: "connection", retentionMs: 1, retentionMode };
+      const policy = createRuntimeContextPolicy(request);
+      policy.prepareContext(context, model);
+      expect(policy.getDecision()!.strategy).toBe("cache-aware");
+    },
+  );
+  it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "keeps the default for an unknown or invalid cache window %s",
+    (retentionMs) => {
+      const { request, context } = fixture();
+      enableHistoryRetrieval(request);
+      request.model.cacheCapabilities = { scope: "connection", retentionMs };
+      const policy = createRuntimeContextPolicy(request);
+      policy.prepareContext(context, model);
+      expect(policy.getDecision()!.strategy).toBe(DEFAULT_CONTEXT_STRATEGY);
+    },
+  );
+  it("accepts a finite positive fractional window at the runtime boundary", () => {
     const { request, context } = fixture();
-    request.tools = ["read_history", "search_history"].map((name) => ({
+    enableHistoryRetrieval(request);
+    request.model.cacheCapabilities = { scope: "connection", retentionMs: 0.5 };
+    const policy = createRuntimeContextPolicy(request);
+    policy.prepareContext(context, model);
+    expect(policy.getDecision()!.strategy).toBe("cache-aware");
+  });
+  it("keeps the default when caching is explicitly disabled", () => {
+    const { request, context } = fixture();
+    enableHistoryRetrieval(request);
+    request.model.cacheCapabilities = {
+      scope: "connection",
+      retentionMs: 300000,
+      retentionMode: "none",
+    };
+    const policy = createRuntimeContextPolicy(request);
+    policy.prepareContext(context, model);
+    expect(policy.getDecision()!.strategy).toBe(DEFAULT_CONTEXT_STRATEGY);
+  });
+  it.each(["current", "retrieval", "snapshots", "cache-aware"] as const)(
+    "honors an explicit %s strategy over an eligible connection",
+    (contextStrategy) => {
+      const { request, context } = fixture();
+      enableHistoryRetrieval(request);
+      request.model.cacheCapabilities = { scope: "connection", retentionMs: 300000 };
+      request.contextStrategy = contextStrategy;
+      const policy = createRuntimeContextPolicy(request);
+      const prepared = policy.prepareContext(context, model);
+      expect(policy.getDecision()!.strategy).toBe(contextStrategy);
+      if (contextStrategy === "current") expect(prepared).toBe(context);
+    },
+  );
+  it.each([
+    [],
+    ["read_history"],
+    ["search_history"],
+    ["READ_HISTORY", "search_history"],
+    ["read_history", "read_history"],
+  ])("preserves fitting originals when required history tools are unavailable: %j", (...names) => {
+    const { request, context } = fixture(60);
+    enableHistoryRetrieval(request);
+    request.tools = names.map((name) => ({
       name,
       description: name,
       inputSchema: { type: "object" },
     }));
-    request.executeTool = async () => ({});
+    request.model.cacheCapabilities = { scope: "connection", retentionMs: 300000 };
+    const policy = createRuntimeContextPolicy(request);
+    expect(policy.prepareContext(context, model).messages).toEqual(context.messages);
+    expect(policy.getDecision()!.strategy).toBe(DEFAULT_CONTEXT_STRATEGY);
+  });
+  it("preserves fitting originals when history tools have no execution entry point", () => {
+    const { request, context } = fixture(60);
+    enableHistoryRetrieval(request);
+    request.executeTool = undefined;
+    request.model.cacheCapabilities = { scope: "connection", retentionMs: 300000 };
+    const policy = createRuntimeContextPolicy(request);
+    expect(policy.prepareContext(context, model).messages).toEqual(context.messages);
+    expect(policy.getDecision()!.strategy).toBe(DEFAULT_CONTEXT_STRATEGY);
+  });
+  it.each([undefined, null, { inputTokens: null, outputTokens: null, cacheReadTokens: null }])(
+    "does not turn an unreported or cancelled request into a warm prefix: %j",
+    (usage) => {
+      const { request, context } = fixture(60);
+      request.threadId = "automatic-no-usage";
+      enableHistoryRetrieval(request);
+      request.model.cacheCapabilities = { scope: "connection", retentionMs: 300000 };
+      const tracker = new ContextCacheTracker(() => 1000);
+      const first = createRuntimeContextPolicy(request, undefined, { cacheTracker: tracker });
+      first.prepareContext(context, model);
+      first.onUsage(usage);
+      const next = createRuntimeContextPolicy(request, undefined, { cacheTracker: tracker });
+      next.prepareContext(context, model);
+      expect(next.getDecision()).toMatchObject({
+        strategy: "cache-aware",
+        predictedCache: "likely-cold",
+      });
+    },
+  );
+  it.each([
+    "userId",
+    "spaceId",
+    "botId",
+    "threadId",
+    "apiKey",
+    "baseUrl",
+    "resolvedEndpoint",
+    "provider",
+    "credentialScope",
+    "headers",
+    "modelId",
+    "oauth",
+  ] as const)("does not reuse automatic warmth after changing %s", (changedScope) => {
+    const { request, context } = fixture(1);
+    enableHistoryRetrieval(request);
+    request.threadId = `automatic-isolation-${changedScope}`;
+    request.model.cacheCapabilities = { scope: "account", retentionMs: 300000 };
+    request.model.apiKey = "synthetic-first-key";
+    request.model.oauth = {
+      credential: {
+        type: "oauth",
+        access: "synthetic-access",
+        refresh: "synthetic-refresh",
+        expires: 123456,
+      },
+    };
+    const adapter = { userId: "user", spaceId: "space" };
+    const resolved = { ...model, headers: { "Synthetic-Account": "first" } };
+    const tracker = new ContextCacheTracker(() => 1000);
+    const options = { cacheTracker: tracker, credentialScope: "synthetic-first-scope" };
+    const first = createRuntimeContextPolicy(request, adapter, options);
+    first.prepareContext(context, resolved);
+    first.onUsage({ inputTokens: 100, outputTokens: 10, cacheReadTokens: 0 });
+    const control = createRuntimeContextPolicy(request, adapter, options);
+    control.prepareContext(context, resolved);
+    expect(control.getDecision()!.predictedCache).toBe("likely-warm");
+    if (changedScope === "userId" || changedScope === "spaceId") adapter[changedScope] = "other";
+    else if (changedScope === "botId" || changedScope === "threadId")
+      request[changedScope] = "other";
+    else if (changedScope === "apiKey" || changedScope === "baseUrl")
+      request.model[changedScope] = "synthetic-other";
+    else if (changedScope === "credentialScope") options.credentialScope = "synthetic-other-scope";
+    else if (changedScope === "headers") resolved.headers["Synthetic-Account"] = "other";
+    else if (changedScope === "resolvedEndpoint") resolved.baseUrl = "https://other.invalid";
+    else if (changedScope === "provider") resolved.provider = "other-provider";
+    else if (changedScope === "modelId") resolved.id = "other-model";
+    else
+      request.model.oauth.credential = {
+        ...request.model.oauth.credential,
+        access: "synthetic-other-access",
+      };
+    const next = createRuntimeContextPolicy(request, adapter, options);
+    expect(next.prepareContext(context, resolved).messages).toEqual(context.messages);
+    expect(next.getDecision()).toMatchObject({
+      strategy: "cache-aware",
+      predictedCache: "likely-cold",
+    });
+  });
+  it("matches the qualified explicit strategy when backend history retrieval is usable", () => {
+    const { request, context } = fixture();
+    enableHistoryRetrieval(request);
     const implicit = createRuntimeContextPolicy(request);
     const explicit = createRuntimeContextPolicy({
       ...request,
