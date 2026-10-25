@@ -810,33 +810,37 @@ describe("Pi connector tool dispatch", () => {
     },
   );
 
-  it("keeps execution successful and marks history unavailable after storage failure", async () => {
-    for await (const _event of new PiAgentRuntime().run(
-      {
-        botId: "b",
-        threadId: "t",
-        runId: "r",
-        prompt: "read data",
-        instructions: "Use tools.",
-        history: [],
-        tools: [destinationTool],
-        model: { provider: "test", id: "dispatch-test-model" },
-        executeTool: async () => ({ id: "kept", body: "x".repeat(40_000) }),
-        storeToolResult: async () => {
-          throw new Error("Storage unavailable");
+  it.each(["throws", "unavailable"])(
+    "keeps execution successful and marks history unavailable when storage %s",
+    async (storage) => {
+      for await (const _event of new PiAgentRuntime().run(
+        {
+          botId: "b",
+          threadId: "t",
+          runId: "r",
+          prompt: "read data",
+          instructions: "Use tools.",
+          history: [],
+          tools: [destinationTool],
+          model: { provider: "test", id: "dispatch-test-model" },
+          executeTool: async () => ({ id: "kept", body: "x".repeat(40_000) }),
+          storeToolResult: async () => {
+            if (storage === "throws") throw new Error("Storage unavailable");
+            return undefined;
+          },
         },
-      },
-      { signal: new AbortController().signal },
-    )) {
-      /* Exhaust the offline stream. */
-    }
-    const result = fakeAgentState.toolResult as { content: Array<{ text: string }> };
-    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
-      result: { id: "kept" },
-      contextTruncated: true,
-      historyUnavailable: true,
-    });
-  });
+        { signal: new AbortController().signal },
+      )) {
+        /* Exhaust the offline stream. */
+      }
+      const result = fakeAgentState.toolResult as { content: Array<{ text: string }> };
+      expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+        result: { id: "kept" },
+        contextTruncated: true,
+        historyUnavailable: true,
+      });
+    },
+  );
 
   it("does not strand an aborted run in a pending result store", async () => {
     const controller = new AbortController();

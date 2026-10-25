@@ -4,9 +4,21 @@ import {
   CONNECTOR_REDACTION_MAX_NODES,
   redactConnectorPayload,
   sanitizeConnectorError,
+  tryRedactConnectorPayload,
 } from "./connector-safety.js";
 
 describe("redactConnectorPayload", () => {
+  it("distinguishes processing failure from a valid service error payload", () => {
+    const service = { ok: false, error: "redaction_error", body: "service diagnostic" };
+    expect(tryRedactConnectorPayload(service, [])).toEqual({ ok: true, value: service });
+    expect(tryRedactConnectorPayload(undefined, [])).toEqual({ ok: true, value: undefined });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(tryRedactConnectorPayload(circular, [])).toEqual({
+      ok: false,
+      error: "redaction_error",
+    });
+  });
   it("preserves empty successful responses", () => {
     expect(redactConnectorPayload(undefined, ["secret"])).toBeUndefined();
     expect(redactConnectorPayload(undefined, [])).toBeUndefined();

@@ -19,7 +19,16 @@ export const CONNECTOR_REDACTION_MAX_NODES = 100_000;
 
 /** Redact complete JSON values and embedded JSON text before results leave a provider. */
 export function redactConnectorPayload(value: unknown, secrets: string[]): unknown {
-  if (value === undefined) return undefined;
+  const redacted = tryRedactConnectorPayload(value, secrets);
+  return redacted.ok ? redacted.value : { error: redacted.error };
+}
+
+/** Persistence callers must distinguish processing failure from a service's own error payload. */
+export function tryRedactConnectorPayload(
+  value: unknown,
+  secrets: string[],
+): { ok: true; value: unknown } | { ok: false; error: "redaction_error" } {
+  if (value === undefined) return { ok: true, value: undefined };
   try {
     const source = JSON.stringify(value);
     if (source === undefined) throw new Error("redaction_error");
@@ -76,8 +85,8 @@ export function redactConnectorPayload(value: unknown, secrets: string[]): unkno
       return item;
     };
     const redacted = visit(JSON.parse(source), 0);
-    return redacted;
+    return { ok: true, value: redacted };
   } catch {
-    return { error: "redaction_error" };
+    return { ok: false, error: "redaction_error" };
   }
 }

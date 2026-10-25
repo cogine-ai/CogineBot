@@ -245,7 +245,11 @@ import {
   refreshRunConnectorContext,
   selectExplicitConnectorAccounts,
 } from "./connector-account-binding.js";
-import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
+import {
+  redactConnectorPayload,
+  sanitizeConnectorError,
+  tryRedactConnectorPayload,
+} from "./connector-safety.js";
 import { TOOL_RESULT_HISTORY_MIN_LENGTH } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
@@ -2823,6 +2827,13 @@ export async function appendToolCompletionAudit(
   }
 }
 
+/** A failed complete-view transform must not become a pageable replacement for stored evidence. */
+export function redactStoredToolResultView(value: unknown, secrets: string[]): unknown {
+  const redacted = tryRedactConnectorPayload(value, secrets);
+  if (!redacted.ok) throw new Error(redacted.error);
+  return redacted.value;
+}
+
 /** Preserve connector outputs that context selection may shorten, never built-in control prompts. */
 export async function storeConnectorToolResultHistory(
   prisma: PrismaClient,
@@ -2840,7 +2851,9 @@ export async function storeConnectorToolResultHistory(
     const original = JSON.stringify(input.result);
     if (!original || original.length <= TOOL_RESULT_HISTORY_MIN_LENGTH) return;
     if (Buffer.byteLength(original, "utf8") > TOOL_RESULT_HISTORY_MAX_BYTES) return;
-    const text = JSON.stringify(redactConnectorPayload(input.result, secrets));
+    const redacted = tryRedactConnectorPayload(input.result, secrets);
+    if (!redacted.ok) return;
+    const text = JSON.stringify(redacted.value);
     if (!text) return;
     return await storeToolResultHistory(prisma, scope, {
       name: redactSecrets(input.name, secrets),
@@ -5791,7 +5804,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               channelId,
               searchBeforeSeq: historySearchBeforeSeq,
               activeRunId: runId,
-              transformToolResult: (value: unknown) => redactConnectorPayload(value, runSecrets),
+              transformToolResult: (value: unknown) =>
+                redactStoredToolResultView(value, runSecrets),
             };
             const response =
               name === "search_history"

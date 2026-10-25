@@ -3,6 +3,9 @@ import type { AgentOptions } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Context, Model, ToolCall } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
+import { HistoryReadInputSchema } from "@rakazo/contracts";
+import type { PrismaClient } from "@rakazo/db";
+import { readHistory } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const providerState = vi.hoisted(() => ({
@@ -35,7 +38,10 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
   registerOpenAiCompatibleRuntime: (models: unknown) => models,
 }));
 
+import { builtinAgentTools } from "./builtin-tools.js";
+import { CONNECTOR_REDACTION_MAX_DEPTH } from "./connector-safety.js";
 import { markToolResultContent, toolResultContentProvenance } from "./context-selection.js";
+import { redactStoredToolResultView } from "./executor.js";
 import { PiAgentRuntime, pruneComputerScreenshotContext } from "./pi-runtime.js";
 import { clipToolResultContent } from "./pi-runtime-limits.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
@@ -133,6 +139,57 @@ describe("real Pi tool-result content provenance", () => {
   afterEach(() => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+  it("returns only a safe tool error when a stored read view cannot be redacted", async () => {
+    let body: unknown = { id: "private-source-canary", body: "x".repeat(400) };
+    for (let index = 0; index <= CONNECTOR_REDACTION_MAX_DEPTH; index += 1) body = { nested: body };
+    const text = JSON.stringify(body);
+    const query = vi.fn().mockResolvedValue([
+      {
+        id: "stored",
+        runId: "run",
+        createdAt: new Date(0),
+        payload: { name: "connector.read", executionId: "call" },
+        toolResult: { text, storedBytes: Buffer.byteLength(text) },
+      },
+    ]);
+    providerState.stream
+      .mockImplementationOnce(() =>
+        response([
+          {
+            type: "toolCall",
+            id: "failed-read",
+            name: "read_history",
+            arguments: { toolResultId: "stored" },
+          },
+        ]),
+      )
+      .mockImplementationOnce((_model, context: Context) => {
+        const failed = resultMessage(context, "failed-read");
+        expect(failed.isError).toBe(true);
+        expect(failed.content).toEqual([{ type: "text", text: "redaction_error" }]);
+        const wire = JSON.stringify(failed);
+        for (const key of ["private-source-canary", "nextRead", "viewHash", "storageTruncated"])
+          expect(wire).not.toContain(key);
+        return response();
+      });
+    await run({
+      tools: [builtinAgentTools.find((tool) => tool.name === "read_history")!],
+      executeTool: async (_name, args) =>
+        readHistory(
+          { $queryRaw: query } as unknown as PrismaClient,
+          {
+            spaceId: "space",
+            userId: "user",
+            threadId: "thread",
+            botId: "bot",
+            transformToolResult: (value) => redactStoredToolResultView(value, []),
+          },
+          HistoryReadInputSchema.parse(args),
+        ),
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
   });
 
   it("keeps an active reference after more than 1024 unrelated views and through actual Agent content identity", async () => {

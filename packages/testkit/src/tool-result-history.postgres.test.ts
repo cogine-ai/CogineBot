@@ -17,12 +17,13 @@ const origin = "http://127.0.0.1:5173";
 
 describe.skipIf(!enabled)("connector result history through executor and Pi", () => {
   it.each([
-    { disabled: false, small: true },
-    { disabled: false, small: false },
-    { disabled: true, small: false },
+    { disabled: false, small: true, invalidView: false },
+    { disabled: false, small: false, invalidView: false },
+    { disabled: true, small: false, invalidView: false },
+    { disabled: false, small: false, invalidView: true },
   ])(
-    "keeps current-strategy references readable with read_history disabled=$disabled small=$small",
-    async ({ disabled, small }) => {
+    "keeps current-strategy references safe with read_history disabled=$disabled small=$small invalidView=$invalidView",
+    async ({ disabled, small, invalidView }) => {
       const secret = 'synthetic"quoted-history-key';
       const source = {
         id: "exact-record-id",
@@ -46,6 +47,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
         structuredContent: redactedSource,
       };
       let storedId = "";
+      let invalidateStoredView: ((id: string) => Promise<void>) | undefined;
       const lastResult = (request: ModelEmulatorRequest) =>
         JSON.parse(
           String(request.messages.findLast((message) => message.role === "tool")?.content),
@@ -66,7 +68,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
           },
         },
         {
-          expect(request) {
+          async expect(request) {
             const result = lastResult(request);
             if (!small) expect(result.contextTruncated).toBe(true);
             expect(
@@ -80,6 +82,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
               expect(result.historyReference.tool).toBe("read_history");
               storedId = result.historyReference.arguments.toolResultId;
               expect(storedId).toBeTruthy();
+              if (invalidView) await invalidateStoredView!(storedId);
             }
           },
           response: () =>
@@ -96,6 +99,22 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
           ? [
               {
                 expect(request: ModelEmulatorRequest) {
+                  if (invalidView) {
+                    const text = String(
+                      request.messages.findLast((message) => message.role === "tool")?.content,
+                    );
+                    expect(text).toContain("redaction_error");
+                    for (const field of [
+                      "unreadable original marker",
+                      "toolResult",
+                      "nextRead",
+                      "viewHash",
+                      "storageTruncated",
+                      "historyReference",
+                    ])
+                      expect(text).not.toContain(field);
+                    return;
+                  }
                   const result = lastResult(request);
                   expect(result.untrusted).toBe(true);
                   expect(result.toolResult).toMatchObject({
@@ -137,6 +156,17 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
           contextStrategy: "current",
         });
         stop = handles.stop;
+        invalidateStoredView = async (id) => {
+          let value: unknown = { body: "unreadable original marker".repeat(100) };
+          for (let depth = 0; depth < 70; depth += 1) value = { nested: value };
+          const text = JSON.stringify(value);
+          expect(Buffer.byteLength(text)).toBeLessThan(1_048_576);
+          // Simulate an older stored view that the current redaction policy cannot process.
+          await handles.prisma.event.update({
+            where: { id },
+            data: { toolResult: { text, storedBytes: Buffer.byteLength(text) } },
+          });
+        };
         const discover = vi.spyOn(handles.connector, "discoverTools").mockResolvedValue([
           {
             name: "synthetic_read_records",
@@ -217,7 +247,7 @@ describe.skipIf(!enabled)("connector result history through executor and Pi", ()
           where: { runId: sent.runId, type: "agent.tool.result.stored" },
         });
         expect(stored).toHaveLength(disabled ? 0 : 1);
-        if (!disabled) {
+        if (!disabled && !invalidView) {
           expect(stored[0]!.id).toBe(storedId);
           expect(JSON.stringify(stored[0]!.toolResult)).not.toContain("quoted-history-key");
           const run = await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } });
