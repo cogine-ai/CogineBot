@@ -48,6 +48,10 @@ const validServers = [
     server: "https://api.example.test/路径/é",
     canonical: "https://api.example.test/%E8%B7%AF%E5%BE%84/%C3%A9",
   },
+  {
+    server: "https://例子.测试/v1",
+    canonical: "https://xn--fsqu00a.xn--0zwm56d/v1",
+  },
   { server: "https://api.example.test/a b", canonical: "https://api.example.test/a%20b" },
   {
     server: "https://api.example.test/path\u00a0",
@@ -144,6 +148,8 @@ describe("reviewed OpenAPI server URLs", () => {
         );
         const { prepared, events } = await reviewAndExecute(outbound, load, count);
         expect(prepared.source).toBe(canonical);
+        expect(prepared.rawTarget).toBe(server);
+        expect(prepared.config).not.toHaveProperty("rawTarget");
         expect(events[0]).toMatchObject({ type: "result" });
         expect(outbound).toHaveBeenCalledOnce();
         expect(String(outbound.mock.calls[0]![0])).toBe(`${canonical.replace(/\/$/, "")}/items`);

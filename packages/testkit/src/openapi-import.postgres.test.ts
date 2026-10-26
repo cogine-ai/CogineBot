@@ -506,6 +506,72 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     }
   });
 
+  it.each(["密钥", "较长的测试密钥"])(
+    "rejects the original %s credential before an IDN target hides it",
+    async (submitted) => {
+      const rawTarget = `https://${submitted}.example.test/v1`;
+      const result = await preview({
+        ...input(documentFor(rawTarget)),
+        credential: submitted,
+        config: { auth: { type: "query", name: "import_key" } },
+      });
+      expect(result).toMatchObject({ status: "invalid", reviewToken: null });
+      expect(JSON.stringify(result)).not.toContain("rawTarget");
+      expect(JSON.stringify(result)).not.toContain(rawTarget);
+      expect(JSON.stringify(result)).not.toContain(submitted);
+      expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
+    },
+  );
+
+  it.each(["密钥", "较长的测试密钥"])(
+    "rejects a re-fetched IDN target containing the %s credential before put",
+    async (submitted) => {
+      const snapshot = {
+        ...input(),
+        credential: submitted,
+        config: { auth: { type: "query", name: "import_key" } },
+      };
+      const reviewed = await preview(snapshot);
+      expect(reviewed.status).toBe("ready");
+      if (reviewed.status !== "ready") throw new Error("Expected a valid review");
+      const tokenPayload = Buffer.from(reviewed.reviewToken.split(".")[0]!, "base64url").toString(
+        "utf8",
+      );
+      expect(JSON.stringify(reviewed)).not.toContain("rawTarget");
+      expect(tokenPayload).not.toContain("rawTarget");
+      expect(tokenPayload).not.toContain(submitted);
+      const request = { ...snapshot, reviewToken: reviewed.reviewToken };
+      const rawTarget = `https://${submitted}.example.test/v1`;
+      documents.set(request.source, documentFor(rawTarget));
+      expect(await confirm(request)).toMatchObject({ status: "invalid", diagnostics: [] });
+      expect(sourceRequests).toHaveLength(2);
+      expect(
+        await handles.prisma.openApiImportReceipt.findFirstOrThrow({
+          where: { spaceId: space.id },
+        }),
+      ).toMatchObject({ state: "invalid", installId: null });
+      expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 1, puts: 0 });
+
+      // Private compiler evidence must also stay out of a later ordinary install.
+      documents.set(request.source, documentFor());
+      const next = await ready(snapshot);
+      expect(
+        Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
+      ).not.toContain("rawTarget");
+      const installed = await confirm(next);
+      expect(installed.status).toBe("installed");
+      if (installed.status !== "installed") throw new Error("Expected an install");
+      const stored = await handles.prisma.capabilityInstall.findUniqueOrThrow({
+        where: { id: installed.install.id },
+      });
+      for (const value of [JSON.stringify(installed), JSON.stringify(stored.config)]) {
+        expect(value).not.toContain("rawTarget");
+        expect(value).not.toContain(rawTarget);
+        expect(value).not.toContain(submitted);
+      }
+    },
+  );
+
   it.each(credentialEchoCases)(
     "rejects $label credential echoes before preview exposes a plan",
     async ({ credential: short, echo }) => {

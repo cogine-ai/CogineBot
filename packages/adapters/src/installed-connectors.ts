@@ -521,6 +521,8 @@ export async function prepareOpenApiInstall(input: Parameters<typeof prepareApiI
   };
   return {
     source: compiled.baseUrl,
+    // Only for credential exclusion checks; never expose or persist with the public plan.
+    rawTarget: (document.servers as Array<{ url: string }>)[0]!.url,
     config,
     operationCount: operations.length,
     diagnostics: compiled.diagnostics,
