@@ -141,7 +141,7 @@ jobs:
         if: matrix.lane == 'web'
         run: |
           set -euo pipefail
-          pnpm test:e2e -- --sandbox=fake --runtime=scripted '--spec=(failure-recovery-auth|failure-recovery|routine-execution|messaging-settings|bot-templates|account-profile|model-settings|chat-reliability|artifact-preview|artifacts-tab|markdown-table|markdown-diagram|peer-messages|spaces|space-settings|desktop-shell|continuous-chat|composer-paste|composer-send-failure|routine-crud|sidebar-density|team-computer|teach-task|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|avatar-editor|avatar-motion|avatar-style|bot-crud|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel|consequential-approval|graphql-integrations|load-failure|mcp-oauth|stuck-work|connector-accounts|native-connectors|native-event-authoring|native-notion-webhook|native-batch2|native-remaining|mcp-approval-card|integration-setup|openapi-import)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
+          pnpm test:e2e -- --sandbox=fake --runtime=scripted '--spec=(failure-recovery-auth|failure-recovery|routine-execution|messaging-settings|bot-templates|account-profile|model-settings|chat-reliability|artifact-preview|artifacts-tab|markdown-table|markdown-diagram|peer-messages|spaces|space-settings|desktop-shell|continuous-chat|composer-paste|composer-send-failure|routine-crud|sidebar-density|team-computer|teach-task|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|avatar-editor|avatar-motion|avatar-style|bot-crud|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel|consequential-approval|graphql-integrations|load-failure|mcp-oauth|stuck-work|connector-accounts|native-connectors|native-event-authoring|native-notion-webhook|native-batch2|native-remaining|mcp-approval-card|integration-setup|openapi-import|takeover-release)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
       - name: Retain diagram UI acceptance screenshots
         if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -206,6 +206,14 @@ jobs:
         with:
           name: openapi-import-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/web/test-results/openapi-import-*/**/b23-openapi-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain takeover release acceptance screenshots
+        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: takeover-release-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/takeover-release-*/**/b31-takeover-*.png
           if-no-files-found: error
           retention-days: 7
       - name: Retain successful synthetic UI screenshots

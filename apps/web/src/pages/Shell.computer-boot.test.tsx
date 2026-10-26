@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import type { AppBootstrap, Bot, ComputerStatus, ThreadSnapshot } from "@rakazo/contracts";
+import type {
+  AppBootstrap,
+  Bot,
+  ComputerStatus,
+  ProductEvent,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
 import type { ReactNode } from "react";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -627,3 +633,102 @@ it.each(["space-1", null])(
     );
   },
 );
+
+it("keeps a settled card when an ordinary same-thread search jump finishes after release", async () => {
+  Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+  const initial: ThreadSnapshot = {
+    ...snapshot(status()),
+    cursor: 10,
+    olderCursor: 1,
+    run: {
+      id: "run-1",
+      botId: "chief",
+      threadId: "thread-chief",
+      taskId: "task-1",
+      status: "waiting_takeover",
+      trigger: "user",
+      routineId: null,
+      modelProvider: null,
+      modelId: null,
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    messages: [
+      {
+        id: "card",
+        seq: 1,
+        threadId: "thread-chief",
+        runId: "run-1",
+        role: "bot",
+        blocks: [{ kind: "computer", text: "Sign in", state: "Needs you" }],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  };
+  const oldSnapshot = deferred<ThreadSnapshot>();
+  const updated = deferred<ProductEvent>();
+  const released = deferred<ProductEvent>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  boundary.call.mockImplementation(async (path, input, options) => {
+    if (path === "threads.get") return oldSnapshot.promise;
+    if (path === "threads.messages")
+      return { threadId: initial.threadId, olderCursor: null, messages: initial.messages };
+    if (path === "threads.subscribe")
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield await updated.promise;
+          yield await released.promise;
+          await new Promise<void>((resolve) =>
+            options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+          );
+        },
+      };
+    return fallback(path, input, options);
+  });
+  await render();
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain(
+    "Needs you",
+  );
+  await act(async () => navigate("/app/chief?m=card"));
+  expect(boundary.call.mock.calls.some(([path]) => path === "threads.messages")).toBe(true);
+  await act(async () =>
+    updated.resolve({
+      id: "event-11",
+      spaceId: "space-1",
+      type: "thread.message.updated",
+      seq: 11,
+      threadId: initial.threadId,
+      botId: "chief",
+      runId: "run-1",
+      payload: {
+        messageId: "card",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [{ kind: "computer", text: "Sign in", state: "Done" }],
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  await act(async () =>
+    released.resolve({
+      id: "event-12",
+      spaceId: "space-1",
+      type: "computer.takeover.released",
+      seq: 12,
+      threadId: initial.threadId,
+      botId: "chief",
+      runId: "run-1",
+      payload: { holder: "none", reason: "done", leaseId: "lease-1" },
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+  await act(async () => oldSnapshot.resolve(initial));
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).not.toContain(
+    "Needs you",
+  );
+});

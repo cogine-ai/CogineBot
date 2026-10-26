@@ -1,6 +1,10 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { takeLiveMessage, updateCloudAgentMessages } from "./thread-message-updates.js";
+import {
+  releasedTakeoverComputerBlocks,
+  takeLiveMessage,
+  updateCloudAgentMessages,
+} from "./thread-message-updates.js";
 
 const cloud = (agentId: string): MessageBlock => ({
   kind: "cloud_agent",
@@ -11,6 +15,34 @@ const cloud = (agentId: string): MessageBlock => ({
 });
 
 describe("shared message updates", () => {
+  it.each(["done", "released", "skipped", "expired", "takeover-skipped"])(
+    "settles only pending takeover cards for %s without mutating their history",
+    (reason) => {
+      const blocks: MessageBlock[] = [
+        { kind: "text", text: "Before" },
+        { kind: "computer", state: "Needs you", text: "Enter protected input" },
+        { kind: "computer", state: "Done", text: "Earlier takeover" },
+        { kind: "computer", state: "needs you", text: "Different state" },
+        { kind: "computer", state: "Needs you", text: "Another pending card" },
+      ];
+      const result = releasedTakeoverComputerBlocks(blocks, reason);
+      const state = ["skipped", "expired", "takeover-skipped"].includes(reason)
+        ? "Skipped"
+        : "Done";
+      expect(result).toEqual([
+        blocks[0],
+        { kind: "computer", state, text: "Enter protected input" },
+        blocks[2],
+        blocks[3],
+        { kind: "computer", state, text: "Another pending card" },
+      ]);
+      expect(result?.[0]).toBe(blocks[0]);
+      expect(result?.[2]).toBe(blocks[2]);
+      expect(blocks[1]).toMatchObject({ state: "Needs you" });
+      expect(releasedTakeoverComputerBlocks(result ?? [], reason)).toBeNull();
+    },
+  );
+
   it("takes only the matching run and drops obsolete unscoped progress in order", () => {
     const messages = [
       { id: "first" },

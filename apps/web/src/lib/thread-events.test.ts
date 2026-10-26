@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type {
   ComputerStatus,
   ProductEvent,
@@ -585,7 +586,7 @@ describe("thread event reduction", () => {
   });
 
   it("event-sources the active run on run.started so Stop does not wait on threads.get", () => {
-    const initial = snapshot([]);
+    const initial = { ...snapshot([]), cursor: 2 };
     const started = reduceThreadSnapshot(
       initial,
       event({
@@ -1097,7 +1098,7 @@ describe("thread event reduction", () => {
     expect(waiting?.cursor).toBe(6);
     expect(
       reduceThreadSnapshot(waiting, event({ type: "run.waiting_input", seq: 7, runId: "run-1" })),
-    ).toBe(waiting);
+    ).toEqual({ ...waiting, cursor: 7 });
   });
 
   it("clears live progress when a run waits for input", () => {
@@ -1898,3 +1899,424 @@ function event(overrides: Partial<ProductEvent>): ProductEvent {
   }
   return next;
 }
+
+describe("released takeover thread state", () => {
+  function waiting() {
+    const run = { ...threadRun("run-1"), status: "waiting_takeover" as const };
+    const sibling = threadRun("run-2", "bot-2");
+    const pending = {
+      ...message(
+        "takeover",
+        [{ kind: "computer" as const, state: "Needs you", text: "Continue" }],
+        1,
+      ),
+      runId: run.id,
+    };
+    const other = {
+      ...message("other", [{ kind: "computer" as const, state: "Needs you", text: "Other" }], 2),
+      runId: sibling.id,
+    };
+    return {
+      ...snapshot([pending, other], 1),
+      cursor: 10,
+      groupId: "group-1",
+      run,
+      activeRuns: [run, sibling],
+      members: [
+        { botId: "bot-1", name: "One", color: "slate", status: "waiting_takeover" },
+        { botId: "bot-2", name: "Two", color: "slate", status: "running" },
+      ],
+    } satisfies ThreadSnapshot;
+  }
+
+  it("routes the committed release through the thread reducer", () => {
+    expect(isThreadSnapshotEvent(event({ type: "computer.takeover.released" }))).toBe(true);
+  });
+
+  it.each(["Done", "Skipped"])(
+    "keeps the committed %s card while resuming only the matching group Run",
+    (state) => {
+      const initial = waiting();
+      const cardUpdated = reduceThreadSnapshot(
+        initial,
+        event({
+          type: "thread.message.updated",
+          seq: 11,
+          payload: {
+            messageId: "takeover",
+            messageSeq: 1,
+            role: "bot",
+            blocks: [{ kind: "computer", state, text: "Continue" }],
+          },
+        }),
+      )!;
+      const released = reduceThreadSnapshot(
+        cardUpdated,
+        event({
+          type: "computer.takeover.released",
+          seq: 12,
+          payload: { reason: state === "Done" ? "done" : "skipped", holder: "none" },
+        }),
+      )!;
+      expect(released.run?.status).toBe("queued");
+      expect(released.activeRuns?.[0]?.status).toBe("queued");
+      expect(released.activeRuns?.[1]).toBe(initial.activeRuns[1]);
+      expect(released.members?.[0]?.status).toBe("queued");
+      expect(released.members?.[1]).toBe(initial.members[1]);
+      expect(released.messages[0]).toMatchObject({
+        seq: 1,
+        runId: "run-1",
+        blocks: [{ kind: "computer", state }],
+      });
+      expect(released.messages[1]?.blocks).toBe(initial.messages[1]?.blocks);
+      expect(released.olderCursor).toBe(1);
+      expect(released.cursor).toBe(12);
+    },
+  );
+
+  it("preserves a displayed group failure while another member's waiting Run is released", () => {
+    const initial = waiting();
+    const failed = {
+      ...threadRun("failed", "bot-failed"),
+      status: "failed" as const,
+      error: "Retained failure",
+    };
+    const released = reduceThreadSnapshot(
+      { ...initial, run: failed },
+      event({ type: "computer.takeover.released", seq: 12 }),
+    )!;
+    expect(released.run).toBe(failed);
+    expect(released.activeRuns?.map((run) => run.status)).toEqual(["queued", "running"]);
+  });
+
+  it.each(["queued", "leased", "running", "cancelled", "failed", "completed"] as const)(
+    "does not revive or rewrite a %s Run on release",
+    (status) => {
+      const initial = waiting();
+      const run = { ...initial.run, status };
+      const released = reduceThreadSnapshot(
+        { ...initial, run, activeRuns: [run] },
+        event({ type: "computer.takeover.released", seq: 12 }),
+      )!;
+      expect(released.run).toBe(run);
+      expect(released.activeRuns?.[0]).toBe(run);
+      expect(released.members).toBe(initial.members);
+      expect(released.cursor).toBe(12);
+    },
+  );
+
+  it.each([undefined, "unknown"])("does not invent a released Run for %s", (runId) => {
+    const initial = waiting();
+    const released = reduceThreadSnapshot(
+      initial,
+      event({ type: "computer.takeover.released", seq: 12, runId }),
+    )!;
+    expect(released.run).toBe(initial.run);
+    expect(released.activeRuns).toBe(initial.activeRuns);
+    expect(released.members).toBe(initial.members);
+    expect(released.messages.map((item) => item.blocks)).toEqual(
+      initial.messages.map((item) => item.blocks),
+    );
+    expect(released.cursor).toBe(12);
+  });
+
+  it("accepts a newer authoritative release snapshot instead of keeping local waiting", () => {
+    const initial = waiting();
+    const run = { ...initial.run, status: "queued" as const };
+    const next = { ...initial, cursor: 12, run, activeRuns: [run, initial.activeRuns[1]!] };
+    const reconciled = reconcileRefreshedThread(initial, next, initial.computer ?? null);
+    expect(reconciled.snapshot.run?.status).toBe("queued");
+    expect(reconciled.snapshot.activeRuns?.[0]?.status).toBe("queued");
+  });
+
+  it("ignores old lifecycle and known card payloads without dropping missing durable history", () => {
+    const initial = waiting();
+    const queued = { ...initial.run, status: "queued" as const };
+    const settled: ThreadSnapshot = {
+      ...initial,
+      cursor: 12,
+      run: queued,
+      activeRuns: [queued],
+      messages: [
+        {
+          ...initial.messages[0]!,
+          blocks: [{ kind: "computer", state: "Done", text: "Continue" }],
+        },
+      ],
+    };
+    for (const stale of [
+      event({ type: "computer.takeover.requested", seq: 10 }),
+      event({ type: "computer.takeover.released", seq: 11 }),
+      event({
+        type: "thread.message.updated",
+        seq: 10,
+        payload: {
+          messageId: "takeover",
+          messageSeq: 1,
+          role: "bot",
+          blocks: [{ kind: "computer", state: "Needs you", text: "Continue" }],
+        },
+      }),
+    ])
+      expect(reduceThreadSnapshot(settled, stale)).toBe(settled);
+    const history = reduceThreadSnapshot(
+      settled,
+      event({
+        type: "thread.message.created",
+        seq: 7,
+        payload: {
+          messageId: "historical",
+          messageSeq: 0,
+          role: "bot",
+          blocks: [{ kind: "text", text: "Earlier" }],
+        },
+      }),
+    )!;
+    expect(history.cursor).toBe(12);
+    expect(history.run).toBe(queued);
+    expect(history.messages.map((item) => item.id)).toEqual(["historical", "takeover"]);
+  });
+
+  it("ignores a foreign-thread release even when it names the visible Run", () => {
+    const initial = waiting();
+    expect(
+      reduceThreadSnapshot(
+        initial,
+        event({ type: "computer.takeover.released", seq: 15, threadId: "other-thread" }),
+      ),
+    ).toBe(initial);
+  });
+});
+
+describe("durable card replay version", () => {
+  it("updates a newly hydrated historical card without accepting an older payload afterwards", () => {
+    const initial = {
+      ...snapshot([message("recent", [{ kind: "text", text: "Later" }], 9)], 9),
+      cursor: 20,
+    };
+    const created = event({
+      type: "thread.message.created",
+      seq: 7,
+      payload: {
+        messageId: "historical-card",
+        messageSeq: 0,
+        role: "bot",
+        blocks: [{ kind: "computer", state: "Needs you", text: "Continue" }],
+      },
+    });
+    const hydrated = reduceThreadSnapshot(initial, created)!;
+    const updated = reduceThreadSnapshot(
+      hydrated,
+      event({
+        ...created,
+        type: "thread.message.updated",
+        seq: 11,
+        payload: {
+          ...created.payload,
+          blocks: [{ kind: "computer", state: "Done", text: "Continue" }],
+        },
+      }),
+    )!;
+    expect(updated.cursor).toBe(20);
+    expect(updated.messages[0]).toMatchObject({
+      seq: 0,
+      blocks: [{ kind: "computer", state: "Done" }],
+    });
+    expect(reduceThreadSnapshot(updated, created)).toBe(updated);
+  });
+});
+
+describe("cleared takeover history barrier", () => {
+  const oldCard = () =>
+    event({
+      type: "thread.message.created",
+      seq: 7,
+      payload: {
+        messageId: "old-card",
+        messageSeq: 0,
+        role: "bot",
+        blocks: [{ kind: "computer", state: "Needs you", text: "Old" }],
+      },
+    });
+  it("does not hydrate an old unknown card after clear or an authoritative empty snapshot", () => {
+    const cleared = reduceThreadSnapshot(snapshot([]), event({ type: "thread.cleared", seq: 20 }))!;
+    expect(reduceThreadSnapshot(cleared, oldCard())).toBe(cleared);
+    const empty = { ...snapshot([]), cursor: 30 };
+    expect(reduceThreadSnapshot(empty, { ...oldCard(), seq: 24 })).toBe(empty);
+  });
+  it("retains the clear barrier through later pages while accepting post-clear historical events", () => {
+    const cleared = reduceThreadSnapshot(snapshot([]), event({ type: "thread.cleared", seq: 20 }))!;
+    const page = { ...snapshot([message("recent", [], 9)], 9), cursor: 30 };
+    const current = mergeThreadSnapshot(cleared, page);
+    expect(reduceThreadSnapshot(current, oldCard())).toBe(current);
+    const hydrated = reduceThreadSnapshot(current, {
+      ...oldCard(),
+      id: "new-event",
+      seq: 24,
+      payload: { ...oldCard().payload, messageId: "new-card" },
+    })!;
+    expect(hydrated.cursor).toBe(30);
+    expect(hydrated.messages.map((item) => item.id)).toEqual(["new-card", "recent"]);
+  });
+});
+
+describe("takeover message snapshot authority", () => {
+  const card = (state: string) =>
+    message("card", [{ kind: "computer", state, text: "Continue" }], 1);
+  const update = (seq: number, state: string) =>
+    event({
+      type: "thread.message.updated",
+      seq,
+      payload: { messageId: "card", messageSeq: 1, role: "bot", blocks: card(state).blocks },
+    });
+  it("keeps the original message version when unrelated progress advances the cursor", () => {
+    const base = { ...snapshot([card("Needs you")]), cursor: 10 };
+    const progressed = reduceThreadSnapshot(
+      base,
+      event({ seq: 20, payload: { text: "Working" } }),
+    )!;
+    const settled = reduceThreadSnapshot(progressed, update(11, "Done"))!;
+    expect(settled.messages.find((item) => item.id === "card")?.blocks).toEqual(
+      card("Done").blocks,
+    );
+    expect(settled.cursor).toBe(20);
+  });
+  it("uses a fresh snapshot's cursor for its messages and retains prior history versions", () => {
+    const old = { ...snapshot([card("Needs you")], 1), cursor: 10 };
+    const history = mergeThreadSnapshot(
+      old,
+      { ...snapshot([message("recent", [], 9)], 9), cursor: 30 },
+      true,
+    );
+    expect(
+      reduceThreadSnapshot(history, update(11, "Done"))?.messages.find((item) => item.id === "card")
+        ?.blocks,
+    ).toEqual(card("Done").blocks);
+    const fresh = mergeThreadSnapshot(history, { ...snapshot([card("Done")]), cursor: 30 });
+    expect(reduceThreadSnapshot(fresh, update(25, "Needs you"))).toBe(fresh);
+  });
+  it("protects an observed card from a page started earlier and accepts a page started later", () => {
+    const base = { ...snapshot([card("Needs you")], 1), cursor: 10 };
+    const current = reduceThreadSnapshot(base, update(11, "Done"))!;
+    const page = {
+      threadId: "thread-1",
+      messages: [message("older", [], 0), card("Skipped")],
+      olderCursor: null,
+    };
+    const delayed = prependThreadMessagePage(current, page, 10)!;
+    expect(delayed.messages.find((item) => item.id === "card")?.blocks).toEqual(
+      card("Done").blocks,
+    );
+    expect(delayed.messages.map((item) => item.id)).toEqual(["older", "card"]);
+    const newer = prependThreadMessagePage(current, page, 12)!;
+    expect(newer.messages.find((item) => item.id === "card")?.blocks).toEqual(
+      card("Skipped").blocks,
+    );
+  });
+});
+
+it("replays a covered clear as a history barrier while retaining newer snapshot state", () => {
+  const run = threadRun("current-run", "bot-2");
+  const base = {
+    ...snapshot([message("recent", [{ kind: "text", text: "After clear" }], 9)], 9),
+    cursor: 30,
+    run,
+    activeRuns: [run],
+  };
+  const older = event({
+    type: "thread.message.created",
+    seq: 7,
+    payload: {
+      messageId: "old-card",
+      messageSeq: 0,
+      role: "bot",
+      blocks: [{ kind: "computer", state: "Needs you", text: "Before clear" }],
+    },
+  });
+  const replayed = reduceThreadSnapshot(base, older)!;
+  const cleared = reduceThreadSnapshot(replayed, event({ type: "thread.cleared", seq: 20 }))!;
+  expect(cleared.messages.map((item) => item.id)).toEqual(["recent"]);
+  expect(cleared.run).toBe(run);
+  expect(cleared.activeRuns).toBe(base.activeRuns);
+  expect(cleared.cursor).toBe(30);
+  expect(cleared.olderCursor).toBe(9);
+  expect(reduceThreadSnapshot(cleared, older)).toBe(cleared);
+});
+
+it("the Shell reader retains a covered clear barrier without replacing current execution", () => {
+  const source = readFileSync(new URL("../pages/Shell.tsx", import.meta.url), "utf8");
+  const start = source.indexOf("      applyEvent: (event: ProductEvent) => {");
+  const end = source.indexOf("\n      },\n    };\n  }", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const body = `${source.slice(start + "      applyEvent: ".length, end)}\n}`;
+  const script = `const handler = ${body.replace("(event: ProductEvent)", "(event)")};`;
+  const run = threadRun("current-run", "bot-2");
+  const snapRef = {
+    current: {
+      ...snapshot([message("recent", [], 9)], 9),
+      cursor: 30,
+      run,
+      activeRuns: [run],
+    } as ThreadSnapshot | null,
+  };
+  const scope = {
+    ownsReader: () => true,
+    snapshotRef: snapRef,
+    reduceThreadSnapshot,
+    expandedHistoryThread: { current: null },
+    commitSnapshot: (next: ThreadSnapshot | null) => {
+      snapRef.current = next;
+    },
+  };
+  const apply = new Function(...Object.keys(scope), `${script}; return handler;`)(
+    ...Object.values(scope),
+  ) as (event: ProductEvent) => void;
+  const older = event({
+    type: "thread.message.created",
+    seq: 7,
+    payload: {
+      messageId: "old-card",
+      messageSeq: 0,
+      role: "bot",
+      blocks: [{ kind: "computer", state: "Needs you", text: "Before clear" }],
+    },
+  });
+  apply(older);
+  apply(event({ type: "thread.cleared", seq: 20 }));
+  apply(older);
+  expect(snapRef.current?.messages.map((item) => item.id)).toEqual(["recent"]);
+  expect(snapRef.current?.run).toBe(run);
+  expect(snapRef.current?.cursor).toBe(30);
+});
+
+it("uses a complete nonempty snapshot as authoritative history after a clear", () => {
+  const previous = {
+    ...snapshot(
+      [message("old-card", [{ kind: "computer", state: "Needs you", text: "Before clear" }], 0)],
+      1,
+    ),
+    cursor: 10,
+  };
+  const current = mergeThreadSnapshot(
+    previous,
+    { ...snapshot([message("after-clear", [], 5)]), cursor: 30 },
+    true,
+  );
+  expect(current.messages.map((item) => item.id)).toEqual(["after-clear"]);
+  expect(
+    reduceThreadSnapshot(
+      current,
+      event({
+        type: "thread.message.created",
+        seq: 7,
+        payload: {
+          messageId: "old-card",
+          messageSeq: 0,
+          role: "bot",
+          blocks: previous.messages[0]!.blocks,
+        },
+      }),
+    ),
+  ).toBe(current);
+});

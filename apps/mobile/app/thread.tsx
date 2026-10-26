@@ -127,12 +127,14 @@ import {
   copyableMobileMessageText,
   currentApiBase,
   currentApiBaseGeneration,
+  currentSpaceSelectionGeneration,
   isSpaceSelectionPending,
   loadSessionToken,
   mergeMobileSnapshot,
   messagingProviderLabel,
   mobileThreadRefreshResult,
   prependMobileMessagePage,
+  protectMobileMessagePage,
   rpc,
   selectableMobileMessageText,
   selectedSpaceId,
@@ -750,6 +752,11 @@ function Thread({
     : botId
       ? { botId }
       : undefined;
+  const spaceEpoch = useSyncExternalStore(
+    subscribeMobileScope,
+    currentSpaceSelectionGeneration,
+    currentSpaceSelectionGeneration,
+  );
   const [snap, setSnap] = useState<MobileSnapshot | null>(null);
   const snapRef = useRef<MobileSnapshot | null>(null);
   // The copy saved on this device stays on screen until a live snapshot replaces it.
@@ -1365,18 +1372,21 @@ function Thread({
       activeGroupId: activeGroupId.current,
     });
     if (result.commit) {
+      const committed = mergeMobileSnapshot(
+        snapRef.current,
+        next,
+        expandedHistoryThread.current === next.threadId,
+      );
       snapshotOrigin.current = scope;
       pendingSave.current = null;
-      writeSavedThread(scope, savedChatTarget(next), next);
-      commitSnap(
-        mergeMobileSnapshot(snapRef.current, next, expandedHistoryThread.current === next.threadId),
-      );
+      writeSavedThread(scope, savedChatTarget(committed), committed);
+      commitSnap(committed);
       setShowingSaved(false);
     }
     if (isCurrentTarget(targetBotId, targetGroupId)) {
       feedback.refreshed(targetGroupId ?? targetBotId);
     }
-    return result.snapshot ?? undefined;
+    return (result.commit ? snapRef.current : result.snapshot) ?? undefined;
   }
 
   async function applyMessageJump(target: { botId?: string; groupId?: string; messageId: string }) {
@@ -1384,9 +1394,10 @@ function Thread({
     const epoch = historyEpoch.current;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
+    const requestCursor = snapRef.current?.cursor ?? -1;
     const scope = await liveSavedChatsScope();
     if (!scope || !isIntegrationsScopeCurrent(scope)) return;
-    const [snap, page] = await Promise.all([
+    const [snap, requestedPage] = await Promise.all([
       rpc<MobileSnapshot>("threads/get", threadTarget),
       rpc<MobileMessagePage>("threads/messages", {
         ...threadTarget,
@@ -1403,14 +1414,20 @@ function Thread({
       return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
-    const targetInPage = page.messages.some((message) => message.id === target.messageId);
-    const opened = targetInPage ? openThreadWindow(snap, page) : null;
-    expandedHistoryThread.current = targetInPage ? page.threadId : null;
+    const latest = mergeMobileSnapshot(snapRef.current, snap);
+    const page = protectMobileMessagePage(
+      latest,
+      requestedPage,
+      Math.min(requestCursor, snap.cursor ?? requestCursor),
+    );
+    const targetInPage = Boolean(page?.messages.some((message) => message.id === target.messageId));
+    const opened = targetInPage && page ? openThreadWindow(latest, page) : null;
+    expandedHistoryThread.current = opened?.snapshot.threadId ?? null;
     pinnedAroundRef.current = opened
       ? {
           ...threadTarget,
           messageId: target.messageId,
-          threadId: page.threadId,
+          threadId: opened.snapshot.threadId,
           newerCursor: opened.newerCursor,
         }
       : null;
@@ -1422,7 +1439,7 @@ function Thread({
     // Publish the jump refs even when the opened snapshot is already visible.
     setThreadScrollState(scrollBehavior.current.state());
     snapshotOrigin.current = scope;
-    commitSnap(opened?.snapshot ?? snap);
+    commitSnap(opened?.snapshot ?? latest);
     setShowingSaved(false);
   }
 
@@ -1439,10 +1456,11 @@ function Thread({
     setLoadingNewer(true);
     const epoch = historyEpoch.current;
     const probe = pinned.probeSeq ?? pinned.newerCursor + 1;
+    const requestCursor = snapRef.current?.cursor ?? -1;
     let visibleUnchanged = false;
     try {
       // Pages come back centered on the seq, so the one after the cursor overlaps what is loaded.
-      const page = await rpc<MobileMessagePage & { coveredThroughSeq?: number }>(
+      const requestedPage = await rpc<MobileMessagePage & { coveredThroughSeq?: number }>(
         "threads/messages",
         {
           ...(groupId ? { groupId } : { botId: botId! }),
@@ -1451,6 +1469,8 @@ function Thread({
       );
       if (epoch !== historyEpoch.current || pinnedAroundRef.current !== pinned || !snapRef.current)
         return;
+      const page = protectMobileMessagePage(snapRef.current, requestedPage, requestCursor);
+      if (!page) return;
       const visibleBefore = threadWindowMessages(
         snapRef.current.messages,
         pinned.newerCursor,
@@ -1519,6 +1539,7 @@ function Thread({
     setLoadingOlder(true);
     const epoch = historyEpoch.current;
     const pinned = pinnedAroundRef.current;
+    const requestCursor = snapRef.current?.cursor ?? -1;
     try {
       const page = await rpc<MobileMessagePage>("threads/messages", {
         ...(groupId ? { groupId } : { botId: botId! }),
@@ -1530,7 +1551,7 @@ function Thread({
         return;
       }
       expandedHistoryThread.current = page.threadId;
-      commitSnap(prependMobileMessagePage(snapRef.current, page));
+      commitSnap(prependMobileMessagePage(snapRef.current, page, requestCursor));
     } catch (err) {
       loadingOlderContent.current = false;
       setError(errorText(err, t("Could not load earlier messages")));
@@ -1632,6 +1653,7 @@ function Thread({
     const abort = new AbortController();
     const subscriptionGeneration = ++liveSubscriptionGeneration.current;
     const sessionGeneration = currentSessionGeneration();
+    const selectionGeneration = currentSpaceSelectionGeneration();
     liveSubscribed.current = false;
     showSavedThread(abort.signal);
     void (async () => {
@@ -1650,14 +1672,30 @@ function Thread({
       if (abort.signal.aborted || readOnly) return;
       let cursor = next?.cursor ?? -1;
       let retryMs = 250;
-      while (!abort.signal.aborted && sessionGeneration === currentSessionGeneration()) {
+      while (
+        !abort.signal.aborted &&
+        sessionGeneration === currentSessionGeneration() &&
+        selectionGeneration === currentSpaceSelectionGeneration() &&
+        liveSubscriptionGeneration.current === subscriptionGeneration
+      ) {
         try {
           liveSubscribed.current = true;
           await subscribeThread(
             groupId ? { groupId } : { botId: botId! },
             cursor,
             (event) => {
-              if (sessionGeneration !== currentSessionGeneration()) return;
+              if (
+                abort.signal.aborted ||
+                sessionGeneration !== currentSessionGeneration() ||
+                selectionGeneration !== currentSpaceSelectionGeneration() ||
+                liveSubscriptionGeneration.current !== subscriptionGeneration ||
+                activeBotId.current !== botId ||
+                activeGroupId.current !== groupId ||
+                (event.threadId &&
+                  snapRef.current?.threadId &&
+                  event.threadId !== snapRef.current.threadId)
+              )
+                return;
               cursor = Math.max(cursor, event.seq ?? -1);
               retryMs = 250;
               if (
@@ -1672,9 +1710,13 @@ function Thread({
                 event.type === "thread.cleared" ||
                 event.type === "run.waiting_input" ||
                 event.type === "computer.takeover.requested" ||
+                event.type === "computer.takeover.released" ||
                 isRunTerminalEvent(event)
               ) {
-                if (event.type === "thread.cleared") {
+                if (
+                  event.type === "thread.cleared" &&
+                  (event.seq === undefined || event.seq > (snapRef.current?.cursor ?? -1))
+                ) {
                   expandedHistoryThread.current = null;
                   pinnedAroundRef.current = null;
                   jumpScrollTarget.current = null;
@@ -1706,7 +1748,13 @@ function Thread({
             liveSubscribed.current = false;
           }
         }
-        if (abort.signal.aborted) break;
+        if (
+          abort.signal.aborted ||
+          sessionGeneration !== currentSessionGeneration() ||
+          selectionGeneration !== currentSpaceSelectionGeneration() ||
+          liveSubscriptionGeneration.current !== subscriptionGeneration
+        )
+          break;
         if (!jumpScrollTarget.current && !expandedHistoryThread.current) {
           await refresh().catch(() => undefined);
         }
@@ -1717,7 +1765,7 @@ function Thread({
     return () => {
       abort.abort();
     };
-  }, [botId, groupId, readOnly, markReadIfVisible, refreshMentionBots, sessionEpoch]);
+  }, [botId, groupId, readOnly, markReadIfVisible, refreshMentionBots, sessionEpoch, spaceEpoch]);
 
   useEffect(() => () => pendingSave.current?.(), [botId, groupId]);
 

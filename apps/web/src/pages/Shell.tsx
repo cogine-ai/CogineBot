@@ -255,6 +255,7 @@ import {
   isComputerStatusEvent,
   isThreadSnapshotEvent,
   prependThreadMessagePage,
+  protectThreadMessagePage,
   reconcileRefreshedThread,
   reduceComputerStatus,
   reduceThreadSnapshot,
@@ -1493,12 +1494,7 @@ export function ShellPage() {
                 !current.messages.some((message) => message.id === event.payload.messageId)
               )
                 expandedHistoryThread.current = event.threadId;
-              commitSnapshot({
-                ...current,
-                cursor: Math.max(current.cursor, event.seq),
-                messages: next.messages,
-                olderCursor: next.olderCursor,
-              });
+              commitSnapshot(next);
             }
           }
           return;
@@ -1659,6 +1655,7 @@ export function ShellPage() {
     const epoch = historyEpoch.current;
     const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
     const before = snapshot.olderCursor;
+    const requestCursor = snapshotRef.current?.cursor ?? -1;
     setLoadingOlder(true);
     try {
       const target = targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! };
@@ -1680,7 +1677,7 @@ export function ShellPage() {
         computerRef.current,
         true,
       );
-      commitSnapshot(prependThreadMessagePage(current.snapshot, page));
+      commitSnapshot(prependThreadMessagePage(current.snapshot, page, requestCursor));
       window.requestAnimationFrame(() => {
         const element = messageScroll.current;
         if (
@@ -1984,7 +1981,7 @@ export function ShellPage() {
           currentBot?.notifyOnFinish ?? false,
           false,
         );
-        if (event.type === "thread.cleared") {
+        if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
           clearHistoryWindow();
         }
@@ -2086,7 +2083,7 @@ export function ShellPage() {
       applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
-        if (event.type === "thread.cleared") {
+        if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
           clearHistoryWindow();
         }
@@ -2645,6 +2642,7 @@ export function ShellPage() {
       : undefined;
     const epoch = historyEpoch.current;
     const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
+    const requestCursor = snapshotRef.current?.cursor ?? -1;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
     const [snap, requestedPage] = await Promise.all([
@@ -2663,7 +2661,7 @@ export function ShellPage() {
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
     const messageId = target.attention ? (snap.attentionMessageId ?? null) : target.messageId;
-    const page =
+    const fetchedPage =
       messageId && messageId !== target.messageId
         ? await rpc.threads.messages({ ...threadTarget, around: { messageId } })
         : requestedPage;
@@ -2682,32 +2680,40 @@ export function ShellPage() {
       else if (target.botId) await refreshThread(target.botId);
       return;
     }
+    const savedGroup = target.groupId ? savedGroupUpdates.current.get(target.groupId) : undefined;
+    const jumpSnapshot =
+      savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
+    const reconciled = reconcileRefreshedThread(current, jumpSnapshot, computerRef.current);
+    const page = protectThreadMessagePage(
+      reconciled.snapshot,
+      fetchedPage,
+      Math.min(requestCursor, snap.cursor),
+    );
     const targetInPage =
+      page !== null &&
       messageId !== null &&
       userVisibleMessages(page.messages, { includePeerReceipts: true }).some(
         (message) => message.id === messageId,
       );
-    expandedHistoryThread.current = targetInPage ? page.threadId : null;
-    pinnedAroundRef.current = targetInPage
-      ? {
-          ...threadTarget,
-          messageId: messageId!,
-          threadId: page.threadId,
-          messages: page.messages,
-          olderCursor: page.olderCursor,
-        }
-      : null;
-    if (targetInPage) initiallyScrolledThread.current = page.threadId;
-    const savedGroup = target.groupId ? savedGroupUpdates.current.get(target.groupId) : undefined;
-    const jumpSnapshot =
-      savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
+    expandedHistoryThread.current = targetInPage && page ? page.threadId : null;
+    pinnedAroundRef.current =
+      targetInPage && page
+        ? {
+            ...threadTarget,
+            messageId: messageId!,
+            threadId: page.threadId,
+            messages: page.messages,
+            olderCursor: page.olderCursor,
+          }
+        : null;
+    if (targetInPage && page) initiallyScrolledThread.current = page.threadId;
     commitSnapshot({
-      ...jumpSnapshot,
-      messages: targetInPage ? page.messages : snap.messages,
-      olderCursor: targetInPage ? page.olderCursor : snap.olderCursor,
+      ...reconciled.snapshot,
+      messages: targetInPage && page ? page.messages : reconciled.snapshot.messages,
+      olderCursor: targetInPage && page ? page.olderCursor : reconciled.snapshot.olderCursor,
     });
     if (threadTarget.botId) {
-      commitComputer(snap.computer ?? null);
+      commitComputer(reconciled.computer);
       // Don't block parent-scroll on routines metadata; a list failure must not abort the jump.
       void rpc.routines
         .list({ botId: threadTarget.botId })
@@ -2733,7 +2739,7 @@ export function ShellPage() {
         const element = messageScroll.current;
         if (element) {
           element.scrollTop = element.scrollHeight;
-          initiallyScrolledThread.current = page.threadId;
+          initiallyScrolledThread.current = reconciled.snapshot.threadId;
         }
       });
     }

@@ -116,3 +116,26 @@ describe("visible thread snapshot publication", () => {
     expect(reconcileVisibleThreadSnapshot(previous, null)).toBeNull();
   });
 });
+
+it("ignores client event metadata while raw snapshots keep their replay authority", () => {
+  const previous = {
+    ...snapshot(),
+    messages: [
+      {
+        id: "card",
+        role: "bot" as const,
+        blocks: [{ kind: "computer" as const, state: "Done", text: "Continue" }],
+        observedEventSeq: 11,
+      },
+    ],
+  };
+  const next = {
+    ...previous,
+    cursor: 30,
+    observedClearSeq: 20,
+    messages: [{ ...previous.messages[0]!, observedEventSeq: 29 }],
+  };
+  expect(reconcileVisibleThreadSnapshot(previous, next)).toBe(previous);
+  expect(next.messages[0]?.observedEventSeq).toBe(29);
+  expect(next.observedClearSeq).toBe(20);
+});
