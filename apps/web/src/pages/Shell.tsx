@@ -6206,6 +6206,9 @@ export function ShellPage() {
 
         {creationAppsEditor && creationAppsEditor === botCreationEditor && panel === "create" ? (
           <PluginsOverlay
+            key={`${settingsOwnerKey}:${creationSpaceId}:${currentSpaceSelectionGeneration()}`}
+            ownerKey={userId ? settingsOwnerKey : null}
+            spaceId={creationSpaceId}
             onConnectionsChanged={connectionsChanged}
             onClose={() => setCreationAppsEditor(null)}
             onOpenMcp={() => {
@@ -6219,6 +6222,9 @@ export function ShellPage() {
         ) : null}
         {pluginsOpen ? (
           <PluginsOverlay
+            key={`${settingsOwnerKey}:${creationSpaceId}:${currentSpaceSelectionGeneration()}`}
+            ownerKey={userId ? settingsOwnerKey : null}
+            spaceId={creationSpaceId}
             activeBotId={activeBotId.current}
             onConnectionsChanged={connectionsChanged}
             onClose={() => setPluginsOpen(false)}

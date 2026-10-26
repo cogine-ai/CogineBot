@@ -285,13 +285,17 @@ function assertSchemaSize(entry: CatalogEntry): void {
 export function resolveCatalogCall(
   call: ConnectorCall,
   entries: CatalogEntry[],
+  parseArgs: (tool: ConnectorTool, args: Record<string, unknown>) => Record<string, unknown> = (
+    tool,
+    args,
+  ) => parseConnectorToolArgs(tool.inputSchema, args),
 ): { call: ConnectorCall; tool: ConnectorTool } {
   const entry = loadCatalogEntry(entries, call.args);
   const args = call.args.arguments;
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     throw new Error("Tool arguments must be an object");
   }
-  const parsed = parseConnectorToolArgs(entry.tool.inputSchema, args as Record<string, unknown>);
+  const parsed = parseArgs(entry.tool, args as Record<string, unknown>);
   return {
     tool: entry.tool,
     call: {
@@ -334,6 +338,7 @@ export async function* executeLazyCatalogControl(
   call: ConnectorCall,
   entries: CatalogEntry[],
   executeResolved: (resolved: ConnectorCall) => AsyncIterable<ConnectorEvent>,
+  parseArgs?: (tool: ConnectorTool, args: Record<string, unknown>) => Record<string, unknown>,
 ): AsyncIterable<ConnectorEvent> {
   if (call.route?.toolName === CATALOG_SEARCH) {
     yield { type: "result", data: searchCatalog(entries, call.args) };
@@ -353,7 +358,7 @@ export async function* executeLazyCatalogControl(
     };
     return;
   }
-  const resolved = resolveCatalogCall(call, entries);
+  const resolved = resolveCatalogCall(call, entries, parseArgs);
   yield* executeResolved(resolved.call);
 }
 

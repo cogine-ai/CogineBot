@@ -280,6 +280,7 @@ import {
   promptFocus,
   startOnboarding,
 } from "./onboarding.js";
+import { createOpenApiImportService } from "./openapi-import.js";
 import { listRoutineRuns } from "./routine-runs.js";
 import { listSpaceRuns } from "./runs.js";
 import { addScreenProxyCapability } from "./screen-proxy.js";
@@ -594,6 +595,8 @@ function mcpAssignmentDto(row: {
 }
 
 export interface RouterDeps {
+  openApiPreviewKey?: string;
+  openApiNow?: () => number;
   cloudAgent?: CloudAgentConnection | null;
   prisma: PrismaClient;
   events: ThreadEvents;
@@ -910,6 +913,7 @@ export function createRouter(deps: RouterDeps) {
     dataDir: deps.dataDir,
   });
   const agentSkills = createAgentSkillsService(deps.prisma);
+  const openApiImports = createOpenApiImportService(deps);
 
   const authed = os.use(async ({ context, next }) => {
     if (!context.actor) throw new ORPCError("UNAUTHORIZED");
@@ -4222,6 +4226,15 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     capabilities: {
+      previewOpenApi: authed.capabilities.previewOpenApi.handler(({ context, input }) =>
+        openApiImports.preview(context, input),
+      ),
+      confirmOpenApi: authed.capabilities.confirmOpenApi.handler(({ context, input }) =>
+        openApiImports.confirm(context, input),
+      ),
+      openApiReceipt: authed.capabilities.openApiReceipt.handler(({ context, input }) =>
+        openApiImports.receipt(context, input.reviewToken),
+      ),
       list: authed.capabilities.list.handler(async ({ context }) => {
         const rows = await deps.prisma.capabilityInstall.findMany({
           where: { spaceId: context.actor.spaceId, userId: context.actor.userId },

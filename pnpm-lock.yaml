@@ -79,6 +79,9 @@ importers:
       mermaid:
         specifier: 11.17.2
         version: 11.17.2
+      zod:
+        specifier: 4.6.2
+        version: 4.6.2
     devDependencies:
       typescript:
         specifier: 7.0.2
@@ -652,6 +655,9 @@ importers:
       undici:
         specifier: 8.10.2
         version: 8.10.2
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
       zod:
         specifier: 4.6.2
         version: 4.6.2

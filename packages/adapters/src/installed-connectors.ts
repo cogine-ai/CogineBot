@@ -15,7 +15,6 @@ import {
   assertNoSensitiveQuery,
   HeaderName,
   isSensitiveHeader,
-  isTransportHeader,
   PublicHeadersSchema,
   readBoundedText,
   requireCredential,
@@ -36,8 +35,16 @@ import {
   isLazyCatalogControlRoute,
   lazyCatalogTools,
   MAX_DESCRIPTION_LENGTH,
+  parseConnectorToolArgs,
   resolveCatalogCall,
 } from "./lazy-tool-catalog.js";
+import type { OpenApiImportDiagnostic } from "./openapi-import.js";
+import {
+  assertOpenApiArguments,
+  compileOpenApiDocument,
+  OpenApiCompileError,
+  parseOpenApiText,
+} from "./openapi-import.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies, RemoteUrlPolicy } from "./remote-mcp.js";
 import {
@@ -77,6 +84,7 @@ const ApiOperationSchema = z.object({
   readOnly: z.boolean().default(false),
   queryParameters: z.array(z.string().min(1).max(120)).default([]),
   headerParameters: z.array(ModelHeaderName).default([]),
+  importPolicy: z.literal("openapi-v1").optional(),
 });
 
 const ApiConfigSchema = z.object({
@@ -99,6 +107,18 @@ export type RemoteConnectorDependencies = RemoteTransportDependencies;
 type RemoteRequestPolicy = RemoteConnectorDependencies & RemoteUrlPolicy;
 
 export class InstalledConnectorProvider implements ConnectorProvider {
+  private readonly strictInputSchemas = new WeakSet<Record<string, unknown>>();
+
+  private readonly parseArgs = (
+    tool: ConnectorTool,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    if (!this.strictInputSchemas.has(tool.inputSchema))
+      return parseConnectorToolArgs(tool.inputSchema, args);
+    assertOpenApiArguments(tool.inputSchema, args);
+    return args;
+  };
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly secrets: SecretStore,
@@ -141,7 +161,11 @@ export class InstalledConnectorProvider implements ConnectorProvider {
   ): Promise<{ call: ConnectorCall; tool: ConnectorTool } | undefined> {
     // Wrappers have no resourceId; real tools always do.
     if (call.route?.resourceId || call.route?.toolName !== CATALOG_EXECUTE) return undefined;
-    return resolveCatalogCall(call, catalogEntries(await this.authorizedTools(context)));
+    return resolveCatalogCall(
+      call,
+      catalogEntries(await this.authorizedTools(context)),
+      this.parseArgs,
+    );
   }
 
   private async authorizedTools(context: AdapterContext): Promise<ConnectorTool[]> {
@@ -197,6 +221,9 @@ export class InstalledConnectorProvider implements ConnectorProvider {
       }
       if (install.kind === "api") {
         const config = ApiConfigSchema.parse(install.config);
+        for (const operation of config.operations)
+          if (operation.importPolicy === "openapi-v1")
+            this.strictInputSchemas.add(operation.inputSchema);
         return config.operations.map((operation) => ({
           name: operation.name ?? operation.id,
           description: operationDescription(
@@ -245,6 +272,7 @@ export class InstalledConnectorProvider implements ConnectorProvider {
           call,
           catalogEntries(await this.authorizedTools(context)),
           (resolved) => this.execute(resolved, context),
+          this.parseArgs,
         );
       } catch (error) {
         yield { type: "error", message: sanitizeConnectorError(error) };
@@ -385,28 +413,86 @@ export async function prepareApiInstall(input: {
   /** Loopback / LAN endpoint escape: deployment owner or instance flag. */
   allowPrivateEndpoint?: boolean;
 }): Promise<{ source: string; config: Record<string, unknown>; operationCount: number }> {
+  if (input.config.openApi === true || input.config.openapi === true)
+    throw new Error("OpenAPI import requires preview confirmation");
+  if (
+    Object.hasOwn(input.config, "importPolicy") ||
+    (Array.isArray(input.config.operations) &&
+      input.config.operations.some((value) => {
+        const operation = asRecord(value);
+        return operation && Object.hasOwn(operation, "importPolicy");
+      }))
+  )
+    throw new Error("OpenAPI import policy requires preview confirmation");
   const auth = AuthSchema.parse(input.config.auth);
   requireCredential(auth, input.credential);
   const headers = PublicHeadersSchema.parse(input.config.headers);
   assertNoSensitiveQuery(input.source);
   const remote = { ...input.remote, allowPrivateEndpoint: input.allowPrivateEndpoint };
-  let source = input.source;
-  let operationsValue = input.config.operations;
-  if (input.config.openApi === true || input.config.openapi === true) {
-    const documentUrl = new URL(input.source);
-    const documentHeaders: Record<string, string> = { accept: "application/json", ...headers };
-    applyCredential(documentUrl, documentHeaders, auth, input.credential);
-    const document = await loadOpenApiDocument(documentUrl, documentHeaders, input.signal, remote);
-    const imported = importOpenApiDocument(document);
-    source = imported.baseUrl;
-    operationsValue = imported.operations;
-  }
-  await assertSafeRemoteUrl(source, remote.resolveHostname, remote);
-  const config = ApiConfigSchema.parse({ auth, headers, operations: operationsValue });
+  await assertSafeRemoteUrl(input.source, remote.resolveHostname, remote);
+  const config = ApiConfigSchema.parse({ auth, headers, operations: input.config.operations });
   return {
-    source,
+    source: input.source,
     config,
     operationCount: config.operations.length,
+  };
+}
+
+export async function prepareOpenApiInstall(input: Parameters<typeof prepareApiInstall>[0]) {
+  const auth = AuthSchema.parse(input.config.auth);
+  requireCredential(auth, input.credential);
+  const headers = PublicHeadersSchema.parse(input.config.headers);
+  assertNoSensitiveQuery(input.source);
+  const remote = { ...input.remote, allowPrivateEndpoint: input.allowPrivateEndpoint };
+  const documentUrl = new URL(input.source);
+  const documentHeaders: Record<string, string> = {
+    accept: "application/json, application/yaml;q=0.9",
+    ...headers,
+  };
+  applyCredential(documentUrl, documentHeaders, auth, input.credential);
+  let document: Record<string, unknown>;
+  try {
+    document = await loadOpenApiDocument(documentUrl, documentHeaders, input.signal, remote);
+  } catch (error) {
+    if (error instanceof OpenApiCompileError) throw error;
+    throw new OpenApiCompileError("fetch_failed");
+  }
+  const compiled = compileOpenApiDocument(document);
+  await assertSafeRemoteUrl(compiled.baseUrl, remote.resolveHostname, remote);
+  const protectedHeaders = new Set(Object.keys(headers).map((name) => name.toLowerCase()));
+  if (auth.type === "bearer") protectedHeaders.add("authorization");
+  if (auth.type === "header" && auth.name) protectedHeaders.add(auth.name.toLowerCase());
+  const operations = compiled.operations.filter((operation) => {
+    const headerCollision = operation.headerParameters.some((name) =>
+      protectedHeaders.has(name.toLowerCase()),
+    );
+    const queryCollision =
+      auth.type === "query" && auth.name && operation.queryParameters.includes(auth.name);
+    if (!headerCollision && !queryCollision) return true;
+    const diagnostic: OpenApiImportDiagnostic = {
+      scope: "operation",
+      code: headerCollision ? "unsafe_header" : "invalid_parameter",
+      operationId: operation.id,
+      method: operation.method,
+      path: operation.path,
+    };
+    if (compiled.diagnostics.length < 100) compiled.diagnostics.push(diagnostic);
+    else compiled.counts.omittedDiagnostics++;
+    compiled.counts.accepted--;
+    compiled.counts.rejected++;
+    return false;
+  });
+  const config = {
+    auth,
+    headers,
+    operations: operations.map((operation) => ApiOperationSchema.parse(operation)),
+  };
+  return {
+    source: compiled.baseUrl,
+    config,
+    operationCount: operations.length,
+    diagnostics: compiled.diagnostics,
+    counts: compiled.counts,
   };
 }
 
@@ -424,99 +510,27 @@ async function loadOpenApiDocument(
     });
     if (!response.ok) throw new Error(`OpenAPI document returned HTTP ${response.status}`);
     const size = Number(response.headers.get("content-length") ?? 0);
-    if (size > 2_000_000) throw new Error("OpenAPI document is too large");
+    if (size > 2_000_000) throw new OpenApiCompileError("document_limit");
     const { text, truncated } = await readBoundedText(response, 2_000_000);
-    if (truncated) throw new Error("OpenAPI document is too large");
-    return JSON.parse(text) as Record<string, unknown>;
+    if (truncated) throw new OpenApiCompileError("document_limit");
+    return parseOpenApiText(text);
   } finally {
     await safeFetch.close().catch(() => undefined);
   }
 }
 
-export function importOpenApiDocument(document: Record<string, unknown>): {
-  baseUrl: string;
-  operations: ApiOperation[];
-} {
-  const server = Array.isArray(document.servers) ? document.servers[0] : undefined;
-  const baseUrl =
-    server && typeof server === "object" && typeof (server as { url?: unknown }).url === "string"
-      ? String((server as { url: string }).url)
-      : "";
-  if (!baseUrl) throw new Error("OpenAPI document must define servers[0].url");
-  assertNoSensitiveQuery(baseUrl);
-  const paths = document.paths;
-  if (!paths || typeof paths !== "object" || Array.isArray(paths)) {
-    throw new Error("OpenAPI document has no paths");
-  }
-  const operations: ApiOperation[] = [];
-  for (const [path, pathValue] of Object.entries(paths)) {
-    if (!pathValue || typeof pathValue !== "object" || Array.isArray(pathValue)) continue;
-    for (const method of ["get", "post", "put", "patch", "delete"] as const) {
-      const raw = (pathValue as Record<string, unknown>)[method];
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-      const operation = raw as Record<string, unknown>;
-      const id = typeof operation.operationId === "string" ? operation.operationId : undefined;
-      if (!id) continue;
-      const properties: Record<string, unknown> = {};
-      const required: string[] = [];
-      const queryParameters: string[] = [];
-      const headerParameters: string[] = [];
-      const commonParameters = Array.isArray((pathValue as Record<string, unknown>).parameters)
-        ? ((pathValue as Record<string, unknown>).parameters as unknown[])
-        : [];
-      const ownParameters = Array.isArray(operation.parameters)
-        ? (operation.parameters as unknown[])
-        : [];
-      for (const parameterValue of [...commonParameters, ...ownParameters]) {
-        if (!parameterValue || typeof parameterValue !== "object") continue;
-        const parameter = parameterValue as Record<string, unknown>;
-        if (typeof parameter.name !== "string") continue;
-        properties[parameter.name] = asRecord(parameter.schema) ?? { type: "string" };
-        if (parameter.in === "query") queryParameters.push(parameter.name);
-        if (parameter.in === "header") {
-          if (isSensitiveHeader(parameter.name) || isTransportHeader(parameter.name)) {
-            throw new Error(`OpenAPI operation ${id} contains unsafe header ${parameter.name}`);
-          }
-          headerParameters.push(parameter.name);
-        }
-        if (parameter.required === true) required.push(parameter.name);
-      }
-      const requestBody = asRecord(operation.requestBody);
-      const content = asRecord(requestBody?.content);
-      const jsonBody = asRecord(content?.["application/json"]);
-      const bodySchema = asRecord(jsonBody?.schema);
-      if (bodySchema) {
-        properties.body = bodySchema;
-        if (requestBody?.required === true) required.push("body");
-      }
-      operations.push({
-        id,
-        name: id,
-        description:
-          typeof operation.description === "string"
-            ? operation.description
-            : typeof operation.summary === "string"
-              ? operation.summary
-              : `${method.toUpperCase()} ${path}`,
-        method: method.toUpperCase() as ApiOperation["method"],
-        path,
-        inputSchema: {
-          type: "object",
-          properties,
-          ...(required.length > 0 ? { required: [...new Set(required)] } : {}),
-        },
-        readOnly: method === "get",
-        queryParameters,
-        headerParameters,
-      });
-      if (operations.length >= 100) break;
-    }
-    if (operations.length >= 100) break;
-  }
-  if (operations.length === 0) {
-    throw new Error("OpenAPI document has no operations with operationId");
-  }
-  return { baseUrl, operations };
+export type {
+  OpenApiImportCounts,
+  OpenApiImportDiagnostic,
+  OpenApiImportDiagnosticCode,
+} from "./openapi-import.js";
+export { compileOpenApiDocument, OpenApiCompileError, parseOpenApiText } from "./openapi-import.js";
+
+export function importOpenApiDocument(document: Record<string, unknown>) {
+  const compiled = compileOpenApiDocument(document);
+  if (compiled.operations.length === 0)
+    throw new OpenApiCompileError(compiled.diagnostics[0]?.code ?? "invalid_operation");
+  return compiled;
 }
 
 /** Lead with the validated route; the provider's prose is bounded and labeled as the provider's. */
@@ -546,10 +560,25 @@ async function executeApiOperation(
   signal: AbortSignal,
   remote: RemoteRequestPolicy,
 ): Promise<unknown> {
+  if (operation.importPolicy === "openapi-v1") {
+    assertOpenApiArguments(operation.inputSchema, args);
+    for (const name of operation.queryParameters) {
+      const value = args[name];
+      for (const item of Array.isArray(value) ? value : [value]) {
+        try {
+          if (typeof item === "string") encodeURIComponent(item);
+        } catch {
+          throw new Error("OpenAPI query parameter is invalid");
+        }
+      }
+    }
+  }
   const consumed = new Set<string>();
   const path = operation.path.replace(/\{([^}]+)\}/g, (_match, name: string) => {
     const value = args[name];
     if (value == null) throw new Error(`Missing path parameter ${name}`);
+    if (operation.importPolicy === "openapi-v1" && /^(?:\.|%2e){1,2}$/i.test(String(value)))
+      throw new Error("OpenAPI path parameter cannot be a dot segment");
     consumed.add(name);
     return encodeURIComponent(String(value));
   });
@@ -559,6 +588,12 @@ async function executeApiOperation(
   for (const key of operation.headerParameters) {
     const value = args[key];
     consumed.add(key);
+    if (
+      operation.importPolicy === "openapi-v1" &&
+      value != null &&
+      (String(value).trim() !== String(value) || /[^\t\x20-\x7e\x80-\xff]/.test(String(value)))
+    )
+      throw new Error("OpenAPI header parameter is invalid");
     if (value != null) headers[key] = String(value);
   }
   if (operation.method === "GET" || operation.method === "DELETE") {
@@ -581,10 +616,23 @@ async function executeApiOperation(
         url.searchParams.set(key, String(value));
       }
     }
-    const payload =
-      args.body ?? Object.fromEntries(Object.entries(args).filter(([key]) => !consumed.has(key)));
-    body = JSON.stringify(payload);
-    headers["content-type"] = "application/json";
+    if (operation.importPolicy === "openapi-v1") {
+      if (
+        Object.hasOwn(args, "body") &&
+        Object.hasOwn(asRecord(operation.inputSchema.properties) ?? {}, "body") &&
+        !operation.queryParameters.includes("body") &&
+        !operation.headerParameters.includes("body") &&
+        !consumed.has("body")
+      ) {
+        body = JSON.stringify(args.body);
+        headers["content-type"] = "application/json";
+      }
+    } else {
+      const payload =
+        args.body ?? Object.fromEntries(Object.entries(args).filter(([key]) => !consumed.has(key)));
+      body = JSON.stringify(payload);
+      headers["content-type"] = "application/json";
+    }
   }
   applyCredential(url, headers, config.auth, credential);
   const safeFetch = createSafeRemoteFetch(remote.fetch, remote.resolveHostname, remote);

@@ -19,6 +19,8 @@ const state = vi.hoisted(() => ({
   alert: vi.fn(),
   params: {} as { app?: string | string[]; botId?: string | string[]; accountOnly?: string },
   lastBot: "",
+  importEpoch: 0,
+  scopeChanged: undefined as (() => void) | undefined,
 }));
 vi.mock("expo-router", () => ({
   router: { push: vi.fn() },
@@ -30,7 +32,24 @@ vi.mock("expo-router", () => ({
     }, [callback, state.focused]);
   },
 }));
-vi.mock("./api", () => ({ rpc: state.rpc }));
+vi.mock("./api", () => ({
+  rpc: state.rpc,
+  captureApiRequestContext: async () => ({
+    apiBase: "https://example.test",
+    headers: {},
+    sessionGeneration: 1,
+  }),
+}));
+vi.mock("./mobile-scope", () => ({
+  captureMobileScope: () => ({ epoch: state.importEpoch, spaceId: "space-a" }),
+  isMobileScopeCurrent: (scope: { epoch: number }) => scope.epoch === state.importEpoch,
+  subscribeMobileScope: (changed: () => void) => {
+    state.scopeChanged = changed;
+    return () => {
+      state.scopeChanged = undefined;
+    };
+  },
+}));
 vi.mock("./integrations-cache", () => ({
   integrationsCacheScope: state.scope,
   persistedIntegrationsCacheScope: state.persisted,
@@ -139,13 +158,16 @@ vi.mock("react-native", () => {
       value,
       onChangeText,
       onEndEditing,
+      editable,
     }: {
       placeholder?: string;
       value?: string;
       onChangeText?: (value: string) => void;
       onEndEditing?: () => void;
+      editable?: boolean;
     }) => (
       <input
+        disabled={editable === false}
         onBlur={onEndEditing}
         placeholder={placeholder}
         value={value}
@@ -188,6 +210,8 @@ beforeEach(() => {
   state.params = {};
   state.lastBot = "";
   state.focused = true;
+  state.importEpoch = 0;
+  state.scopeChanged = undefined;
   state.scope.mockReset().mockResolvedValue({ userId: "user-a", spaceId: "space-a" });
   state.persisted.mockReset().mockResolvedValue(null);
   state.read.mockReset().mockReturnValue(null);
@@ -215,6 +239,77 @@ afterEach(() => {
 async function render(node: ReactNode = <Integrations />) {
   await act(async () => root.render(node));
 }
+
+async function press(label: string) {
+  const button = [...container.querySelectorAll("button")].find((row) => row.textContent === label);
+  expect(button, label).toBeDefined();
+  await act(async () => button!.click());
+}
+
+async function fillSource(placeholder: string, value: string) {
+  const input = container.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`)!;
+  expect(input, placeholder).not.toBeNull();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+it("reviews accepted and rejected OpenAPI operations before explicit installation", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  const install = {
+    id: "install-one",
+    name: "Example API",
+    kind: "api",
+    source: "https://example.test/spec.yaml",
+    secretConfigured: false,
+    config: {},
+    version: "1.0.0",
+    digest: "digest",
+    createdAt: "2026-01-01",
+  };
+  let installed = false;
+  const preview = {
+    status: "ready",
+    target: "https://service.example.test",
+    operations: [{ id: "listItems", method: "GET", path: "/items", readOnly: true }],
+    diagnostics: [{ scope: "operation", code: "external_reference", operationId: "unsafeInput" }],
+    counts: { discovered: 2, accepted: 1, rejected: 1, omittedDiagnostics: 0 },
+    reviewToken: "review-one",
+    expiresAt: "2027-01-01T00:00:00.000Z",
+  };
+  state.rpc.mockImplementation((proc: string) => {
+    if (proc === "capabilities/list") return Promise.resolve(installed ? [install] : []);
+    if (proc === "capabilities/confirmOpenApi") {
+      installed = true;
+      return Promise.resolve({ status: "installed", replayed: false, install });
+    }
+    return proc === "capabilities/previewOpenApi" ? Promise.resolve(preview) : original(proc);
+  });
+  await render();
+  await act(async () => resolveCatalog([]));
+  await press("Advanced");
+  await press("Add OpenAPI");
+  await fillSource("Display name", "Example API");
+  await fillSource("https://example.com/openapi.json", "https://example.test/spec.yaml");
+  await press("Preview");
+  expect(container.textContent).toContain("listItems");
+  expect(container.textContent).toContain("unsafeInput");
+  expect(container.textContent).toContain("External references are not supported.");
+  expect(state.rpc.mock.calls.some(([proc]) => proc === "capabilities/install")).toBe(false);
+  expect(state.rpc.mock.calls.some(([proc]) => proc === "capabilities/confirmOpenApi")).toBe(false);
+  await press("Add");
+  expect(state.rpc).toHaveBeenCalledWith(
+    "capabilities/confirmOpenApi",
+    expect.objectContaining({
+      name: "Example API",
+      source: "https://example.test/spec.yaml",
+      reviewToken: "review-one",
+    }),
+    expect.anything(),
+  );
+  expect(container.textContent).toContain("Example API");
+});
 
 it.each(["composio", "pipedream"])(
   "native-first unconfigured source defaults to available %s in the rendered chooser",
@@ -786,3 +881,176 @@ it.each([{ app: "notion" }, { app: "unknown-app" }, { app: ["google-calendar"] }
     ).toBe(false);
   },
 );
+
+const importPreview = {
+  status: "ready",
+  target: "https://service.example.test",
+  operations: [{ id: "listItems", method: "GET", path: "/items", readOnly: true }],
+  diagnostics: [],
+  counts: { discovered: 1, accepted: 1, rejected: 0, omittedDiagnostics: 0 },
+  reviewToken: "review-kept",
+  expiresAt: "2027-01-01T00:00:00Z",
+};
+function importDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+async function beginImport() {
+  await render();
+  await act(async () => resolveCatalog([]));
+  await press("Advanced");
+  await press("Add OpenAPI");
+  await fillSource("Display name", "Example API");
+  await fillSource("https://example.com/openapi.json", "https://example.test/spec.yaml");
+  await press("No authentication");
+  await fillSource("Bearer token", "initial-secret");
+}
+
+it("keeps a new native credential after a delayed preview for the edited draft", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  const wait = importDeferred<typeof importPreview>();
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "capabilities/previewOpenApi" ? wait.promise : original(proc),
+  );
+  await beginImport();
+  await press("Preview");
+  await fillSource("Bearer token", "new-secret");
+  await act(async () => wait.resolve(importPreview));
+  expect(container.querySelector('[data-testid="openapi-import-review"]')).toBeNull();
+  expect(
+    container.querySelector<HTMLInputElement>('input[placeholder="Bearer token"]')?.value,
+  ).toBe("new-secret");
+});
+
+it("keeps a reopened native source form when an earlier confirmation returns", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  const wait = importDeferred<unknown>();
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "capabilities/previewOpenApi"
+      ? Promise.resolve(importPreview)
+      : proc === "capabilities/confirmOpenApi"
+        ? wait.promise
+        : original(proc),
+  );
+  await beginImport();
+  await press("Preview");
+  await press("Add");
+  await press("Close");
+  await press("Add OpenAPI");
+  await fillSource("Display name", "New draft");
+  await press("No authentication");
+  await fillSource("Bearer token", "new-secret");
+  await act(async () =>
+    wait.resolve({
+      status: "installed",
+      replayed: false,
+      install: {
+        id: "install-one",
+        kind: "api",
+        name: "Old API",
+        source: "https://example.test/spec.yaml",
+        config: {},
+        version: null,
+        digest: null,
+        secretConfigured: true,
+        createdAt: "2026-01-01",
+      },
+    }),
+  );
+  expect(
+    container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.value,
+  ).toBe("New draft");
+  expect(
+    container.querySelector<HTMLInputElement>('input[placeholder="Bearer token"]')?.value,
+  ).toBe("new-secret");
+  expect(container.textContent).not.toContain("Old API");
+});
+
+it("uses a read-only receipt check and keeps the original native retry token", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "capabilities/previewOpenApi"
+      ? Promise.resolve(importPreview)
+      : proc === "capabilities/confirmOpenApi"
+        ? Promise.reject(new Error("Lost response"))
+        : proc === "capabilities/openApiReceipt"
+          ? Promise.resolve({ status: "pending", diagnostics: [] })
+          : original(proc),
+  );
+  await beginImport();
+  await press("Preview");
+  await press("Add");
+  expect(container.textContent).toContain("Could not confirm installation.");
+  await press("Check status");
+  expect(state.rpc).toHaveBeenCalledWith(
+    "capabilities/openApiReceipt",
+    { reviewToken: "review-kept" },
+    expect.anything(),
+  );
+  expect(
+    state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/confirmOpenApi"),
+  ).toHaveLength(1);
+  await press("Retry");
+  const confirms = state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/confirmOpenApi");
+  expect(confirms).toHaveLength(2);
+  expect(confirms[1]![1]).toEqual(confirms[0]![1]);
+  expect(
+    state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/previewOpenApi"),
+  ).toHaveLength(1);
+});
+
+it("closes the reviewed native credential on an actor or Space epoch change", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  const wait = importDeferred<typeof importPreview>();
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "capabilities/previewOpenApi" ? wait.promise : original(proc),
+  );
+  await beginImport();
+  await press("Preview");
+  await act(async () => {
+    state.importEpoch += 2;
+    state.scopeChanged?.();
+  });
+  await act(async () => wait.resolve(importPreview));
+  expect(container.querySelector('[data-testid="openapi-import-review"]')).toBeNull();
+  expect(container.querySelector('input[placeholder="Bearer token"]')).toBeNull();
+});
+
+it("ignores a native preview when its screen loses focus", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  const wait = importDeferred<typeof importPreview>();
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "capabilities/previewOpenApi" ? wait.promise : original(proc),
+  );
+  await beginImport();
+  await press("Preview");
+  state.focused = false;
+  await render();
+  await act(async () => wait.resolve(importPreview));
+  expect(container.querySelector('[data-testid="openapi-import-review"]')).toBeNull();
+});
+
+it("locks the submitted native credential while a receipt is unknown", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "capabilities/previewOpenApi"
+      ? Promise.resolve(importPreview)
+      : proc === "capabilities/confirmOpenApi"
+        ? Promise.reject(new Error("Lost response"))
+        : original(proc),
+  );
+  await beginImport();
+  await press("Preview");
+  await press("Add");
+  expect(
+    container.querySelector<HTMLInputElement>('input[placeholder="Bearer token"]')?.disabled,
+  ).toBe(true);
+  expect(
+    [...container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Check status" && !button.disabled,
+    ),
+  ).toBe(true);
+});

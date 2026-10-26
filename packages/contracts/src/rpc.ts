@@ -138,6 +138,13 @@ import {
   NativeSlackHookStatusSchema,
   SaveNativeSlackHookInputSchema,
 } from "./native-slack-events.js";
+import {
+  OpenApiImportConfirmationSchema,
+  OpenApiImportConfirmInputSchema,
+  OpenApiImportInputSchema,
+  OpenApiImportPreviewSchema,
+  OpenApiImportReceiptInputSchema,
+} from "./openapi-import.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { RoutineHistorySchema, RoutineRunCursorSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -708,6 +715,13 @@ export const appContract = {
   },
   capabilities: {
     list: oc.output(z.array(CapabilityInstallSchema)),
+    previewOpenApi: oc.input(OpenApiImportInputSchema).output(OpenApiImportPreviewSchema),
+    confirmOpenApi: oc
+      .input(OpenApiImportConfirmInputSchema)
+      .output(OpenApiImportConfirmationSchema),
+    openApiReceipt: oc
+      .input(OpenApiImportReceiptInputSchema)
+      .output(OpenApiImportConfirmationSchema),
     catalogSearch: oc
       .input(
         z.object({

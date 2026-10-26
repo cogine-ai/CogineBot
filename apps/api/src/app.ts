@@ -10,6 +10,7 @@ import type {
   MessagingSurface,
   RealtimeFanout,
   SandboxProvider,
+  SecretStore,
   TransactionalEmailProvider,
 } from "@rakazo/adapter-kit";
 import type {
@@ -175,6 +176,8 @@ export async function createApp(
     runtime?: AgentRuntime;
     contextStrategy?: AgentContextStrategy;
     readinessCheck?: () => Promise<unknown>;
+    secretStore?: SecretStore;
+    openApiNow?: () => number;
   } = {},
 ): Promise<AppHandles> {
   const {
@@ -191,6 +194,8 @@ export async function createApp(
     runtime: runtimeOverride,
     contextStrategy,
     readinessCheck: readinessCheckOverride,
+    secretStore: secretStoreOverride,
+    openApiNow,
     ...envOverrides
   } = overrides;
   const env = { ...loadEnv(process.env), ...envOverrides };
@@ -214,7 +219,8 @@ export async function createApp(
           publisher: created.pool,
         })
       : new InMemoryRealtimeFanout());
-  const secrets = createSecretStore(env.encryptionKey, process.env, realtime);
+  const secrets =
+    secretStoreOverride ?? createSecretStore(env.encryptionKey, process.env, realtime);
   await secrets.start();
   if (secrets.describe().capabilities.degraded)
     logger.warn("Secret storage degraded; encrypted credentials remain available");
@@ -559,6 +565,8 @@ export async function createApp(
   reconciler?.start();
 
   const router = createRouter({
+    openApiPreviewKey: env.encryptionKey,
+    openApiNow,
     cloudAgent,
     codexCatalog,
     prisma,
