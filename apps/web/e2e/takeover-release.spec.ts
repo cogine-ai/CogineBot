@@ -75,6 +75,7 @@ test("released takeover cards stay settled while the computer remains available 
   await expect(cards.first().getByText("Done", { exact: true })).toBeVisible();
   await expect(cards.last().getByText("Skipped", { exact: true })).toBeVisible();
   await expect(cards.getByText("Needs you", { exact: true })).toHaveCount(0);
-  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  // An idle subscription sends its first heartbeat after 20s; allow startup overhead.
+  await expect(page.getByTestId("connection-status")).toHaveCount(0, { timeout: 30_000 });
   await captureScreenshot(page, testInfo, "b31-takeover-reloaded");
 });
