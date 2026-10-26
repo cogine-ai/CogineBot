@@ -40,6 +40,38 @@ const shortEchoCases = shortCredentials.flatMap((value) => [
     echo: Buffer.from(value).toString("base64"),
   },
 ]);
+const longPercentCredential = "Known+/Token12456";
+const percentBytes = (value: string) =>
+  [...Buffer.from(value)].map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
+const credentialEchoCases = [
+  ...shortEchoCases,
+  { label: "6-character lower percent", credential: "kZ+124", echo: "kZ%2b124" },
+  {
+    label: "17-character lower percent",
+    credential: longPercentCredential,
+    echo: "Known%2b%2fToken12456",
+  },
+  {
+    label: "17-character mixed percent",
+    credential: longPercentCredential,
+    echo: "Known%2b%2FToken12456",
+  },
+  { label: "encoded unreserved byte", credential: "mN+1283", echo: "%6dN%2b1283" },
+  { label: "6-character full percent", credential: "kZ+124", echo: percentBytes("kZ+124") },
+  {
+    label: "17-character full percent",
+    credential: longPercentCredential,
+    echo: percentBytes(longPercentCredential),
+  },
+  { label: "UTF-8 lower percent", credential: "密钥+42", echo: "%e5%af%86%e9%92%a5%2b42" },
+  { label: "UTF-8 full percent", credential: "密钥+42", echo: percentBytes("密钥+42") },
+  { label: "malformed prefix beside valid percent", credential: "kZ+124", echo: "%zzkZ%2b124" },
+  {
+    label: "malformed suffix beside mixed percent",
+    credential: longPercentCredential,
+    echo: "Known%2b%2FToken12456%zz",
+  },
+];
 
 function echoedDocument(echo: string, location: "source" | "operation" | "config" | "diagnostic") {
   return {
@@ -444,7 +476,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
   });
 
-  it.each(shortEchoCases)(
+  it.each(credentialEchoCases)(
     "rejects $label credential echoes before preview exposes a plan",
     async ({ credential: short, echo }) => {
       for (const location of ["source", "operation", "config", "diagnostic"] as const) {
@@ -455,6 +487,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
         const serialized = JSON.stringify(result);
         for (const value of [
           short,
+          echo,
           encodeURIComponent(short),
           Buffer.from(short).toString("base64"),
         ])
@@ -473,7 +506,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     },
   );
 
-  it.each(shortEchoCases)(
+  it.each(credentialEchoCases)(
     "rejects a re-fetched $label credential echo as invalid before any secret put",
     async ({ credential: short, echo }) => {
       const request = await ready({ ...input(), credential: short });
@@ -488,7 +521,12 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 1, puts: 0 });
       const recovered = await receipt(request.reviewToken);
       expect(recovered).toMatchObject({ status: "invalid", diagnostics: [] });
-      for (const value of [short, encodeURIComponent(short), Buffer.from(short).toString("base64")])
+      for (const value of [
+        short,
+        echo,
+        encodeURIComponent(short),
+        Buffer.from(short).toString("base64"),
+      ])
         expect(JSON.stringify(recovered)).not.toContain(value);
     },
   );
@@ -508,6 +546,35 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       });
       expect(secrets.values.get(secret.ciphertext)).toBe(short);
       expect(JSON.stringify(result)).not.toContain(short);
+      expect(await counts()).toEqual({ installs: 1, secretRows: 1, receipts: 1, puts: 1 });
+    },
+  );
+
+  it.each(["MN+1283", "MN%2b1283"])(
+    "keeps ordinary credential letters case-sensitive for %s public content",
+    async (echo) => {
+      const request = await ready({
+        ...input(echoedDocument(echo, "config")),
+        credential: "mN+1283",
+      });
+      const result = await confirm(request);
+      expect(result.status).toBe("installed");
+      if (result.status !== "installed") throw new Error("Expected an install");
+      const install = await handles.prisma.capabilityInstall.findUniqueOrThrow({
+        where: { id: result.install.id },
+      });
+      expect(install.config).toMatchObject({
+        operations: [
+          {
+            description: `Echo ${echo}`,
+            inputSchema: { properties: { filter: { default: echo } } },
+          },
+        ],
+      });
+      const secret = await handles.prisma.secret.findUniqueOrThrow({
+        where: { id: install.secretId! },
+      });
+      expect(secrets.values.get(secret.ciphertext)).toBe("mN+1283");
       expect(await counts()).toEqual({ installs: 1, secretRows: 1, receipts: 1, puts: 1 });
     },
   );

@@ -122,7 +122,12 @@ function assertNoCredential(credential: string | undefined, value: unknown): voi
   } catch {
     /* The raw value is still checked. */
   }
-  if (containsSecret(value, variants))
+  // Percent-escape hex is case-insensitive, and unreserved bytes may be escaped too.
+  // This is only a leakage check; the reviewed data itself stays byte-for-byte intact.
+  const decoded = (JSON.stringify(value) ?? "").replace(/(?:%[0-9a-f]{2})+/gi, (escaped) =>
+    Buffer.from(escaped.replaceAll("%", ""), "hex").toString("utf8"),
+  );
+  if (containsSecret(value, variants) || containsSecret(decoded, variants))
     throw new CredentialInPublicPlan("Credential is not public configuration");
 }
 
