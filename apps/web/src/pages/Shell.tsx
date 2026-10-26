@@ -262,6 +262,7 @@ import {
   threadRunError,
   userHoldsComputerControl,
 } from "../lib/thread-events";
+import { readThreadSnapshot } from "../lib/thread-snapshot-request";
 import { getToolActivityEnabled, subscribeToolActivity } from "../lib/tool-activity-preference";
 import {
   isToolOnlyNarration,
@@ -364,15 +365,10 @@ type PendingBrowserNotification = {
 const ATTACHMENT_ACCEPT = ATTACHMENT_ALLOWED_MIME_TYPES.join(",");
 /** Identity colour for bots the roster no longer knows about. */
 const FALLBACK_BOT_COLOR = "#85858A";
-const THREAD_SNAPSHOT_TIMEOUT_MS = 2_000;
 /** Bound Settings leave so a hung voice status refresh cannot block dismissal. */
 const VOICE_STATUS_REFRESH_TIMEOUT_MS = 10_000;
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 32;
 const MOBILE_SIDEBAR_SWIPE_DISTANCE_PX = 56;
-function threadSnapshotSignal(parent: AbortSignal): AbortSignal {
-  return AbortSignal.any([parent, AbortSignal.timeout(THREAD_SNAPSHOT_TIMEOUT_MS)]);
-}
-
 function voiceStatusRefreshTimeout(): Promise<never> {
   return new Promise((_, reject) => {
     AbortSignal.timeout(VOICE_STATUS_REFRESH_TIMEOUT_MS).addEventListener("abort", () => {
@@ -1952,16 +1948,18 @@ export function ShellPage() {
           primed?.botId === active.id
             ? Promise.resolve(primed)
             : pendingJump
-              ? rpc.threads.get(
-                  { botId: active.id },
-                  { signal: threadSnapshotSignal(abort.signal) },
+              ? readThreadSnapshot(abort.signal, (signal) =>
+                  rpc.threads.get({ botId: active.id }, { signal }),
                 )
-              : refreshThread(active.id, threadSnapshotSignal(abort.signal)),
+              : readThreadSnapshot(abort.signal, (signal) => refreshThread(active.id, signal)),
         );
       },
       loadHead: () =>
-        rpc.threads.head({ botId: active.id }, { signal: threadSnapshotSignal(abort.signal) }),
-      refresh: () => reader.read(refreshThread(active.id, threadSnapshotSignal(abort.signal))),
+        readThreadSnapshot(abort.signal, (signal) =>
+          rpc.threads.head({ botId: active.id }, { signal }),
+        ),
+      refresh: () =>
+        reader.read(readThreadSnapshot(abort.signal, (signal) => refreshThread(active.id, signal))),
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) =>
         rpc.threads.subscribe({ botId: active.id, cursor }, { signal: abort.signal }),
@@ -2079,11 +2077,15 @@ export function ShellPage() {
       loadInitial: () =>
         reader.read(
           pendingJump
-            ? rpc.threads.get({ groupId }, { signal: threadSnapshotSignal(abort.signal) })
-            : refreshGroupThread(groupId, threadSnapshotSignal(abort.signal)),
+            ? readThreadSnapshot(abort.signal, (signal) => rpc.threads.get({ groupId }, { signal }))
+            : readThreadSnapshot(abort.signal, (signal) => refreshGroupThread(groupId, signal)),
         ),
-      loadHead: () => rpc.threads.head({ groupId }, { signal: threadSnapshotSignal(abort.signal) }),
-      refresh: () => reader.read(refreshGroupThread(groupId, threadSnapshotSignal(abort.signal))),
+      loadHead: () =>
+        readThreadSnapshot(abort.signal, (signal) => rpc.threads.head({ groupId }, { signal })),
+      refresh: () =>
+        reader.read(
+          readThreadSnapshot(abort.signal, (signal) => refreshGroupThread(groupId, signal)),
+        ),
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) => rpc.threads.subscribe({ groupId, cursor }, { signal: abort.signal }),
       applyEvent: reader.applyEvent,
