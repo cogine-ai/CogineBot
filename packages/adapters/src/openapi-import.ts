@@ -182,21 +182,32 @@ export function compileOpenApiDocument(document: unknown): {
   const server = Array.isArray(root.servers) ? asRecord(root.servers[0]) : undefined;
   if (typeof server?.url !== "string" || !server.url)
     throw new OpenApiCompileError("invalid_server");
-  const baseUrl = server.url;
+  const rawBaseUrl = server.url;
+  let baseUrl: string;
   try {
-    encodeURIComponent(baseUrl);
-    const url = new URL(baseUrl);
+    encodeURIComponent(rawBaseUrl);
+    const absolute = /^https?:\/\/[^/?#]+(\/[^?#]*)?$/i.exec(rawBaseUrl);
+    if (
+      !absolute ||
+      rawBaseUrl.startsWith(" ") ||
+      rawBaseUrl.endsWith(" ") ||
+      containsUrlControl(rawBaseUrl) ||
+      rawBaseUrl.includes("\\") ||
+      (absolute[1] ?? "").split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))
+    )
+      throw new Error();
+    const url = new URL(rawBaseUrl);
     if (
       !["https:", "http:"].includes(url.protocol) ||
       url.username ||
       url.password ||
       url.search ||
       url.hash ||
-      containsUrlControl(baseUrl) ||
-      /[{}]/.test(baseUrl) ||
+      /[{}]/.test(rawBaseUrl) ||
       server.variables !== undefined
     )
       throw new Error();
+    baseUrl = url.href;
   } catch {
     throw new OpenApiCompileError("invalid_server");
   }
