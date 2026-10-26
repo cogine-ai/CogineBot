@@ -557,6 +557,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       expect(tokenPayload).not.toContain(submitted);
       if (representation === "ACE") {
         expect(JSON.stringify(reviewed)).not.toContain("unicodeHostname");
+        expect(JSON.stringify(reviewed)).not.toContain(`${submitted}.example.test`);
         expect(tokenPayload).not.toContain("unicodeHostname");
       }
       const request = { ...snapshot, reviewToken: reviewed.reviewToken };
@@ -574,10 +575,14 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       // Private compiler evidence must also stay out of a later ordinary install.
       documents.set(request.source, documentFor());
       const next = await ready(snapshot);
-      if (representation === "ACE")
+      if (representation === "ACE") {
         expect(
           Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
         ).not.toContain("unicodeHostname");
+        expect(
+          Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
+        ).not.toContain(`${submitted}.example.test`);
+      }
       expect(
         Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
       ).not.toContain("rawTarget");
