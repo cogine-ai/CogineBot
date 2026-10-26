@@ -49,6 +49,11 @@ const idnTargets = [
     hostname: domainToASCII(`${submitted}.example.test`),
   })),
   { submitted: "STRAE", representation: "ACE", hostname: "xn--strae-oqa.example.test" },
+  ...["１２３", "０１２３", "0x7F", "１２７.１"].map((submitted) => ({
+    submitted,
+    representation: "ACE",
+    hostname: new URL(`https://${submitted}.example.test/v1`).hostname,
+  })),
 ];
 const shortCredentials = ["kZ+124", "mN+1283"];
 const shortEchoCases = shortCredentials.flatMap((value) => [

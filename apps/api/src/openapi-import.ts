@@ -142,12 +142,23 @@ function assertPreparedHasNoCredential(credential: string | undefined, prepared:
   for (const character of credential)
     if (character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127) return;
   const ascii = domainToASCII(credential);
-  const unicode = domainToUnicode(ascii);
+  const variants = [[ascii, domainToUnicode(ascii)]];
+  const suffix = ".invalid";
+  const contextualAscii = domainToASCII(`${credential}${suffix}`);
+  const contextualUnicode = domainToUnicode(contextualAscii);
+  if (contextualAscii.endsWith(suffix) && contextualUnicode.endsWith(suffix))
+    variants.push([
+      contextualAscii.slice(0, -suffix.length),
+      contextualUnicode.slice(0, -suffix.length),
+    ]);
+  const hostname = new URL(prepared.source).hostname;
   if (
-    ascii &&
-    unicode &&
-    (new URL(prepared.source).hostname.includes(ascii) ||
-      prepared.unicodeHostname.includes(unicode))
+    variants.some(
+      ([ascii, unicode]) =>
+        ascii &&
+        unicode &&
+        (hostname.includes(ascii) || prepared.unicodeHostname.includes(unicode)),
+    )
   )
     throw new CredentialInPublicPlan("Credential is not public configuration");
 }
