@@ -134,6 +134,35 @@ describe("shared Linux desktop lifecycle", () => {
     expect(readFileSync(slot, "utf8").split("\n")[5]).toBe(retained[5]);
   });
 
+  it("keeps execution fencing outside versioned cleanup", () => {
+    const f = fixture();
+    expect(f.ensure("a").status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    expect(f.run(desktopControlCommand("a", "run:1", env, true, "human-a", "grant-1")).status).toBe(
+      0,
+    );
+    expect(f.ensure("a", "run:2").status).toBe(0);
+    const before = readFileSync(slot, "utf8");
+    expect(f.run(desktopControlCommand("a", "run:1", env, false, "human-a")).status).toBe(75);
+    expect(readFileSync(slot, "utf8")).toBe(before);
+    expect(
+      f.run(desktopControlCommand("a", "run:1", env, false, "human-a", "grant-1")).status,
+    ).toBe(0);
+    const cleaned = readFileSync(slot, "utf8").split("\n");
+    expect(cleaned[1]).toBe("run:2");
+    expect(cleaned[3]).toBe("");
+    expect(cleaned[7]).toBe("");
+    expect(f.ensure("a", "run:1").status).toBe(75);
+    expect(f.run(desktopControlCommand("a", "run:2", env, true, "human-a", "grant-2")).status).toBe(
+      0,
+    );
+    const replacement = readFileSync(slot, "utf8");
+    expect(
+      f.run(desktopControlCommand("a", "run:1", env, false, "other-token", "grant-2")).status,
+    ).toBe(0);
+    expect(readFileSync(slot, "utf8")).toBe(replacement);
+  });
+
   it.each([65, 128])("keeps an opaque %s-character control receipt through recovery", (length) => {
     const f = fixture();
     const token = "a".repeat(length);

@@ -952,21 +952,29 @@ export function desktopControlCommand(
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(token)) throw new Error("invalid control token");
   if (grantVersion && !/^[A-Za-z0-9_-]{1,64}$/.test(grantVersion))
     throw new Error("invalid control grant version");
+  // A version identifies the failed grant attempt across execution fences.
+  // Cleaning it up must never claim or roll back an execution lease.
+  const versionedCleanup = !interactive && Boolean(grantVersion);
   return [
     ...registryLockCommand(screenId),
     `[ -f "$slot" ] || exit ${interactive ? 75 : 0}`,
-    ...(!interactive && grantVersion
-      ? [`[ "$control_version" = ${shellQuote(grantVersion)} ] || exit 0`]
-      : []),
-    ...acceptLeaseCommand(leaseId, !interactive),
+    ...(versionedCleanup
+      ? [
+          `[ "$control_version" = ${shellQuote(grantVersion!)} ] || exit 0`,
+          `if [ -n "$control_token" ] && [ "$control_token" != ${shellQuote(token)} ]; then exit 0; fi`,
+          `if [ "$control_token" != ${shellQuote(token)} ] && [ "$revoking_token" != ${shellQuote(token)} ]; then exit 0; fi`,
+        ]
+      : acceptLeaseCommand(leaseId, !interactive)),
     'case "$state" in releasing) exit 75 ;; esac',
     ...(interactive
       ? ['case "$state" in blocked|releasing) exit 75 ;; esac']
-      : [
-          `if [ -n "$control_token" ] && [ "$control_token" != ${shellQuote(token)} ]; then exit 0; fi`,
-          `if [ "$control_token" != ${shellQuote(token)} ] && [ "$revoking_token" != ${shellQuote(token)} ] && [ "$(cat /tmp/rakazo/control-token-$((index + ${env.displayStart})) 2>/dev/null || true)" != ${shellQuote(token)} ]; then exit 0; fi`,
-        ]),
-    '[ -n "$incoming" ] && current=$incoming || true',
+      : versionedCleanup
+        ? []
+        : [
+            `if [ -n "$control_token" ] && [ "$control_token" != ${shellQuote(token)} ]; then exit 0; fi`,
+            `if [ "$control_token" != ${shellQuote(token)} ] && [ "$revoking_token" != ${shellQuote(token)} ] && [ "$(cat /tmp/rakazo/control-token-$((index + ${env.displayStart})) 2>/dev/null || true)" != ${shellQuote(token)} ]; then exit 0; fi`,
+          ]),
+    ...(!versionedCleanup ? ['[ -n "$incoming" ] && current=$incoming || true'] : []),
     ...(interactive ? [`control_version=${shellQuote(grantVersion ?? randomUUID())}`] : []),
     `control_token=""; revoking_token=${shellQuote(token)}; idle_at=""; state=blocked; write_slot`,
     UNLOCK_REGISTRY,

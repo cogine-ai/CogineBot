@@ -177,6 +177,171 @@ describe("LinuxDesktop.releaseScreen", () => {
     },
   );
 
+  it("cleans a preserved failed grant after another caller advances the same Run", async () => {
+    const f = shellHost();
+    let runs = 0;
+    let urls = 0;
+    let afterCleanup: string[] | undefined;
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        if (++runs === 3) throw new Error("cleanup unavailable before execution");
+        const result = await f.host.run(...args);
+        if (runs === 4) afterCleanup = readFileSync(f.slot(), "utf8").split("\n");
+        return result;
+      },
+      screenUrl: async () => {
+        if (++urls === 1) throw new Error("publication failed");
+        return "http://screen.example";
+      },
+    });
+    const original = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        original,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+    const reclaimed = { ...original, screenLeaseId: "run:2" };
+    await new LinuxDesktop(f.host).connectScreen(
+      computer,
+      { view: "stream", interactive: false },
+      reclaimed,
+    );
+    const preserved = readFileSync(f.slot(), "utf8").split("\n");
+    expect(preserved[1]).toBe("run:2");
+    expect(preserved[3]).toBe("human-a");
+    expect(preserved[7]).toBe(version);
+    await desktop.connectScreen(computer, { view: "stream", interactive: false }, reclaimed);
+    expect(afterCleanup?.[1]).toBe("run:2");
+    expect(afterCleanup?.[3]).toBe("");
+    expect(afterCleanup?.[7]).toBe("");
+    expect(readFileSync(f.slot(), "utf8").split("\n")[1]).toBe("run:2");
+    expect(runs).toBe(5);
+  });
+
+  it("cleans the first failed publication after another caller preserves its grant", async () => {
+    const f = shellHost();
+    let runs = 0;
+    let afterCleanup: string[] | undefined;
+    let entered!: () => void;
+    let fail!: (error: Error) => void;
+    const publishing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<string>((_resolve, reject) => {
+      fail = reject;
+    });
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        const result = await f.host.run(...args);
+        if (++runs === 3) afterCleanup = readFileSync(f.slot(), "utf8").split("\n");
+        return result;
+      },
+      screenUrl: async () => {
+        entered();
+        return held;
+      },
+    });
+    const original = { ...context, screenLeaseId: "run:1" };
+    const pending = desktop
+      .connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        original,
+      )
+      .catch((error: unknown) => error);
+    await publishing;
+    const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+    await new LinuxDesktop(f.host).connectScreen(
+      computer,
+      { view: "stream", interactive: false },
+      { ...original, screenLeaseId: "run:2" },
+    );
+    const preserved = readFileSync(f.slot(), "utf8").split("\n");
+    expect(preserved[1]).toBe("run:2");
+    expect(preserved[3]).toBe("human-a");
+    expect(preserved[7]).toBe(version);
+    const failure = new Error("publication failed after reclaim");
+    fail(failure);
+    expect(await pending).toBe(failure);
+    expect(afterCleanup?.[1]).toBe("run:2");
+    expect(afterCleanup?.[3]).toBe("");
+    expect(afterCleanup?.[7]).toBe("");
+    expect(runs).toBe(3);
+  });
+
+  it("cleans a preserved failed grant when another interactive grant never dispatches", async () => {
+    const f = shellHost();
+    let runs = 0;
+    let urls = 0;
+    let afterCleanup: string[] | undefined;
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        if (++runs === 3) throw new Error("old cleanup unavailable before execution");
+        const result = await f.host.run(...args);
+        if (runs === 4) afterCleanup = readFileSync(f.slot(), "utf8").split("\n");
+        return result;
+      },
+      screenUrl: async () => {
+        if (++urls === 1) throw new Error("old publication failed");
+        return "http://screen.example";
+      },
+    });
+    const original = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        original,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+    const reclaimed = { ...original, screenLeaseId: "run:2" };
+    let otherRuns = 0;
+    let otherPublished = false;
+    let unexecutedGrant = "";
+    const dispatchFailure = new Error("replacement grant transport failed before execution");
+    const other = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        if (++otherRuns === 2) {
+          unexecutedGrant = args[1];
+          throw dispatchFailure;
+        }
+        return f.host.run(...args);
+      },
+      screenUrl: async () => {
+        otherPublished = true;
+        return "http://screen.example";
+      },
+    });
+    await expect(
+      other.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        reclaimed,
+      ),
+    ).rejects.toBe(dispatchFailure);
+    const unexecutedVersion = unexecutedGrant.match(/control_version='([^']+)'/)?.[1];
+    expect(unexecutedVersion).toBeDefined();
+    expect(unexecutedVersion).not.toBe(version);
+    expect(otherPublished).toBe(false);
+    const preserved = readFileSync(f.slot(), "utf8").split("\n");
+    expect(preserved[1]).toBe("run:2");
+    expect(preserved[3]).toBe("human-a");
+    expect(preserved[7]).toBe(version);
+    await desktop.connectScreen(computer, { view: "stream", interactive: false }, reclaimed);
+    expect(afterCleanup?.[1]).toBe("run:2");
+    expect(afterCleanup?.[3]).toBe("");
+    expect(afterCleanup?.[7]).toBe("");
+    expect(runs).toBe(5);
+  });
+
   it("refuses ensure while publication cleanup is still unconfirmed", async () => {
     const f = shellHost();
     const commands: string[] = [];
