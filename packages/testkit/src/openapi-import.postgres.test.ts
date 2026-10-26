@@ -54,6 +54,11 @@ const idnTargets = [
     representation: "ACE",
     hostname: new URL(`https://${submitted}.example.test/v1`).hostname,
   })),
+  ...["%74oken", "t%6Fken", "%C3%A9", "%31%32%33"].map((submitted) => ({
+    submitted,
+    representation: "ACE",
+    hostname: new URL(`https://${submitted}.example.test/v1`).hostname,
+  })),
 ];
 const shortCredentials = ["kZ+124", "mN+1283"];
 const shortEchoCases = shortCredentials.flatMap((value) => [

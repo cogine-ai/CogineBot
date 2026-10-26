@@ -138,13 +138,20 @@ function assertNoCredential(credential: string | undefined, value: unknown): voi
 
 function assertPreparedHasNoCredential(credential: string | undefined, prepared: Prepared): void {
   assertNoCredential(credential, prepared);
-  if (!credential || /[%/\\?#@:]/.test(credential)) return;
-  for (const character of credential)
+  if (!credential) return;
+  let hostnameCredential: string;
+  try {
+    hostnameCredential = decodeURIComponent(credential);
+  } catch {
+    return;
+  }
+  if (/[%/\\?#@:]/.test(hostnameCredential)) return;
+  for (const character of hostnameCredential)
     if (character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127) return;
-  const ascii = domainToASCII(credential);
+  const ascii = domainToASCII(hostnameCredential);
   const variants = [[ascii, domainToUnicode(ascii)]];
   const suffix = ".invalid";
-  const contextualAscii = domainToASCII(`${credential}${suffix}`);
+  const contextualAscii = domainToASCII(`${hostnameCredential}${suffix}`);
   const contextualUnicode = domainToUnicode(contextualAscii);
   if (contextualAscii.endsWith(suffix) && contextualUnicode.endsWith(suffix))
     variants.push([
