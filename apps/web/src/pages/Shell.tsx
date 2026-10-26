@@ -1670,14 +1670,17 @@ export function ShellPage() {
         activeGroupId.current !== targetGroupId
       )
         return;
-      expandedHistoryThread.current = page.threadId;
       const current = reconcileRefreshedThread(
         snapshotRef.current,
         snap,
         computerRef.current,
         true,
       );
-      commitSnapshot(prependThreadMessagePage(current.snapshot, page, requestCursor));
+      const next = prependThreadMessagePage(current.snapshot, page, requestCursor);
+      const admitted = current.snapshot.olderCursor !== null && next !== current.snapshot;
+      if (admitted) expandedHistoryThread.current = page.threadId;
+      commitSnapshot(next);
+      if (!admitted) return;
       window.requestAnimationFrame(() => {
         const element = messageScroll.current;
         if (

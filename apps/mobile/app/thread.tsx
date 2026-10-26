@@ -1563,8 +1563,12 @@ function Thread({
         loadingOlderContent.current = false;
         return;
       }
-      expandedHistoryThread.current = page.threadId;
-      commitSnap(prependMobileMessagePage(snapRef.current, page, requestCursor));
+      const previous = snapRef.current;
+      const next = prependMobileMessagePage(previous, page, requestCursor);
+      if (previous?.olderCursor != null && next !== previous)
+        expandedHistoryThread.current = page.threadId;
+      else loadingOlderContent.current = false;
+      commitSnap(next);
     } catch (err) {
       loadingOlderContent.current = false;
       setError(errorText(err, t("Could not load earlier messages")));

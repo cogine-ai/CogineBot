@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import type {
   AppBootstrap,
   Bot,
@@ -13,6 +15,12 @@ import { createRoot } from "react-dom/client";
 import type { NavigateFunction } from "react-router-dom";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  mergeThreadSnapshot,
+  prependThreadMessagePage,
+  reconcileRefreshedThread,
+  reduceThreadSnapshot,
+} from "../lib/thread-events";
 
 const boundary = vi.hoisted(() => ({
   call: vi.fn(),
@@ -60,6 +68,11 @@ vi.mock("@lingui/react/macro", () => {
 });
 
 import { ShellPage } from "./Shell";
+
+const testFileUrl = import.meta.url;
+const shellSource = readFileSync(new URL("./Shell.tsx", testFileUrl), "utf8");
+const olderStart = shellSource.indexOf("  async function loadOlderMessages()");
+const olderHandler = `${stripTypeScriptTypes(shellSource.slice(olderStart, shellSource.indexOf("  useEffect(() => {", olderStart)))}\nreturn loadOlderMessages;`;
 
 const chief: Bot = {
   id: "chief",
@@ -1055,5 +1068,126 @@ it.each([false, true])(
     expect(scrolled.includes("card")).toBe(!deleted);
     expect(container.querySelector('[data-testid="computer-card"]') !== null).toBe(!deleted);
     expect(container.textContent).not.toContain("Load earlier messages");
+  },
+);
+
+it.each(
+  [
+    "complete-refresh",
+    "covered-clear",
+    "already-expanded",
+    "metadata-only-complete",
+    "accepted",
+  ].flatMap((scenario) => [false, true].map((inGroup) => ({ scenario, inGroup }))),
+)(
+  "admits older history side effects after $scenario (group=$inGroup)",
+  async ({ scenario, inGroup }) => {
+    const initial = mergeThreadSnapshot(null, {
+      ...jumpSnapshot("chief", 10, "Needs you"),
+      olderCursor: 1,
+      ...(inGroup ? { botId: undefined, groupId: "ops" } : {}),
+    });
+    const page = deferred<unknown>();
+    const get = deferred<ThreadSnapshot>();
+    let height = 100;
+    const scrollElement = document.createElement("div");
+    Object.defineProperty(scrollElement, "scrollHeight", { get: () => height });
+    scrollElement.scrollTop = 25;
+    const snapshotRef = { current: initial };
+    const expandedHistoryThread = {
+      current: scenario === "already-expanded" ? initial.threadId : null,
+    };
+    const commitSnapshot = vi.fn((next: ThreadSnapshot) => {
+      snapshotRef.current = next;
+    });
+    const scope = {
+      inGroup,
+      active: chief,
+      groupId: inGroup ? "ops" : undefined,
+      snapshot: initial,
+      loadingOlder: false,
+      pinnedAroundRef: { current: null },
+      messageScroll: { current: scrollElement },
+      historyEpoch: { current: 0 },
+      selectedSpaceId: () => "space-1",
+      groupSettingsActor: { current: { spaceId: "space-1" } },
+      snapshotRef,
+      setLoadingOlder: vi.fn(),
+      rpc: { threads: { messages: () => page.promise, get: () => get.promise } },
+      activeBotId: { current: inGroup ? undefined : chief.id },
+      activeGroupId: { current: inGroup ? "ops" : undefined },
+      expandedHistoryThread,
+      computerRef: { current: null },
+      reconcileRefreshedThread,
+      prependThreadMessagePage,
+      commitSnapshot,
+    };
+    const loadOlder = new Function(...Object.keys(scope), olderHandler)(...Object.values(scope));
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+    try {
+      const loading = loadOlder();
+      const accepted = scenario === "accepted";
+      const coveredClear = scenario === "covered-clear";
+      const metadataOnly = scenario === "metadata-only-complete";
+      const fresh = mergeThreadSnapshot(null, {
+        ...initial,
+        cursor: accepted ? 10 : coveredClear ? 30 : 20,
+        olderCursor: accepted || coveredClear ? 1 : null,
+        messages: jumpSnapshot("chief", 20, "Done").messages,
+      });
+      if (coveredClear) {
+        snapshotRef.current = reduceThreadSnapshot(fresh, {
+          id: "clear-20",
+          spaceId: "space-1",
+          type: "thread.cleared",
+          seq: 20,
+          threadId: initial.threadId,
+          botId: "chief",
+          payload: {},
+          createdAt: "2026-01-01T00:00:00Z",
+        })!;
+      }
+      if (metadataOnly) {
+        snapshotRef.current = {
+          ...initial,
+          olderCursor: null,
+          messages: jumpSnapshot("chief", 10, "Done").messages,
+        };
+      }
+      get.resolve(metadataOnly ? { ...initial, cursor: 9 } : coveredClear ? initial : fresh);
+      height = 150;
+      page.resolve({
+        threadId: initial.threadId,
+        olderCursor: null,
+        messages: [
+          {
+            ...initial.messages[0],
+            id: "earlier",
+            seq: 0,
+            role: "user",
+            blocks: [{ kind: "text", text: "Earlier" }],
+          },
+        ],
+      });
+      await loading;
+      expect(commitSnapshot).toHaveBeenCalledTimes(1);
+      expect(snapshotRef.current.cursor).toBe(
+        accepted || metadataOnly ? 10 : coveredClear ? 30 : 20,
+      );
+      expect(snapshotRef.current.messages[0]?.blocks).toEqual(
+        accepted
+          ? [{ kind: "text", text: "Earlier" }]
+          : [{ kind: "computer", text: "Sign in", state: "Done" }],
+      );
+      expect(expandedHistoryThread.current).toBe(
+        accepted || scenario === "already-expanded" ? initial.threadId : null,
+      );
+      expect(frame).toHaveBeenCalledTimes(accepted ? 1 : 0);
+      if (accepted) frame.mock.calls[0]![0](0);
+      expect(scrollElement.scrollTop).toBe(accepted ? 75 : 25);
+      expect(scope.setLoadingOlder.mock.calls).toEqual([[true], [false]]);
+    } finally {
+      frame.mockRestore();
+    }
   },
 );

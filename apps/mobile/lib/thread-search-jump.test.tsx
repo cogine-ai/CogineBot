@@ -12,6 +12,7 @@ import type {
   applyMobileThreadEvent,
   MobileSnapshot,
   mergeMobileSnapshot,
+  prependMobileMessagePage,
   protectMobileMessagePage,
 } from "./api";
 import { ThreadJumpAnchor } from "./thread-jump";
@@ -38,13 +39,14 @@ const apiHandlers = ts
       .replaceAll(
         "export ",
         "",
-      )}\n${apiSource.slice(apiSource.indexOf("export function applyMobileThreadEvent("), apiSource.indexOf("\nexport {", apiSource.indexOf("export function applyMobileThreadEvent("))).replaceAll("export ", "")}\nreturn { mergeMobileSnapshot, protectMobileMessagePage, applyMobileThreadEvent };`,
+      )}\n${apiSource.slice(apiSource.indexOf("export function applyMobileThreadEvent("), apiSource.indexOf("\nexport {", apiSource.indexOf("export function applyMobileThreadEvent("))).replaceAll("export ", "")}\nreturn { mergeMobileSnapshot, prependMobileMessagePage, protectMobileMessagePage, applyMobileThreadEvent };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
   )
   .outputText.replaceAll("export ", "");
 const api: {
   applyMobileThreadEvent: typeof applyMobileThreadEvent;
   mergeMobileSnapshot: typeof mergeMobileSnapshot;
+  prependMobileMessagePage: typeof prependMobileMessagePage;
   protectMobileMessagePage: typeof protectMobileMessagePage;
 } = new Function(...Object.keys(core), apiHandlers)(...Object.values(core));
 const forwardHandler = source.slice(
@@ -60,6 +62,10 @@ const raceHandlers = ts.transpileModule(
 const handlers = ts.transpileModule(`${commitHandler}\n${jumpHandler}\nreturn applyMessageJump;`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const olderHandlers = ts.transpileModule(
+  `${commitHandler}\n${source.slice(source.indexOf("  async function loadOlderMessages()"), source.indexOf("  const markReadIfVisible"))}\nreturn { older: loadOlderMessages, commit: commitSnap };`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
 
 describe("mobile search jump", () => {
   it.each(["botId", "groupId"] as const)(
@@ -302,7 +308,7 @@ function raceScope(
     jumpGeneration: { current: 0 },
     activeGroupId: { current: targetKey === "groupId" ? "target-1" : undefined },
     activeBotId: { current: targetKey === "botId" ? "target-1" : undefined },
-    expandedHistoryThread: { current: null },
+    expandedHistoryThread: { current: null as string | null },
     pinnedAroundRef: {
       current: null as { messageId: string; threadId: string; newerCursor: number | null } | null,
     },
@@ -325,6 +331,82 @@ function raceScope(
     t: (text: string) => text,
   };
 }
+
+it.each(
+  [
+    "complete-refresh",
+    "covered-clear",
+    "already-expanded",
+    "metadata-only-complete",
+    "accepted",
+  ].flatMap((scenario) =>
+    (["botId", "groupId"] as const).map((targetKey) => ({ scenario, targetKey })),
+  ),
+)(
+  "marks $targetKey history expanded only after admitting the older page ($scenario)",
+  async ({ targetKey, scenario }) => {
+    const initial = api.mergeMobileSnapshot(null, {
+      ...jumpCard("target-thread", 10, "Needs you"),
+      olderCursor: 1,
+    });
+    const page = deferred<unknown>();
+    const scope = {
+      ...raceScope(initial, targetKey, () => page.promise),
+      snap: initial,
+      loadingOlder: false,
+      loadingOlderContent: { current: false },
+      setLoadingOlder: vi.fn(),
+    };
+    const alreadyExpanded = scenario === "already-expanded";
+    scope.expandedHistoryThread.current = alreadyExpanded ? initial.threadId : null;
+    const handlers = new Function(...Object.keys(scope), olderHandlers)(...Object.values(scope));
+    const older = handlers.older();
+    expect(scope.loadingOlderContent.current, scenario).toBe(true);
+    if (scenario === "metadata-only-complete") {
+      handlers.commit(jumpCard(initial.threadId, 10, "Done"));
+    } else if (scenario !== "accepted") {
+      let current = api.mergeMobileSnapshot(initial, {
+        ...jumpCard(initial.threadId, scenario === "covered-clear" ? 30 : 20, "Done"),
+        olderCursor: scenario === "covered-clear" ? 1 : null,
+      });
+      if (scenario === "covered-clear") {
+        current = api.applyMobileThreadEvent(current, {
+          type: "thread.cleared",
+          threadId: initial.threadId,
+          seq: 20,
+          payload: {},
+        })!;
+      }
+      handlers.commit(current);
+    }
+    const beforePage = scope.snapRef.current;
+    page.resolve({
+      threadId: initial.threadId,
+      olderCursor: null,
+      messages: [
+        { id: "earlier", seq: 0, role: "user", blocks: [{ kind: "text", text: "Earlier" }] },
+      ],
+    });
+    await older;
+    const admitted = scenario === "accepted";
+    expect(scope.expandedHistoryThread.current, scenario).toBe(
+      admitted || alreadyExpanded ? initial.threadId : null,
+    );
+    expect(scope.loadingOlderContent.current, scenario).toBe(admitted);
+    expect(
+      scope.snapRef.current?.messages.some((message) => message.id === "earlier"),
+      scenario,
+    ).toBe(admitted);
+    if (!admitted && scenario !== "metadata-only-complete")
+      expect(scope.snapRef.current, scenario).toBe(beforePage);
+    if (!admitted)
+      expect(scope.snapRef.current?.messages[0]?.blocks, scenario).toEqual(
+        beforePage?.messages[0]?.blocks,
+      );
+    expect(scope.setLoadingOlder.mock.calls, scenario).toEqual([[true], [false]]);
+    expect(scope.setError, scenario).not.toHaveBeenCalled();
+  },
+);
 
 const jumpOrigins = ["cold", "cross-low", "cross-equal", "cross-high", "same-thread"] as const;
 it.each(["botId", "groupId"] as const)(
