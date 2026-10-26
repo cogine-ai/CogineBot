@@ -596,3 +596,34 @@ it("keeps a valid computer provision when only the same bot's conversation histo
   expect(chrome.textContent).toContain("Take control");
   expect(boundary.call.mock.calls.filter(([path]) => path === "computer.takeover")).toHaveLength(0);
 });
+
+it.each(["space-1", null])(
+  "keeps a visible recovery provision when reselecting the current chat with stored Space %s",
+  async (storedSpace) => {
+    boundary.space = storedSpace;
+    currentComputer = status("chief", "running");
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+    const otherwise = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation((path: string, ...args: unknown[]) =>
+      path === "computer.screenUrl" ? Promise.resolve({ url: null }) : otherwise(path, ...args),
+    );
+    await render();
+    await openPanel();
+    expect(document.body.textContent).not.toContain("Booting up");
+    const chiefRow = container.querySelector<HTMLElement>('[data-roster-bot-id="chief"]')!;
+    expect(chiefRow.getAttribute("aria-current")).toBe("page");
+    const generation = boundary.generation;
+    await click(chiefRow);
+    expect.soft(boundary.generation).toBe(generation);
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+    await act(async () => firstBoot.resolve(currentComputer));
+    expect.soft(bootCalls).toEqual(["chief"]);
+    expect.soft(document.body.textContent).not.toContain("Computer is busy");
+    const chrome = document.querySelector('[data-testid="computer-chrome"]')!;
+    expect(chrome.textContent).toContain("Watching");
+    expect(chrome.textContent).toContain("Take control");
+    expect(boundary.call.mock.calls.filter(([path]) => path === "computer.takeover")).toHaveLength(
+      0,
+    );
+  },
+);

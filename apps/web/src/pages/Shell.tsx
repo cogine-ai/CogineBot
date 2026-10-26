@@ -2190,10 +2190,19 @@ export function ShellPage() {
     (spaceId: string, path: string) => {
       setMobileSidebarOpen(false);
       const previousSpaceId = selectedSpaceId();
+      const previousEffective = previousSpaceId ?? bootstrapMe?.spaceId;
+      const currentPath = activeGroupId.current
+        ? `/app/g/${activeGroupId.current}`
+        : activeBotId.current
+          ? `/app/${activeBotId.current}`
+          : null;
+      if (previousEffective === spaceId && path === currentPath) {
+        navigate(path);
+        return;
+      }
       // Persist the active space (including primary) so voice/RPC headers match the chat.
       const selectionStored = selectSpace(spaceId);
       if (!selectionStored) return;
-      const previousEffective = previousSpaceId ?? bootstrapMe?.spaceId;
       const boundaryChanged = previousEffective !== spaceId;
       // Soft-navigate within the same space; reload only when the auth boundary changes
       // so bootstrapped bots/groups match the request header.
