@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { activeBotId, completeOnboarding, rpc, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  createNamedBot,
+  rpc,
+  signup,
+} from "./helpers";
 
 test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => {
   const stamp = Date.now();
@@ -88,4 +95,61 @@ test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => 
     await flood;
     await rpc(page, "threads/stop", { botId }).catch(() => {});
   }
+});
+
+test("cold and cross-thread deep links scroll to a target in complete history", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `jump-complete-${stamp}@rakazo.test`, "password12", "History Jump");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const targetText = `complete-jump-target-${stamp}`;
+  await rpc(page, "threads/send", { botId, text: targetText, clientNonce: `target-${stamp}` });
+  for (let index = 0; index < 14; index += 1) {
+    await rpc(page, "threads/send", {
+      botId,
+      text: `complete-jump-filler-${index}-${stamp} ${"A later message keeps the earlier target outside the visible reading area. ".repeat(6)}`,
+      clientNonce: `complete-${stamp}-${index}`,
+    });
+  }
+  await rpc(page, "threads/stop", { botId });
+  const target = await rpc<{
+    threadId: string;
+    cursor: number;
+    olderCursor: number | null;
+    messages: Array<{ id: string; role: string; blocks: Array<{ kind: string; text?: string }> }>;
+  }>(page, "threads/get", { botId });
+  expect(target.olderCursor).toBeNull();
+  const messageId = target.messages.find(
+    (message) =>
+      message.role === "user" && message.blocks.some((block) => block.text === targetText),
+  )?.id;
+  if (!messageId) throw new Error("missing complete-history target");
+  const row = page.getByTestId("transcript").locator(`[data-message-id="${messageId}"]`);
+  await expect(page.getByTestId("transcript")).toContainText(`complete-jump-filler-13-${stamp}`);
+  await expect(row).toHaveCount(1);
+  await expect(row).not.toBeInViewport();
+
+  await page.goto(`/app/${botId}?m=${messageId}`);
+  await expect(row).toBeInViewport();
+  await expect(page).not.toHaveURL(/[?&]m=/);
+  // An idle thread sends its first heartbeat after 20s; allow startup overhead.
+  await expect(page.getByTestId("connection-status")).toHaveCount(0, { timeout: 30_000 });
+  await captureScreenshot(page, testInfo, "b31-jump-cold");
+
+  const otherId = await createNamedBot(page, "Other jump");
+  const other = await rpc<{ threadId: string; cursor: number }>(page, "threads/get", {
+    botId: otherId,
+  });
+  expect(other.threadId).not.toBe(target.threadId);
+  expect(other.cursor).toBeLessThan(target.cursor);
+  await page.evaluate((url) => {
+    history.pushState({}, "", url);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, `/app/${botId}?m=${messageId}`);
+  await expect(row).toBeInViewport();
+  await expect(page).not.toHaveURL(/[?&]m=/);
+  await expect(page.getByTestId("connection-status")).toHaveCount(0, { timeout: 30_000 });
+  await captureScreenshot(page, testInfo, "b31-jump-cross");
 });
