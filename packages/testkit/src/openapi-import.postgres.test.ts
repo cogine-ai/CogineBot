@@ -275,6 +275,19 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     return { name: "Reviewed API", source, config: { auth: { type: "bearer" } }, credential };
   }
 
+  function echoInput(document: unknown, suppliedCredential: string): OpenApiImportInput {
+    return {
+      ...input(document),
+      credential: suppliedCredential,
+      config: {
+        auth:
+          suppliedCredential === "密钥+42"
+            ? { type: "query", name: "import_key" }
+            : { type: "bearer" },
+      },
+    };
+  }
+
   async function preview(request: OpenApiImportInput) {
     return OpenApiImportPreviewSchema.parse(
       await rpc<OpenApiImportPreview>("capabilities/previewOpenApi", request),
@@ -361,12 +374,14 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
           const url = new URL(request instanceof Request ? request.url : String(request));
           if (url.hostname === "import.example.test") {
             sourceRequests.push(url.href);
-            const queued = replies.get(url.href)?.shift();
+            const documentUrl = new URL(url);
+            documentUrl.searchParams.delete("import_key");
+            const queued = replies.get(documentUrl.href)?.shift();
             return queued
               ? queued()
-              : typeof documents.get(url.href) === "string"
-                ? new Response(documents.get(url.href) as string)
-                : Response.json(documents.get(url.href));
+              : typeof documents.get(documentUrl.href) === "string"
+                ? new Response(documents.get(documentUrl.href) as string)
+                : Response.json(documents.get(documentUrl.href));
           }
           if (url.hostname === "service.example.test") {
             outbound.push({
@@ -480,7 +495,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     "rejects $label credential echoes before preview exposes a plan",
     async ({ credential: short, echo }) => {
       for (const location of ["source", "operation", "config", "diagnostic"] as const) {
-        const request = { ...input(echoedDocument(echo, location)), credential: short };
+        const request = echoInput(echoedDocument(echo, location), short);
         const result = await preview(request);
         expect(result.status, location).toBe("invalid");
         expect(result.reviewToken, location).toBeNull();
@@ -494,11 +509,8 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
           expect(serialized, location).not.toContain(value);
         expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
       }
-      const request = {
-        ...input(),
-        credential: short,
-        config: { auth: { type: "bearer" }, headers: { "X-Context": echo } },
-      };
+      const request = echoInput(documentFor(), short);
+      request.config = { ...request.config, headers: { "X-Context": echo } };
       const result = await preview(request);
       expect(result).toMatchObject({ status: "invalid", reviewToken: null });
       expect(JSON.stringify(result)).not.toContain(echo);
@@ -509,7 +521,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
   it.each(credentialEchoCases)(
     "rejects a re-fetched $label credential echo as invalid before any secret put",
     async ({ credential: short, echo }) => {
-      const request = await ready({ ...input(), credential: short });
+      const request = await ready(echoInput(documentFor(), short));
       // The signed request stays unchanged; only the actual fetched document changes.
       documents.set(request.source, echoedDocument(echo, "diagnostic"));
       expect(await confirm(request)).toMatchObject({ status: "invalid", diagnostics: [] });
