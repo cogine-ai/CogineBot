@@ -784,6 +784,109 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     expect(await counts()).toEqual({ installs: 1, secretRows: 1, receipts: 1, puts: 1 });
   });
 
+  it.each([
+    { version: "3.0.4", label: "3.0.4", projectsReadOnly: true },
+    { version: "3.1.1", label: "3.1.1", projectsReadOnly: false },
+    { version: undefined, label: "missing version", projectsReadOnly: false },
+  ])(
+    "keeps $label request readOnly rules through installed discovery and HTTP",
+    async ({ version, projectsReadOnly }) => {
+      const request = await ready(
+        input({
+          ...(version ? { openapi: version } : {}),
+          servers: [{ url: target }],
+          paths: {
+            "/readonly-items": {
+              post: {
+                operationId: "create_readonly_item",
+                requestBody: {
+                  required: true,
+                  content: {
+                    "application/json": {
+                      schema: {
+                        type: "object",
+                        properties: {
+                          id: { type: "integer", readOnly: true },
+                          name: { type: "string", minLength: 1 },
+                        },
+                        required: ["id", "name"],
+                        additionalProperties: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        }),
+      );
+      const installed = await confirm(request);
+      expect(installed.status).toBe("installed");
+      if (installed.status !== "installed") throw new Error("Expected an install");
+      const stored = await handles.prisma.capabilityInstall.findUniqueOrThrow({
+        where: { id: installed.install.id },
+      });
+      const persistedSchema = JSON.parse(JSON.stringify(stored.config)).operations[0].inputSchema;
+      const bodySchema = persistedSchema.properties.body;
+      expect(persistedSchema.required).toEqual(["body"]);
+      expect(bodySchema.additionalProperties).toBe(true);
+      const provider = handles.connectors;
+      const context = {
+        userId: actor.userId,
+        spaceId: space.id,
+        operationId: "openapi-readonly-acceptance",
+        traceId: "openapi-readonly-acceptance",
+        signal: new AbortController().signal,
+      };
+      const tools = await provider.discoverTools(context);
+      const tool = tools.find((candidate) => candidate.route?.resourceId === stored.id)!;
+      expect(tool.route).toMatchObject({
+        connectorId: "installed",
+        toolName: "create_readonly_item",
+      });
+      expect(tool.inputSchema).toEqual(persistedSchema);
+      const wire = JSON.parse(JSON.stringify(parametersFor(tool)));
+      expect(wire.properties.body.required).toEqual(projectsReadOnly ? ["name"] : ["id", "name"]);
+      if (projectsReadOnly) {
+        expect(bodySchema.properties).not.toHaveProperty("id");
+        expect(wire.properties.body.properties).not.toHaveProperty("id");
+        expect(bodySchema.not).toEqual({ type: "object", anyOf: [{ required: ["id"] }] });
+      } else {
+        expect(bodySchema.properties.id).toMatchObject({ type: "integer", readOnly: true });
+        expect(wire.properties.body.properties).toHaveProperty("id");
+        expect(bodySchema.not).toBeUndefined();
+      }
+      const withoutId = { name: "Created item", "allowed-extra": { retained: true } };
+      const withId = { id: 7, ...withoutId };
+      const run = async (body: Record<string, unknown>) => {
+        const events = [];
+        for await (const event of provider.execute(
+          { tool: tool.name, route: tool.route, args: { body }, executionId: randomUUID() },
+          context,
+        ))
+          events.push(event);
+        return events;
+      };
+      const invalid = projectsReadOnly ? withId : withoutId;
+      expect(await run(invalid)).toEqual([
+        { type: "error", message: expect.stringContaining("schema") },
+      ]);
+      expect(outbound).toHaveLength(0);
+      const valid = projectsReadOnly ? withoutId : withId;
+      const original = JSON.stringify(valid);
+      expect(await run(valid)).toContainEqual(expect.objectContaining({ type: "result" }));
+      expect(outbound).toHaveLength(1);
+      expect(outbound[0]).toMatchObject({
+        url: `${target}/readonly-items`,
+        method: "POST",
+        body: original,
+      });
+      expect(JSON.stringify(valid)).toBe(original);
+      expect(sourceRequests).toHaveLength(2);
+      expect(await counts()).toEqual({ installs: 1, secretRows: 1, receipts: 1, puts: 1 });
+    },
+  );
+
   it("rejects document changes after review before storing any credential", async () => {
     const request = await ready(input());
     const changed = documentFor();

@@ -1242,8 +1242,13 @@ describe("connector read-only metadata and approval enforcement", () => {
 });
 
 describe("strict installed argument approval replay", () => {
-  function installedFixture(format: string, startsCatalog: boolean) {
+  function installedFixture(
+    formatOrSchema: string | Record<string, unknown>,
+    startsCatalog: boolean,
+    openapi?: string,
+  ) {
     const operation = compileOpenApiDocument({
+      ...(openapi ? { openapi } : {}),
       servers: [{ url: "https://93.184.216.34" }],
       paths: {
         "/items": {
@@ -1251,7 +1256,14 @@ describe("strict installed argument approval replay", () => {
             operationId: "demo_get_item",
             requestBody: {
               required: true,
-              content: { "application/json": { schema: { type: "string", format } } },
+              content: {
+                "application/json": {
+                  schema:
+                    typeof formatOrSchema === "string"
+                      ? { type: "string", format: formatOrSchema }
+                      : formatOrSchema,
+                },
+              },
             },
           },
         },
@@ -1391,6 +1403,88 @@ describe("strict installed argument approval replay", () => {
         expect(f.effects).toHaveLength(1);
         expect(f.effects[0]!.status).toBe("completed");
       }
+    },
+  );
+
+  const directionalRequest = {
+    type: "object",
+    properties: {
+      serverId: { type: "string", readOnly: true },
+      name: { type: "string" },
+      password: { type: "string", writeOnly: true },
+    },
+    required: ["serverId", "name", "password"],
+    additionalProperties: true,
+  };
+
+  it.each([false, true])(
+    "replays the approved request without response-only fields when catalog starts as %s",
+    async (startsCatalog) => {
+      const f = installedFixture(directionalRequest, startsCatalog, "3.0.4");
+      const approved = {
+        body: { name: "Approved name", password: "approved-private", extra: "business" },
+      };
+      f.setCalls([
+        {
+          args: approved,
+          executionId: "request",
+          catalogId: "install-format:demo_get_item",
+        },
+      ]);
+      await f.run();
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.effects).toHaveLength(1);
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      f.effects[0]!.status = "approved";
+      f.shrink();
+      f.setCalls([
+        {
+          args: { body: { serverId: "unapproved", name: "Replacement", password: "ignored" } },
+          executionId: "resume",
+        },
+      ]);
+      await f.run();
+      expect(f.fetch).toHaveBeenCalledOnce();
+      expect(f.fetch.mock.calls[0]![1]!.body).toBe(
+        '{"name":"Approved name","password":"approved-private","extra":"business"}',
+      );
+      expect(approved).toEqual({
+        body: { name: "Approved name", password: "approved-private", extra: "business" },
+      });
+      expect(f.effects).toHaveLength(1);
+      expect(f.effects[0]!.status).toBe("completed");
+    },
+  );
+
+  it.each([false, true])(
+    "keeps response-only keys in saved approval arguments off HTTP when catalog starts as %s",
+    async (startsCatalog) => {
+      const f = installedFixture(directionalRequest, startsCatalog, "3.0.4");
+      f.setCalls([
+        {
+          args: {
+            body: { serverId: "server-owned", name: "Approved name", password: "approved-private" },
+          },
+          executionId: "request",
+          catalogId: "install-format:demo_get_item",
+        },
+      ]);
+      await f.run();
+      if (f.effects.length > 0) {
+        expect(f.effects).toHaveLength(1);
+        f.effects[0]!.status = "approved";
+        f.shrink();
+        f.setCalls([
+          {
+            args: { body: { name: "Unapproved replacement", password: "ignored" } },
+            executionId: "resume",
+          },
+        ]);
+        await f.run();
+      }
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toMatchObject({ error: expect.stringContaining("schema") });
+      expect(f.effects).toHaveLength(startsCatalog ? 0 : 1);
     },
   );
 

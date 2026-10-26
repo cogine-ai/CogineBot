@@ -287,7 +287,7 @@ export function compileOpenApiDocument(document: unknown): {
           }
         }
         const properties: Record<string, unknown> = {};
-        const schemaContext = { root, work: 0, bytes: 0 };
+        const schemaContext = { root, work: 0, bytes: 0, requestReadOnly: false };
         const required: string[] = [];
         const queryParameters: string[] = [];
         const headerParameters: string[] = [];
@@ -368,6 +368,8 @@ export function compileOpenApiDocument(document: unknown): {
           if (!json || !content || Object.keys(content).length !== 1 || json.encoding !== undefined)
             throw new OpenApiCompileError("unsupported_parameter");
           if (headerNames.has("content-type")) throw new OpenApiCompileError("unsafe_header");
+          schemaContext.requestReadOnly =
+            typeof root.openapi === "string" && root.openapi.startsWith("3.0.");
           properties.body = compileSchema(schemaContext, json.schema);
           if (requestBody?.required === true) required.push("body");
         }
@@ -468,7 +470,12 @@ function referenceTarget(root: Record<string, unknown>, ref: string): unknown {
   return current;
 }
 
-type SchemaContext = { root: Record<string, unknown>; work: number; bytes: number };
+type SchemaContext = {
+  root: Record<string, unknown>;
+  work: number;
+  bytes: number;
+  requestReadOnly: boolean;
+};
 const annotations = new Set([
   "title",
   "description",
@@ -532,7 +539,61 @@ function literal(context: SchemaContext, value: unknown, depth: number): unknown
 
 function compileSchema(context: SchemaContext, value: unknown): Record<string, unknown> {
   const expanded = expandSchema(context, value, [], 0);
-  return validateSchema(expanded);
+  const validated = validateSchema(expanded);
+  if (context.requestReadOnly) projectRequestSchema(context, validated);
+  return validated;
+}
+
+function requestPropertyReadOnly(
+  schema: Record<string, unknown>,
+  inheritedReadOnly = false,
+  inheritedWriteOnly = false,
+): boolean {
+  const readOnly = inheritedReadOnly || schema.readOnly === true;
+  const writeOnly = inheritedWriteOnly || schema.writeOnly === true;
+  if (readOnly && writeOnly) throw new OpenApiCompileError("unsafe_schema");
+  const variants = schema.oneOf ?? schema.anyOf;
+  if (!Array.isArray(variants)) return readOnly;
+  const states = variants.map((variant) =>
+    requestPropertyReadOnly(variant as Record<string, unknown>, readOnly, writeOnly),
+  );
+  if (states.some((state) => state !== states[0])) throw new OpenApiCompileError("unsafe_schema");
+  return states[0]!;
+}
+
+function projectRequestSchema(context: SchemaContext, schema: Record<string, unknown>): void {
+  charge(context, schema);
+  for (const key of ["oneOf", "anyOf"])
+    for (const variant of (schema[key] as Record<string, unknown>[] | undefined) ?? [])
+      projectRequestSchema(context, variant);
+  const properties = asRecord(schema.properties);
+  if (properties) {
+    const forbidden: string[] = [];
+    for (const [name, value] of Object.entries(properties)) {
+      const child = value as Record<string, unknown>;
+      const readOnly = requestPropertyReadOnly(child);
+      projectRequestSchema(context, child);
+      if (readOnly) {
+        charge(context, name);
+        forbidden.push(name);
+        delete properties[name];
+      }
+    }
+    if (forbidden.length) {
+      const blocked = new Set(forbidden);
+      if (Array.isArray(schema.required)) {
+        const required = schema.required.filter((name) => !blocked.has(name));
+        if (required.length) schema.required = required;
+        else delete schema.required;
+      }
+      schema.not = {
+        type: "object",
+        anyOf: forbidden.map((name) => ({ required: [name] })),
+      };
+    }
+  }
+  const items = asRecord(schema.items);
+  if (items) projectRequestSchema(context, items);
 }
 
 function expandSchema(
@@ -545,6 +606,12 @@ function expandSchema(
   if (depth > 64) throw new OpenApiCompileError("schema_limit");
   const schema = asRecord(value);
   if (!schema) throw new OpenApiCompileError("unsafe_schema");
+  if (
+    ["readOnly", "writeOnly"].some(
+      (key) => schema[key] !== undefined && typeof schema[key] !== "boolean",
+    )
+  )
+    throw new OpenApiCompileError("unsafe_schema");
   let result: Record<string, unknown> = {};
   if (schema.$ref !== undefined) {
     if (typeof schema.$ref !== "string") throw new OpenApiCompileError("unresolved_reference");
@@ -590,12 +657,16 @@ function expandSchema(
       writable: true,
     });
   }
-  result = intersectSchemas(result, own);
+  result = intersectSchemas(result, own, context.requestReadOnly);
   if (schema.allOf !== undefined) {
     if (!Array.isArray(schema.allOf) || !schema.allOf.length || schema.allOf.length > 20)
       throw new OpenApiCompileError("unsafe_schema");
     for (const child of schema.allOf)
-      result = intersectSchemas(result, expandSchema(context, child, chain, depth + 1));
+      result = intersectSchemas(
+        result,
+        expandSchema(context, child, chain, depth + 1),
+        context.requestReadOnly,
+      );
   }
   return result;
 }
@@ -603,6 +674,7 @@ function expandSchema(
 function intersectSchemas(
   left: Record<string, unknown>,
   right: Record<string, unknown>,
+  requestReadOnly: boolean,
 ): Record<string, unknown> {
   for (const [closed, other] of [
     [left, right],
@@ -618,7 +690,9 @@ function intersectSchemas(
   for (const [key, value] of Object.entries(right)) {
     const current = Object.hasOwn(merged, key) ? merged[key] : undefined;
     let next = value;
-    if (
+    if (requestReadOnly && (key === "readOnly" || key === "writeOnly") && current === true)
+      next = true;
+    else if (
       current !== undefined &&
       !isDeepStrictEqual(current, value) &&
       !annotations.has(key) &&
@@ -646,13 +720,16 @@ function intersectSchemas(
         next = intersectSchemas(
           current as Record<string, unknown>,
           value as Record<string, unknown>,
+          requestReadOnly,
         );
       else if (key === "properties" && asRecord(current) && asRecord(value)) {
         const properties = { ...(current as Record<string, unknown>) };
         for (const [name, child] of Object.entries(value as Record<string, unknown>)) {
           const existing = Object.hasOwn(properties, name) ? asRecord(properties[name]) : undefined;
           Object.defineProperty(properties, name, {
-            value: existing ? intersectSchemas(existing, child as Record<string, unknown>) : child,
+            value: existing
+              ? intersectSchemas(existing, child as Record<string, unknown>, requestReadOnly)
+              : child,
             enumerable: true,
             configurable: true,
             writable: true,
