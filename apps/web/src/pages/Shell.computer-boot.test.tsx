@@ -866,6 +866,184 @@ it.each(
   },
 );
 
+it.each(
+  (["thread.message.created", "thread.message.updated"] as const).flatMap((type) =>
+    ["pre-clear", "known-fallback", "admitted"].flatMap((scenario) =>
+      [false, true].map((inGroup) => ({ type, scenario, inGroup })),
+    ),
+  ),
+)(
+  "retains history only after admitted $type replay ($scenario, group=$inGroup)",
+  async ({ type, scenario, inGroup }) => {
+    const initial: ThreadSnapshot = {
+      ...jumpSnapshot("chief", 5, "Done"),
+      olderCursor: 1,
+      ...(inGroup ? { botId: undefined, groupId: "ops", threadId: "thread-ops" } : {}),
+      messages: [
+        {
+          ...jumpSnapshot("chief", 5, "Done").messages[0]!,
+          id: "anchor",
+          threadId: inGroup ? "thread-ops" : "thread-chief",
+          blocks: [{ kind: "text", text: "Initial anchor" }],
+        },
+      ],
+    };
+    const prepare = deferred<ProductEvent>();
+    const replay = deferred<ProductEvent>();
+    const refresh = deferred<ProductEvent>();
+    const stableRoutines: AppBootstrap["routines"] = [];
+    let server = initial;
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: inGroup ? null : initial });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") return server;
+      if (path === "routines.list") return stableRoutines;
+      if (path === "threads.subscribe")
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield await prepare.promise;
+            yield await replay.promise;
+            yield await refresh.promise;
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
+          },
+        };
+      return fallback(path, input, options);
+    });
+    const frame = (seq: number, messageId: string, text: string): ProductEvent => ({
+      id: `event-${seq}`,
+      spaceId: "space-1",
+      threadId: initial.threadId,
+      botId: "chief",
+      seq,
+      type: "thread.message.updated",
+      payload: { messageId, messageSeq: 1, role: "user", blocks: [{ kind: "text", text }] },
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    await render(inGroup ? "/app/g/ops" : "/app/chief");
+    server = {
+      ...initial,
+      cursor: 20,
+      olderCursor: scenario === "pre-clear" ? null : 1,
+      messages: initial.messages.map((message) => ({
+        ...message,
+        blocks: [{ kind: "text", text: "Authoritative anchor" }],
+      })),
+    };
+    // Consume 7 before a direct GET commits 20, leaving replay 11 ahead of the reader cursor.
+    await act(async () => prepare.resolve(frame(7, "anchor", "Before refresh")));
+    expect(container.querySelector('[data-message-id="anchor"]')?.textContent).toContain(
+      "Authoritative anchor",
+    );
+    const historical = frame(11, "historical", "Recovered history");
+    historical.type = type;
+    historical.payload.messageSeq = 0;
+    if (scenario === "known-fallback") {
+      historical.id = "anchor";
+      delete historical.payload.messageId;
+    }
+    await act(async () => replay.resolve(historical));
+    expect(container.querySelector('[data-message-id="historical"]') !== null).toBe(
+      scenario === "admitted",
+    );
+    server = {
+      ...initial,
+      cursor: 21,
+      messages: [
+        {
+          ...initial.messages[0]!,
+          id: "tail",
+          seq: 5,
+          blocks: [{ kind: "text", text: "New latest page" }],
+        },
+      ],
+    };
+    await act(async () => refresh.resolve(frame(12, "anchor", "Obsolete payload")));
+    expect(container.querySelector('[data-message-id="tail"]')?.textContent).toContain(
+      "New latest page",
+    );
+    expect(container.querySelector('[data-message-id="anchor"]') !== null).toBe(
+      scenario === "admitted",
+    );
+    expect(container.querySelector('[data-message-id="historical"]') !== null).toBe(
+      scenario === "admitted",
+    );
+  },
+);
+
+it.each(["Space", "actor", "target"])(
+  "ignores a late durable replay after changing the reader %s",
+  async (scopeChange) => {
+    const initial = { ...jumpSnapshot("chief", 5, "Done"), olderCursor: 1 };
+    const prepare = deferred<ProductEvent>();
+    const replay = deferred<ProductEvent>();
+    let server = initial;
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get")
+        return input?.botId === "worker" ? jumpSnapshot("worker", 30, "Done") : server;
+      if (path === "threads.subscribe")
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield await prepare.promise;
+            yield await replay.promise;
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
+          },
+        };
+      return fallback(path, input, options);
+    });
+    await render();
+    server = { ...initial, cursor: 20 };
+    const event: ProductEvent = {
+      id: "updated-7",
+      spaceId: "space-1",
+      threadId: initial.threadId,
+      botId: "chief",
+      seq: 7,
+      type: "thread.message.updated",
+      payload: {
+        messageId: "card",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [{ kind: "computer", state: "Done", text: "Sign in" }],
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    await act(async () => prepare.resolve(event));
+    if (scopeChange === "Space") {
+      boundary.space = "space-2";
+      boundary.generation += 1;
+    } else if (scopeChange === "actor") {
+      boundary.session.data.user.id = "user-2";
+    }
+    await act(async () =>
+      navigate(scopeChange === "target" ? "/app/worker" : "/app/chief?scope=changed"),
+    );
+    const reads = boundary.call.mock.calls.filter(([path]) => path === "threads.get").length;
+    await act(async () =>
+      replay.resolve({
+        ...event,
+        id: "replay-11",
+        type: "thread.message.created",
+        seq: 11,
+        payload: {
+          messageId: "historical",
+          messageSeq: 0,
+          role: "user",
+          blocks: [{ kind: "text", text: "Old reader history" }],
+        },
+      }),
+    );
+    expect(container.querySelector('[data-message-id="historical"]')).toBeNull();
+    expect(boundary.call.mock.calls.filter(([path]) => path === "threads.get")).toHaveLength(reads);
+    expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+  },
+);
+
 function jumpSnapshot(botId: string, cursor: number, state: string): ThreadSnapshot {
   return {
     ...snapshot(status(botId)),

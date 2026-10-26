@@ -1487,11 +1487,14 @@ export function ShellPage() {
           ) {
             const next = reduceThreadSnapshot(current, event);
             if (current && next) {
+              const messageId = String(event.payload.messageId ?? event.id);
               if (
+                next !== current &&
                 (event.type === "thread.message.created" ||
                   event.type === "thread.message.updated") &&
                 typeof event.payload.messageSeq === "number" &&
-                !current.messages.some((message) => message.id === event.payload.messageId)
+                !current.messages.some((message) => message.id === messageId) &&
+                next.messages.some((message) => message.id === messageId)
               )
                 expandedHistoryThread.current = event.threadId;
               commitSnapshot(next);
