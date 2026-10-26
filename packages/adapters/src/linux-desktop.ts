@@ -102,7 +102,7 @@ export class LinuxDesktop {
       computer,
       desktopControlCommand(
         screenSessionKey(context),
-        context.screenLeaseId,
+        entry.leaseId,
         env,
         false,
         entry.token,

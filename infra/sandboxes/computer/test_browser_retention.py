@@ -221,8 +221,106 @@ def control_request(commands, steps=None):
         return False
 
 
+def healthy_route_recovery(commands):
+    """Route damage alone must not replace the live input process or its lease."""
+    server = ThreadingHTTPServer(("127.0.0.1", 8090), Page)
+    Thread(target=server.serve_forever, daemon=True).start()
+    run(commands, "reset")
+    ports = {bot: int(commands["debug" + bot]) for bot in "ab"}
+    targets = {}
+    for bot in "ab":
+        run(commands, "ensure" + bot)
+        client = browser(ports[bot])
+        try:
+            for suffix in ["1", "2"]:
+                label = bot + suffix
+                target = client.call("Target.createTarget", {"url": f"http://127.0.0.1:8090/{label}"})["targetId"]
+                targets[label] = target
+                wait_for(lambda: state(ports[bot], target).get("sentinel") == label, "route fixture page script")
+        finally:
+            client.close()
+    original_pids = {bot: browser_pid(commands["profile" + bot]) for bot in "ab"}
+    expected = {label: state(ports[label[0]], target) for label, target in targets.items()}
+    run(commands, "grant")
+    client = browser(ports["a"])
+    try:
+        client.call("Target.activateTarget", {"targetId": targets["a1"]})
+    finally:
+        client.close()
+    run(commands, "focus")
+    evaluate(ports["a"], targets["a1"], "var input=document.querySelector('input');input.focus();input.setSelectionRange(input.value.length,input.value.length);true")
+    assert evaluate(ports["a"], targets["a1"], "document.hasFocus()")
+    view_port, control_port = int(commands["viewPort"]), int(commands["controlPort"])
+    viewer, peer = Rfb(view_port, "view-a"), Rfb(view_port, "view-b")
+    target_file = Path(f"/tmp/rakazo/desktop-targets/control-{commands['displaya']}")
+    original_mapping = target_file.read_text()
+    assert original_mapping.startswith("control-a: unix_socket:")
+    socket = original_mapping.strip().split("unix_socket:", 1)[1]
+    assert Path(socket).is_socket()
+    input_match = lambda argv: argv[0].endswith(b"x11vnc") and socket.encode() in argv
+    gateway_match = lambda argv: f"0.0.0.0:{control_port}".encode() in argv and b"--token-source=/tmp/rakazo/desktop-targets" in argv
+    def gateway_listeners():
+        # websockify forks one child per RFB client with identical argv.
+        candidates = pids(gateway_match)
+        return [pid for pid in candidates if int(Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[1]) not in candidates]
+
+    input_pids, gateway_pids = pids(input_match), gateway_listeners()
+    assert len(input_pids) == 1 and len(gateway_pids) == 1
+
+    def retained():
+        assert pids(input_match) == input_pids, "route repair replaced healthy input process"
+        assert gateway_listeners() == gateway_pids, "route repair replaced healthy gateway"
+        assert Path(f"/tmp/rakazo/control-token-{commands['displaya']}").read_text() == "control-a", "owner token changed during route repair"
+        for bot in "ab":
+            assert browser_pid(commands["profile" + bot]) == original_pids[bot]
+            assert running(original_pids[bot])
+            present = {page["id"] for page in pages(ports[bot])}
+            assert all(targets[label] in present for label in targets if label.startswith(bot))
+        for label, target in targets.items():
+            assert state(ports[label[0]], target) == expected[label], label
+
+    def type_control(value):
+        controller = Rfb(control_port, "control-a")
+        try:
+            controller.key(value)
+            expected["a1"] = {**expected["a1"], "draft": expected["a1"]["draft"] + value, "inputs": expected["a1"]["inputs"] + 1}
+            wait_for(lambda: state(ports["a"], targets["a1"]) == expected["a1"], "one recovered control input")
+        finally:
+            controller.close()
+
+    type_control("c")
+    retained()
+    corruption = commands["routeCorruption"]
+    if corruption == "missing":
+        target_file.unlink()
+    elif corruption == "empty":
+        target_file.write_text("")
+    else:
+        assert corruption == "mismatched"
+        target_file.write_text("control-a: unix_socket:/tmp/rakazo/sockets/not-this-control\n")
+    retained()
+    peer.ping()
+    # Both processes and the token socket remain healthy: only the route is damaged.
+    assert Path(socket).is_socket()
+    run(commands, "recover")
+    retained()
+    type_control("d")
+    assert target_file.read_text() == original_mapping, "current token route was not restored"
+    viewer.key("v")
+    time.sleep(0.2)
+    retained()
+    peer.ping()
+    viewer.close()
+    peer.close()
+    print("ROUTE_RECOVERY_EVIDENCE " + json.dumps({"managed": commands["managed"] == "true", "corruption": corruption, "retainedTargets": 4, "unchangedBrowserPids": 2, "unchangedInputPids": len(input_pids), "unchangedGatewayPids": len(gateway_pids), "rfbInputs": 2, "duplicateInputs": 0, "readonlyInputAttempts": 1, "ownerTokenPreserved": True}), flush=True)
+    print("PASS: healthy control route repaired with current owner token, readonly watch, and unchanged browser/input/gateway processes")
+
+
 def main():
     commands = json.loads(Path(sys.argv[1]).read_text())
+    if commands.get("routeCorruption"):
+        healthy_route_recovery(commands)
+        return
     server = ThreadingHTTPServer(("127.0.0.1", 8090), Page)
     Thread(target=server.serve_forever, daemon=True).start()
     run(commands, "reset")

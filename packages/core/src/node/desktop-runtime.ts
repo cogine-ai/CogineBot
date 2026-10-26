@@ -630,16 +630,23 @@ function renderInteractiveScreenCommand(
   }
   if (!controlToken) throw new Error("interactive screen requires a control token");
   const socket = `/tmp/rakazo/sockets/control-${layout.displayNumber}-${socketKey}`;
+  const process = quoteLayout(`^([^ ]*/)?x11vnc .* -unixsock ${socket}( |$)`);
   return [
-    `[ -f ${tokenFile} ] && [ "$(cat ${tokenFile})" = ${shellQuote(controlToken)} ] && [ -S ${socket} ] && pgrep -f ${quoteLayout(`^([^ ]*/)?x11vnc .* -unixsock ${socket}( |$)`)} >/dev/null && (echo >/dev/tcp/127.0.0.1/${layout.controlPort}) >/dev/null 2>&1 && exit 0 || true`,
+    "set -eu",
+    `if ! { [ -f ${tokenFile} ] && [ "$(cat ${tokenFile})" = ${shellQuote(controlToken)} ] && [ -S ${socket} ] && pgrep -f ${process} >/dev/null; }; then`,
     stopProcesses,
     `mkdir -p ${TARGETS} /tmp/rakazo/sockets`,
-    `printf %s ${shellQuote(controlToken)} >${tokenFile}`,
     `nohup x11vnc -display ${layout.display} -forever -shared -nopw -rfbport 0 -unixsock ${socket} -xkb -ncache 0 8>&- 9>&- </dev/null >/tmp/rakazo/x11vnc-control-${layout.displayNumber}.log 2>&1 &`,
-    `for i in $(seq 1 50); do [ -S ${socket} ] && break; sleep 0.1; done`,
-    `[ -S ${socket} ] || exit 1`,
-    `printf '%s: unix_socket:%s\\n' ${shellQuote(controlToken)} ${socket} >/tmp/rakazo/control-target-next-${layout.displayNumber}`,
-    `mv /tmp/rakazo/control-target-next-${layout.displayNumber} ${targetFile}`,
+    `for i in $(seq 1 50); do [ -S ${socket} ] && pgrep -f ${process} >/dev/null && break; sleep 0.1; done`,
+    `[ -S ${socket} ] && pgrep -f ${process} >/dev/null || exit 1`,
+    `printf %s ${shellQuote(controlToken)} >${tokenFile}`,
+    "fi",
+    // Repair the route even when its input-capable process is already healthy.
+    `desired=$(printf '%s: unix_socket:%s\\n' ${shellQuote(controlToken)} ${socket})`,
+    `if [ ! -f ${targetFile} ] || [ "$(cat ${targetFile})" != "$desired" ]; then`,
+    `  printf '%s\\n' "$desired" >/tmp/rakazo/control-target-next-${layout.displayNumber}`,
+    `  mv /tmp/rakazo/control-target-next-${layout.displayNumber} ${targetFile}`,
+    "fi",
     gatewayCommand(layout.controlPort),
   ].join("\n");
 }

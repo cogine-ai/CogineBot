@@ -139,35 +139,43 @@ describe("LinuxDesktop.releaseScreen", () => {
     expect(commands.at(-1)).not.toContain("RAKAZO_DESKTOP=");
   });
 
-  it("retries an unconfirmed publication cleanup before a later ensure", async () => {
-    const f = shellHost();
-    let runs = 0;
-    let urls = 0;
-    const transport = new Error("cleanup transport failed before execution");
-    const desktop = new LinuxDesktop({
-      ...f.host,
-      run: async (...args) => {
-        runs += 1;
-        if (runs === 3) throw transport;
-        return f.host.run(...args);
-      },
-      screenUrl: async () => {
-        if (++urls === 1) throw new Error("publication failed");
-        return "http://screen.example";
-      },
-    });
-    const current = { ...context, screenLeaseId: "run:1" };
-    await expect(
-      desktop.connectScreen(
+  it.each(["run:1", "next:2"])(
+    "retries an unconfirmed publication cleanup before %s ensures",
+    async (nextLease) => {
+      const f = shellHost();
+      let runs = 0;
+      let urls = 0;
+      const transport = new Error("cleanup transport failed before execution");
+      const desktop = new LinuxDesktop({
+        ...f.host,
+        run: async (...args) => {
+          runs += 1;
+          if (runs === 3) throw transport;
+          return f.host.run(...args);
+        },
+        screenUrl: async () => {
+          if (++urls === 1) throw new Error("publication failed");
+          return "http://screen.example";
+        },
+      });
+      const current = { ...context, screenLeaseId: "run:1" };
+      await expect(
+        desktop.connectScreen(
+          computer,
+          { view: "stream", interactive: true, controlToken: "human-a" },
+          current,
+        ),
+      ).rejects.toBeInstanceOf(AggregateError);
+      expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("human-a");
+      await desktop.connectScreen(
         computer,
-        { view: "stream", interactive: true, controlToken: "human-a" },
-        current,
-      ),
-    ).rejects.toBeInstanceOf(AggregateError);
-    expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("human-a");
-    await desktop.connectScreen(computer, { view: "stream", interactive: false }, current);
-    expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("");
-  });
+        { view: "stream", interactive: false },
+        { ...current, screenLeaseId: nextLease },
+      );
+      expect(readFileSync(f.slot(), "utf8").split("\n")[1]).toBe(nextLease);
+      expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("");
+    },
+  );
 
   it("refuses ensure while publication cleanup is still unconfirmed", async () => {
     const f = shellHost();

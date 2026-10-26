@@ -307,6 +307,32 @@ describe.skipIf(process.platform !== "linux")("generated desktop lifecycle proce
     ).toBe("");
   });
 
+  it.each(["missing", "empty", "mismatched"])(
+    "repairs a %s control route without restarting its healthy input process",
+    async (damage) => {
+      const f = await fixture();
+      expect(f.ensure().status).toBe(0);
+      const browser = f.pid();
+      expect(
+        f.run(desktopControlCommand("a", "run:1", f.env, true, "human-a", "grant-1")).status,
+      ).toBe(0);
+      const socket = targetSocket(f, "control");
+      const input = Number(readFileSync(`${socket}.pid`, "utf8"));
+      const target = path.join(f.runtime, "desktop-targets", `control-${f.env.displayStart}`);
+      const expected = readFileSync(target, "utf8");
+      if (damage === "missing") rmSync(target);
+      else writeFileSync(target, damage === "empty" ? "" : "old: unix_socket:/old\n");
+      const repaired = f.ensure("run:2");
+      expect(repaired.status, repaired.stderr).toBe(0);
+      expect(readFileSync(target, "utf8")).toBe(expected);
+      expect(Number(readFileSync(`${socket}.pid`, "utf8"))).toBe(input);
+      expect(alive(input)).toBe(true);
+      expect(f.pid()).toBe(browser);
+      expect(f.state()[3]).toBe("human-a");
+      expect(f.state()[7]).toBe("grant-1");
+    },
+  );
+
   it("does not let old token or same-token publication cleanup revoke a replacement grant", async () => {
     const f = await fixture();
     expect(f.ensure().status).toBe(0);

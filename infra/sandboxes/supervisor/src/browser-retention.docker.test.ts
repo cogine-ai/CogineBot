@@ -160,6 +160,87 @@ it.skipIf(!enabled).each([false, true])(
 );
 
 it.skipIf(!enabled).each([
+  [false, "empty"],
+  [false, "missing"],
+  [false, "mismatched"],
+  [true, "empty"],
+  [true, "missing"],
+  [true, "mismatched"],
+] as const)(
+  "repairs healthy control route (managed=%s) after %s target corruption",
+  (managed, corruption) => {
+    const name = `rakazo-browser-retention-${randomUUID()}`;
+    const directory = mkdtempSync(path.join(tmpdir(), "browser-route-recovery-"));
+    const env = managed
+      ? { ...DEFAULT_DESKTOP_ENV, displayStart: 20, portStart: 6100, preservePrimaryDisplay: false }
+      : DEFAULT_DESKTOP_ENV;
+    const commands: Record<string, string> = {
+      reset: resetDesktopRuntimeCommand(),
+      viewPort: screenPorts(0, env).viewPort,
+      controlPort: screenPorts(0, env).controlPort,
+      routeCorruption: corruption,
+      managed: String(managed),
+    };
+    for (const [bot, index] of [
+      ["a", 0],
+      ["b", 1],
+    ] as const) {
+      commands[`ensure${bot}`] = managed
+        ? managedDesktopCommand(`bot-${bot}`, `run-${bot}:1`, env, `view-${bot}`)
+        : ensureScreenCommand(index, `bot-${bot}`, `view-${bot}`, env);
+      commands[`debug${bot}`] = String(screenPorts(index, env).debugPort);
+      commands[`profile${bot}`] = browserProfilePathForScreen(`bot-${bot}`, env);
+    }
+    commands.displaya = String(screenPorts(0, env).displayNumber);
+    commands.grant = managed
+      ? desktopControlCommand("bot-a", "run-a:1", env, true, "control-a")
+      : interactiveScreenCommand(true, "control-a", screenPorts(0, env));
+    commands.recover = managed
+      ? commands.ensurea!
+      : `bash -eu -c ${shellQuote(commands.ensurea!)}\nbash -eu -c ${shellQuote(commands.grant)}`;
+    commands.focus = `env DISPLAY=:${screenPorts(0, env).displayNumber} sh -c 'window=$(xdotool search --onlyvisible --name "^a1" | tail -n 1); [ -n "$window" ] && xdotool windowactivate --sync "$window"'`;
+    try {
+      start(name);
+      const commandFile = path.join(directory, "commands.json");
+      writeFileSync(commandFile, JSON.stringify(commands));
+      docker("cp", commandFile, `${name}:/tmp/browser-retention-commands.json`);
+      docker(
+        "cp",
+        fileURLToPath(new URL("../../computer/test_browser_retention.py", import.meta.url)),
+        `${name}:/tmp/test_browser_retention.py`,
+      );
+      const result = docker(
+        "exec",
+        name,
+        "python3",
+        "/tmp/test_browser_retention.py",
+        "/tmp/browser-retention-commands.json",
+      );
+      expect(result).toContain("PASS: healthy control route repaired");
+      process.stdout.write(result);
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "stdout" in error &&
+        typeof error.stdout === "string"
+      )
+        process.stderr.write(error.stdout);
+      try {
+        process.stderr.write(docker("logs", "--tail", "40", name));
+      } catch {
+        /* Preserve the test failure. */
+      }
+      throw error;
+    } finally {
+      cleanup(name);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+  180_000,
+);
+
+it.skipIf(!enabled).each([
   ["TERM", false],
   ["TERM", true],
   ["INT", false],
