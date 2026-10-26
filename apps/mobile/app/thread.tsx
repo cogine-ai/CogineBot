@@ -1394,16 +1394,9 @@ function Thread({
     const epoch = historyEpoch.current;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
-    const requestCursor = snapRef.current?.cursor ?? -1;
     const scope = await liveSavedChatsScope();
     if (!scope || !isIntegrationsScopeCurrent(scope)) return;
-    const [snap, requestedPage] = await Promise.all([
-      rpc<MobileSnapshot>("threads/get", threadTarget),
-      rpc<MobileMessagePage>("threads/messages", {
-        ...threadTarget,
-        around: { messageId: target.messageId },
-      }),
-    ]);
+    const snap = await rpc<MobileSnapshot>("threads/get", threadTarget);
     // The epoch check drops a jump that raced a conversation clear (or a bot switch); the
     // generation check drops an older same-thread jump that finished after a newer one.
     if (
@@ -1414,15 +1407,35 @@ function Thread({
       return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
-    const latest = mergeMobileSnapshot(snapRef.current, snap);
-    const page = protectMobileMessagePage(
-      latest,
-      requestedPage,
-      Math.min(requestCursor, snap.cursor ?? requestCursor),
+    const atDispatch = snapRef.current;
+    const requestCursor = Math.max(
+      snap.cursor ?? -1,
+      atDispatch?.threadId === snap.threadId ? (atDispatch.cursor ?? -1) : -1,
     );
+    // The page read must follow its target snapshot, including on a cold or cross-thread jump.
+    const requestedPage = await rpc<MobileMessagePage>("threads/messages", {
+      ...threadTarget,
+      around: { messageId: target.messageId },
+    });
+    if (
+      epoch !== historyEpoch.current ||
+      jumpId !== jumpGeneration.current ||
+      !isIntegrationsScopeCurrent(scope)
+    )
+      return;
+    if (target.groupId && activeGroupId.current !== target.groupId) return;
+    if (target.botId && activeBotId.current !== target.botId) return;
+    const latest = mergeMobileSnapshot(snapRef.current, snap);
+    const page = protectMobileMessagePage(latest, requestedPage, requestCursor);
     const targetInPage = Boolean(page?.messages.some((message) => message.id === target.messageId));
     const opened = targetInPage && page ? openThreadWindow(latest, page) : null;
-    expandedHistoryThread.current = opened?.snapshot.threadId ?? null;
+    const targetInSnapshot =
+      page === null &&
+      userVisibleMessages(latest.messages, { includePeerReceipts: true }).some(
+        (message) => message.id === target.messageId,
+      );
+    const jumpTarget = targetInPage || targetInSnapshot ? target.messageId : null;
+    expandedHistoryThread.current = jumpTarget ? latest.threadId : null;
     pinnedAroundRef.current = opened
       ? {
           ...threadTarget,
@@ -1431,8 +1444,8 @@ function Thread({
           newerCursor: opened.newerCursor,
         }
       : null;
-    jumpAnchor.current.begin(targetInPage ? target.messageId : null);
-    jumpScrollTarget.current = targetInPage ? target.messageId : null;
+    jumpAnchor.current.begin(jumpTarget);
+    jumpScrollTarget.current = jumpTarget;
     newerLoadFailed.current = false;
     joinPinnedAfterLayout.current = null;
     pinnedScrollMetrics.current = { offset: 0, viewport: 0, content: 0 };

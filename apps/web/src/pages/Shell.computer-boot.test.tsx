@@ -289,10 +289,10 @@ afterEach(() => {
   container.remove();
   vi.unstubAllGlobals();
 });
-async function render() {
+async function render(entry = "/app/chief") {
   await act(async () =>
     root.render(
-      <MemoryRouter initialEntries={["/app/chief"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/app/:botId" element={<RoutedShell />} />
           <Route path="/app/g/:groupId" element={<RoutedShell />} />
@@ -668,14 +668,32 @@ it("keeps a settled card when an ordinary same-thread search jump finishes after
     ],
   };
   const oldSnapshot = deferred<ThreadSnapshot>();
+  const oldPage = deferred<{
+    threadId: string;
+    olderCursor: null;
+    messages: ThreadSnapshot["messages"];
+  }>();
+  const pageStarted = deferred<void>();
   const updated = deferred<ProductEvent>();
   const released = deferred<ProductEvent>();
+  let server = initial;
+  let getReads = 0;
+  let pageReads = 0;
   const fallback = boundary.call.getMockImplementation()!;
   boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
   boundary.call.mockImplementation(async (path, input, options) => {
-    if (path === "threads.get") return oldSnapshot.promise;
-    if (path === "threads.messages")
-      return { threadId: initial.threadId, olderCursor: null, messages: initial.messages };
+    if (path === "threads.get") {
+      getReads += 1;
+      return getReads === 1 ? oldSnapshot.promise : server;
+    }
+    if (path === "threads.messages") {
+      pageReads += 1;
+      if (pageReads === 1) {
+        pageStarted.resolve();
+        return oldPage.promise;
+      }
+      return { threadId: server.threadId, olderCursor: null, messages: server.messages };
+    }
     if (path === "threads.subscribe")
       return {
         async *[Symbol.asyncIterator]() {
@@ -693,7 +711,16 @@ it("keeps a settled card when an ordinary same-thread search jump finishes after
     "Needs you",
   );
   await act(async () => navigate("/app/chief?m=card"));
-  expect(boundary.call.mock.calls.some(([path]) => path === "threads.messages")).toBe(true);
+  await act(async () => oldSnapshot.resolve(initial));
+  await pageStarted.promise;
+  server = {
+    ...initial,
+    cursor: 11,
+    messages: initial.messages.map((message) => ({
+      ...message,
+      blocks: [{ kind: "computer", text: "Sign in", state: "Done" }],
+    })),
+  };
   await act(async () =>
     updated.resolve({
       id: "event-11",
@@ -712,6 +739,11 @@ it("keeps a settled card when an ordinary same-thread search jump finishes after
       createdAt: "2026-01-01T00:00:00Z",
     }),
   );
+  server = {
+    ...server,
+    cursor: 12,
+    run: initial.run ? { ...initial.run, status: "queued" } : null,
+  };
   await act(async () =>
     released.resolve({
       id: "event-12",
@@ -726,9 +758,302 @@ it("keeps a settled card when an ordinary same-thread search jump finishes after
     }),
   );
   expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
-  await act(async () => oldSnapshot.resolve(initial));
+  await act(async () =>
+    oldPage.resolve({ threadId: initial.threadId, olderCursor: null, messages: initial.messages }),
+  );
   expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
   expect(container.querySelector('[data-testid="computer-card"]')?.textContent).not.toContain(
     "Needs you",
   );
 });
+
+it.each(
+  ["cold", "cross-low", "cross-equal", "cross-high", "same-thread"].flatMap((origin) =>
+    ["bot", "group"].map((kind) => ({ origin, kind })),
+  ),
+)(
+  "opens a $origin $kind message target only after reading its snapshot",
+  async ({ origin, kind }) => {
+    const targetBot = origin.startsWith("cross") ? "worker" : "chief";
+    const target = jumpSnapshot(targetBot, 20, "Done");
+    const targetRoute = kind === "group" ? "/app/g/ops" : `/app/${targetBot}`;
+    if (kind === "group") {
+      target.groupId = "ops";
+      delete target.botId;
+      target.threadId = "thread-ops";
+      target.messages = target.messages.map((message) => ({
+        ...message,
+        threadId: target.threadId,
+      }));
+      target.members = bootstrap().groups[0]!.members;
+    }
+    const get = deferred<ThreadSnapshot>();
+    let server: ThreadSnapshot = {
+      ...target,
+      cursor: 19,
+      messages: target.messages.map((message) => ({
+        ...message,
+        blocks: [{ kind: "computer" as const, text: "Sign in", state: "Needs you" }],
+      })),
+    };
+    let pageReads = 0;
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    const priorCursor: Record<string, number> = {
+      "cross-low": 5,
+      "cross-equal": 20,
+      "cross-high": 100,
+      "same-thread": 10,
+    };
+    boundary.bootstrap.mockResolvedValue({
+      ...bootstrap(),
+      thread:
+        origin === "cold"
+          ? null
+          : origin === "same-thread"
+            ? { ...target, cursor: 10 }
+            : jumpSnapshot("chief", priorCursor[origin]!, "Needs you"),
+    });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (
+        path === "threads.get" &&
+        (kind === "group" ? input?.groupId === "ops" : input?.botId === targetBot)
+      ) {
+        const result = await get.promise;
+        server = result;
+        return result;
+      }
+      if (path === "threads.messages") {
+        pageReads += 1;
+        return {
+          threadId: server.threadId,
+          olderCursor: null,
+          messages: structuredClone(server.messages),
+        };
+      }
+      return fallback(path, input, options);
+    });
+    await render(
+      origin === "cold"
+        ? `${targetRoute}?m=card`
+        : origin === "same-thread"
+          ? targetRoute
+          : "/app/chief",
+    );
+    if (origin !== "cold") await act(async () => navigate(`${targetRoute}?m=card`));
+    expect.soft(pageReads).toBe(0);
+    await act(async () => get.resolve(target));
+    expect(pageReads).toBeGreaterThan(0);
+    expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+    expect(scrolled).toContain("card");
+  },
+);
+
+function jumpSnapshot(botId: string, cursor: number, state: string): ThreadSnapshot {
+  return {
+    ...snapshot(status(botId)),
+    cursor,
+    messages: [
+      {
+        id: "card",
+        threadId: `thread-${botId}`,
+        seq: 1,
+        role: "bot",
+        blocks: [{ kind: "computer", text: "Sign in", state }],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  };
+}
+
+it.each([false, true])(
+  "keeps a cold receipt projection while rejecting a deleted target (deleted=%s)",
+  async (deleted) => {
+    const get = deferred<ThreadSnapshot>();
+    const receipt: ThreadSnapshot["messages"][number] = {
+      id: "receipt",
+      threadId: "thread-chief",
+      seq: 9,
+      role: "bot",
+      blocks: [{ kind: "bot_message_sent", toBotId: "peer", toBotName: "Peer", text: "Receipt" }],
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const target = {
+      ...snapshot(status()),
+      cursor: 20,
+      messages: [
+        { ...receipt, id: "base", seq: 1, blocks: [{ kind: "text" as const, text: "Earlier" }] },
+      ],
+    };
+    let serverMessages = [receipt];
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: null });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") {
+        const result = await get.promise;
+        serverMessages = deleted ? [] : [receipt];
+        return result;
+      }
+      if (path === "threads.messages")
+        return {
+          threadId: target.threadId,
+          olderCursor: null,
+          messages: structuredClone(serverMessages),
+        };
+      return fallback(path, input, options);
+    });
+    await render("/app/chief?m=receipt");
+    await act(async () => get.resolve(target));
+    expect(container.querySelector('[data-message-id="receipt"]') !== null).toBe(!deleted);
+    expect(scrolled.includes("receipt")).toBe(!deleted);
+  },
+);
+
+it.each(["cold", "cross-high"] as const)(
+  "opens older paginated history from a %s route",
+  async (origin) => {
+    const botId = origin === "cold" ? "chief" : "worker";
+    const get = deferred<ThreadSnapshot>();
+    const target = {
+      ...jumpSnapshot(botId, 20, "Done"),
+      olderCursor: 50,
+      messages: [
+        {
+          ...jumpSnapshot(botId, 20, "Done").messages[0]!,
+          id: "tail",
+          seq: 50,
+          blocks: [{ kind: "text" as const, text: "Latest" }],
+        },
+      ],
+    };
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    boundary.bootstrap.mockResolvedValue({
+      ...bootstrap(),
+      thread: origin === "cold" ? null : jumpSnapshot("chief", 100, "Needs you"),
+    });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get" && input?.botId === botId) return get.promise;
+      if (path === "threads.messages")
+        return {
+          threadId: target.threadId,
+          olderCursor: null,
+          messages: jumpSnapshot(botId, 20, "Done").messages,
+        };
+      return fallback(path, input, options);
+    });
+    await render(origin === "cold" ? "/app/chief?m=card" : "/app/chief");
+    if (origin !== "cold") await act(async () => navigate("/app/worker?m=card"));
+    await act(async () => get.resolve(target));
+    expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+    expect(scrolled).toContain("card");
+  },
+);
+
+it.each(["card", null])(
+  "resolves the current attention target from its snapshot (%s)",
+  async (attentionMessageId) => {
+    const get = deferred<ThreadSnapshot>();
+    const calls: Array<string | undefined> = [];
+    const target = { ...jumpSnapshot("chief", 20, "Done"), attentionMessageId };
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") return get.promise;
+      if (path === "threads.messages") {
+        calls.push(input?.around?.messageId);
+        return { threadId: target.threadId, olderCursor: null, messages: target.messages };
+      }
+      return fallback(path, input, options);
+    });
+    await render();
+    await act(async () => navigate("/app/chief?m=obsolete&attention=1"));
+    expect(calls).toEqual([]);
+    await act(async () => get.resolve(target));
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((id) => id === (attentionMessageId ?? "obsolete"))).toBe(true);
+    expect(scrolled.includes("card")).toBe(attentionMessageId !== null);
+  },
+);
+
+it.each([false, true])(
+  "scrolls only to a still-loaded authoritative target after a rejected page (deleted=%s)",
+  async (deleted) => {
+    const initial = jumpSnapshot("chief", 20, "Needs you");
+    const ready = jumpSnapshot("chief", 21, "Done");
+    if (deleted) ready.messages = [];
+    const oldPage = deferred<{
+      threadId: string;
+      olderCursor: number;
+      messages: ThreadSnapshot["messages"];
+    }>();
+    const pageStarted = deferred<void>();
+    const streamEnded = deferred<void>();
+    const stableRoutines: AppBootstrap["routines"] = [];
+    let server = initial;
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    boundary.bootstrap.mockResolvedValue({
+      ...bootstrap(),
+      thread: initial,
+      routines: stableRoutines,
+    });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") return server;
+      if (path === "routines.list") return stableRoutines;
+      if (path === "threads.messages") {
+        pageStarted.resolve();
+        return oldPage.promise;
+      }
+      if (path === "threads.subscribe")
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: async () => {
+                await streamEnded.promise;
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        };
+      return fallback(path, input, options);
+    });
+    await render();
+    await act(async () => navigate("/app/chief?m=card"));
+    await pageStarted.promise;
+    server = ready;
+    await act(async () => streamEnded.resolve());
+    expect(container.querySelector('[data-testid="computer-card"]') !== null).toBe(!deleted);
+    if (!deleted)
+      expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain(
+        "Done",
+      );
+    await act(async () =>
+      oldPage.resolve({ threadId: initial.threadId, olderCursor: 1, messages: initial.messages }),
+    );
+    expect(scrolled.includes("card")).toBe(!deleted);
+    expect(container.querySelector('[data-testid="computer-card"]') !== null).toBe(!deleted);
+    expect(container.textContent).not.toContain("Load earlier messages");
+  },
+);

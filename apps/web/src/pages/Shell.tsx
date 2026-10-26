@@ -2642,13 +2642,9 @@ export function ShellPage() {
       : undefined;
     const epoch = historyEpoch.current;
     const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
-    const requestCursor = snapshotRef.current?.cursor ?? -1;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
-    const [snap, requestedPage] = await Promise.all([
-      rpc.threads.get(threadTarget),
-      rpc.threads.messages({ ...threadTarget, around: { messageId: target.messageId } }),
-    ]);
+    const snap = await rpc.threads.get(threadTarget);
     // The epoch check drops a jump that raced a conversation clear (or a bot switch): applying
     // the fetched page would pin deleted messages that every later refresh keeps restoring.
     // jumpId drops an older jump that finished after a newer click.
@@ -2661,10 +2657,16 @@ export function ShellPage() {
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
     const messageId = target.attention ? (snap.attentionMessageId ?? null) : target.messageId;
-    const fetchedPage =
-      messageId && messageId !== target.messageId
-        ? await rpc.threads.messages({ ...threadTarget, around: { messageId } })
-        : requestedPage;
+    const atDispatch = snapshotRef.current;
+    const requestCursor = Math.max(
+      snap.cursor,
+      atDispatch?.threadId === snap.threadId ? atDispatch.cursor : -1,
+    );
+    // The page read must follow its target snapshot, including on a cold or cross-thread jump.
+    const fetchedPage = await rpc.threads.messages({
+      ...threadTarget,
+      around: { messageId: messageId ?? target.messageId },
+    });
     if (
       epoch !== historyEpoch.current ||
       jumpId !== jumpGeneration.current ||
@@ -2684,18 +2686,21 @@ export function ShellPage() {
     const jumpSnapshot =
       savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
     const reconciled = reconcileRefreshedThread(current, jumpSnapshot, computerRef.current);
-    const page = protectThreadMessagePage(
-      reconciled.snapshot,
-      fetchedPage,
-      Math.min(requestCursor, snap.cursor),
-    );
+    const page = protectThreadMessagePage(reconciled.snapshot, fetchedPage, requestCursor);
     const targetInPage =
       page !== null &&
       messageId !== null &&
       userVisibleMessages(page.messages, { includePeerReceipts: true }).some(
         (message) => message.id === messageId,
       );
-    expandedHistoryThread.current = targetInPage && page ? page.threadId : null;
+    const targetInSnapshot =
+      page === null &&
+      messageId !== null &&
+      userVisibleMessages(reconciled.snapshot.messages, { includePeerReceipts: true }).some(
+        (message) => message.id === messageId,
+      );
+    const targetLoaded = targetInPage || targetInSnapshot;
+    expandedHistoryThread.current = targetLoaded ? reconciled.snapshot.threadId : null;
     pinnedAroundRef.current =
       targetInPage && page
         ? {
@@ -2706,7 +2711,7 @@ export function ShellPage() {
             olderCursor: page.olderCursor,
           }
         : null;
-    if (targetInPage && page) initiallyScrolledThread.current = page.threadId;
+    if (targetLoaded) initiallyScrolledThread.current = reconciled.snapshot.threadId;
     commitSnapshot({
       ...reconciled.snapshot,
       messages: targetInPage && page ? page.messages : reconciled.snapshot.messages,
@@ -2729,7 +2734,7 @@ export function ShellPage() {
       setRoutines([]);
       setRoutinesBotId(null);
     }
-    if (targetInPage) {
+    if (targetLoaded) {
       // The transcript owns the scroll: it retries until the pinned row is
       // mounted and unfollows the tail, so live commits cannot cancel it.
       setScrollRequest({ messageId: messageId!, nonce: jumpId });
@@ -2758,6 +2763,7 @@ export function ShellPage() {
     const messageId = searchParams.get("m");
     const routineId = searchParams.get("routine");
     if (inGroup && groupId && messageId) {
+      if (!activeGroup) return;
       void jumpToMessage({ groupId, messageId, attention: searchParams.get("attention") === "1" })
         .catch(() => undefined)
         .finally(() => {
@@ -2802,7 +2808,16 @@ export function ShellPage() {
           setSearchParams(next, { replace: true });
         });
     }
-  }, [active?.id, groupId, inGroup, routines, routinesBotId, searchParams, setSearchParams]);
+  }, [
+    active?.id,
+    activeGroup?.id,
+    groupId,
+    inGroup,
+    routines,
+    routinesBotId,
+    searchParams,
+    setSearchParams,
+  ]);
   const activeSnapshot = inNewChat
     ? null
     : inGroup
