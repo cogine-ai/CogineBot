@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { domainToASCII } from "node:url";
 import type {
   AdapterContext,
   SecretContext,
@@ -30,6 +31,19 @@ const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATAB
 const origin = "http://127.0.0.1:5173";
 const target = "https://service.example.test/v1";
 const credential = "synthetic-import-credential";
+const idnCredentials = ["密钥", "较长的测试密钥"];
+const idnTargets = [
+  ...idnCredentials.map((submitted) => ({
+    submitted,
+    representation: "Unicode",
+    hostname: `${submitted}.example.test`,
+  })),
+  ...idnCredentials.map((submitted) => ({
+    submitted,
+    representation: "ACE",
+    hostname: domainToASCII(`${submitted}.example.test`),
+  })),
+];
 const shortCredentials = ["kZ+124", "mN+1283"];
 const shortEchoCases = shortCredentials.flatMap((value) => [
   { label: `${value.length}-character raw`, credential: value, echo: value },
@@ -506,10 +520,10 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     }
   });
 
-  it.each(["密钥", "较长的测试密钥"])(
-    "rejects the original %s credential before an IDN target hides it",
-    async (submitted) => {
-      const rawTarget = `https://${submitted}.example.test/v1`;
+  it.each(idnTargets)(
+    "rejects the original $submitted credential in a $representation IDN target",
+    async ({ submitted, representation, hostname }) => {
+      const rawTarget = `https://${hostname}/v1`;
       const result = await preview({
         ...input(documentFor(rawTarget)),
         credential: submitted,
@@ -519,13 +533,14 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       expect(JSON.stringify(result)).not.toContain("rawTarget");
       expect(JSON.stringify(result)).not.toContain(rawTarget);
       expect(JSON.stringify(result)).not.toContain(submitted);
+      if (representation === "ACE") expect(JSON.stringify(result)).not.toContain("unicodeHostname");
       expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
     },
   );
 
-  it.each(["密钥", "较长的测试密钥"])(
-    "rejects a re-fetched IDN target containing the %s credential before put",
-    async (submitted) => {
+  it.each(idnTargets)(
+    "rejects a re-fetched $representation IDN target containing the $submitted credential before put",
+    async ({ submitted, representation, hostname }) => {
       const snapshot = {
         ...input(),
         credential: submitted,
@@ -540,8 +555,12 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       expect(JSON.stringify(reviewed)).not.toContain("rawTarget");
       expect(tokenPayload).not.toContain("rawTarget");
       expect(tokenPayload).not.toContain(submitted);
+      if (representation === "ACE") {
+        expect(JSON.stringify(reviewed)).not.toContain("unicodeHostname");
+        expect(tokenPayload).not.toContain("unicodeHostname");
+      }
       const request = { ...snapshot, reviewToken: reviewed.reviewToken };
-      const rawTarget = `https://${submitted}.example.test/v1`;
+      const rawTarget = `https://${hostname}/v1`;
       documents.set(request.source, documentFor(rawTarget));
       expect(await confirm(request)).toMatchObject({ status: "invalid", diagnostics: [] });
       expect(sourceRequests).toHaveLength(2);
@@ -555,6 +574,10 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       // Private compiler evidence must also stay out of a later ordinary install.
       documents.set(request.source, documentFor());
       const next = await ready(snapshot);
+      if (representation === "ACE")
+        expect(
+          Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
+        ).not.toContain("unicodeHostname");
       expect(
         Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
       ).not.toContain("rawTarget");
@@ -568,6 +591,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
         expect(value).not.toContain("rawTarget");
         expect(value).not.toContain(rawTarget);
         expect(value).not.toContain(submitted);
+        if (representation === "ACE") expect(value).not.toContain("unicodeHostname");
       }
     },
   );

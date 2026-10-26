@@ -157,4 +157,27 @@ describe("reviewed OpenAPI server URLs", () => {
       }
     },
   );
+
+  it.each([
+    { server: "https://api.example.test/v1", hostname: "api.example.test" },
+    { server: "https://例子.测试/v1", hostname: "例子.测试" },
+    { server: "https://xn--fsqu00a.xn--0zwm56d/v1", hostname: "例子.测试" },
+    { server: "https://xn--vct863k.example.test/v1", hostname: "密钥.example.test" },
+  ])("keeps the Unicode hostname private for $server", async ({ server, hostname }) => {
+    for (const count of [1, 21]) {
+      const load = vi.fn(async () => Response.json(documentFor(server, count)));
+      const outbound = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ ok: true }),
+      );
+      const { prepared, events } = await reviewAndExecute(outbound, load, count);
+      expect(prepared.unicodeHostname).toBe(hostname);
+      expect(prepared.rawTarget).toBe(server);
+      expect(prepared.config).not.toHaveProperty("unicodeHostname");
+      expect(events[0]).toMatchObject({ type: "result" });
+      expect(outbound).toHaveBeenCalledOnce();
+      expect(String(outbound.mock.calls[0]![0])).toBe(
+        `${prepared.source.replace(/\/$/, "")}/items`,
+      );
+    }
+  });
 });

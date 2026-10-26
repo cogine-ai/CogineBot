@@ -1,3 +1,4 @@
+import { domainToUnicode } from "node:url";
 import { MIMEType } from "node:util";
 import type {
   AdapterContext,
@@ -523,6 +524,7 @@ export async function prepareOpenApiInstall(input: Parameters<typeof prepareApiI
     source: compiled.baseUrl,
     // Only for credential exclusion checks; never expose or persist with the public plan.
     rawTarget: (document.servers as Array<{ url: string }>)[0]!.url,
+    unicodeHostname: domainToUnicode(new URL(compiled.baseUrl).hostname),
     config,
     operationCount: operations.length,
     diagnostics: compiled.diagnostics,
