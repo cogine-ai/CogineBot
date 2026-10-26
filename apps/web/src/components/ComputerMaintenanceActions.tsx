@@ -26,10 +26,12 @@ type Action = "recover" | "reset" | "update";
 export function ComputerMaintenanceActions({
   botId,
   computer,
+  onChanging,
   onChanged,
 }: {
   botId: string;
   computer: ComputerStatus | null;
+  onChanging?: () => void;
   onChanged: () => Promise<void>;
 }) {
   const { t } = useLingui();
@@ -52,6 +54,7 @@ export function ComputerMaintenanceActions({
   if (!hasActions) return null;
 
   async function run(action: Action) {
+    onChanging?.();
     setPending(action);
     setError(null);
     try {
