@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { domainToASCII } from "node:url";
+import { domainToASCII, domainToUnicode } from "node:url";
 import type {
   AdapterContext,
   SecretContext,
@@ -48,6 +48,7 @@ const idnTargets = [
     representation: "ACE",
     hostname: domainToASCII(`${submitted}.example.test`),
   })),
+  { submitted: "STRAE", representation: "ACE", hostname: "xn--strae-oqa.example.test" },
 ];
 const shortCredentials = ["kZ+124", "mN+1283"];
 const shortEchoCases = shortCredentials.flatMap((value) => [
@@ -529,6 +530,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     "rejects the original $submitted credential in a $representation IDN target",
     async ({ submitted, representation, hostname }) => {
       const rawTarget = `https://${hostname}/v1`;
+      const decodedHostname = domainToUnicode(hostname);
       const result = await preview({
         ...input(documentFor(rawTarget)),
         credential: submitted,
@@ -538,7 +540,10 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       expect(JSON.stringify(result)).not.toContain("rawTarget");
       expect(JSON.stringify(result)).not.toContain(rawTarget);
       expect(JSON.stringify(result)).not.toContain(submitted);
-      if (representation === "ACE") expect(JSON.stringify(result)).not.toContain("unicodeHostname");
+      if (representation === "ACE") {
+        expect(JSON.stringify(result)).not.toContain("unicodeHostname");
+        expect(JSON.stringify(result)).not.toContain(decodedHostname);
+      }
       expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
     },
   );
@@ -546,6 +551,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
   it.each(idnTargets)(
     "rejects a re-fetched $representation IDN target containing the $submitted credential before put",
     async ({ submitted, representation, hostname }) => {
+      const decodedHostname = domainToUnicode(hostname);
       const snapshot = {
         ...input(),
         credential: submitted,
@@ -562,8 +568,9 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       expect(tokenPayload).not.toContain(submitted);
       if (representation === "ACE") {
         expect(JSON.stringify(reviewed)).not.toContain("unicodeHostname");
-        expect(JSON.stringify(reviewed)).not.toContain(`${submitted}.example.test`);
+        expect(JSON.stringify(reviewed)).not.toContain(decodedHostname);
         expect(tokenPayload).not.toContain("unicodeHostname");
+        expect(tokenPayload).not.toContain(decodedHostname);
       }
       const request = { ...snapshot, reviewToken: reviewed.reviewToken };
       const rawTarget = `https://${hostname}/v1`;
@@ -586,7 +593,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
         ).not.toContain("unicodeHostname");
         expect(
           Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
-        ).not.toContain(`${submitted}.example.test`);
+        ).not.toContain(decodedHostname);
       }
       expect(
         Buffer.from(next.reviewToken.split(".")[0]!, "base64url").toString("utf8"),
@@ -601,7 +608,10 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
         expect(value).not.toContain("rawTarget");
         expect(value).not.toContain(rawTarget);
         expect(value).not.toContain(submitted);
-        if (representation === "ACE") expect(value).not.toContain("unicodeHostname");
+        if (representation === "ACE") {
+          expect(value).not.toContain("unicodeHostname");
+          expect(value).not.toContain(decodedHostname);
+        }
       }
     },
   );
