@@ -51,6 +51,7 @@ type Prepared = Awaited<ReturnType<typeof prepareOpenApiInstall>>;
 type Lease = { owner: string; generation: number };
 class LostLease extends Error {}
 class ChangedReview extends Error {}
+class CredentialInPublicPlan extends Error {}
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -110,7 +111,7 @@ function normalize(input: OpenApiImportInput): OpenApiImportInput {
 }
 
 function assertNoCredential(credential: string | undefined, value: unknown): void {
-  if (!credential || credential.length < 8) return;
+  if (!credential) return;
   const variants = [
     credential,
     Buffer.from(credential).toString("base64"),
@@ -121,7 +122,8 @@ function assertNoCredential(credential: string | undefined, value: unknown): voi
   } catch {
     /* The raw value is still checked. */
   }
-  if (containsSecret(value, variants)) throw new Error("Credential is not public configuration");
+  if (containsSecret(value, variants))
+    throw new CredentialInPublicPlan("Credential is not public configuration");
 }
 
 function installView(row: InstallRow): CapabilityInstall {
@@ -513,11 +515,12 @@ export function createOpenApiImportService(deps: Dependencies) {
           return { status: "installed", install: installView(row), replayed: false } as const;
         });
       } catch (error) {
+        const invalid = error instanceof CredentialInPublicPlan;
         const changed =
           error instanceof ChangedReview ||
           (error instanceof OpenApiCompileError && error.code !== "fetch_failed");
         try {
-          await settle(context, claims, lease, changed ? "stale" : "pending");
+          await settle(context, claims, lease, invalid ? "invalid" : changed ? "stale" : "pending");
         } catch {
           /* A disconnected database leaves the bounded lease recoverable. */
         }

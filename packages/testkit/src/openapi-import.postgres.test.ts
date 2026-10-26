@@ -19,7 +19,7 @@ import type {
 import { OpenApiImportConfirmationSchema, OpenApiImportPreviewSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { parametersFor } from "../../adapters/src/pi-runtime.js";
 import { sessionCookieHeader } from "./index.js";
@@ -30,6 +30,41 @@ const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATAB
 const origin = "http://127.0.0.1:5173";
 const target = "https://service.example.test/v1";
 const credential = "synthetic-import-credential";
+const shortCredentials = ["kZ+124", "mN+1283"];
+const shortEchoCases = shortCredentials.flatMap((value) => [
+  { label: `${value.length}-character raw`, credential: value, echo: value },
+  { label: `${value.length}-character URI`, credential: value, echo: encodeURIComponent(value) },
+  {
+    label: `${value.length}-character base64`,
+    credential: value,
+    echo: Buffer.from(value).toString("base64"),
+  },
+]);
+
+function echoedDocument(echo: string, location: "source" | "operation" | "config" | "diagnostic") {
+  return {
+    openapi: "3.0.3",
+    servers: [{ url: location === "source" ? `${target}/echo/${echo}` : target }],
+    paths: {
+      "/safe": {
+        get: {
+          operationId: location === "operation" ? `read_${echo}` : "read_safe",
+          description: location === "config" ? `Echo ${echo}` : "Read safe items",
+          parameters: [
+            {
+              name: "filter",
+              in: "query",
+              schema: { type: "string", ...(location === "config" ? { default: echo } : {}) },
+            },
+          ],
+        },
+      },
+      ...(location === "diagnostic"
+        ? { [`/rejected/${echo}`]: { trace: { operationId: "rejected_trace" } } }
+        : {}),
+    },
+  };
+}
 
 function deferred() {
   let resolve!: () => void;
@@ -358,6 +393,14 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     if (dataDir) rmSync(dataDir, { recursive: true, force: true });
   });
 
+  afterEach(async () => {
+    secrets.beforePut = undefined;
+    secrets.afterPut = undefined;
+    secrets.failDelete = false;
+    transactionFailure = undefined;
+    if (space) await handles.prisma.space.delete({ where: { id: space.id } });
+  });
+
   it("previews partial YAML imports without creating an intent, install, or secret", async () => {
     const request = input(
       `openapi: 3.0.3\nservers:\n  - url: ${target}\npaths:\n  /items:\n    get:\n      operationId: list_items\n    trace:\n      operationId: rejected_trace\n`,
@@ -400,6 +443,74 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     });
     expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
   });
+
+  it.each(shortEchoCases)(
+    "rejects $label credential echoes before preview exposes a plan",
+    async ({ credential: short, echo }) => {
+      for (const location of ["source", "operation", "config", "diagnostic"] as const) {
+        const request = { ...input(echoedDocument(echo, location)), credential: short };
+        const result = await preview(request);
+        expect(result.status, location).toBe("invalid");
+        expect(result.reviewToken, location).toBeNull();
+        const serialized = JSON.stringify(result);
+        for (const value of [
+          short,
+          encodeURIComponent(short),
+          Buffer.from(short).toString("base64"),
+        ])
+          expect(serialized, location).not.toContain(value);
+        expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
+      }
+      const request = {
+        ...input(),
+        credential: short,
+        config: { auth: { type: "bearer" }, headers: { "X-Context": echo } },
+      };
+      const result = await preview(request);
+      expect(result).toMatchObject({ status: "invalid", reviewToken: null });
+      expect(JSON.stringify(result)).not.toContain(echo);
+      expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
+    },
+  );
+
+  it.each(shortEchoCases)(
+    "rejects a re-fetched $label credential echo as invalid before any secret put",
+    async ({ credential: short, echo }) => {
+      const request = await ready({ ...input(), credential: short });
+      // The signed request stays unchanged; only the actual fetched document changes.
+      documents.set(request.source, echoedDocument(echo, "diagnostic"));
+      expect(await confirm(request)).toMatchObject({ status: "invalid", diagnostics: [] });
+      expect(sourceRequests).toHaveLength(2);
+      const row = await handles.prisma.openApiImportReceipt.findFirstOrThrow({
+        where: { spaceId: space.id },
+      });
+      expect(row).toMatchObject({ state: "invalid", installId: null });
+      expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 1, puts: 0 });
+      const recovered = await receipt(request.reviewToken);
+      expect(recovered).toMatchObject({ status: "invalid", diagnostics: [] });
+      for (const value of [short, encodeURIComponent(short), Buffer.from(short).toString("base64")])
+        expect(JSON.stringify(recovered)).not.toContain(value);
+    },
+  );
+
+  it.each(shortCredentials)(
+    "installs a non-conflicting %s short credential without imposing a minimum length",
+    async (short) => {
+      const request = await ready({ ...input(), credential: short });
+      const result = await confirm(request);
+      expect(result.status).toBe("installed");
+      if (result.status !== "installed") throw new Error("Expected an install");
+      const install = await handles.prisma.capabilityInstall.findUniqueOrThrow({
+        where: { id: result.install.id },
+      });
+      const secret = await handles.prisma.secret.findUniqueOrThrow({
+        where: { id: install.secretId! },
+      });
+      expect(secrets.values.get(secret.ciphertext)).toBe(short);
+      expect(JSON.stringify(result)).not.toContain(short);
+      expect(await counts()).toEqual({ installs: 1, secretRows: 1, receipts: 1, puts: 1 });
+    },
+  );
 
   it("uses read-only pending recovery while the valid review has no receipt row", async () => {
     const request = await ready(input());

@@ -8,13 +8,14 @@ import {
   PipedreamConnector,
   ThirdPartyConnectorEmulator,
 } from "@rakazo/adapters";
+import type { OpenApiImportConfirmation, OpenApiImportPreview } from "@rakazo/contracts";
 import { listSpaceBackupModels, replaceSpaceBackupModels } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { sessionCookieHeader } from "./index.js";
 
-type App = { request: (input: string, init?: RequestInit) => Promise<Response> };
 type AppHandles = Awaited<ReturnType<typeof createApp>>;
+type App = Pick<AppHandles["app"], "request">;
 type Actor = { spaceId: string; userId: string };
 
 process.env.WAKEUP_DRIVER = "memory";
@@ -537,17 +538,29 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     const cookie = await signup(app, `api-connector-${stamp}@rakazo.test`, "API Connector");
     const actor = await rpc<Actor>(app, cookie, "me");
     const credential = "test-connector-secret-value";
-    const install = await rpc<{
-      id: string;
-      config: Record<string, unknown>;
-      secretConfigured: boolean;
-    }>(app, cookie, "capabilities/install", {
-      kind: "api",
+    const input = {
       name: "CRM API",
       source: "https://api.example.test/openapi.json",
       credential,
       config: { openApi: true, auth: { type: "bearer" } },
-    });
+    };
+    const preview = await rpc<OpenApiImportPreview>(
+      app,
+      cookie,
+      "capabilities/previewOpenApi",
+      input,
+    );
+    expect(preview.status).toBe("ready");
+    if (preview.status !== "ready") throw new Error("Expected a reviewable connector");
+    const confirmation = await rpc<OpenApiImportConfirmation>(
+      app,
+      cookie,
+      "capabilities/confirmOpenApi",
+      { ...input, reviewToken: preview.reviewToken },
+    );
+    expect(confirmation.status).toBe("installed");
+    if (confirmation.status !== "installed") throw new Error("Expected a confirmed connector");
+    const install = confirmation.install;
     expect(install.secretConfigured).toBe(true);
     expect(JSON.stringify(install)).not.toContain(credential);
 

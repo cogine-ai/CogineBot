@@ -4416,7 +4416,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const liveSchema = (resolvedTool ?? connectorTools.get(name))?.inputSchema;
               if (liveSchema) {
                 try {
-                  assertConnectorToolArgs(liveSchema, args);
+                  const validated = await deps.connector?.assertCallArgs?.(
+                    { ...connectorCall, tool: name, args, route: liveRoute },
+                    connectorContext,
+                  );
+                  if (!validated) assertConnectorToolArgs(liveSchema, args);
                 } catch (error) {
                   return { error: sanitizeConnectorError(error) };
                 }

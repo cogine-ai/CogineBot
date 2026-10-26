@@ -3,6 +3,7 @@ import type {
   AgentRuntime,
   AutoReviewProvider,
   ConnectorCall,
+  ConnectorProvider,
   ConnectorTool,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
@@ -12,10 +13,14 @@ import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/a
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isApprovalPausedResult } from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
+import { ConnectorRegistry } from "./composio-connector.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { connectorAccountRevision } from "./connector-account-binding.js";
+import { DestinationEmulator } from "./destination-emulator.js";
 import { createRunExecutor } from "./executor.js";
+import { InstalledConnectorProvider } from "./installed-connectors.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
+import { compileOpenApiDocument } from "./openapi-import.js";
 import { serializeModelSecret } from "./pi-oauth.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
 
@@ -83,6 +88,8 @@ function fixture({
   connections = [],
   connectionIds = [],
   onConnectionRead,
+  connectorProvider,
+  catalogToolName = "demo_execute_tool",
 }: {
   builtin?: boolean;
   disabledBuiltinTools?: string[];
@@ -104,6 +111,8 @@ function fixture({
   connections?: TestConnection[];
   connectionIds?: string[];
   onConnectionRead?: (count: number) => void;
+  connectorProvider?: ConnectorProvider;
+  catalogToolName?: string;
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -265,7 +274,7 @@ function fixture({
   const runtimeRun = vi.fn<AgentRuntime["run"]>(async function* (request: AgentRunRequest) {
     for (const call of calls) {
       const result = await request.executeTool!(
-        catalog ? "demo_execute_tool" : name,
+        catalog ? catalogToolName : name,
         catalog ? { id: call.catalogId ?? `resource-1:${name}`, arguments: call.args } : call.args,
         call.executionId,
       );
@@ -277,7 +286,7 @@ function fixture({
   const executor = createRunExecutor({
     prisma,
     runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
-    connector: {
+    connector: connectorProvider ?? {
       discoverTools: async () =>
         builtin
           ? []
@@ -341,6 +350,9 @@ function fixture({
     pauseRunForInput,
     setCalls(next: typeof calls) {
       calls = next;
+    },
+    setCatalog(next: boolean) {
+      catalog = next;
     },
     async run(expectedOutcome: "completed" | "failed" = "completed") {
       run.status = "queued";
@@ -1226,5 +1238,198 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("strict installed argument approval replay", () => {
+  function installedFixture(format: string, startsCatalog: boolean) {
+    const operation = compileOpenApiDocument({
+      servers: [{ url: "https://93.184.216.34" }],
+      paths: {
+        "/items": {
+          post: {
+            operationId: "demo_get_item",
+            requestBody: {
+              required: true,
+              content: { "application/json": { schema: { type: "string", format } } },
+            },
+          },
+        },
+      },
+    }).operations[0]!;
+    const target = {
+      id: "install-format",
+      kind: "api",
+      name: "Items",
+      source: "https://93.184.216.34",
+      secretId: null,
+      config: { auth: { type: "none" }, operations: [operation] },
+    };
+    const sibling = {
+      ...target,
+      id: "sibling",
+      config: {
+        auth: { type: "none" },
+        operations: Array.from({ length: 20 }, (_, index) => ({
+          id: `other_${index}`,
+          method: "GET",
+          path: `/other/${index}`,
+        })),
+      },
+    };
+    let visible: Array<typeof target | typeof sibling> = startsCatalog
+      ? [target, sibling]
+      : [target];
+    let revision: string | undefined;
+    const providerPrisma = {
+      capabilityInstall: {
+        findMany: vi.fn(async () => visible),
+        findFirst: vi.fn(
+          async ({ where }: { where: { id: string; userId: string; spaceId: string } }) =>
+            where.userId === "user-1" && where.spaceId === "space-1"
+              ? (visible.find((row) => row.id === where.id) ?? null)
+              : null,
+        ),
+      },
+      deploymentSettings: { findUnique: vi.fn(async () => null) },
+    };
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ ok: true }),
+    );
+    const installed = new InstalledConnectorProvider(providerPrisma as never, {} as never, {
+      fetch,
+    });
+    const assertCallArgs = vi.spyOn(installed, "assertCallArgs");
+    const connectorProvider = new ConnectorRegistry(new DestinationEmulator(), [installed]);
+    const discoverTools = connectorProvider.discoverTools.bind(connectorProvider);
+    connectorProvider.discoverTools = async (context) =>
+      (await discoverTools(context)).map((tool) =>
+        tool.route?.resourceId === target.id && revision !== undefined
+          ? { ...tool, route: { ...tool.route, resourceRevision: revision } }
+          : tool,
+      );
+    const f = fixture({
+      name: "demo_get_item",
+      catalog: startsCatalog,
+      catalogToolName: "installed_execute_tool",
+      connectorProvider,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "demo_get_item" }],
+    });
+    return {
+      ...f,
+      fetch,
+      installed,
+      assertCallArgs,
+      target,
+      providerPrisma,
+      shrink() {
+        visible = [target];
+        f.setCatalog(false);
+      },
+      remove() {
+        visible = [];
+      },
+      replace() {
+        visible = [{ ...target, id: "replacement" }];
+      },
+      revise() {
+        revision = "changed";
+      },
+    };
+  }
+
+  it.each([false, true])(
+    "keeps invalid arguments off HTTP when catalog starts as %s",
+    async (startsCatalog) => {
+      const f = installedFixture("email", startsCatalog);
+      f.setCalls([
+        {
+          args: { body: "not-email" },
+          executionId: "request",
+          catalogId: "install-format:demo_get_item",
+        },
+      ]);
+      await f.run();
+      if (!startsCatalog) {
+        expect(f.effects).toHaveLength(1);
+        f.effects[0]!.status = "approved";
+        f.setCalls([{ args: { body: "!a@example.test" }, executionId: "resume" }]);
+        await f.run();
+      } else expect(f.effects).toHaveLength(0);
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toMatchObject({ error: expect.stringContaining("schema") });
+    },
+  );
+
+  it.each([
+    ["uri-reference", "../x"],
+    ["date-time", "2026-10-26t12:00:00+08:00"],
+    ["email", "!a@example.test"],
+  ])(
+    "uses one %s validator for bound-direct and catalog-to-direct approvals",
+    async (format, value) => {
+      for (const startsCatalog of [false, true]) {
+        const f = installedFixture(format!, startsCatalog);
+        f.setCalls([
+          {
+            args: { body: value },
+            executionId: "request",
+            catalogId: "install-format:demo_get_item",
+          },
+        ]);
+        await f.run();
+        expect(f.fetch).not.toHaveBeenCalled();
+        expect(f.effects).toHaveLength(1);
+        expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+        f.effects[0]!.status = "approved";
+        f.shrink();
+        f.setCalls([{ args: { body: "unapproved replacement" }, executionId: "resume" }]);
+        await f.run();
+        expect(f.assertCallArgs).toHaveBeenCalledOnce();
+        expect(f.fetch).toHaveBeenCalledOnce();
+        expect(f.fetch.mock.calls[0]![1]!.body).toBe(JSON.stringify(value));
+        expect(f.effects).toHaveLength(1);
+        expect(f.effects[0]!.status).toBe("completed");
+      }
+    },
+  );
+
+  it.each(["remove", "replace", "revise"] as const)(
+    "keeps the existing %s approval route gate ahead of provider validation",
+    async (change) => {
+      const f = installedFixture("email", false);
+      f.setCalls([{ args: { body: "!a@example.test" }, executionId: "request" }]);
+      await f.run();
+      f.effects[0]!.status = "approved";
+      f[change]();
+      f.setCalls([{ args: { body: "!a@example.test" }, executionId: "resume" }]);
+      await f.run("failed");
+      expect(f.assertCallArgs).not.toHaveBeenCalled();
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toMatchObject({
+        error: expect.stringContaining("different connector resource"),
+      });
+    },
+  );
+
+  it("rejects an unowned or unexpected-revision strict route without sending HTTP", async () => {
+    const f = installedFixture("email", false);
+    const call = {
+      tool: "demo_get_item",
+      route: { connectorId: "installed", resourceId: "install-format", toolName: "demo_get_item" },
+      args: { body: "!a@example.test" },
+      executionId: "check",
+    };
+    const context = { userId: "user-1", spaceId: "space-1", signal: new AbortController().signal };
+    await expect(
+      f.installed.assertCallArgs(call, { ...context, userId: "other-user" } as never),
+    ).rejects.toThrow("unavailable");
+    await expect(
+      f.installed.assertCallArgs(
+        { ...call, route: { ...call.route, resourceRevision: "changed" } },
+        context as never,
+      ),
+    ).rejects.toThrow("revision changed");
+    expect(f.fetch).not.toHaveBeenCalled();
   });
 });

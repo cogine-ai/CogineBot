@@ -1,3 +1,4 @@
+import { MIMEType } from "node:util";
 import type {
   AdapterContext,
   ConnectorCall,
@@ -168,6 +169,33 @@ export class InstalledConnectorProvider implements ConnectorProvider {
     );
   }
 
+  async assertCallArgs(call: ConnectorCall, context: AdapterContext): Promise<boolean> {
+    if (call.route?.connectorId !== "installed" || !call.route.resourceId) return false;
+    const install = await this.authorizedInstall(call.route.resourceId, context);
+    if (!install) throw new Error("Installed connector is unavailable");
+    if (install.kind !== "api") return false;
+    const config = ApiConfigSchema.parse(install.config);
+    const operation = config.operations.find((candidate) => candidate.id === call.route?.toolName);
+    if (!operation) throw new Error("API operation is unavailable");
+    if (operation.importPolicy !== "openapi-v1") return false;
+    // Installed API routes bind an immutable install ID and declare no separate revision.
+    if (call.route.resourceRevision !== undefined)
+      throw new Error("Installed connector revision changed");
+    assertOpenApiArguments(operation.inputSchema, call.args);
+    return true;
+  }
+
+  private authorizedInstall(id: string, context: AdapterContext): Promise<InstalledRow | null> {
+    return this.prisma.capabilityInstall.findFirst({
+      where: {
+        id,
+        spaceId: context.spaceId,
+        userId: context.userId,
+        kind: { in: ["mcp", "api", "graphql"] },
+      },
+    });
+  }
+
   private async authorizedTools(context: AdapterContext): Promise<ConnectorTool[]> {
     const installs = await this.prisma.capabilityInstall.findMany({
       where: {
@@ -284,14 +312,7 @@ export class InstalledConnectorProvider implements ConnectorProvider {
       yield { type: "error", message: "Installed connector route is missing" };
       return;
     }
-    const install = await this.prisma.capabilityInstall.findFirst({
-      where: {
-        id: installId,
-        spaceId: context.spaceId,
-        userId: context.userId,
-        kind: { in: ["mcp", "api", "graphql"] },
-      },
-    });
+    const install = await this.authorizedInstall(installId, context);
     if (!install) {
       yield { type: "error", message: "Installed connector is unavailable" };
       return;
@@ -462,16 +483,23 @@ export async function prepareOpenApiInstall(input: Parameters<typeof prepareApiI
   const protectedHeaders = new Set(Object.keys(headers).map((name) => name.toLowerCase()));
   if (auth.type === "bearer") protectedHeaders.add("authorization");
   if (auth.type === "header" && auth.name) protectedHeaders.add(auth.name.toLowerCase());
+  const contentTypeHeaders = Object.entries(headers).filter(
+    ([name]) => name.toLowerCase() === "content-type",
+  );
+  const contentTypeAuth = auth.type === "header" && auth.name?.toLowerCase() === "content-type";
+  const contentTypeCompatible = contentTypeHeaders.every(([, value]) => isJsonContentType(value));
   const operations = compiled.operations.filter((operation) => {
     const headerCollision = operation.headerParameters.some((name) =>
       protectedHeaders.has(name.toLowerCase()),
     );
     const queryCollision =
       auth.type === "query" && auth.name && operation.queryParameters.includes(auth.name);
-    if (!headerCollision && !queryCollision) return true;
+    const contentTypeCollision =
+      apiOperationHasJsonBody(operation) && (contentTypeAuth || !contentTypeCompatible);
+    if (!headerCollision && !queryCollision && !contentTypeCollision) return true;
     const diagnostic: OpenApiImportDiagnostic = {
       scope: "operation",
-      code: headerCollision ? "unsafe_header" : "invalid_parameter",
+      code: headerCollision || contentTypeCollision ? "unsafe_header" : "invalid_parameter",
       operationId: operation.id,
       method: operation.method,
       path: operation.path,
@@ -482,6 +510,10 @@ export async function prepareOpenApiInstall(input: Parameters<typeof prepareApiI
     compiled.counts.rejected++;
     return false;
   });
+  if (contentTypeHeaders.length > 0 && operations.some(apiOperationHasJsonBody)) {
+    for (const [name] of contentTypeHeaders) delete headers[name];
+    headers["content-type"] = "application/json";
+  }
   const config = {
     auth,
     headers,
@@ -494,6 +526,29 @@ export async function prepareOpenApiInstall(input: Parameters<typeof prepareApiI
     diagnostics: compiled.diagnostics,
     counts: compiled.counts,
   };
+}
+
+function apiOperationHasJsonBody(operation: ApiOperation): boolean {
+  return (
+    Object.hasOwn(asRecord(operation.inputSchema.properties) ?? {}, "body") &&
+    !operation.queryParameters.includes("body") &&
+    !operation.headerParameters.includes("body") &&
+    !operation.path.includes("{body}")
+  );
+}
+
+function isJsonContentType(value: string): boolean {
+  try {
+    const mime = new MIMEType(value);
+    return (
+      mime.essence === "application/json" &&
+      [...mime.params].every(
+        ([name, value]) => name === "charset" && value.toLowerCase() === "utf-8",
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function loadOpenApiDocument(
@@ -617,13 +672,7 @@ async function executeApiOperation(
       }
     }
     if (operation.importPolicy === "openapi-v1") {
-      if (
-        Object.hasOwn(args, "body") &&
-        Object.hasOwn(asRecord(operation.inputSchema.properties) ?? {}, "body") &&
-        !operation.queryParameters.includes("body") &&
-        !operation.headerParameters.includes("body") &&
-        !consumed.has("body")
-      ) {
+      if (Object.hasOwn(args, "body") && apiOperationHasJsonBody(operation)) {
         body = JSON.stringify(args.body);
         headers["content-type"] = "application/json";
       }

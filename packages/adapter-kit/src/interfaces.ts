@@ -181,6 +181,9 @@ export interface ConnectorProvider {
     call: ConnectorCall,
     context: AdapterContext,
   ): Promise<{ call: ConnectorCall; tool: ConnectorTool } | undefined>;
+  /** Assert bound arguments without changing them. True selects the provider's validator;
+   * false leaves the shared schema assertion in effect. Must not perform remote requests. */
+  assertCallArgs?(call: ConnectorCall, context: AdapterContext): Promise<boolean>;
   execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent>;
 }
 
