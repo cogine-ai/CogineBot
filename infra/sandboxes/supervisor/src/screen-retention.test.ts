@@ -189,6 +189,16 @@ async function fixture() {
     });
   const watch = (screen = "a", lease = "run-a:1") =>
     request(screen, lease, { interactive: false, revokeControl: false });
+  const directWatch = () =>
+    supervisorApp.request("/computers/computer/screen", {
+      headers: {
+        authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+        "x-rakazo-bot-id": "owner",
+        "x-rakazo-space-id": "space",
+        "x-rakazo-screen-id": "a",
+        "x-rakazo-screen-lease-id": "run-a:1",
+      },
+    });
   const grant = (token: string, lease = "run-a:1") =>
     request("a", lease, { interactive: true, controlToken: token });
   const revoke = (token: string, lease = "run-a:1") =>
@@ -199,6 +209,7 @@ async function fixture() {
     commands,
     container,
     watch,
+    directWatch,
     grant,
     revoke,
     release: (screen = "a", lease = "run-a:1", cancel = false) =>
@@ -427,6 +438,31 @@ describe("screen retention through supervisor routes", () => {
 });
 
 describe("finite screen work and retained admission", () => {
+  it("waits for finite work before a direct watch can tear down a failed setup", async () => {
+    const f = await fixture();
+    await f.watch();
+    await f.release();
+    await f.watch("b", "run-b:2");
+    const gate = f.hold("actions");
+    const pending = f.work("actions", "run-a:1");
+    await gate.entered;
+    const start = f.commands.length;
+    f.fail((command) => command.includes("desktop_view_token="));
+    const watching = f.directWatch();
+    try {
+      expect((await f.watch("c", "run-c:3")).status).toBe(400);
+      expect(f.commands.slice(start).some((command) => command.includes("Browser.close"))).toBe(
+        false,
+      );
+    } finally {
+      gate.release();
+    }
+    expect((await pending).status).toBe(200);
+    expect((await watching).status).toBe(404);
+    f.fail(() => false);
+    expect((await f.watch("c", "run-c:3")).status).toBe(200);
+  });
+
   it("does not start queued work after its request was aborted", async () => {
     const f = await fixture();
     await f.watch();

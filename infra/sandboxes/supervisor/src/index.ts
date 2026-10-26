@@ -708,12 +708,14 @@ app.post("/computers/:id/files", async (c) => {
 app.get("/computers/:id/screen", async (c) => {
   const id = c.req.param("id");
   try {
-    const { container, info, layout, viewToken } = await managedScreen(
-      id,
-      c.req.header("x-rakazo-bot-id"),
-      c.req.header("x-rakazo-space-id"),
-      c.req.header("x-rakazo-screen-id"),
-      c.req.header("x-rakazo-screen-lease-id"),
+    const { container, info, layout, viewToken } = await withComputerScreenLifecycle(c, () =>
+      managedScreen(
+        id,
+        c.req.header("x-rakazo-bot-id"),
+        c.req.header("x-rakazo-space-id"),
+        c.req.header("x-rakazo-screen-id"),
+        c.req.header("x-rakazo-screen-lease-id"),
+      ),
     );
     const screenUrl = await publishedScreenUrl(container, info, layout.viewPort);
     return c.redirect(screenUrlWithToken(screenUrl, viewToken));
