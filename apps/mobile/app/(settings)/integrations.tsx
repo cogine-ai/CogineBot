@@ -130,8 +130,11 @@ export default function Integrations() {
   const sourceFormGeneration = useRef(0);
   const sourceImport = useRef<ReturnType<typeof createOpenApiImportReview> | null>(null);
   const sourceAbort = useRef<AbortController | null>(null);
+  const manualSourceAttempt = useRef<object | null>(null);
+  const [manualSourcePending, setManualSourcePending] = useState(false);
   const sourceInputsLocked =
-    !!sourceReview && ["confirming", "pending", "unknown"].includes(sourceReview.phase);
+    manualSourcePending ||
+    (!!sourceReview && ["confirming", "pending", "unknown"].includes(sourceReview.phase));
   const [lastBotId, setLastBotId] = useState("");
   const [catalogReady, setCatalogReady] = useState(false);
   const [labelDrafts, setLabelDrafts] = useState<Record<string, string>>({});
@@ -157,6 +160,8 @@ export default function Integrations() {
 
   function invalidateSourceReview() {
     sourceFormGeneration.current += 1;
+    manualSourceAttempt.current = null;
+    setManualSourcePending(false);
     sourceAbort.current?.abort();
     sourceImport.current = null;
     setSourceReview(null);
@@ -970,15 +975,22 @@ export default function Integrations() {
   }
 
   async function addSource() {
-    if (!sourceKind || sourceKind === "api") return;
+    if (!sourceKind || sourceKind === "api" || manualSourceAttempt.current) return;
+    const attempt = {};
+    manualSourceAttempt.current = attempt;
     const generation = sourceFormGeneration.current;
     const connectionCurrent = captureConnectionScope();
     const scope = captureMobileScope();
     const isCurrent = () =>
+      manualSourceAttempt.current === attempt &&
       generation === sourceFormGeneration.current &&
       connectionCurrent() &&
       isMobileScopeCurrent(scope);
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      manualSourceAttempt.current = null;
+      return;
+    }
+    setManualSourcePending(true);
     setPending("source");
     setSourceError(null);
     try {
@@ -1018,7 +1030,14 @@ export default function Integrations() {
     } catch (reason) {
       if (isCurrent()) setSourceError(errorText(reason, t("Could not add source")));
     } finally {
-      if (isCurrent()) setPending(null);
+      if (manualSourceAttempt.current === attempt) {
+        const current = isCurrent();
+        manualSourceAttempt.current = null;
+        if (current) {
+          setManualSourcePending(false);
+          setPending((pending) => (pending === "source" ? null : pending));
+        }
+      }
     }
   }
 
@@ -1443,6 +1462,7 @@ export default function Integrations() {
                       editable={!sourceInputsLocked}
                       value={name}
                       onChangeText={(value) => {
+                        if (manualSourceAttempt.current || sourceInputsLocked) return;
                         invalidateSourceReview();
                         setName(value);
                       }}
@@ -1455,6 +1475,7 @@ export default function Integrations() {
                         editable={!sourceInputsLocked}
                         value={url}
                         onChangeText={(value) => {
+                          if (manualSourceAttempt.current || sourceInputsLocked) return;
                           invalidateSourceReview();
                           setUrl(value);
                         }}
@@ -1478,6 +1499,7 @@ export default function Integrations() {
                         accessibilityRole="button"
                         disabled={sourceInputsLocked}
                         onPress={() => {
+                          if (manualSourceAttempt.current || sourceInputsLocked) return;
                           invalidateSourceReview();
                           setRequiresAuth((value) => !value);
                         }}
@@ -1493,6 +1515,7 @@ export default function Integrations() {
                         editable={!sourceInputsLocked}
                         value={credential}
                         onChangeText={(value) => {
+                          if (manualSourceAttempt.current || sourceInputsLocked) return;
                           invalidateSourceReview();
                           setCredential(value);
                         }}
@@ -1521,7 +1544,7 @@ export default function Integrations() {
                     <View style={styles.accountActions}>
                       {sourceKind !== "api" || !sourceReview ? (
                         <NativeActionButton
-                          busy={pending === "source"}
+                          busy={manualSourcePending}
                           label={sourceKind === "api" ? t("Preview") : t("Verify and add")}
                           onPress={() =>
                             sourceKind === "api" ? void previewOpenApi() : void addSource()
@@ -1531,10 +1554,11 @@ export default function Integrations() {
                       ) : null}
                       <NativeActionButton
                         label={
-                          sourceReview &&
-                          ["confirming", "pending", "unknown", "terminal"].includes(
-                            sourceReview.phase,
-                          )
+                          manualSourcePending ||
+                          (sourceReview &&
+                            ["confirming", "pending", "unknown", "terminal"].includes(
+                              sourceReview.phase,
+                            ))
                             ? t("Close")
                             : t("Cancel")
                         }

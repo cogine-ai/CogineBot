@@ -378,3 +378,165 @@ it("does not restore a removed source from the confirmation's earlier list refre
   await act(async () => list.resolve([install]));
   expect(container.textContent).not.toContain("Example API");
 });
+
+const manualKinds = ["mcp", "graphql", "executor", "treg"] as const;
+type ManualKind = (typeof manualKinds)[number];
+const manualEntries = {
+  mcp: { label: "Add MCP server", url: "https://example.com/mcp", credential: "Credential" },
+  graphql: { label: "Add GraphQL", url: "https://example.com/graphql", credential: "Credential" },
+  executor: {
+    label: "Add Executor",
+    url: "https://executor.example/mcp",
+    credential: "Executor token",
+  },
+  treg: { label: "Add Treg", url: null, credential: "Treg token" },
+} as const;
+async function openManual(kind: ManualKind, name = `Manual ${kind}`) {
+  await press(manualEntries[kind].label);
+  await fill("Display name", name);
+  const sourcePlaceholder = manualEntries[kind].url;
+  if (sourcePlaceholder) await fill(sourcePlaceholder, `https://manual.example.test/${kind}`);
+  if (kind === "mcp" || kind === "graphql") {
+    const select = container.querySelector<HTMLSelectElement>("select")!;
+    await act(async () => {
+      select.value = "header";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await fill("Header name", "x-original-key");
+  }
+  await fill(manualEntries[kind].credential, "original-secret");
+}
+
+it.each(manualKinds)(
+  "keeps %s manual installation single-flight through edit attempts and unrelated removal",
+  async (kind) => {
+    const wait = deferred<typeof install>();
+    const installed = {
+      ...install,
+      id: `manual-${kind}`,
+      kind: kind === "graphql" ? "graphql" : "mcp",
+      name: `Manual ${kind}`,
+    };
+    api.list.mockResolvedValue([{ ...install, id: "earlier-source", name: "Earlier source" }]);
+    api.install.mockReturnValue(wait.promise);
+    await render();
+    await openManual(kind);
+    const submit = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Verify and add",
+    )!;
+    await act(async () => {
+      submit.click();
+      submit.click();
+    });
+    expect(api.install).toHaveBeenCalledTimes(1);
+    const submitted = api.install.mock.calls[0]![0];
+    const fields = [
+      ...container.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        'input[placeholder="Display name"], input[type="password"], select, input[placeholder="Header name"]',
+      ),
+    ];
+    expect(fields.length).toBeGreaterThan(1);
+    expect(fields.every((field) => field.disabled)).toBe(true);
+    await fill("Display name", "Ignored edit");
+    await fill(manualEntries[kind].credential, "ignored-secret");
+    if (manualEntries[kind].url)
+      await fill(manualEntries[kind].url!, "https://ignored.example.test");
+    const auth = container.querySelector<HTMLSelectElement>("select");
+    if (auth) await fill("Header name", "ignored-key");
+    if (auth)
+      await act(async () => {
+        auth.value = "none";
+        auth.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.value,
+    ).toBe(`Manual ${kind}`);
+    expect(
+      container.querySelector<HTMLInputElement>(
+        `input[placeholder="${manualEntries[kind].credential}"]`,
+      )?.value,
+    ).toBe("original-secret");
+    await press("Remove");
+    expect(submit.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.disabled,
+    ).toBe(true);
+    await act(async () => submit.click());
+    expect(api.install).toHaveBeenCalledTimes(1);
+    if (auth) {
+      expect(auth.value).toBe("header");
+      expect(
+        container.querySelector<HTMLInputElement>('input[placeholder="Header name"]')?.value,
+      ).toBe("x-original-key");
+    }
+    expect(submitted.name).toBe(`Manual ${kind}`);
+    expect(submitted.credential).toBe("original-secret");
+    api.list.mockResolvedValue([installed]);
+    await act(async () => wait.resolve(installed));
+    expect(container.querySelector('input[placeholder="Display name"]')).toBeNull();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).toContain(`Manual ${kind}`);
+    expect(api.list).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each(manualKinds)(
+  "does not let a closed %s attempt clear a replacement manual credential or lock",
+  async (kind) => {
+    const old = deferred<typeof install>();
+    const current = deferred<typeof install>();
+    api.install.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    await render();
+    await openManual(kind);
+    await press("Verify and add");
+    await press("Close");
+    await openManual(kind, "Replacement draft");
+    await fill(manualEntries[kind].credential, "new-secret");
+    await press("Verify and add");
+    await act(async () => old.resolve(install));
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.value,
+    ).toBe("Replacement draft");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        `input[placeholder="${manualEntries[kind].credential}"]`,
+      )?.value,
+    ).toBe("new-secret");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.disabled,
+    ).toBe(true);
+    expect(api.list).toHaveBeenCalledTimes(1);
+    api.list.mockResolvedValue([{ ...install, name: "Replacement draft" }]);
+    await act(async () => current.resolve(install));
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(api.list).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each(["kind", "actor-space"])(
+  "abandons manual observation on an explicit %s change without clearing the new draft",
+  async (boundary) => {
+    const wait = deferred<typeof install>();
+    api.install.mockReturnValue(wait.promise);
+    await render();
+    await openManual("mcp");
+    await press("Verify and add");
+    if (boundary === "actor-space") {
+      api.generation += 2;
+      await render("new-actor-session");
+    }
+    await openManual("graphql", "Next draft");
+    await fill("Credential", "next-secret");
+    await act(async () => wait.resolve(install));
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.value,
+    ).toBe("Next draft");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Credential"]')?.value,
+    ).toBe("next-secret");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.disabled,
+    ).toBe(false);
+    expect(api.list).toHaveBeenCalledTimes(1);
+  },
+);

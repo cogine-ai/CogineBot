@@ -73,12 +73,14 @@ vi.mock("../components/native-action-button", () => ({
     label,
     onPress,
     disabled,
+    busy,
   }: {
     label: string;
     onPress: () => void;
     disabled?: boolean;
+    busy?: boolean;
   }) => (
-    <button type="button" disabled={disabled} onClick={onPress}>
+    <button type="button" disabled={disabled || busy} onClick={onPress}>
       {label}
     </button>
   ),
@@ -148,8 +150,16 @@ vi.mock("react-native", () => {
     View,
     ScrollView: View,
     Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
-    Pressable: ({ children, onPress }: { children: ReactNode; onPress: () => void }) => (
-      <button type="button" onClick={onPress}>
+    Pressable: ({
+      children,
+      onPress,
+      disabled,
+    }: {
+      children: ReactNode;
+      onPress: () => void;
+      disabled?: boolean;
+    }) => (
+      <button type="button" disabled={disabled} onClick={onPress}>
         {children}
       </button>
     ),
@@ -1084,3 +1094,176 @@ it("hides Ready for an invalid native preview while retaining rejection diagnost
   expect(review?.textContent).toContain("External references are not supported.");
   expect(review?.textContent).toContain("Preview again");
 });
+
+const manualSourceKinds = ["mcp", "graphql", "executor", "treg"] as const;
+type ManualSourceKind = (typeof manualSourceKinds)[number];
+const manualSourceEntries = {
+  mcp: { label: "Add MCP server", url: "https://example.com/mcp", credential: "Bearer token" },
+  graphql: { label: "Add GraphQL", url: "https://example.com/graphql", credential: "Bearer token" },
+  executor: {
+    label: "Add Executor",
+    url: "https://executor.example/mcp",
+    credential: "Executor token",
+  },
+  treg: { label: "Add Treg", url: null, credential: "Treg token" },
+} as const;
+async function openManualSource(kind: ManualSourceKind, name = `Manual ${kind}`) {
+  await press(manualSourceEntries[kind].label);
+  await fillSource("Display name", name);
+  const sourcePlaceholder = manualSourceEntries[kind].url;
+  if (sourcePlaceholder) await fillSource(sourcePlaceholder, `https://manual.example.test/${kind}`);
+  if (kind === "mcp" || kind === "graphql") await press("No authentication");
+  await fillSource(manualSourceEntries[kind].credential, "original-secret");
+}
+
+it.each(manualSourceKinds)(
+  "keeps native %s manual installation single-flight through edit attempts and unrelated removal",
+  async (kind) => {
+    const original = state.rpc.getMockImplementation()!;
+    const wait = importDeferred<unknown>();
+    const installed = {
+      id: `manual-${kind}`,
+      kind: kind === "graphql" ? "graphql" : "mcp",
+      name: `Manual ${kind}`,
+      source: `https://manual.example.test/${kind}`,
+    };
+    let listed = [{ ...installed, id: "earlier-source", name: "Earlier source" }];
+    state.rpc.mockImplementation((proc: string) =>
+      proc === "capabilities/install"
+        ? wait.promise
+        : proc === "capabilities/list"
+          ? Promise.resolve(listed)
+          : proc === "capabilities/remove"
+            ? Promise.resolve({ ok: true })
+            : original(proc),
+    );
+    await render();
+    await act(async () => resolveCatalog([]));
+    await press("Advanced");
+    await openManualSource(kind);
+    const submit = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Verify and add",
+    )!;
+    await act(async () => {
+      submit.click();
+      submit.click();
+    });
+    expect(state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/install")).toHaveLength(
+      1,
+    );
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.disabled,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>(
+        `input[placeholder="${manualSourceEntries[kind].credential}"]`,
+      )?.disabled,
+    ).toBe(true);
+    await fillSource("Display name", "Ignored edit");
+    await fillSource(manualSourceEntries[kind].credential, "ignored-secret");
+    if (manualSourceEntries[kind].url)
+      await fillSource(manualSourceEntries[kind].url!, "https://ignored.example.test");
+    if (kind === "mcp" || kind === "graphql") await press("Bearer authentication");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.value,
+    ).toBe(`Manual ${kind}`);
+    expect(
+      container.querySelector<HTMLInputElement>(
+        `input[placeholder="${manualSourceEntries[kind].credential}"]`,
+      )?.value,
+    ).toBe("original-secret");
+    await press("Remove");
+    expect(submit.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.disabled,
+    ).toBe(true);
+    await act(async () => submit.click());
+    const submitted = state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/install");
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]![1].credential).toBe("original-secret");
+    listed = [installed];
+    await act(async () => wait.resolve(installed));
+    expect(container.querySelector('input[placeholder="Display name"]')).toBeNull();
+    expect(
+      container.querySelector(`input[placeholder="${manualSourceEntries[kind].credential}"]`),
+    ).toBeNull();
+    expect(container.textContent).toContain(`Manual ${kind}`);
+    expect(state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/list")).toHaveLength(2);
+  },
+);
+
+it.each(manualSourceKinds)(
+  "does not let a closed native %s attempt clear a replacement credential or lock",
+  async (kind) => {
+    const original = state.rpc.getMockImplementation()!;
+    const old = importDeferred<unknown>();
+    const current = importDeferred<unknown>();
+    let calls = 0;
+    state.rpc.mockImplementation((proc: string) =>
+      proc === "capabilities/install"
+        ? ++calls === 1
+          ? old.promise
+          : current.promise
+        : original(proc),
+    );
+    await render();
+    await act(async () => resolveCatalog([]));
+    await press("Advanced");
+    await openManualSource(kind);
+    await press("Verify and add");
+    await press("Close");
+    await openManualSource(kind, "Replacement draft");
+    await fillSource(manualSourceEntries[kind].credential, "new-secret");
+    await press("Verify and add");
+    await act(async () => old.resolve({}));
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.value,
+    ).toBe("Replacement draft");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        `input[placeholder="${manualSourceEntries[kind].credential}"]`,
+      )?.value,
+    ).toBe("new-secret");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.disabled,
+    ).toBe(true);
+    expect(state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/list")).toHaveLength(1);
+    await act(async () => current.resolve({}));
+    expect(container.querySelector('input[placeholder="Display name"]')).toBeNull();
+    expect(state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/list")).toHaveLength(2);
+  },
+);
+
+it.each(["kind", "actor-space"])(
+  "abandons native manual observation on an explicit %s change without clearing the new draft",
+  async (boundary) => {
+    const original = state.rpc.getMockImplementation()!;
+    const wait = importDeferred<unknown>();
+    state.rpc.mockImplementation((proc: string) =>
+      proc === "capabilities/install" ? wait.promise : original(proc),
+    );
+    await render();
+    await act(async () => resolveCatalog([]));
+    await press("Advanced");
+    await openManualSource("mcp");
+    await press("Verify and add");
+    if (boundary === "actor-space")
+      await act(async () => {
+        state.importEpoch += 2;
+        state.scopeChanged?.();
+      });
+    await openManualSource("graphql", "Next draft");
+    await fillSource("Bearer token", "next-secret");
+    await act(async () => wait.resolve({}));
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.value,
+    ).toBe("Next draft");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Bearer token"]')?.value,
+    ).toBe("next-secret");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Display name"]')?.disabled,
+    ).toBe(false);
+    expect(state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/list")).toHaveLength(1);
+  },
+);

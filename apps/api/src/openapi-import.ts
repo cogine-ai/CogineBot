@@ -106,7 +106,11 @@ function normalize(input: OpenApiImportInput): OpenApiImportInput {
     Buffer.byteLength(canonical(config), "utf8") > 2_000_000
   )
     throw new Error("Invalid import configuration");
-  assertNoCredential(normalized.credential, { source: normalized.source, config });
+  assertNoCredential(normalized.credential, {
+    name: normalized.name,
+    source: normalized.source,
+    config,
+  });
   return normalized;
 }
 

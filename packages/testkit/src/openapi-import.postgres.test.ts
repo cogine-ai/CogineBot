@@ -491,6 +491,21 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
   });
 
+  it("rejects credential echoes in import names before source fetch or persistence", async () => {
+    const submitted = "kZ+124";
+    for (const echo of [
+      submitted,
+      encodeURIComponent(submitted),
+      Buffer.from(submitted).toString("base64"),
+    ]) {
+      const result = await preview({ ...input(), name: `API ${echo}`, credential: submitted });
+      expect(result).toMatchObject({ status: "invalid", reviewToken: null });
+      expect(JSON.stringify(result)).not.toContain(echo);
+      expect(sourceRequests).toHaveLength(0);
+      expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 0, puts: 0 });
+    }
+  });
+
   it.each(credentialEchoCases)(
     "rejects $label credential echoes before preview exposes a plan",
     async ({ credential: short, echo }) => {

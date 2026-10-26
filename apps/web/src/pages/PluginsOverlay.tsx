@@ -151,13 +151,18 @@ export function PluginsOverlay({
   const sourceFormGeneration = useRef(0);
   const sourceImport = useRef<ReturnType<typeof createOpenApiImportReview> | null>(null);
   const sourceAbort = useRef<AbortController | null>(null);
+  const manualSourceAttempt = useRef<object | null>(null);
+  const [manualSourcePending, setManualSourcePending] = useState(false);
   const sourceAuthority = useRef<object | null>(null);
   const selectedSourceSpace = selectedSpaceId();
   const sourceSpaceGeneration = currentSpaceSelectionGeneration();
   const sourceInputsLocked =
-    !!sourceReview && ["confirming", "pending", "unknown"].includes(sourceReview.phase);
+    manualSourcePending ||
+    (!!sourceReview && ["confirming", "pending", "unknown"].includes(sourceReview.phase));
   function invalidateSourceReview() {
     sourceFormGeneration.current += 1;
+    manualSourceAttempt.current = null;
+    setManualSourcePending(false);
     sourceAbort.current?.abort();
     sourceImport.current = null;
     setSourceReview(null);
@@ -785,18 +790,25 @@ export function PluginsOverlay({
   }
 
   async function installSource() {
-    if (!sourceKind || sourceKind === "api") return;
+    if (!sourceKind || sourceKind === "api" || manualSourceAttempt.current) return;
+    const attempt = {};
+    manualSourceAttempt.current = attempt;
     const generation = sourceFormGeneration.current;
     const authority = sourceAuthority.current;
     const selection = selectedSpaceId();
     const selectionGeneration = currentSpaceSelectionGeneration();
     const isCurrent = () =>
+      manualSourceAttempt.current === attempt &&
       sourceAuthority.current === authority &&
       authority !== null &&
       generation === sourceFormGeneration.current &&
       selection === selectedSpaceId() &&
       selectionGeneration === currentSpaceSelectionGeneration();
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      manualSourceAttempt.current = null;
+      return;
+    }
+    setManualSourcePending(true);
     const client = createSpaceRpc(spaceId ?? selection, isCurrent);
     setSourceError(null);
     setPending("install-source");
@@ -835,7 +847,14 @@ export function PluginsOverlay({
     } catch (err) {
       if (isCurrent()) setSourceError(errorText(err, t`Could not install connector`));
     } finally {
-      if (isCurrent()) setPending(null);
+      if (manualSourceAttempt.current === attempt) {
+        const current = isCurrent();
+        manualSourceAttempt.current = null;
+        if (current) {
+          setManualSourcePending(false);
+          setPending((pending) => (pending === "install-source" ? null : pending));
+        }
+      }
     }
   }
 
@@ -1524,6 +1543,7 @@ export function PluginsOverlay({
                           disabled={sourceInputsLocked}
                           value={sourceName}
                           onChange={(event) => {
+                            if (manualSourceAttempt.current || sourceInputsLocked) return;
                             invalidateSourceReview();
                             setSourceName(event.target.value);
                           }}
@@ -1534,6 +1554,7 @@ export function PluginsOverlay({
                             disabled={sourceInputsLocked}
                             value={sourceUrl}
                             onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
                               invalidateSourceReview();
                               setSourceUrl(event.target.value);
                             }}
@@ -1554,6 +1575,7 @@ export function PluginsOverlay({
                             disabled={sourceInputsLocked}
                             value={authType}
                             onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
                               invalidateSourceReview();
                               setAuthType(event.target.value as typeof authType);
                             }}
@@ -1576,6 +1598,7 @@ export function PluginsOverlay({
                             disabled={sourceInputsLocked}
                             value={authName}
                             onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
                               invalidateSourceReview();
                               setAuthName(event.target.value);
                             }}
@@ -1591,6 +1614,7 @@ export function PluginsOverlay({
                             disabled={sourceInputsLocked}
                             value={credential}
                             onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
                               invalidateSourceReview();
                               setCredential(event.target.value);
                             }}
@@ -1625,6 +1649,7 @@ export function PluginsOverlay({
                               className="rounded-full"
                               size="sm"
                               disabled={
+                                manualSourcePending ||
                                 pending === "install-source" ||
                                 (sourceKind === "api" && (!ownerKey || !spaceId))
                               }
@@ -1634,7 +1659,7 @@ export function PluginsOverlay({
                             >
                               {sourceKind === "api" ? (
                                 <Trans>Preview</Trans>
-                              ) : pending === "install-source" ? (
+                              ) : manualSourcePending ? (
                                 <Trans>Verifying…</Trans>
                               ) : (
                                 <Trans>Verify and add</Trans>
@@ -1651,10 +1676,11 @@ export function PluginsOverlay({
                               setSourceKind(null);
                             }}
                           >
-                            {sourceReview &&
-                            ["confirming", "pending", "unknown", "terminal"].includes(
-                              sourceReview.phase,
-                            ) ? (
+                            {manualSourcePending ||
+                            (sourceReview &&
+                              ["confirming", "pending", "unknown", "terminal"].includes(
+                                sourceReview.phase,
+                              )) ? (
                               <Trans>Close</Trans>
                             ) : (
                               <Trans>Cancel</Trans>
