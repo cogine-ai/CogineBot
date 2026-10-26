@@ -16,6 +16,7 @@ import {
   mergeThreadHistory,
   prependThreadHistoryPage,
   progressMessageId,
+  protectObservedThreadPage,
   reduceLiveMessageBlocks,
   replyMetadata,
   runFailureError,
@@ -25,6 +26,35 @@ import {
   updateCloudAgentMessages,
   upsertMessageById,
 } from "@rakazo/core";
+
+// A durable event version is independent of the message's position in history.
+type ObservedThreadMessage = ThreadMessage & { observedEventSeq?: number };
+type ObservedThreadSnapshot = ThreadSnapshot & { observedClearSeq?: number };
+
+function observeThreadMessages(snapshot: ThreadSnapshot, authoritative = false): ThreadSnapshot {
+  let changed = false;
+  const messages = snapshot.messages.map((message) => {
+    if (message.id.startsWith("progress:") || message.id.startsWith("subagent:")) return message;
+    const version = (message as ObservedThreadMessage).observedEventSeq;
+    if ((!authoritative && version !== undefined) || version === snapshot.cursor) return message;
+    changed = true;
+    return { ...message, observedEventSeq: snapshot.cursor } as ObservedThreadMessage;
+  });
+  return changed ? { ...snapshot, messages } : snapshot;
+}
+
+function threadClearSeq(snapshot: ThreadSnapshot): number | undefined {
+  return (
+    (snapshot as ObservedThreadSnapshot).observedClearSeq ??
+    (snapshot.olderCursor === null ? snapshot.cursor : undefined)
+  );
+}
+
+function observeThreadClear(snapshot: ThreadSnapshot, seq: number | undefined): ThreadSnapshot {
+  if (seq === undefined || (snapshot as ObservedThreadSnapshot).observedClearSeq === seq)
+    return snapshot;
+  return { ...snapshot, observedClearSeq: seq } as ObservedThreadSnapshot;
+}
 
 const runTriggers = new Set<string>(RUN_TRIGGERS);
 
@@ -145,7 +175,16 @@ export function mergeThreadSnapshot(
   // A threads.get started before SSE caught up must not wipe newer live state
   // (e.g. ask cards applied after send's post-refresh request was already in flight).
   if (prev && prev.threadId === next.threadId && prev.cursor > next.cursor) return prev;
-  return mergeThreadHistory(prev, next, preserveLoadedHistory);
+  const merged = mergeThreadHistory(
+    prev ? observeThreadMessages(prev) : null,
+    observeThreadMessages(next, true),
+    preserveLoadedHistory && next.olderCursor !== null,
+  );
+  const clearSeq = Math.max(
+    prev?.threadId === next.threadId ? (threadClearSeq(prev) ?? -1) : -1,
+    threadClearSeq(next) ?? -1,
+  );
+  return observeThreadClear(merged, clearSeq < 0 ? undefined : clearSeq);
 }
 
 /**
@@ -206,6 +245,7 @@ export function reconcileRefreshedThread(
 
   const localWaiting =
     sameThread &&
+    prev?.cursor === snapshot.cursor &&
     prev?.run?.status === "waiting_takeover" &&
     snapshot.run?.id === prev.run.id &&
     snapshot.run.status !== "waiting_takeover" &&
@@ -228,11 +268,28 @@ export function reconcileRefreshedThread(
   return { snapshot, computer };
 }
 
+export function protectThreadMessagePage<TPage extends ThreadMessagePage>(
+  prev: ThreadSnapshot | null,
+  page: TPage,
+  requestCursor = prev?.cursor ?? -1,
+): TPage | null {
+  return protectObservedThreadPage(
+    prev ? observeThreadMessages(prev) : null,
+    page,
+    requestCursor,
+    prev ? threadClearSeq(prev) : undefined,
+  );
+}
+
 export function prependThreadMessagePage(
   prev: ThreadSnapshot | null,
   page: ThreadMessagePage,
+  requestCursor = prev?.cursor ?? -1,
 ): ThreadSnapshot | null {
-  return prependThreadHistoryPage(prev, page);
+  const protectedPage = protectThreadMessagePage(prev, page, requestCursor);
+  return protectedPage && prev
+    ? prependThreadHistoryPage(observeThreadMessages(prev), protectedPage)
+    : prev;
 }
 
 export function isThreadSnapshotEvent(event: ProductEvent): boolean {
@@ -249,6 +306,7 @@ export function isThreadSnapshotEvent(event: ProductEvent): boolean {
     event.type === "run.started" ||
     event.type === "run.waiting_input" ||
     event.type === "computer.takeover.requested" ||
+    event.type === "computer.takeover.released" ||
     isRunTerminalEvent(event)
   );
 }
@@ -257,27 +315,62 @@ export function reduceThreadSnapshot(
   prev: ThreadSnapshot | null,
   event: ProductEvent,
 ): ThreadSnapshot | null {
-  if (!prev) return prev;
+  if (!prev || event.threadId !== prev.threadId) return prev;
+  const original = prev;
+  const clearSeq = threadClearSeq(prev);
+  if (event.type === "thread.cleared" && event.seq <= prev.cursor) {
+    if (event.seq <= (clearSeq ?? -1)) return prev;
+    const observed = observeThreadMessages(prev);
+    return observeThreadClear(
+      {
+        ...observed,
+        messages: observed.messages.filter(
+          (message) =>
+            ((message as ObservedThreadMessage).observedEventSeq ?? original.cursor) > event.seq,
+        ),
+      },
+      event.seq,
+    );
+  }
+  const messageEvent =
+    event.type === "thread.message.created" || event.type === "thread.message.updated";
+  const known = messageEvent
+    ? (prev.messages.find(
+        (message) => message.id === String(event.payload.messageId ?? event.id),
+      ) as ObservedThreadMessage | undefined)
+    : undefined;
+  if (
+    messageEvent
+      ? (clearSeq !== undefined && event.seq <= clearSeq) ||
+        (known && event.seq <= (known.observedEventSeq ?? prev.cursor))
+      : event.seq <= prev.cursor
+  )
+    return prev;
+  const cursor = Math.max(prev.cursor, event.seq);
+  prev = observeThreadMessages(observeThreadClear(prev, clearSeq));
   if (event.type === "thread.cleared") {
-    return {
-      ...prev,
-      cursor: event.seq,
-      messages: [],
-      olderCursor: null,
-      run: null,
-      activeRuns: [],
-    };
+    return observeThreadClear(
+      {
+        ...prev,
+        cursor,
+        messages: [],
+        olderCursor: null,
+        run: null,
+        activeRuns: [],
+      },
+      event.seq,
+    );
   }
   if (event.type === "run.started") {
     // Background runs (ticket work) stay invisible in the transcript; the server
     // already filters their events and snapshots, this guards a late arrival.
     if (isBackgroundRunTrigger(event.payload.trigger as string | undefined)) {
-      return { ...prev, cursor: event.seq };
+      return { ...prev, cursor };
     }
     if (!event.runId) {
       return {
         ...prev,
-        cursor: event.seq,
+        cursor,
         members: updateMemberStatus(prev.members, event.botId, "running"),
       };
     }
@@ -292,7 +385,7 @@ export function reduceThreadSnapshot(
     const activeRuns = prev.groupId ? [...without, run] : [run];
     return {
       ...prev,
-      cursor: event.seq,
+      cursor,
       members: updateMemberStatus(prev.members, event.botId, "running"),
       // A group failure lives only in run; keep it until dismiss so a late member start
       // cannot wipe the banner (activeRuns still tracks the new work).
@@ -330,7 +423,7 @@ export function reduceThreadSnapshot(
       members === prev.members &&
       messages === prev.messages
     ) {
-      return prev;
+      return cursor === prev.cursor ? original : { ...prev, cursor };
     }
     if (needsInsert && runId) {
       const waitingRun: Run = {
@@ -355,7 +448,7 @@ export function reduceThreadSnapshot(
         (prev.run.status !== "waiting_input" && prev.run.status !== "waiting_takeover");
       return {
         ...prev,
-        cursor: event.seq,
+        cursor,
         members,
         messages,
         run: promoteWaiting ? waitingRun : prev.run,
@@ -364,7 +457,7 @@ export function reduceThreadSnapshot(
     }
     return {
       ...prev,
-      cursor: event.seq,
+      cursor,
       members,
       messages,
       run: runChanged && prev.run ? { ...prev.run, status } : prev.run,
@@ -374,6 +467,30 @@ export function reduceThreadSnapshot(
           )
         : prev.activeRuns,
     };
+  }
+  if (event.type === "computer.takeover.released") {
+    const runId = event.runId;
+    const settle = <T extends { id: string; status: string }>(candidate: T): T =>
+      runId && candidate.id === runId && candidate.status === "waiting_takeover"
+        ? { ...candidate, status: "queued" }
+        : candidate;
+    const run = prev.run ? settle(prev.run) : prev.run;
+    const activeChanged = Boolean(
+      runId &&
+        prev.activeRuns?.some(
+          (candidate) => candidate.id === runId && candidate.status === "waiting_takeover",
+        ),
+    );
+    const activeRuns = activeChanged ? prev.activeRuns?.map(settle) : prev.activeRuns;
+    const releasedWaiting = run !== prev.run || activeChanged;
+    const members =
+      releasedWaiting &&
+      prev.members?.some(
+        (member) => member.botId === event.botId && member.status === "waiting_takeover",
+      )
+        ? updateMemberStatus(prev.members, event.botId, "queued")
+        : prev.members;
+    return { ...prev, cursor, run, activeRuns, members };
   }
   if (isRunTerminalEvent(event)) {
     const activeRuns = prev.activeRuns?.filter((candidate) => candidate.id !== event.runId);
@@ -387,7 +504,7 @@ export function reduceThreadSnapshot(
       primaryEnded ?? prev.activeRuns?.find((candidate) => candidate.id === event.runId) ?? null;
     return {
       ...prev,
-      cursor: event.seq,
+      cursor,
       messages: prev.messages.filter((message) => message.id !== progressMessageId(event)),
       members: updateMemberStatus(prev.members, event.botId, nextMemberRun?.status ?? "idle"),
       // A failed run stays in run (activeRuns already excludes it) so the transcript can say
@@ -418,7 +535,7 @@ export function reduceThreadSnapshot(
       runId: event.runId,
       createdAt: event.createdAt,
     };
-    return { ...prev, cursor: event.seq, messages: [...remaining, streaming] };
+    return { ...prev, cursor, messages: [...remaining, streaming] };
   }
   if (event.type === "agent.tool.called") {
     const liveId = progressMessageId(event);
@@ -437,10 +554,10 @@ export function reduceThreadSnapshot(
       runId: event.runId,
       createdAt: event.createdAt,
     };
-    return { ...prev, cursor: event.seq, messages: [...remaining, next] };
+    return { ...prev, cursor, messages: [...remaining, next] };
   }
   if (event.type === "agent.tool.completed") {
-    return { ...prev, cursor: event.seq };
+    return { ...prev, cursor };
   }
   if (event.type === "thread.subagent") {
     const block = subagentBlockFromPayload(event.payload);
@@ -464,25 +581,26 @@ export function reduceThreadSnapshot(
         without.push(message);
       }
     }
-    return { ...prev, cursor: event.seq, messages: [...without, next, ...kept] };
+    return { ...prev, cursor, messages: [...without, next, ...kept] };
   }
 
   if (event.type === "thread.cloud_agent") {
     return {
       ...prev,
-      cursor: event.seq,
+      cursor,
       messages: updateCloudAgentMessages(prev.messages, event.payload ?? {}),
     };
   }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const messageSeq = event.payload.messageSeq;
-    if (typeof messageSeq !== "number") return prev;
+    if (typeof messageSeq !== "number") return original;
     const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
     const blocks = (event.payload.blocks as ThreadMessage["blocks"]) ?? [];
     const id = String(event.payload.messageId ?? event.id);
     const known = prev.messages.find((message) => message.id === id);
-    const next: ThreadMessage = {
+    const next: ObservedThreadMessage = {
       id,
+      observedEventSeq: event.seq,
       threadId: event.threadId,
       seq: messageSeq,
       role,
@@ -514,9 +632,9 @@ export function reduceThreadSnapshot(
         messages.splice(before, 0, next);
       }
     }
-    return { ...prev, cursor: event.seq, messages };
+    return { ...prev, cursor, messages };
   }
-  return prev;
+  return original;
 }
 
 function updateMemberStatus(

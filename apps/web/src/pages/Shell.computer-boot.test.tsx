@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import type { AppBootstrap, Bot, ComputerStatus, ThreadSnapshot } from "@rakazo/contracts";
+import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
+import type {
+  AppBootstrap,
+  Bot,
+  ComputerStatus,
+  ProductEvent,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
 import type { ReactNode } from "react";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -7,6 +15,12 @@ import { createRoot } from "react-dom/client";
 import type { NavigateFunction } from "react-router-dom";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  mergeThreadSnapshot,
+  prependThreadMessagePage,
+  reconcileRefreshedThread,
+  reduceThreadSnapshot,
+} from "../lib/thread-events";
 
 const boundary = vi.hoisted(() => ({
   call: vi.fn(),
@@ -54,6 +68,11 @@ vi.mock("@lingui/react/macro", () => {
 });
 
 import { ShellPage } from "./Shell";
+
+const testFileUrl = import.meta.url;
+const shellSource = readFileSync(new URL("./Shell.tsx", testFileUrl), "utf8");
+const olderStart = shellSource.indexOf("  async function loadOlderMessages()");
+const olderHandler = `${stripTypeScriptTypes(shellSource.slice(olderStart, shellSource.indexOf("  useEffect(() => {", olderStart)))}\nreturn loadOlderMessages;`;
 
 const chief: Bot = {
   id: "chief",
@@ -283,10 +302,10 @@ afterEach(() => {
   container.remove();
   vi.unstubAllGlobals();
 });
-async function render() {
+async function render(entry = "/app/chief") {
   await act(async () =>
     root.render(
-      <MemoryRouter initialEntries={["/app/chief"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/app/:botId" element={<RoutedShell />} />
           <Route path="/app/g/:groupId" element={<RoutedShell />} />
@@ -625,5 +644,728 @@ it.each(["space-1", null])(
     expect(boundary.call.mock.calls.filter(([path]) => path === "computer.takeover")).toHaveLength(
       0,
     );
+  },
+);
+
+it("keeps a settled card when an ordinary same-thread search jump finishes after release", async () => {
+  Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+  const initial: ThreadSnapshot = {
+    ...snapshot(status()),
+    cursor: 10,
+    olderCursor: 1,
+    run: {
+      id: "run-1",
+      botId: "chief",
+      threadId: "thread-chief",
+      taskId: "task-1",
+      status: "waiting_takeover",
+      trigger: "user",
+      routineId: null,
+      modelProvider: null,
+      modelId: null,
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    messages: [
+      {
+        id: "card",
+        seq: 1,
+        threadId: "thread-chief",
+        runId: "run-1",
+        role: "bot",
+        blocks: [{ kind: "computer", text: "Sign in", state: "Needs you" }],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  };
+  const oldSnapshot = deferred<ThreadSnapshot>();
+  const oldPage = deferred<{
+    threadId: string;
+    olderCursor: null;
+    messages: ThreadSnapshot["messages"];
+  }>();
+  const pageStarted = deferred<void>();
+  const updated = deferred<ProductEvent>();
+  const released = deferred<ProductEvent>();
+  let server = initial;
+  let getReads = 0;
+  let pageReads = 0;
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  boundary.call.mockImplementation(async (path, input, options) => {
+    if (path === "threads.get") {
+      getReads += 1;
+      return getReads === 1 ? oldSnapshot.promise : server;
+    }
+    if (path === "threads.messages") {
+      pageReads += 1;
+      if (pageReads === 1) {
+        pageStarted.resolve();
+        return oldPage.promise;
+      }
+      return { threadId: server.threadId, olderCursor: null, messages: server.messages };
+    }
+    if (path === "threads.subscribe")
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield await updated.promise;
+          yield await released.promise;
+          await new Promise<void>((resolve) =>
+            options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+          );
+        },
+      };
+    return fallback(path, input, options);
+  });
+  await render();
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain(
+    "Needs you",
+  );
+  await act(async () => navigate("/app/chief?m=card"));
+  await act(async () => oldSnapshot.resolve(initial));
+  await pageStarted.promise;
+  server = {
+    ...initial,
+    cursor: 11,
+    messages: initial.messages.map((message) => ({
+      ...message,
+      blocks: [{ kind: "computer", text: "Sign in", state: "Done" }],
+    })),
+  };
+  await act(async () =>
+    updated.resolve({
+      id: "event-11",
+      spaceId: "space-1",
+      type: "thread.message.updated",
+      seq: 11,
+      threadId: initial.threadId,
+      botId: "chief",
+      runId: "run-1",
+      payload: {
+        messageId: "card",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [{ kind: "computer", text: "Sign in", state: "Done" }],
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  server = {
+    ...server,
+    cursor: 12,
+    run: initial.run ? { ...initial.run, status: "queued" } : null,
+  };
+  await act(async () =>
+    released.resolve({
+      id: "event-12",
+      spaceId: "space-1",
+      type: "computer.takeover.released",
+      seq: 12,
+      threadId: initial.threadId,
+      botId: "chief",
+      runId: "run-1",
+      payload: { holder: "none", reason: "done", leaseId: "lease-1" },
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+  await act(async () =>
+    oldPage.resolve({ threadId: initial.threadId, olderCursor: null, messages: initial.messages }),
+  );
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+  expect(container.querySelector('[data-testid="computer-card"]')?.textContent).not.toContain(
+    "Needs you",
+  );
+});
+
+it.each(
+  ["cold", "cross-low", "cross-equal", "cross-high", "same-thread"].flatMap((origin) =>
+    ["bot", "group"].map((kind) => ({ origin, kind })),
+  ),
+)(
+  "opens a $origin $kind message target only after reading its snapshot",
+  async ({ origin, kind }) => {
+    const targetBot = origin.startsWith("cross") ? "worker" : "chief";
+    const target = jumpSnapshot(targetBot, 20, "Done");
+    const targetRoute = kind === "group" ? "/app/g/ops" : `/app/${targetBot}`;
+    if (kind === "group") {
+      target.groupId = "ops";
+      delete target.botId;
+      target.threadId = "thread-ops";
+      target.messages = target.messages.map((message) => ({
+        ...message,
+        threadId: target.threadId,
+      }));
+      target.members = bootstrap().groups[0]!.members;
+    }
+    const get = deferred<ThreadSnapshot>();
+    let server: ThreadSnapshot = {
+      ...target,
+      cursor: 19,
+      messages: target.messages.map((message) => ({
+        ...message,
+        blocks: [{ kind: "computer" as const, text: "Sign in", state: "Needs you" }],
+      })),
+    };
+    let pageReads = 0;
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    const priorCursor: Record<string, number> = {
+      "cross-low": 5,
+      "cross-equal": 20,
+      "cross-high": 100,
+      "same-thread": 10,
+    };
+    boundary.bootstrap.mockResolvedValue({
+      ...bootstrap(),
+      thread:
+        origin === "cold"
+          ? null
+          : origin === "same-thread"
+            ? { ...target, cursor: 10 }
+            : jumpSnapshot("chief", priorCursor[origin]!, "Needs you"),
+    });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (
+        path === "threads.get" &&
+        (kind === "group" ? input?.groupId === "ops" : input?.botId === targetBot)
+      ) {
+        const result = await get.promise;
+        server = result;
+        return result;
+      }
+      if (path === "threads.messages") {
+        pageReads += 1;
+        return {
+          threadId: server.threadId,
+          olderCursor: null,
+          messages: structuredClone(server.messages),
+        };
+      }
+      return fallback(path, input, options);
+    });
+    await render(
+      origin === "cold"
+        ? `${targetRoute}?m=card`
+        : origin === "same-thread"
+          ? targetRoute
+          : "/app/chief",
+    );
+    if (origin !== "cold") await act(async () => navigate(`${targetRoute}?m=card`));
+    expect.soft(pageReads).toBe(0);
+    await act(async () => get.resolve(target));
+    expect(pageReads).toBeGreaterThan(0);
+    expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+    expect(scrolled).toContain("card");
+  },
+);
+
+it.each(
+  (["thread.message.created", "thread.message.updated"] as const).flatMap((type) =>
+    ["pre-clear", "known-fallback", "admitted"].flatMap((scenario) =>
+      [false, true].map((inGroup) => ({ type, scenario, inGroup })),
+    ),
+  ),
+)(
+  "retains history only after admitted $type replay ($scenario, group=$inGroup)",
+  async ({ type, scenario, inGroup }) => {
+    const initial: ThreadSnapshot = {
+      ...jumpSnapshot("chief", 5, "Done"),
+      olderCursor: 1,
+      ...(inGroup ? { botId: undefined, groupId: "ops", threadId: "thread-ops" } : {}),
+      messages: [
+        {
+          ...jumpSnapshot("chief", 5, "Done").messages[0]!,
+          id: "anchor",
+          threadId: inGroup ? "thread-ops" : "thread-chief",
+          blocks: [{ kind: "text", text: "Initial anchor" }],
+        },
+      ],
+    };
+    const prepare = deferred<ProductEvent>();
+    const replay = deferred<ProductEvent>();
+    const refresh = deferred<ProductEvent>();
+    const stableRoutines: AppBootstrap["routines"] = [];
+    let server = initial;
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: inGroup ? null : initial });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") return server;
+      if (path === "routines.list") return stableRoutines;
+      if (path === "threads.subscribe")
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield await prepare.promise;
+            yield await replay.promise;
+            yield await refresh.promise;
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
+          },
+        };
+      return fallback(path, input, options);
+    });
+    const frame = (seq: number, messageId: string, text: string): ProductEvent => ({
+      id: `event-${seq}`,
+      spaceId: "space-1",
+      threadId: initial.threadId,
+      botId: "chief",
+      seq,
+      type: "thread.message.updated",
+      payload: { messageId, messageSeq: 1, role: "user", blocks: [{ kind: "text", text }] },
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    await render(inGroup ? "/app/g/ops" : "/app/chief");
+    server = {
+      ...initial,
+      cursor: 20,
+      olderCursor: scenario === "pre-clear" ? null : 1,
+      messages: initial.messages.map((message) => ({
+        ...message,
+        blocks: [{ kind: "text", text: "Authoritative anchor" }],
+      })),
+    };
+    // Consume 7 before a direct GET commits 20, leaving replay 11 ahead of the reader cursor.
+    await act(async () => prepare.resolve(frame(7, "anchor", "Before refresh")));
+    expect(container.querySelector('[data-message-id="anchor"]')?.textContent).toContain(
+      "Authoritative anchor",
+    );
+    const historical = frame(11, "historical", "Recovered history");
+    historical.type = type;
+    historical.payload.messageSeq = 0;
+    if (scenario === "known-fallback") {
+      historical.id = "anchor";
+      delete historical.payload.messageId;
+    }
+    await act(async () => replay.resolve(historical));
+    expect(container.querySelector('[data-message-id="historical"]') !== null).toBe(
+      scenario === "admitted",
+    );
+    server = {
+      ...initial,
+      cursor: 21,
+      messages: [
+        {
+          ...initial.messages[0]!,
+          id: "tail",
+          seq: 5,
+          blocks: [{ kind: "text", text: "New latest page" }],
+        },
+      ],
+    };
+    await act(async () => refresh.resolve(frame(12, "anchor", "Obsolete payload")));
+    expect(container.querySelector('[data-message-id="tail"]')?.textContent).toContain(
+      "New latest page",
+    );
+    expect(container.querySelector('[data-message-id="anchor"]') !== null).toBe(
+      scenario === "admitted",
+    );
+    expect(container.querySelector('[data-message-id="historical"]') !== null).toBe(
+      scenario === "admitted",
+    );
+  },
+);
+
+it.each(["Space", "actor", "target"])(
+  "ignores a late durable replay after changing the reader %s",
+  async (scopeChange) => {
+    const initial = { ...jumpSnapshot("chief", 5, "Done"), olderCursor: 1 };
+    const prepare = deferred<ProductEvent>();
+    const replay = deferred<ProductEvent>();
+    let server = initial;
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get")
+        return input?.botId === "worker" ? jumpSnapshot("worker", 30, "Done") : server;
+      if (path === "threads.subscribe")
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield await prepare.promise;
+            yield await replay.promise;
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
+          },
+        };
+      return fallback(path, input, options);
+    });
+    await render();
+    server = { ...initial, cursor: 20 };
+    const event: ProductEvent = {
+      id: "updated-7",
+      spaceId: "space-1",
+      threadId: initial.threadId,
+      botId: "chief",
+      seq: 7,
+      type: "thread.message.updated",
+      payload: {
+        messageId: "card",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [{ kind: "computer", state: "Done", text: "Sign in" }],
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    await act(async () => prepare.resolve(event));
+    if (scopeChange === "Space") {
+      boundary.space = "space-2";
+      boundary.generation += 1;
+    } else if (scopeChange === "actor") {
+      boundary.session.data.user.id = "user-2";
+    }
+    await act(async () =>
+      navigate(scopeChange === "target" ? "/app/worker" : "/app/chief?scope=changed"),
+    );
+    const reads = boundary.call.mock.calls.filter(([path]) => path === "threads.get").length;
+    await act(async () =>
+      replay.resolve({
+        ...event,
+        id: "replay-11",
+        type: "thread.message.created",
+        seq: 11,
+        payload: {
+          messageId: "historical",
+          messageSeq: 0,
+          role: "user",
+          blocks: [{ kind: "text", text: "Old reader history" }],
+        },
+      }),
+    );
+    expect(container.querySelector('[data-message-id="historical"]')).toBeNull();
+    expect(boundary.call.mock.calls.filter(([path]) => path === "threads.get")).toHaveLength(reads);
+    expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+  },
+);
+
+function jumpSnapshot(botId: string, cursor: number, state: string): ThreadSnapshot {
+  return {
+    ...snapshot(status(botId)),
+    cursor,
+    messages: [
+      {
+        id: "card",
+        threadId: `thread-${botId}`,
+        seq: 1,
+        role: "bot",
+        blocks: [{ kind: "computer", text: "Sign in", state }],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  };
+}
+
+it.each([false, true])(
+  "keeps a cold receipt projection while rejecting a deleted target (deleted=%s)",
+  async (deleted) => {
+    const get = deferred<ThreadSnapshot>();
+    const receipt: ThreadSnapshot["messages"][number] = {
+      id: "receipt",
+      threadId: "thread-chief",
+      seq: 9,
+      role: "bot",
+      blocks: [{ kind: "bot_message_sent", toBotId: "peer", toBotName: "Peer", text: "Receipt" }],
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const target = {
+      ...snapshot(status()),
+      cursor: 20,
+      messages: [
+        { ...receipt, id: "base", seq: 1, blocks: [{ kind: "text" as const, text: "Earlier" }] },
+      ],
+    };
+    let serverMessages = [receipt];
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: null });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") {
+        const result = await get.promise;
+        serverMessages = deleted ? [] : [receipt];
+        return result;
+      }
+      if (path === "threads.messages")
+        return {
+          threadId: target.threadId,
+          olderCursor: null,
+          messages: structuredClone(serverMessages),
+        };
+      return fallback(path, input, options);
+    });
+    await render("/app/chief?m=receipt");
+    await act(async () => get.resolve(target));
+    expect(container.querySelector('[data-message-id="receipt"]') !== null).toBe(!deleted);
+    expect(scrolled.includes("receipt")).toBe(!deleted);
+  },
+);
+
+it.each(["cold", "cross-high"] as const)(
+  "opens older paginated history from a %s route",
+  async (origin) => {
+    const botId = origin === "cold" ? "chief" : "worker";
+    const get = deferred<ThreadSnapshot>();
+    const target = {
+      ...jumpSnapshot(botId, 20, "Done"),
+      olderCursor: 50,
+      messages: [
+        {
+          ...jumpSnapshot(botId, 20, "Done").messages[0]!,
+          id: "tail",
+          seq: 50,
+          blocks: [{ kind: "text" as const, text: "Latest" }],
+        },
+      ],
+    };
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    boundary.bootstrap.mockResolvedValue({
+      ...bootstrap(),
+      thread: origin === "cold" ? null : jumpSnapshot("chief", 100, "Needs you"),
+    });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get" && input?.botId === botId) return get.promise;
+      if (path === "threads.messages")
+        return {
+          threadId: target.threadId,
+          olderCursor: null,
+          messages: jumpSnapshot(botId, 20, "Done").messages,
+        };
+      return fallback(path, input, options);
+    });
+    await render(origin === "cold" ? "/app/chief?m=card" : "/app/chief");
+    if (origin !== "cold") await act(async () => navigate("/app/worker?m=card"));
+    await act(async () => get.resolve(target));
+    expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain("Done");
+    expect(scrolled).toContain("card");
+  },
+);
+
+it.each(["card", null])(
+  "resolves the current attention target from its snapshot (%s)",
+  async (attentionMessageId) => {
+    const get = deferred<ThreadSnapshot>();
+    const calls: Array<string | undefined> = [];
+    const target = { ...jumpSnapshot("chief", 20, "Done"), attentionMessageId };
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") return get.promise;
+      if (path === "threads.messages") {
+        calls.push(input?.around?.messageId);
+        return { threadId: target.threadId, olderCursor: null, messages: target.messages };
+      }
+      return fallback(path, input, options);
+    });
+    await render();
+    await act(async () => navigate("/app/chief?m=obsolete&attention=1"));
+    expect(calls).toEqual([]);
+    await act(async () => get.resolve(target));
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((id) => id === (attentionMessageId ?? "obsolete"))).toBe(true);
+    expect(scrolled.includes("card")).toBe(attentionMessageId !== null);
+  },
+);
+
+it.each([false, true])(
+  "scrolls only to a still-loaded authoritative target after a rejected page (deleted=%s)",
+  async (deleted) => {
+    const initial = jumpSnapshot("chief", 20, "Needs you");
+    const ready = jumpSnapshot("chief", 21, "Done");
+    if (deleted) ready.messages = [];
+    const oldPage = deferred<{
+      threadId: string;
+      olderCursor: number;
+      messages: ThreadSnapshot["messages"];
+    }>();
+    const pageStarted = deferred<void>();
+    const streamEnded = deferred<void>();
+    const stableRoutines: AppBootstrap["routines"] = [];
+    let server = initial;
+    const scrolled: Array<string | null> = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this.getAttribute("data-message-id"));
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    boundary.bootstrap.mockResolvedValue({
+      ...bootstrap(),
+      thread: initial,
+      routines: stableRoutines,
+    });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") return server;
+      if (path === "routines.list") return stableRoutines;
+      if (path === "threads.messages") {
+        pageStarted.resolve();
+        return oldPage.promise;
+      }
+      if (path === "threads.subscribe")
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: async () => {
+                await streamEnded.promise;
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        };
+      return fallback(path, input, options);
+    });
+    await render();
+    await act(async () => navigate("/app/chief?m=card"));
+    await pageStarted.promise;
+    server = ready;
+    await act(async () => streamEnded.resolve());
+    expect(container.querySelector('[data-testid="computer-card"]') !== null).toBe(!deleted);
+    if (!deleted)
+      expect(container.querySelector('[data-testid="computer-card"]')?.textContent).toContain(
+        "Done",
+      );
+    await act(async () =>
+      oldPage.resolve({ threadId: initial.threadId, olderCursor: 1, messages: initial.messages }),
+    );
+    expect(scrolled.includes("card")).toBe(!deleted);
+    expect(container.querySelector('[data-testid="computer-card"]') !== null).toBe(!deleted);
+    expect(container.textContent).not.toContain("Load earlier messages");
+  },
+);
+
+it.each(
+  [
+    "complete-refresh",
+    "covered-clear",
+    "already-expanded",
+    "metadata-only-complete",
+    "accepted",
+  ].flatMap((scenario) => [false, true].map((inGroup) => ({ scenario, inGroup }))),
+)(
+  "admits older history side effects after $scenario (group=$inGroup)",
+  async ({ scenario, inGroup }) => {
+    const initial = mergeThreadSnapshot(null, {
+      ...jumpSnapshot("chief", 10, "Needs you"),
+      olderCursor: 1,
+      ...(inGroup ? { botId: undefined, groupId: "ops" } : {}),
+    });
+    const page = deferred<unknown>();
+    const get = deferred<ThreadSnapshot>();
+    let height = 100;
+    const scrollElement = document.createElement("div");
+    Object.defineProperty(scrollElement, "scrollHeight", { get: () => height });
+    scrollElement.scrollTop = 25;
+    const snapshotRef = { current: initial };
+    const expandedHistoryThread = {
+      current: scenario === "already-expanded" ? initial.threadId : null,
+    };
+    const commitSnapshot = vi.fn((next: ThreadSnapshot) => {
+      snapshotRef.current = next;
+    });
+    const scope = {
+      inGroup,
+      active: chief,
+      groupId: inGroup ? "ops" : undefined,
+      snapshot: initial,
+      loadingOlder: false,
+      pinnedAroundRef: { current: null },
+      messageScroll: { current: scrollElement },
+      historyEpoch: { current: 0 },
+      selectedSpaceId: () => "space-1",
+      groupSettingsActor: { current: { spaceId: "space-1" } },
+      snapshotRef,
+      setLoadingOlder: vi.fn(),
+      rpc: { threads: { messages: () => page.promise, get: () => get.promise } },
+      activeBotId: { current: inGroup ? undefined : chief.id },
+      activeGroupId: { current: inGroup ? "ops" : undefined },
+      expandedHistoryThread,
+      computerRef: { current: null },
+      reconcileRefreshedThread,
+      prependThreadMessagePage,
+      commitSnapshot,
+    };
+    const loadOlder = new Function(...Object.keys(scope), olderHandler)(...Object.values(scope));
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+    try {
+      const loading = loadOlder();
+      const accepted = scenario === "accepted";
+      const coveredClear = scenario === "covered-clear";
+      const metadataOnly = scenario === "metadata-only-complete";
+      const fresh = mergeThreadSnapshot(null, {
+        ...initial,
+        cursor: accepted ? 10 : coveredClear ? 30 : 20,
+        olderCursor: accepted || coveredClear ? 1 : null,
+        messages: jumpSnapshot("chief", 20, "Done").messages,
+      });
+      if (coveredClear) {
+        snapshotRef.current = reduceThreadSnapshot(fresh, {
+          id: "clear-20",
+          spaceId: "space-1",
+          type: "thread.cleared",
+          seq: 20,
+          threadId: initial.threadId,
+          botId: "chief",
+          payload: {},
+          createdAt: "2026-01-01T00:00:00Z",
+        })!;
+      }
+      if (metadataOnly) {
+        snapshotRef.current = {
+          ...initial,
+          olderCursor: null,
+          messages: jumpSnapshot("chief", 10, "Done").messages,
+        };
+      }
+      get.resolve(metadataOnly ? { ...initial, cursor: 9 } : coveredClear ? initial : fresh);
+      height = 150;
+      page.resolve({
+        threadId: initial.threadId,
+        olderCursor: null,
+        messages: [
+          {
+            ...initial.messages[0],
+            id: "earlier",
+            seq: 0,
+            role: "user",
+            blocks: [{ kind: "text", text: "Earlier" }],
+          },
+        ],
+      });
+      await loading;
+      expect(commitSnapshot).toHaveBeenCalledTimes(1);
+      expect(snapshotRef.current.cursor).toBe(
+        accepted || metadataOnly ? 10 : coveredClear ? 30 : 20,
+      );
+      expect(snapshotRef.current.messages[0]?.blocks).toEqual(
+        accepted
+          ? [{ kind: "text", text: "Earlier" }]
+          : [{ kind: "computer", text: "Sign in", state: "Done" }],
+      );
+      expect(expandedHistoryThread.current).toBe(
+        accepted || scenario === "already-expanded" ? initial.threadId : null,
+      );
+      expect(frame).toHaveBeenCalledTimes(accepted ? 1 : 0);
+      if (accepted) frame.mock.calls[0]![0](0);
+      expect(scrollElement.scrollTop).toBe(accepted ? 75 : 25);
+      expect(scope.setLoadingOlder.mock.calls).toEqual([[true], [false]]);
+    } finally {
+      frame.mockRestore();
+    }
   },
 );

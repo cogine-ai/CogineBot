@@ -141,7 +141,9 @@ describe("call session", () => {
         messages:
           type === "thread.cleared"
             ? []
-            : expect.arrayContaining([{ ...botMessage("before-clear", "Earlier reply") }]),
+            : expect.arrayContaining([
+                expect.objectContaining(botMessage("before-clear", "Earlier reply")),
+              ]),
       });
     },
   );

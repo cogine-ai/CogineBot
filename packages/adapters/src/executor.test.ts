@@ -2134,6 +2134,80 @@ description: Prepare standup notes
     );
   });
 
+  it.each(["takeover", "takeover-skipped"])(
+    "repairs a %s card before acquiring the computer or calling the model",
+    async (checkpoint) => {
+      const boundary = new Error("stop before computer acquisition");
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "group-thread" }]),
+        run: {
+          findFirst: vi.fn().mockResolvedValue({ status: "running" }),
+          findUnique: vi.fn().mockResolvedValue({ status: "running" }),
+        },
+        message: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: "card-1",
+              seq: 2,
+              blocks: [{ kind: "computer", state: "Needs you", text: "Protected input" }],
+            },
+          ]),
+          update: vi.fn().mockResolvedValue({}),
+        },
+        thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 4 }) },
+        event: { create: vi.fn(async ({ data }) => ({ ...data, threadId: "group-thread" })) },
+      };
+      const prisma = {
+        $transaction: vi.fn(async (callback) => callback(tx)),
+        run: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "run-1",
+            spaceId: "space-1",
+            botId: "bot-1",
+            threadId: "group-thread",
+            status: "queued",
+            checkpoint,
+            leaseFence: 0,
+          }),
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ status: "leased", startedAt: null }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        bot: {
+          findUniqueOrThrow: vi
+            .fn()
+            .mockResolvedValue({ computerId: "computer-1", computerSwitching: false }),
+        },
+        computer: {
+          findUniqueOrThrow: vi.fn(async () => {
+            throw boundary;
+          }),
+        },
+      } as unknown as PrismaClient;
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const runtimeRun = vi.fn();
+      const executor = createRunExecutor({
+        prisma,
+        events: { notify },
+        runtime: { run: runtimeRun },
+      } as unknown as Parameters<typeof createRunExecutor>[0]);
+      await expect(executor.continueRun("run-1", "worker-1")).rejects.toBe(boundary);
+      expect(tx.message.update).toHaveBeenCalledWith({
+        where: { id: "card-1" },
+        data: {
+          blocks: [
+            {
+              kind: "computer",
+              state: checkpoint === "takeover" ? "Done" : "Skipped",
+              text: "Protected input",
+            },
+          ],
+        },
+      });
+      expect(notify).toHaveBeenCalledExactlyOnceWith("group-thread", 3);
+      expect(runtimeRun).not.toHaveBeenCalled();
+    },
+  );
+
   it("consumes a persisted takeover checkpoint when claiming the run", async () => {
     const updateMany = vi.fn(async () => ({ count: 0 }));
     const prisma = {

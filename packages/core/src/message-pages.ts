@@ -21,6 +21,30 @@ export function mergeThreadHistory<
   };
 }
 
+/** Admit a page read before live events without replacing newer observed message payloads. */
+export function protectObservedThreadPage<
+  TMessage extends MessageIdentity & { observedEventSeq?: number },
+  TPage extends ThreadHistory<TMessage>,
+>(
+  current: ThreadHistory<TMessage> | null,
+  page: TPage,
+  requestCursor: number,
+  clearSeq?: number,
+): TPage | null {
+  if (current && current.threadId !== page.threadId) return null;
+  if (clearSeq !== undefined && requestCursor < clearSeq) return null;
+  const known = new Map(current?.messages.map((message) => [message.id, message]));
+  return {
+    ...page,
+    messages: page.messages.map((message) => {
+      const observed = known.get(message.id);
+      return observed && (observed.observedEventSeq ?? -1) > requestCursor
+        ? observed
+        : { ...message, observedEventSeq: requestCursor };
+    }),
+  };
+}
+
 export function prependThreadHistoryPage<
   TMessage extends MessageIdentity,
   TSnapshot extends ThreadHistory<TMessage>,

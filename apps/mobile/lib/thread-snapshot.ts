@@ -24,13 +24,19 @@ function equalValue(previous: unknown, next: unknown): boolean {
   );
 }
 
+function visibleSnapshot(snapshot: MobileSnapshot) {
+  const { cursor: _cursor, observedClearSeq: _clear, ...visible } = snapshot;
+  return {
+    ...visible,
+    messages: snapshot.messages.map(({ observedEventSeq: _version, ...message }) => message),
+  };
+}
+
 /** Compare projected screen snapshots; the replay cursor stays current in snapRef. */
 export function reconcileVisibleThreadSnapshot(
   previous: MobileSnapshot | null,
   next: MobileSnapshot | null,
 ): MobileSnapshot | null {
   if (previous === next || !previous || !next) return next;
-  const { cursor: _previousCursor, ...previousVisible } = previous;
-  const { cursor: _nextCursor, ...nextVisible } = next;
-  return equalValue(previousVisible, nextVisible) ? previous : next;
+  return equalValue(visibleSnapshot(previous), visibleSnapshot(next)) ? previous : next;
 }

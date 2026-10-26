@@ -118,6 +118,7 @@ import {
   retireModelCredential,
   SpaceLimitError,
   searchHistory,
+  settleReleasedTakeoverCards,
   storeToolResultHistory,
   TOOL_RESULT_HISTORY_MAX_BYTES,
 } from "@rakazo/db";
@@ -3348,6 +3349,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
       if (isTerminal(run.status as RunStatus)) return;
       let { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume } =
         takeoverContinuePlan(run);
+      const settleTakeoverCards = async () => {
+        if (!takeoverResume) return;
+        await settleReleasedTakeoverCards(
+          deps.prisma,
+          {
+            spaceId: run.spaceId,
+            threadId: run.threadId,
+            botId: run.botId,
+            runId,
+            reason: takeoverResume.checkpoint,
+          },
+          (threadId, seq) => deps.events.notify(threadId, seq),
+        );
+      };
 
       const fence = nextFence(run.leaseFence);
       const now = new Date();
@@ -3404,6 +3419,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
         return;
       }
+      await settleTakeoverCards();
       let computerLease: ComputerExecutionLease | null = null;
       try {
         computerLease = await acquireComputerExecutionLease(deps.prisma, {
@@ -3925,6 +3941,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume },
                 held,
               ));
+            await settleTakeoverCards();
           }
         }
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.

@@ -255,12 +255,14 @@ import {
   isComputerStatusEvent,
   isThreadSnapshotEvent,
   prependThreadMessagePage,
+  protectThreadMessagePage,
   reconcileRefreshedThread,
   reduceComputerStatus,
   reduceThreadSnapshot,
   threadRunError,
   userHoldsComputerControl,
 } from "../lib/thread-events";
+import { readThreadSnapshot } from "../lib/thread-snapshot-request";
 import { getToolActivityEnabled, subscribeToolActivity } from "../lib/tool-activity-preference";
 import {
   isToolOnlyNarration,
@@ -363,15 +365,10 @@ type PendingBrowserNotification = {
 const ATTACHMENT_ACCEPT = ATTACHMENT_ALLOWED_MIME_TYPES.join(",");
 /** Identity colour for bots the roster no longer knows about. */
 const FALLBACK_BOT_COLOR = "#85858A";
-const THREAD_SNAPSHOT_TIMEOUT_MS = 2_000;
 /** Bound Settings leave so a hung voice status refresh cannot block dismissal. */
 const VOICE_STATUS_REFRESH_TIMEOUT_MS = 10_000;
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 32;
 const MOBILE_SIDEBAR_SWIPE_DISTANCE_PX = 56;
-function threadSnapshotSignal(parent: AbortSignal): AbortSignal {
-  return AbortSignal.any([parent, AbortSignal.timeout(THREAD_SNAPSHOT_TIMEOUT_MS)]);
-}
-
 function voiceStatusRefreshTimeout(): Promise<never> {
   return new Promise((_, reject) => {
     AbortSignal.timeout(VOICE_STATUS_REFRESH_TIMEOUT_MS).addEventListener("abort", () => {
@@ -1486,19 +1483,17 @@ export function ShellPage() {
           ) {
             const next = reduceThreadSnapshot(current, event);
             if (current && next) {
+              const messageId = String(event.payload.messageId ?? event.id);
               if (
+                next !== current &&
                 (event.type === "thread.message.created" ||
                   event.type === "thread.message.updated") &&
                 typeof event.payload.messageSeq === "number" &&
-                !current.messages.some((message) => message.id === event.payload.messageId)
+                !current.messages.some((message) => message.id === messageId) &&
+                next.messages.some((message) => message.id === messageId)
               )
                 expandedHistoryThread.current = event.threadId;
-              commitSnapshot({
-                ...current,
-                cursor: Math.max(current.cursor, event.seq),
-                messages: next.messages,
-                olderCursor: next.olderCursor,
-              });
+              commitSnapshot(next);
             }
           }
           return;
@@ -1659,6 +1654,7 @@ export function ShellPage() {
     const epoch = historyEpoch.current;
     const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
     const before = snapshot.olderCursor;
+    const requestCursor = snapshotRef.current?.cursor ?? -1;
     setLoadingOlder(true);
     try {
       const target = targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! };
@@ -1673,14 +1669,17 @@ export function ShellPage() {
         activeGroupId.current !== targetGroupId
       )
         return;
-      expandedHistoryThread.current = page.threadId;
       const current = reconcileRefreshedThread(
         snapshotRef.current,
         snap,
         computerRef.current,
         true,
       );
-      commitSnapshot(prependThreadMessagePage(current.snapshot, page));
+      const next = prependThreadMessagePage(current.snapshot, page, requestCursor);
+      const admitted = current.snapshot.olderCursor !== null && next !== current.snapshot;
+      if (admitted) expandedHistoryThread.current = page.threadId;
+      commitSnapshot(next);
+      if (!admitted) return;
       window.requestAnimationFrame(() => {
         const element = messageScroll.current;
         if (
@@ -1949,16 +1948,18 @@ export function ShellPage() {
           primed?.botId === active.id
             ? Promise.resolve(primed)
             : pendingJump
-              ? rpc.threads.get(
-                  { botId: active.id },
-                  { signal: threadSnapshotSignal(abort.signal) },
+              ? readThreadSnapshot(abort.signal, (signal) =>
+                  rpc.threads.get({ botId: active.id }, { signal }),
                 )
-              : refreshThread(active.id, threadSnapshotSignal(abort.signal)),
+              : readThreadSnapshot(abort.signal, (signal) => refreshThread(active.id, signal)),
         );
       },
       loadHead: () =>
-        rpc.threads.head({ botId: active.id }, { signal: threadSnapshotSignal(abort.signal) }),
-      refresh: () => reader.read(refreshThread(active.id, threadSnapshotSignal(abort.signal))),
+        readThreadSnapshot(abort.signal, (signal) =>
+          rpc.threads.head({ botId: active.id }, { signal }),
+        ),
+      refresh: () =>
+        reader.read(readThreadSnapshot(abort.signal, (signal) => refreshThread(active.id, signal))),
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) =>
         rpc.threads.subscribe({ botId: active.id, cursor }, { signal: abort.signal }),
@@ -1984,7 +1985,7 @@ export function ShellPage() {
           currentBot?.notifyOnFinish ?? false,
           false,
         );
-        if (event.type === "thread.cleared") {
+        if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
           clearHistoryWindow();
         }
@@ -2076,17 +2077,21 @@ export function ShellPage() {
       loadInitial: () =>
         reader.read(
           pendingJump
-            ? rpc.threads.get({ groupId }, { signal: threadSnapshotSignal(abort.signal) })
-            : refreshGroupThread(groupId, threadSnapshotSignal(abort.signal)),
+            ? readThreadSnapshot(abort.signal, (signal) => rpc.threads.get({ groupId }, { signal }))
+            : readThreadSnapshot(abort.signal, (signal) => refreshGroupThread(groupId, signal)),
         ),
-      loadHead: () => rpc.threads.head({ groupId }, { signal: threadSnapshotSignal(abort.signal) }),
-      refresh: () => reader.read(refreshGroupThread(groupId, threadSnapshotSignal(abort.signal))),
+      loadHead: () =>
+        readThreadSnapshot(abort.signal, (signal) => rpc.threads.head({ groupId }, { signal })),
+      refresh: () =>
+        reader.read(
+          readThreadSnapshot(abort.signal, (signal) => refreshGroupThread(groupId, signal)),
+        ),
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) => rpc.threads.subscribe({ groupId, cursor }, { signal: abort.signal }),
       applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
-        if (event.type === "thread.cleared") {
+        if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
           clearHistoryWindow();
         }
@@ -2647,10 +2652,7 @@ export function ShellPage() {
     const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
-    const [snap, requestedPage] = await Promise.all([
-      rpc.threads.get(threadTarget),
-      rpc.threads.messages({ ...threadTarget, around: { messageId: target.messageId } }),
-    ]);
+    const snap = await rpc.threads.get(threadTarget);
     // The epoch check drops a jump that raced a conversation clear (or a bot switch): applying
     // the fetched page would pin deleted messages that every later refresh keeps restoring.
     // jumpId drops an older jump that finished after a newer click.
@@ -2663,10 +2665,16 @@ export function ShellPage() {
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
     const messageId = target.attention ? (snap.attentionMessageId ?? null) : target.messageId;
-    const page =
-      messageId && messageId !== target.messageId
-        ? await rpc.threads.messages({ ...threadTarget, around: { messageId } })
-        : requestedPage;
+    const atDispatch = snapshotRef.current;
+    const requestCursor = Math.max(
+      snap.cursor,
+      atDispatch?.threadId === snap.threadId ? atDispatch.cursor : -1,
+    );
+    // The page read must follow its target snapshot, including on a cold or cross-thread jump.
+    const fetchedPage = await rpc.threads.messages({
+      ...threadTarget,
+      around: { messageId: messageId ?? target.messageId },
+    });
     if (
       epoch !== historyEpoch.current ||
       jumpId !== jumpGeneration.current ||
@@ -2682,32 +2690,43 @@ export function ShellPage() {
       else if (target.botId) await refreshThread(target.botId);
       return;
     }
+    const savedGroup = target.groupId ? savedGroupUpdates.current.get(target.groupId) : undefined;
+    const jumpSnapshot =
+      savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
+    const reconciled = reconcileRefreshedThread(current, jumpSnapshot, computerRef.current);
+    const page = protectThreadMessagePage(reconciled.snapshot, fetchedPage, requestCursor);
     const targetInPage =
+      page !== null &&
       messageId !== null &&
       userVisibleMessages(page.messages, { includePeerReceipts: true }).some(
         (message) => message.id === messageId,
       );
-    expandedHistoryThread.current = targetInPage ? page.threadId : null;
-    pinnedAroundRef.current = targetInPage
-      ? {
-          ...threadTarget,
-          messageId: messageId!,
-          threadId: page.threadId,
-          messages: page.messages,
-          olderCursor: page.olderCursor,
-        }
-      : null;
-    if (targetInPage) initiallyScrolledThread.current = page.threadId;
-    const savedGroup = target.groupId ? savedGroupUpdates.current.get(target.groupId) : undefined;
-    const jumpSnapshot =
-      savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
+    const targetInSnapshot =
+      page === null &&
+      messageId !== null &&
+      userVisibleMessages(reconciled.snapshot.messages, { includePeerReceipts: true }).some(
+        (message) => message.id === messageId,
+      );
+    const targetLoaded = targetInPage || targetInSnapshot;
+    expandedHistoryThread.current = targetLoaded ? reconciled.snapshot.threadId : null;
+    pinnedAroundRef.current =
+      targetInPage && page
+        ? {
+            ...threadTarget,
+            messageId: messageId!,
+            threadId: page.threadId,
+            messages: page.messages,
+            olderCursor: page.olderCursor,
+          }
+        : null;
+    if (targetLoaded) initiallyScrolledThread.current = reconciled.snapshot.threadId;
     commitSnapshot({
-      ...jumpSnapshot,
-      messages: targetInPage ? page.messages : snap.messages,
-      olderCursor: targetInPage ? page.olderCursor : snap.olderCursor,
+      ...reconciled.snapshot,
+      messages: targetInPage && page ? page.messages : reconciled.snapshot.messages,
+      olderCursor: targetInPage && page ? page.olderCursor : reconciled.snapshot.olderCursor,
     });
     if (threadTarget.botId) {
-      commitComputer(snap.computer ?? null);
+      commitComputer(reconciled.computer);
       // Don't block parent-scroll on routines metadata; a list failure must not abort the jump.
       void rpc.routines
         .list({ botId: threadTarget.botId })
@@ -2723,7 +2742,7 @@ export function ShellPage() {
       setRoutines([]);
       setRoutinesBotId(null);
     }
-    if (targetInPage) {
+    if (targetLoaded) {
       // The transcript owns the scroll: it retries until the pinned row is
       // mounted and unfollows the tail, so live commits cannot cancel it.
       setScrollRequest({ messageId: messageId!, nonce: jumpId });
@@ -2733,7 +2752,7 @@ export function ShellPage() {
         const element = messageScroll.current;
         if (element) {
           element.scrollTop = element.scrollHeight;
-          initiallyScrolledThread.current = page.threadId;
+          initiallyScrolledThread.current = reconciled.snapshot.threadId;
         }
       });
     }
@@ -2752,6 +2771,7 @@ export function ShellPage() {
     const messageId = searchParams.get("m");
     const routineId = searchParams.get("routine");
     if (inGroup && groupId && messageId) {
+      if (!activeGroup) return;
       void jumpToMessage({ groupId, messageId, attention: searchParams.get("attention") === "1" })
         .catch(() => undefined)
         .finally(() => {
@@ -2796,7 +2816,16 @@ export function ShellPage() {
           setSearchParams(next, { replace: true });
         });
     }
-  }, [active?.id, groupId, inGroup, routines, routinesBotId, searchParams, setSearchParams]);
+  }, [
+    active?.id,
+    activeGroup?.id,
+    groupId,
+    inGroup,
+    routines,
+    routinesBotId,
+    searchParams,
+    setSearchParams,
+  ]);
   const activeSnapshot = inNewChat
     ? null
     : inGroup

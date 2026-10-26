@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 vi.mock("./ai-consent", () => ({ promptAiConsent: vi.fn() }));
 
 import { isServerUnreachable, withLiveStreamingProgress } from "@rakazo/core";
@@ -63,6 +65,7 @@ import {
   registerRejectedSessionDraftCapture,
   restoreRejectedSessionDraft,
 } from "./rejected-session-draft";
+import { savedThreadSnapshot } from "./saved-chats";
 import * as SessionModule from "./session.js";
 import {
   clearSessionToken,
@@ -3589,6 +3592,41 @@ describe("mobile thread subscription", () => {
     vi.mocked(SecureStore.getItemAsync).mockResolvedValue("");
   });
 
+  it("does not deliver a late release chunk after its reader was aborted", async () => {
+    let resolveRead!: (value: ReadableStreamReadResult<Uint8Array>) => void;
+    let markRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      markRead = resolve;
+    });
+    const reader = {
+      read: vi.fn(
+        () =>
+          new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
+            resolveRead = resolve;
+            markRead();
+          }),
+      ),
+      cancel: vi.fn(async () => undefined),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, body: { getReader: () => reader } })),
+    );
+    const abort = new AbortController();
+    const onEvent = vi.fn();
+    const subscription = subscribeThread({ botId: "bot-1" }, 3, onEvent, abort.signal);
+    await readStarted;
+    abort.abort();
+    resolveRead({
+      done: false,
+      value: new TextEncoder().encode(
+        'data: {"json":{"type":"computer.takeover.released","threadId":"thread-1","runId":"run-1","seq":4}}\n\n',
+      ),
+    });
+    await subscription;
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
   it("parses fragmented SSE frames and ignores malformed data and completion markers", async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -4612,3 +4650,522 @@ async function verifiedScopeStorage() {
   await selectSpace("space-b");
   return storage;
 }
+
+describe("mobile released takeover observation", () => {
+  function waiting(): MobileSnapshot {
+    return {
+      ...snapshot(
+        [
+          {
+            ...mobileMessage(
+              "takeover",
+              [{ kind: "computer", state: "Needs you", text: "Continue" }],
+              1,
+            ),
+            runId: "run-1",
+          },
+          {
+            ...mobileMessage("other", [{ kind: "computer", state: "Needs you", text: "Other" }], 2),
+            runId: "run-2",
+          },
+        ],
+        1,
+      ),
+      cursor: 10,
+      groupId: "group-1",
+      run: { id: "run-1", botId: "bot-1", status: "waiting_takeover" },
+      activeRuns: [
+        { id: "run-1", botId: "bot-1", status: "waiting_takeover" },
+        { id: "run-2", botId: "bot-2", status: "running" },
+      ],
+      members: [
+        { botId: "bot-1", name: "One", color: "slate", status: "waiting_takeover" },
+        { botId: "bot-2", name: "Two", color: "slate", status: "running" },
+      ],
+    };
+  }
+
+  it.each(["Done", "Skipped"])("keeps the committed %s card and releases only its Run", (state) => {
+    const initial = waiting();
+    const updated = applyMobileThreadEvent(initial, {
+      type: "thread.message.updated",
+      seq: 11,
+      threadId: "thread-1",
+      runId: "run-1",
+      botId: "bot-1",
+      payload: {
+        messageId: "takeover",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [{ kind: "computer", state, text: "Continue" }],
+      },
+    })!;
+    const released = applyMobileThreadEvent(updated, {
+      type: "computer.takeover.released",
+      seq: 12,
+      threadId: "thread-1",
+      runId: "run-1",
+      botId: "bot-1",
+      payload: { reason: "done", holder: "none" },
+    })!;
+    expect(released.run?.status).toBe("queued");
+    expect(released.activeRuns?.map((run) => run.status)).toEqual(["queued", "running"]);
+    expect(released.activeRuns?.[1]).toBe(initial.activeRuns?.[1]);
+    expect(released.members?.[0]?.status).toBe("queued");
+    expect(released.members?.[1]).toBe(initial.members?.[1]);
+    expect(released.messages[0]).toMatchObject({
+      threadId: "thread-1",
+      seq: 1,
+      runId: "run-1",
+      blocks: [{ kind: "computer", state }],
+    });
+    expect(released.messages[1]?.blocks).toBe(initial.messages[1]?.blocks);
+    expect(released.cursor).toBe(12);
+    expect(released.olderCursor).toBe(1);
+  });
+
+  it.each(["queued", "leased", "running", "cancelled", "failed", "completed"])(
+    "does not revive a %s Run",
+    (status) => {
+      const initial = waiting();
+      const run = { ...initial.run!, status };
+      const next = applyMobileThreadEvent(
+        { ...initial, run, activeRuns: [run] },
+        { type: "computer.takeover.released", seq: 12, runId: "run-1", botId: "bot-1" },
+      )!;
+      expect(next.run).toBe(run);
+      expect(next.activeRuns?.[0]).toBe(run);
+      expect(next.members).toBe(initial.members);
+      expect(next.cursor).toBe(12);
+    },
+  );
+
+  it("preserves the displayed failure and sibling active Runs when another Run resumes", () => {
+    const initial = waiting();
+    const failed = { id: "failed", status: "failed", error: "Retained failure" };
+    const next = applyMobileThreadEvent(
+      { ...initial, run: failed },
+      { type: "computer.takeover.released", seq: 12, runId: "run-1", botId: "bot-1" },
+    )!;
+    expect(next.run).toBe(failed);
+    expect(next.activeRuns?.map((run) => run.status)).toEqual(["queued", "running"]);
+  });
+
+  it.each([undefined, "unknown"])("does not insert a released Run for %s", (runId) => {
+    const initial = waiting();
+    const next = applyMobileThreadEvent(initial, {
+      type: "computer.takeover.released",
+      seq: 12,
+      runId,
+      botId: "bot-1",
+    })!;
+    expect(next.run).toBe(initial.run);
+    expect(next.activeRuns).toBe(initial.activeRuns);
+    expect(next.members).toBe(initial.members);
+    expect(next.cursor).toBe(12);
+  });
+
+  it("rejects older same-thread snapshots while accepting a lower cursor in another thread", () => {
+    const initial = waiting();
+    const old = { ...initial, cursor: 8, run: { ...initial.run!, status: "running" } };
+    expect(mergeMobileSnapshot(initial, old, true)).toBe(initial);
+    const other = { ...old, threadId: "thread-other", cursor: 0 };
+    expect(mergeMobileSnapshot(initial, other, true)).toMatchObject(other);
+    const gate = {
+      fetched: old,
+      onScreen: initial,
+      requestGeneration: 1,
+      currentGeneration: 1,
+      requestEpoch: 1,
+      currentEpoch: 1,
+      targetBotId: "bot-1",
+      activeBotId: "bot-1",
+      targetGroupId: undefined,
+      activeGroupId: undefined,
+    };
+    expect(mobileThreadRefreshResult(gate)).toEqual({ commit: false, snapshot: initial });
+  });
+
+  it("keeps waiting only at the same cursor and accepts a newer release snapshot", () => {
+    const initial = waiting();
+    const incoming = {
+      ...initial,
+      run: { ...initial.run!, status: "queued" },
+      activeRuns: [{ ...initial.activeRuns![0]!, status: "queued" }, initial.activeRuns![1]!],
+    };
+    expect(mergeMobileSnapshot(initial, incoming).run?.status).toBe("waiting_takeover");
+    expect(mergeMobileSnapshot(initial, { ...incoming, cursor: 11 }).run?.status).toBe("queued");
+  });
+
+  it("does not roll back known card or lifecycle payloads while hydrating missing durable history", () => {
+    const initial = waiting();
+    const queued = { ...initial.run!, status: "queued" };
+    const settled: MobileSnapshot = {
+      ...initial,
+      cursor: 12,
+      run: queued,
+      activeRuns: [queued],
+      messages: [
+        {
+          ...initial.messages[0]!,
+          blocks: [{ kind: "computer", state: "Done", text: "Continue" }],
+        },
+      ],
+    };
+    for (const stale of [
+      { type: "computer.takeover.requested", seq: 10, runId: "run-1" },
+      { type: "computer.takeover.released", seq: 11, runId: "run-1" },
+      {
+        type: "thread.message.updated",
+        seq: 10,
+        runId: "run-1",
+        payload: {
+          messageId: "takeover",
+          messageSeq: 1,
+          role: "bot",
+          blocks: [{ kind: "computer", state: "Needs you", text: "Continue" }],
+        },
+      },
+    ])
+      expect(applyMobileThreadEvent(settled, stale)).toBe(settled);
+    const history = applyMobileThreadEvent(settled, {
+      type: "thread.message.created",
+      seq: 7,
+      threadId: "thread-1",
+      payload: {
+        messageId: "historical",
+        messageSeq: 0,
+        role: "bot",
+        blocks: [{ kind: "text", text: "Earlier" }],
+      },
+    })!;
+    expect(history.cursor).toBe(12);
+    expect(history.run).toBe(queued);
+    expect(history.messages.map((item) => item.id)).toEqual(["historical", "takeover"]);
+  });
+
+  it("ignores a release from another thread", () => {
+    const initial = waiting();
+    expect(
+      applyMobileThreadEvent(initial, {
+        type: "computer.takeover.released",
+        seq: 15,
+        threadId: "other-thread",
+        runId: "run-1",
+      }),
+    ).toBe(initial);
+  });
+});
+
+describe("mobile durable card replay version", () => {
+  it("applies a newer historical card payload without moving the thread cursor backwards", () => {
+    const initial = {
+      ...snapshot([mobileMessage("recent", [{ kind: "text", text: "Later" }], 9)], 9),
+      cursor: 20,
+    };
+    const created = {
+      type: "thread.message.created",
+      seq: 7,
+      threadId: "thread-1",
+      runId: "run-1",
+      payload: {
+        messageId: "historical-card",
+        messageSeq: 0,
+        role: "bot",
+        blocks: [{ kind: "computer", state: "Needs you", text: "Continue" }],
+      },
+    };
+    const hydrated = applyMobileThreadEvent(initial, created)!;
+    const updated = applyMobileThreadEvent(hydrated, {
+      ...created,
+      type: "thread.message.updated",
+      seq: 11,
+      payload: {
+        ...created.payload,
+        blocks: [{ kind: "computer", state: "Done", text: "Continue" }],
+      },
+    })!;
+    expect(updated.cursor).toBe(20);
+    expect(updated.messages[0]).toMatchObject({
+      seq: 0,
+      blocks: [{ kind: "computer", state: "Done" }],
+    });
+    expect(applyMobileThreadEvent(updated, created)).toBe(updated);
+  });
+});
+
+describe("mobile screen released-event callback", () => {
+  function screenCallback() {
+    const source = readFileSync(new URL("../app/thread.tsx", import.meta.url), "utf8");
+    const start = source.indexOf(
+      "            (event) => {",
+      source.indexOf("const subscriptionGeneration = ++liveSubscriptionGeneration.current"),
+    );
+    const end = source.indexOf("            abort.signal,", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const callback = source.slice(start, end).trim().replace(/,$/, "");
+    const state = { session: 1, selection: 1 };
+    const abort = new AbortController();
+    const snapRef = {
+      current: {
+        ...snapshot(),
+        cursor: 10,
+        run: { id: "run-1", botId: "bot-1", status: "waiting_takeover" },
+        activeRuns: [{ id: "run-1", botId: "bot-1", status: "waiting_takeover" }],
+      } as MobileSnapshot | null,
+    };
+    const activeBotId = { current: "bot-1" as string | undefined };
+    const liveSubscriptionGeneration = { current: 1 };
+    const commitSnap = vi.fn((next: MobileSnapshot | null) => {
+      snapRef.current = next;
+    });
+    const scope = {
+      abort,
+      sessionGeneration: 1,
+      selectionGeneration: 1,
+      subscriptionGeneration: 1,
+      currentSessionGeneration: () => state.session,
+      currentSpaceSelectionGeneration: () => state.selection,
+      botId: "bot-1",
+      groupId: undefined,
+      activeBotId,
+      activeGroupId: { current: undefined },
+      liveSubscriptionGeneration,
+      snapRef,
+      commitSnap,
+      applyMobileThreadEvent,
+      isRunTerminalEvent: (event: { type: string }) =>
+        event.type.startsWith("run.") && event.type !== "run.waiting_input",
+      expandedHistoryThread: { current: null },
+      pinnedAroundRef: { current: null },
+      jumpScrollTarget: { current: null },
+      jumpAnchor: { current: { release: vi.fn() } },
+      historyEpoch: { current: 1 },
+      readVisibleTarget: { current: null },
+      refreshMentionBots: vi.fn(),
+      markReadIfVisible: vi.fn(),
+      refresh: vi.fn(async () => {}),
+    };
+    const handler = new Function(
+      ...Object.keys(scope),
+      `let cursor = 10; let retryMs = 250; const callback = ${callback}; return callback;`,
+    )(...Object.values(scope)) as (event: Parameters<typeof applyMobileThreadEvent>[1]) => void;
+    return { handler, snapRef, commitSnap, state, abort, activeBotId, liveSubscriptionGeneration };
+  }
+
+  it("routes the screen's real released callback into the thread reducer", () => {
+    const h = screenCallback();
+    h.handler({
+      type: "computer.takeover.released",
+      seq: 11,
+      runId: "run-1",
+      botId: "bot-1",
+      threadId: "thread-1",
+    });
+    expect(h.snapRef.current?.run?.status).toBe("queued");
+    expect(h.snapRef.current?.cursor).toBe(11);
+  });
+
+  it.each(["abort", "reader", "target", "Space", "session"])(
+    "does not apply an old screen callback after %s changes",
+    (change) => {
+      const h = screenCallback();
+      if (change === "abort") h.abort.abort();
+      else if (change === "reader") h.liveSubscriptionGeneration.current += 1;
+      else if (change === "target") h.activeBotId.current = "bot-2";
+      else if (change === "Space") h.state.selection += 1;
+      else h.state.session += 1;
+      h.handler({
+        type: "thread.message.updated",
+        seq: 11,
+        runId: "run-1",
+        botId: "bot-1",
+        threadId: "thread-1",
+        payload: {
+          messageId: "old-card",
+          messageSeq: 1,
+          blocks: [{ kind: "computer", state: "Done", text: "Continue" }],
+        },
+      });
+      expect(h.commitSnap).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("mobile cleared takeover history barrier", () => {
+  const oldCard = () => ({
+    type: "thread.message.created",
+    seq: 7,
+    payload: {
+      messageId: "old-card",
+      messageSeq: 0,
+      role: "bot",
+      blocks: [{ kind: "computer", state: "Needs you", text: "Old" }],
+    },
+  });
+  it("does not hydrate an old unknown card after clear or an authoritative empty snapshot", () => {
+    const cleared = applyMobileThreadEvent(snapshot(), { type: "thread.cleared", seq: 20 })!;
+    expect(applyMobileThreadEvent(cleared, oldCard())).toBe(cleared);
+    const empty = { ...snapshot(), cursor: 30 };
+    expect(applyMobileThreadEvent(empty, { ...oldCard(), seq: 24 })).toBe(empty);
+  });
+  it("keeps its clear barrier across fresh pages without dropping post-clear history", () => {
+    const cleared = applyMobileThreadEvent(snapshot(), { type: "thread.cleared", seq: 20 })!;
+    const page = { ...snapshot([mobileMessage("recent", [], 9)], 9), cursor: 30 };
+    const current = mergeMobileSnapshot(cleared, page);
+    expect(applyMobileThreadEvent(current, oldCard())).toBe(current);
+    const hydrated = applyMobileThreadEvent(current, {
+      ...oldCard(),
+      seq: 24,
+      payload: { ...oldCard().payload, messageId: "new-card" },
+    })!;
+    expect(hydrated.cursor).toBe(30);
+    expect(hydrated.messages.map((item) => item.id)).toEqual(["new-card", "recent"]);
+  });
+});
+
+describe("mobile takeover message snapshot authority", () => {
+  const card = (state: string) =>
+    mobileMessage("card", [{ kind: "computer", state, text: "Continue" }], 1);
+  const update = (seq: number, state: string) => ({
+    type: "thread.message.updated",
+    seq,
+    payload: { messageId: "card", messageSeq: 1, role: "bot", blocks: card(state).blocks },
+  });
+  it("retains a message's original snapshot version across unrelated progress", () => {
+    const base = { ...snapshot([card("Needs you")]), cursor: 10 };
+    const progressed = applyMobileThreadEvent(base, {
+      type: "thread.progress",
+      seq: 20,
+      runId: "run-1",
+      payload: { text: "Working" },
+    })!;
+    const settled = applyMobileThreadEvent(progressed, update(11, "Done"))!;
+    expect(settled.messages.find((item) => item.id === "card")?.blocks).toEqual(
+      card("Done").blocks,
+    );
+    expect(settled.cursor).toBe(20);
+  });
+  it("distinguishes fresh snapshot messages from retained history", () => {
+    const old = { ...snapshot([card("Needs you")], 1), cursor: 10 };
+    const history = mergeMobileSnapshot(
+      old,
+      { ...snapshot([mobileMessage("recent", [], 9)], 9), cursor: 30 },
+      true,
+    );
+    expect(
+      applyMobileThreadEvent(history, update(11, "Done"))?.messages.find(
+        (item) => item.id === "card",
+      )?.blocks,
+    ).toEqual(card("Done").blocks);
+    const fresh = mergeMobileSnapshot(history, { ...snapshot([card("Done")]), cursor: 30 });
+    expect(applyMobileThreadEvent(fresh, update(25, "Needs you"))).toBe(fresh);
+  });
+  it("rejects a late page payload without blocking a page requested after the observed update", () => {
+    const base = { ...snapshot([card("Needs you")], 1), cursor: 10 };
+    const current = applyMobileThreadEvent(base, update(11, "Done"))!;
+    const page = {
+      threadId: "thread-1",
+      messages: [mobileMessage("older", [], 0), card("Skipped")],
+      olderCursor: null,
+    };
+    const delayed = prependMobileMessagePage(current, page, 10)!;
+    expect(delayed.messages.find((item) => item.id === "card")?.blocks).toEqual(
+      card("Done").blocks,
+    );
+    expect(delayed.messages.map((item) => item.id)).toEqual(["older", "card"]);
+    const newer = prependMobileMessagePage(current, page, 12)!;
+    expect(newer.messages.find((item) => item.id === "card")?.blocks).toEqual(
+      card("Skipped").blocks,
+    );
+  });
+});
+
+it("replays a covered mobile clear without replacing newer execution state", () => {
+  const run = { id: "current-run", botId: "bot-2", status: "running" };
+  const base = {
+    ...snapshot([mobileMessage("recent", [{ kind: "text", text: "After clear" }], 9)], 9),
+    cursor: 30,
+    run,
+    activeRuns: [run],
+  };
+  const older = {
+    type: "thread.message.created",
+    seq: 7,
+    payload: {
+      messageId: "old-card",
+      messageSeq: 0,
+      role: "bot",
+      blocks: [{ kind: "computer", state: "Needs you", text: "Before clear" }],
+    },
+  };
+  const replayed = applyMobileThreadEvent(base, older)!;
+  const cleared = applyMobileThreadEvent(replayed, { type: "thread.cleared", seq: 20 })!;
+  expect(cleared.messages.map((item) => item.id)).toEqual(["recent"]);
+  expect(cleared.run).toBe(run);
+  expect(cleared.activeRuns).toBe(base.activeRuns);
+  expect(cleared.cursor).toBe(30);
+  expect(cleared.olderCursor).toBe(9);
+  expect(applyMobileThreadEvent(cleared, older)).toBe(cleared);
+});
+
+it("keeps mobile card and clear observations when saving offline thread history", () => {
+  const initial = { ...snapshot([mobileMessage("recent", [], 9)], 9), cursor: 20 };
+  const created = {
+    type: "thread.message.created",
+    seq: 7,
+    payload: {
+      messageId: "old-card",
+      messageSeq: 0,
+      role: "bot",
+      blocks: [{ kind: "computer", state: "Needs you", text: "Old" }],
+    },
+  };
+  const pending = applyMobileThreadEvent(initial, created)!;
+  const settled = applyMobileThreadEvent(pending, {
+    ...created,
+    type: "thread.message.updated",
+    seq: 11,
+    payload: { ...created.payload, blocks: [{ kind: "computer", state: "Done", text: "Old" }] },
+  })!;
+  const saved = JSON.parse(JSON.stringify(savedThreadSnapshot(settled))) as MobileSnapshot;
+  expect(applyMobileThreadEvent(saved, created)).toBe(saved);
+  const cleared = applyMobileThreadEvent(settled, { type: "thread.cleared", seq: 25 })!;
+  const savedClear = JSON.parse(JSON.stringify(savedThreadSnapshot(cleared))) as MobileSnapshot;
+  expect(applyMobileThreadEvent(savedClear, created)).toBe(savedClear);
+});
+
+it("accepts complete mobile history after clear without retaining an obsolete old card", () => {
+  const previous = {
+    ...snapshot(
+      [
+        mobileMessage(
+          "old-card",
+          [{ kind: "computer", state: "Needs you", text: "Before clear" }],
+          0,
+        ),
+      ],
+      1,
+    ),
+    cursor: 10,
+  };
+  const current = mergeMobileSnapshot(
+    previous,
+    { ...snapshot([mobileMessage("after-clear", [], 5)]), cursor: 30 },
+    true,
+  );
+  expect(current.messages.map((item) => item.id)).toEqual(["after-clear"]);
+  expect(
+    applyMobileThreadEvent(current, {
+      type: "thread.message.created",
+      seq: 7,
+      payload: {
+        messageId: "old-card",
+        messageSeq: 0,
+        role: "bot",
+        blocks: previous.messages[0]!.blocks,
+      },
+    }),
+  ).toBe(current);
+});

@@ -11,6 +11,7 @@ import type {
   ModelCatalogEntry,
   ModelCredential,
   ReplyPreview,
+  RunStatus,
   Space,
   SpaceNavigation,
 } from "@rakazo/contracts";
@@ -26,12 +27,14 @@ import {
   aiDataUsesForProcedure,
   cancelResponseBody,
   ensureAiDataConsent,
+  isActive,
   isRunTerminalEvent,
   isServerUnreachable,
   isUnreachableStatus,
   mergeThreadHistory,
   prependThreadHistoryPage,
   progressMessageId,
+  protectObservedThreadPage,
   readBoundedJsonResponse,
   reduceLiveMessageBlocks,
   replyMetadata,
@@ -1220,6 +1223,8 @@ export type MobileMessage = {
   id: string;
   threadId?: string;
   seq?: number;
+  /** Last durable event applied, independent of the message's history position. */
+  observedEventSeq?: number;
   runId?: string;
   role: "user" | "bot" | "system";
   /** Set when the message was sent from a live voice call; groups one call's transcript. */
@@ -1255,6 +1260,7 @@ export type MobileSnapshot = {
   groupName?: string;
   threadId: string;
   cursor?: number;
+  observedClearSeq?: number;
   messages: MobileMessage[];
   olderCursor: number | null;
   run: { id: string; botId?: string; status: string; error?: string | null } | null;
@@ -1300,26 +1306,103 @@ export function mobileThreadRefreshResult(input: {
   activeBotId: string | undefined;
   activeGroupId: string | undefined;
 }): { commit: boolean; snapshot: MobileSnapshot | null } {
+  const stale =
+    input.onScreen?.threadId === input.fetched.threadId &&
+    (input.onScreen.cursor ?? -1) > (input.fetched.cursor ?? -1);
   const commit =
-    input.requestGeneration === input.currentGeneration && shouldApplyMobileThreadRefresh(input);
+    input.requestGeneration === input.currentGeneration &&
+    shouldApplyMobileThreadRefresh(input) &&
+    !stale;
   return { commit, snapshot: commit ? input.fetched : input.onScreen };
 }
 
 export type MobileMessagePage = ThreadHistory<MobileMessage>;
+
+function observeMobileMessages(snapshot: MobileSnapshot, authoritative = false): MobileSnapshot {
+  if (snapshot.cursor === undefined) return snapshot;
+  let changed = false;
+  const messages = snapshot.messages.map((message) => {
+    if (
+      (!authoritative && message.observedEventSeq !== undefined) ||
+      message.observedEventSeq === snapshot.cursor
+    )
+      return message;
+    changed = true;
+    return { ...message, observedEventSeq: snapshot.cursor };
+  });
+  return changed ? { ...snapshot, messages } : snapshot;
+}
+
+function mobileClearSeq(snapshot: MobileSnapshot): number | undefined {
+  return snapshot.observedClearSeq ?? (snapshot.olderCursor === null ? snapshot.cursor : undefined);
+}
+
+function observeMobileClear(snapshot: MobileSnapshot, seq: number | undefined): MobileSnapshot {
+  return seq === undefined || snapshot.observedClearSeq === seq
+    ? snapshot
+    : { ...snapshot, observedClearSeq: seq };
+}
 
 export function mergeMobileSnapshot(
   prev: MobileSnapshot | null,
   next: MobileSnapshot,
   preserveLoadedHistory = false,
 ): MobileSnapshot {
-  return mergeThreadHistory(prev, next, preserveLoadedHistory);
+  const sameThread = prev?.threadId === next.threadId;
+  if (sameThread && (prev.cursor ?? -1) > (next.cursor ?? -1)) return prev;
+  let merged = mergeThreadHistory(
+    prev ? observeMobileMessages(prev) : null,
+    observeMobileMessages(next, true),
+    preserveLoadedHistory && next.olderCursor !== null,
+  );
+  if (
+    sameThread &&
+    prev.cursor === merged.cursor &&
+    prev.run?.status === "waiting_takeover" &&
+    merged.run?.id === prev.run.id &&
+    merged.run.status !== "waiting_takeover" &&
+    isActive(merged.run.status as RunStatus)
+  ) {
+    const runId = merged.run.id;
+    merged = {
+      ...merged,
+      run: { ...merged.run, status: "waiting_takeover" },
+      activeRuns: merged.activeRuns?.map((run) =>
+        run.id === runId ? { ...run, status: "waiting_takeover" } : run,
+      ),
+    };
+    if (merged.computer?.busyBotName)
+      merged = { ...merged, computer: { ...merged.computer, busyBotName: null } };
+  }
+  const clearSeq = Math.max(
+    sameThread ? (mobileClearSeq(prev) ?? -1) : -1,
+    mobileClearSeq(next) ?? -1,
+  );
+  return observeMobileClear(merged, clearSeq < 0 ? undefined : clearSeq);
+}
+
+export function protectMobileMessagePage<TPage extends MobileMessagePage>(
+  prev: MobileSnapshot | null,
+  page: TPage,
+  requestCursor = prev?.cursor ?? -1,
+): TPage | null {
+  return protectObservedThreadPage(
+    prev ? observeMobileMessages(prev) : null,
+    page,
+    requestCursor,
+    prev ? mobileClearSeq(prev) : undefined,
+  );
 }
 
 export function prependMobileMessagePage(
   prev: MobileSnapshot | null,
   page: MobileMessagePage,
+  requestCursor = prev?.cursor ?? -1,
 ): MobileSnapshot | null {
-  return prependThreadHistoryPage(prev, page);
+  const protectedPage = protectMobileMessagePage(prev, page, requestCursor);
+  return protectedPage && prev
+    ? prependThreadHistoryPage(observeMobileMessages(prev), protectedPage)
+    : prev;
 }
 
 const MESSAGING_PROVIDER_LABELS: Record<string, string> = {
@@ -1390,6 +1473,7 @@ type ThreadEvent = {
   id?: string;
   createdAt?: string;
   botId?: string;
+  threadId?: string;
   type: string;
   seq?: number;
   runId?: string;
@@ -1405,10 +1489,13 @@ export async function subscribeThread(
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,
 ) {
+  const selectionGeneration = currentSpaceSelectionGeneration();
   const context = await captureApiRequestContext();
   const current = () =>
     context.apiBase === currentApiBase() &&
-    context.sessionGeneration === currentSessionGeneration();
+    context.sessionGeneration === currentSessionGeneration() &&
+    selectionGeneration === currentSpaceSelectionGeneration();
+  if (signal.aborted || !current()) return;
   const res = await fetch(`${context.apiBase}/rpc/threads/subscribe`, {
     method: "POST",
     headers: {
@@ -1440,7 +1527,7 @@ export async function subscribeThread(
         timer = setTimeout(() => resolve("idle"), IDLE_TIMEOUT_MS);
       }),
     ]).finally(() => clearTimeout(timer));
-    if (read === "idle") {
+    if (read === "idle" || signal.aborted || !current()) {
       void reader.cancel().catch(() => undefined);
       return;
     }
@@ -1450,6 +1537,7 @@ export async function subscribeThread(
     const chunks = buffer.split("\n\n");
     buffer = chunks.pop() ?? "";
     for (const chunk of chunks) {
+      if (signal.aborted || !current()) return;
       const data = chunk
         .split("\n")
         .filter((line) => line.startsWith("data:"))
@@ -1471,16 +1559,57 @@ export function applyMobileThreadEvent(
   prev: MobileSnapshot | null,
   event: ThreadEvent,
 ): MobileSnapshot | null {
-  if (!prev || event.type === "heartbeat") return prev;
+  if (!prev || event.type === "heartbeat" || (event.threadId && event.threadId !== prev.threadId))
+    return prev;
+  const original = prev;
+  const clearSeq = mobileClearSeq(prev);
+  if (
+    event.type === "thread.cleared" &&
+    event.seq !== undefined &&
+    event.seq <= (prev.cursor ?? -1)
+  ) {
+    if (event.seq <= (clearSeq ?? -1)) return prev;
+    const observed = observeMobileMessages(prev);
+    return observeMobileClear(
+      {
+        ...observed,
+        messages: observed.messages.filter(
+          (message) => (message.observedEventSeq ?? original.cursor ?? -1) > event.seq!,
+        ),
+      },
+      event.seq,
+    );
+  }
+  const messageEvent =
+    event.type === "thread.message.created" || event.type === "thread.message.updated";
+  const known = messageEvent
+    ? prev.messages.find(
+        (message) =>
+          message.id === String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`),
+      )
+    : undefined;
+  if (
+    typeof event.seq === "number" &&
+    (messageEvent
+      ? (clearSeq !== undefined && event.seq <= clearSeq) ||
+        (known && event.seq <= (known.observedEventSeq ?? prev.cursor ?? -1))
+      : event.seq <= (prev.cursor ?? -1))
+  )
+    return prev;
+  const cursor = event.seq === undefined ? prev.cursor : Math.max(prev.cursor ?? -1, event.seq);
+  prev = observeMobileMessages(observeMobileClear(prev, clearSeq));
   if (event.type === "thread.cleared") {
-    return {
-      ...prev,
-      cursor: event.seq,
-      messages: [],
-      olderCursor: null,
-      run: null,
-      activeRuns: [],
-    };
+    return observeMobileClear(
+      {
+        ...prev,
+        cursor,
+        messages: [],
+        olderCursor: null,
+        run: null,
+        activeRuns: [],
+      },
+      event.seq ?? cursor,
+    );
   }
   if (event.type === "run.waiting_input" || event.type === "computer.takeover.requested") {
     const status = event.type === "run.waiting_input" ? "waiting_input" : "waiting_takeover";
@@ -1507,7 +1636,6 @@ export function applyMobileThreadEvent(
         ? { ...prev.computer, busyBotName: null }
         : prev.computer;
     const computerChanged = computer !== prev.computer;
-    const cursor = event.seq ?? prev.cursor;
     if (!runChanged && !activeRunChanged && !progressCleared && !needsInsert && !computerChanged) {
       return cursor === prev.cursor ? prev : { ...prev, cursor };
     }
@@ -1539,6 +1667,32 @@ export function applyMobileThreadEvent(
       : prev.activeRuns;
     return { ...prev, cursor, run, activeRuns, messages, computer };
   }
+  if (event.type === "computer.takeover.released") {
+    const runId = event.runId;
+    const settle = <T extends { id: string; status: string }>(candidate: T): T =>
+      runId && candidate.id === runId && candidate.status === "waiting_takeover"
+        ? { ...candidate, status: "queued" }
+        : candidate;
+    const run = prev.run ? settle(prev.run) : prev.run;
+    const activeChanged = Boolean(
+      runId &&
+        prev.activeRuns?.some(
+          (candidate) => candidate.id === runId && candidate.status === "waiting_takeover",
+        ),
+    );
+    const activeRuns = activeChanged ? prev.activeRuns?.map(settle) : prev.activeRuns;
+    const releasedWaiting = run !== prev.run || activeChanged;
+    const members =
+      releasedWaiting &&
+      prev.members?.some(
+        (member) => member.botId === event.botId && member.status === "waiting_takeover",
+      )
+        ? prev.members.map((member) =>
+            member.botId === event.botId ? { ...member, status: "queued" } : member,
+          )
+        : prev.members;
+    return { ...prev, cursor, run, activeRuns, members };
+  }
   if (isRunTerminalEvent(event)) {
     const activeRuns = prev.activeRuns?.filter((candidate) => candidate.id !== event.runId);
     const diagnostic = runFailureError(event, { preserveDetails: true });
@@ -1549,7 +1703,7 @@ export function applyMobileThreadEvent(
       primaryEnded ?? prev.activeRuns?.find((candidate) => candidate.id === event.runId) ?? null;
     return {
       ...prev,
-      cursor: event.seq ?? prev.cursor,
+      cursor,
       messages: prev.messages.filter((message) => message.id !== progressMessageId(event)),
       // A failed run stays in run so the thread can say why it stopped (see reduceThreadSnapshot).
       run:
@@ -1576,7 +1730,7 @@ export function applyMobileThreadEvent(
     };
     return {
       ...prev,
-      cursor: event.seq ?? prev.cursor,
+      cursor,
       messages: [...remaining, streaming],
     };
   }
@@ -1595,12 +1749,12 @@ export function applyMobileThreadEvent(
     };
     return {
       ...prev,
-      cursor: event.seq ?? prev.cursor,
+      cursor,
       messages: [...remaining, streaming],
     };
   }
   if (event.type === "agent.tool.completed") {
-    return { ...prev, cursor: event.seq ?? prev.cursor };
+    return { ...prev, cursor };
   }
   if (event.type === "thread.subagent") {
     const agentId = String(event.payload?.agentId ?? event.id ?? "live");
@@ -1624,14 +1778,14 @@ export function applyMobileThreadEvent(
     };
     return {
       ...prev,
-      cursor: event.seq ?? prev.cursor,
+      cursor,
       messages: [...prev.messages.filter((message) => message.id !== streaming.id), streaming],
     };
   }
   if (event.type === "thread.cloud_agent") {
     return {
       ...prev,
-      cursor: event.seq ?? prev.cursor,
+      cursor,
       messages: updateCloudAgentMessages(prev.messages, event.payload ?? {}),
     };
   }
@@ -1641,8 +1795,11 @@ export function applyMobileThreadEvent(
     const known = prev.messages.find((message) => message.id === id);
     const next: MobileMessage = {
       id,
+      threadId: event.threadId ?? known?.threadId ?? prev.threadId,
+      seq: typeof event.payload?.messageSeq === "number" ? event.payload.messageSeq : known?.seq,
+      observedEventSeq: event.seq ?? known?.observedEventSeq,
       createdAt: known?.createdAt ?? event.createdAt,
-      runId: event.runId ? String(event.runId) : undefined,
+      runId: event.runId ?? known?.runId,
       role: (event.payload?.role as MobileMessage["role"]) ?? "bot",
       // An update can leave the call id out — the `end_call` marker does — so keep the one
       // the message already carries instead of dropping it out of its call.
@@ -1651,24 +1808,34 @@ export function applyMobileThreadEvent(
       botId: event.botId ?? (event.payload?.botId ? String(event.payload.botId) : undefined),
       ...replyMetadata(event.payload ?? {}, known),
     };
-    return {
-      ...prev,
-      cursor: event.seq ?? prev.cursor,
-      messages: upsertMessageById(
-        remaining.filter(
-          (message) =>
-            !(
-              message.id.startsWith("subagent:") &&
-              next.blocks.some(
-                (block) => block.kind === "subagent" && message.id === `subagent:${block.agentId}`,
-              )
-            ),
-        ),
-        next,
+    const messages = upsertMessageById(
+      remaining.filter(
+        (message) =>
+          !(
+            message.id.startsWith("subagent:") &&
+            next.blocks.some(
+              (block) => block.kind === "subagent" && message.id === `subagent:${block.agentId}`,
+            )
+          ),
       ),
-    };
+      next,
+    );
+    if (!known && typeof next.seq === "number") {
+      const before = messages.findIndex(
+        (message) =>
+          typeof message.seq === "number" &&
+          message.seq > next.seq! &&
+          !message.id.startsWith("progress:") &&
+          !message.id.startsWith("subagent:"),
+      );
+      if (before >= 0) {
+        messages.pop();
+        messages.splice(before, 0, next);
+      }
+    }
+    return { ...prev, cursor, messages };
   }
-  return prev;
+  return original;
 }
 
 export {
