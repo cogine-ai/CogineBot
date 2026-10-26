@@ -130,7 +130,8 @@ describe("shared Linux desktop lifecycle", () => {
     expect(f.run(managedDesktopCommand("a", "run:2", env, "next-view")).stdout).toContain(
       "RAKAZO_DESKTOP=0:next-view",
     );
-    expect(readFileSync(slot, "utf8").split("\n")[4]).toBe("active");
+    expect(readFileSync(slot, "utf8").split("\n")[4]).toBe("idle");
+    expect(readFileSync(slot, "utf8").split("\n")[5]).toBe(retained[5]);
   });
 
   it.each([65, 128])("keeps an opaque %s-character control receipt through recovery", (length) => {

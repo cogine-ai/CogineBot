@@ -288,6 +288,7 @@ export function oldestIdleScreen(assigned: Map<string, ScreenAssignment>, limit:
     .filter(
       ([, slot]) =>
         !slot.releasing &&
+        !slot.working &&
         !slot.controlled &&
         !slot.controlToken &&
         slot.idleAt !== undefined &&
@@ -308,6 +309,7 @@ export interface ScreenAssignment {
   controlled?: boolean;
   controlToken?: string;
   controlVersion?: number;
+  working?: boolean;
 }
 
 /** Forget screen assignments and their boot marker together on every cleanup path. */

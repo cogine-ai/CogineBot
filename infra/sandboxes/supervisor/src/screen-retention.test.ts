@@ -74,6 +74,14 @@ async function fixture() {
   let boot = "boot-1";
   const currentTokens = new Map<string, string>();
   let fail: (command: string) => boolean = () => false;
+  let workGate:
+    | {
+        matches: (command: string) => boolean;
+        enter: () => void;
+        wait: Promise<void>;
+        entered: boolean;
+      }
+    | undefined;
   const container = {
     inspect: vi.fn(async () => ({
       Config: {
@@ -86,8 +94,17 @@ async function fixture() {
     exec: vi.fn(async (options: { Cmd: string[] }) => {
       const command = options.Cmd[2] ?? options.Cmd.join(" ");
       commands.push(command);
+      if (workGate && !workGate.entered && workGate.matches(options.Cmd.join(" "))) {
+        workGate.entered = true;
+        workGate.enter();
+        await workGate.wait;
+      }
       const failed = fail(command);
-      let stdout = "";
+      let stdout = options.Cmd[0]?.endsWith("rakazo-page-browser")
+        ? "{}"
+        : command.includes("GEOM")
+          ? "GEOM 1 1\nIMAGE AQID\n"
+          : "";
       if (!failed) {
         const display = command.match(/control-token-(\d+)/)?.[1];
         const grant = command.match(/printf %s '([^']+)' >\/tmp\/rakazo\/control-token-/)?.[1];
@@ -109,6 +126,53 @@ async function fixture() {
     }),
   };
   mocks.getContainer.mockReturnValue(container);
+  const work = (
+    kind: "actions" | "input" | "observe" | "browser",
+    lease: string | undefined,
+    screen = "a",
+    signal?: AbortSignal,
+  ) =>
+    supervisorApp.request(`/computers/computer/${kind}`, {
+      method: "POST",
+      signal,
+      headers: {
+        authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+        "content-type": "application/json",
+        "x-rakazo-bot-id": "owner",
+        "x-rakazo-space-id": "space",
+        "x-rakazo-screen-id": screen,
+        ...(lease ? { "x-rakazo-screen-lease-id": lease } : {}),
+      },
+      body: JSON.stringify(
+        kind === "actions"
+          ? { actions: [{ kind: "key", key: "a" }], observe: false }
+          : kind === "input"
+            ? { input: { kind: "key", key: "a" } }
+            : kind === "browser"
+              ? { command: "snapshot" }
+              : {},
+      ),
+    });
+  const hold = (kind: "actions" | "input" | "observe" | "browser") => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    workGate = {
+      matches: (command) =>
+        command.includes(
+          kind === "browser" ? "rakazo-page-browser" : kind === "observe" ? "GEOM" : "xdotool",
+        ),
+      enter,
+      wait,
+      entered: false,
+    };
+    return { entered, release };
+  };
   const request = (screen: string, lease: string, body?: object, cancel = false) =>
     supervisorApp.request(`/computers/computer/screen${body ? "-mode" : ""}`, {
       method: body ? "POST" : "DELETE",
@@ -130,6 +194,8 @@ async function fixture() {
   const revoke = (token: string, lease = "run-a:1") =>
     request("a", lease, { interactive: false, controlToken: token });
   return {
+    work,
+    hold,
     commands,
     container,
     watch,
@@ -356,6 +422,127 @@ describe("screen retention through supervisor routes", () => {
       const start = f.commands.length;
       await f.watch();
       expect(grants(f.commands.slice(start)).join("\n")).toContain(replacement);
+    },
+  );
+});
+
+describe("finite screen work and retained admission", () => {
+  it("does not start queued work after its request was aborted", async () => {
+    const f = await fixture();
+    await f.watch();
+    await f.release();
+    const gate = f.hold("actions");
+    const pending = f.work("actions", "run-a:1");
+    await gate.entered;
+    const controller = new AbortController();
+    const queued = f.work("input", "run-a:1", "a", controller.signal);
+    controller.abort();
+    const start = f.commands.length;
+    gate.release();
+    expect((await pending).status).toBe(200);
+    expect((await queued).status).toBe(500);
+    expect(f.commands.slice(start)).toEqual([]);
+  });
+
+  it("waits for finite work before changing control on the same screen", async () => {
+    const f = await fixture();
+    await f.watch();
+    await f.release();
+    await f.watch("b", "run-b:2");
+    const gate = f.hold("input");
+    const pending = f.work("input", undefined);
+    await gate.entered;
+    const start = f.commands.length;
+    const granting = f.grant("control-a");
+    try {
+      expect((await f.watch("c", "run-c:3")).status).toBe(400);
+      expect(grants(f.commands.slice(start))).toEqual([]);
+    } finally {
+      gate.release();
+    }
+    expect((await pending).status).toBe(200);
+    expect((await granting).status).toBe(200);
+    expect(f.token()).toBe("control-a");
+    expect((await f.watch("c", "run-c:3")).status).toBe(400);
+  });
+
+  it.each(["actions", "input", "observe", "browser"] as const)(
+    "pins %s only while the request is using its display",
+    async (kind) => {
+      const f = await fixture();
+      await f.watch();
+      await f.release();
+      await f.watch("b", "run-b:2");
+      const gate = f.hold(kind);
+      const pending = f.work(kind, "run-a:1");
+      await gate.entered;
+      try {
+        expect((await f.watch("c", "run-c:3")).status).toBe(400);
+      } finally {
+        gate.release();
+      }
+      expect((await pending).status).toBe(200);
+      expect((await f.watch("c", "run-c:3")).status).toBe(200);
+    },
+  );
+
+  it.each(["actions", "input"] as const)(
+    "protects human %s with no execution lease and leaves peer screens concurrent",
+    async (kind) => {
+      const f = await fixture();
+      await f.watch();
+      await f.release();
+      await f.watch("b", "run-b:2");
+      const gate = f.hold(kind);
+      const pending = f.work(kind, undefined);
+      await gate.entered;
+      try {
+        expect((await f.work("input", "run-b:2", "b")).status).toBe(200);
+        expect((await f.watch("c", "run-c:3")).status).toBe(400);
+      } finally {
+        gate.release();
+      }
+      expect((await pending).status).toBe(200);
+      expect((await f.watch("c", "run-c:3")).status).toBe(200);
+    },
+  );
+
+  it("releases the pin on errors and does not permanently activate repeated passive watches", async () => {
+    const f = await fixture();
+    await f.watch();
+    await f.release();
+    await f.watch();
+    await f.watch();
+    await f.watch("b", "run-b:2");
+    f.fail((command) => command.includes("xdotool"));
+    expect((await f.work("input", undefined)).status).toBe(500);
+    f.fail(() => false);
+    expect((await f.watch("c", "run-c:3")).status).toBe(200);
+  });
+
+  it.each([false, true])(
+    "finishes old work before release (cancel=%s) can recycle its display",
+    async (cancel) => {
+      const f = await fixture();
+      await f.watch();
+      await f.release();
+      await f.watch("b", "run-b:2");
+      const gate = f.hold("actions");
+      const pending = f.work("actions", "run-a:1");
+      await gate.entered;
+      const start = f.commands.length;
+      const releasing = f.release("a", "run-a:1", cancel);
+      try {
+        expect((await f.watch("c", "run-c:3")).status).toBe(400);
+        expect(f.commands.slice(start).some((command) => command.includes("Browser.close"))).toBe(
+          false,
+        );
+      } finally {
+        gate.release();
+      }
+      expect((await pending).status).toBe(200);
+      expect((await releasing).status).toBe(200);
+      expect((await f.watch("c", "run-c:3")).status).toBe(200);
     },
   );
 });

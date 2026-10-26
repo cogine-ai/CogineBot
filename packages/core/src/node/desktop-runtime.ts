@@ -781,6 +781,29 @@ function acceptLeaseCommand(leaseId?: string, release = false) {
   ];
 }
 
+/** Run one finite operation only while its observed allocation still owns the display. */
+export function desktopWorkCommand(
+  screenId: string,
+  leaseId: string | undefined,
+  env: DesktopEnvironment,
+  index: number,
+  viewToken: string,
+  command: string,
+) {
+  screenPorts(index, env);
+  if (!/^[A-Za-z0-9_-]+$/.test(viewToken)) throw new Error("invalid desktop view token");
+  return [
+    ...registryLockCommand(screenId),
+    '[ -f "$slot" ] || exit 75',
+    `[ "$index" = ${shellQuote(String(index))} ] && [ "$view_token" = ${shellQuote(viewToken)} ] || exit 75`,
+    'case "$state" in active|idle) ;; *) exit 75 ;; esac',
+    ...(leaseId === undefined ? [] : [`[ "$current" = ${shellQuote(leaseId)} ] || exit 75`]),
+    UNLOCK_REGISTRY,
+    // The parent retains the lifecycle lock; background GUI children must not inherit it.
+    `bash -eu -c ${shellQuote(command)} desktop-work 8>&- 9>&-`,
+  ].join("\n");
+}
+
 /** Allocate a live slot while keeping the durable profile keyed by bot identity. */
 export function managedDesktopCommand(
   screenId: string,
@@ -793,6 +816,8 @@ export function managedDesktopCommand(
     ...acceptLeaseCommand(leaseId),
     'case "$state" in active|idle) ;; *) exit 75 ;; esac',
     'if [ -n "$control_token" ]; then [[ "$control_token" =~ ^[A-Za-z0-9_-]{1,128}$ ]] && [[ "$control_version" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || exit 75; fi',
+    "retain_idle=0; retained_idle_at=$idle_at",
+    'if [ "$state" = idle ] && [ -z "$control_token" ] && [ -z "$revoking_token" ]; then retain_idle=1; fi',
     'if [ -z "$index" ]; then',
     `  allocation=$(python3 -c ${shellQuote(`import pathlib, re, sys
 used = set()
@@ -864,6 +889,10 @@ else:
     `  bash -eu -c ${shellQuote(restoreControlCommand(env))} desktop "$index" "$restore_token" || { ${reservedAccessFailureCommand(screenId, env)}; }`,
     `  ${LOCK_REGISTRY}`,
     '  control_token=$restore_token; revoking_token=""; state=active; write_slot',
+    "fi",
+    'if [ "$retain_idle" = 1 ] && [ -z "$restore_token" ]; then',
+    `  ${LOCK_REGISTRY}`,
+    "  state=idle; idle_at=$retained_idle_at; write_slot",
     "fi",
     'printf "RAKAZO_DESKTOP=%s:%s\\n" "$index" "$view_token"',
   ].join("\n");

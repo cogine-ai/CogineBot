@@ -417,6 +417,7 @@ describe.skipIf(process.platform !== "linux")("generated desktop lifecycle proce
         '  case "$*" in *sockets/control-*) return 1 ;; esac',
         '  command pkill "$@"',
         "}",
+        "export -f pkill",
       ].join("\n"),
     );
     expect(failed.status).not.toBe(0);
@@ -450,6 +451,7 @@ describe.skipIf(process.platform !== "linux")("generated desktop lifecycle proce
         `  while [ ! -f ${shellQuote(proceed)} ]; do sleep 0.02; done`,
         '  command pkill "$@"',
         "}",
+        "export -f pkill",
       ].join("\n"),
     );
     await vi.waitFor(() => expect(existsSync(held)).toBe(true));

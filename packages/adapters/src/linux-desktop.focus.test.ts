@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AdapterContext, ComputerAction, ComputerRef } from "@rakazo/adapter-kit";
-import { browserProfilePathForScreen } from "@rakazo/core/node/desktop-runtime";
+import { browserProfilePathForScreen, shellQuote } from "@rakazo/core/node/desktop-runtime";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { LinuxDesktop } from "./linux-desktop.js";
 
@@ -87,18 +87,28 @@ async function focusCommand(action: ComputerAction) {
 }
 
 function runFocus(command: string) {
-  return spawnSync("bash", ["-c", command], {
-    cwd: root,
-    env: {
-      ...process.env,
-      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
-      FOCUS_WINDOWS: windows,
-      FOCUS_ACTIVATED: activated,
-      FOCUS_RECORDED: recorded,
+  const key = command.match(/slot="\$dir\/([a-f0-9]+)\.slot"/)?.[1];
+  if (!key) throw new Error("missing fixture allocation key");
+  const runtime = path.join(root, "runtime");
+  const registry = path.join(runtime, "desktop-assignments");
+  mkdirSync(registry, { recursive: true });
+  writeFileSync(path.join(registry, `${key}.slot`), "0\n\ntoken\n\nactive\n\n\n\n");
+  return spawnSync(
+    "bash",
+    ["-c", `flock() { :; }\n${command.replaceAll("/tmp/rakazo", runtime)}`],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+        FOCUS_WINDOWS: windows,
+        FOCUS_ACTIVATED: activated,
+        FOCUS_RECORDED: recorded,
+      },
+      encoding: "utf8",
+      timeout: 4_000,
     },
-    encoding: "utf8",
-    timeout: 4_000,
-  });
+  );
 }
 
 afterAll(() => {
@@ -127,7 +137,7 @@ describe("provider focus command", () => {
       ].join("\n"),
     );
     const exact = await focusCommand({ kind: "focus", application: "xterm" });
-    expect(exact).toContain(`\ncd '${workspace}'\n`);
+    expect(exact).toContain(shellQuote(`\ncd '${workspace}'\n`).slice(1, -1));
     const raised = runFocus(exact);
     expect(raised.status, raised.stderr).toBe(0);
     expect(readFileSync(activated, "utf8").trim()).toBe("0x00000002");
@@ -138,7 +148,7 @@ describe("provider focus command", () => {
       application: sleeper,
       uri: "notes.txt",
     });
-    expect(command).toContain(`\ncd '${workspace}'\n`);
+    expect(command).toContain(shellQuote(`\ncd '${workspace}'\n`).slice(1, -1));
     writeFileSync(windows, "0x00000009  0 9 sleeper.Sleeper host app\n");
     const started = Date.now();
     const result = runFocus(command);
@@ -201,8 +211,8 @@ describe("provider focus command", () => {
         ].join("\n"),
       );
       const command = await focusCommand({ kind: "focus", application: "chromium" });
-      expect(command).toContain(`CHROME_USER_DATA_DIR='${mine}'`);
-      expect(command).not.toContain(`\ncd '${workspace}'\n`);
+      expect(command).toContain(shellQuote(`CHROME_USER_DATA_DIR='${mine}'`).slice(1, -1));
+      expect(command).not.toContain(shellQuote(`\ncd '${workspace}'\n`).slice(1, -1));
       const result = runFocus(command);
       expect(result.status, result.stderr).toBe(0);
       expect(readFileSync(activated, "utf8").trim()).toBe("0x0000000b");
@@ -223,12 +233,14 @@ describe("provider focus command", () => {
       application: "firefox",
       uri: "https://example.test",
     });
-    expect(command).toContain("nohup /tmp/rakazo/browser-launch-1 'https://example.test'");
+    expect(command).toContain(
+      shellQuote("nohup /tmp/rakazo/browser-launch-1 'https://example.test'").slice(1, -1),
+    );
     expect(command).toContain(
       "in chromium|chromium-browser|google-chrome|google-chrome-stable|chrome)",
     );
     expect(command).not.toContain("in firefox)");
-    expect(command).not.toContain(`\ncd '${workspace}'\n`);
+    expect(command).not.toContain(shellQuote(`\ncd '${workspace}'\n`).slice(1, -1));
     const result = runFocus(command);
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(activated, "utf8").trim()).toBe("0x0000000c");

@@ -16,6 +16,7 @@ import { getLogger, SERVICE_NAMES } from "@rakazo/logging";
 import { createRootLogger } from "@rakazo/logging/axiom";
 import { requestLogging } from "@rakazo/logging/hono";
 import Docker from "dockerode";
+import type { Context, Env } from "hono";
 import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
@@ -112,6 +113,7 @@ const teamScreenLimit = resolveTeamScreenLimit();
 // IPs, so computer control must use a published loopback port instead.
 const controlViaLoopback = process.env.SANDBOX_CONTROL_VIA_LOOPBACK === "true";
 const computerScreens = new Map<string, Map<string, ScreenAssignment>>();
+const computerScreenLifecycleLocks = new Map<string, Promise<unknown>>();
 // Container start time each screen registry was built under; see currentComputerScreens.
 const computerScreenBoots = new Map<string, string>();
 
@@ -493,42 +495,37 @@ app.post("/computers/:id/browser", async (c) => {
   const carriesSavedLogin =
     body.command === "act" && body.actions.some((step) => "origin" in step && step.origin);
   try {
-    const { container, layout } = await managedScreen(
-      c.req.param("id"),
-      c.req.header("x-rakazo-bot-id"),
-      c.req.header("x-rakazo-space-id"),
-      c.req.header("x-rakazo-screen-id"),
-      c.req.header("x-rakazo-screen-lease-id"),
-    );
-    const result = await runContainerCommand(
-      container,
-      // Arguments go over stdin: origin-bound fills carry saved logins, and argv is readable by
-      // any process in the computer, including the bot's own shell. Other commands also keep the
-      // argv copy so a computer still on an older image keeps working until it is replaced.
-      [
-        "/usr/local/bin/rakazo-page-browser",
-        body.command,
-        ...(carriesSavedLogin ? [] : [JSON.stringify(body)]),
-      ],
-      {
-        env: [
-          `DISPLAY=${layout.display}`,
-          `RAKAZO_CDP_PORT=${layout.debugPort}`,
-          "HOME=/home/rakazo",
-          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-          "RAKAZO_BROWSER_WATCH_STDIN=1",
-          "RAKAZO_BROWSER_ARGS_STDIN=1",
+    return await withManagedScreenWork(c, async ({ container, layout }) => {
+      const result = await runContainerCommand(
+        container,
+        // Arguments go over stdin: origin-bound fills carry saved logins, and argv is readable by
+        // any process in the computer, including the bot's own shell. Other commands also keep the
+        // argv copy so a computer still on an older image keeps working until it is replaced.
+        [
+          "/usr/local/bin/rakazo-page-browser",
+          body.command,
+          ...(carriesSavedLogin ? [] : [JSON.stringify(body)]),
         ],
-        timeoutMs: 25_000,
-        signal,
-        stdin: `${JSON.stringify(body)}\n`,
-      },
-    );
-    // A nonzero exit or malformed output cannot establish which mutations ran.
-    if (result.code !== 0 || Buffer.byteLength(result.stdout) > 512 * 1024) {
-      throw new Error("Page browser unavailable or interrupted");
-    }
-    return c.json(JSON.parse(result.stdout));
+        {
+          env: [
+            `DISPLAY=${layout.display}`,
+            `RAKAZO_CDP_PORT=${layout.debugPort}`,
+            "HOME=/home/rakazo",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "RAKAZO_BROWSER_WATCH_STDIN=1",
+            "RAKAZO_BROWSER_ARGS_STDIN=1",
+          ],
+          timeoutMs: 25_000,
+          signal,
+          stdin: `${JSON.stringify(body)}\n`,
+        },
+      );
+      // A nonzero exit or malformed output cannot establish which mutations ran.
+      if (result.code !== 0 || Buffer.byteLength(result.stdout) > 512 * 1024) {
+        throw new Error("Page browser unavailable or interrupted");
+      }
+      return c.json(JSON.parse(result.stdout));
+    });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return c.json({
@@ -545,32 +542,27 @@ app.post("/computers/:id/browser", async (c) => {
 
 app.post("/computers/:id/observe", async (c) => {
   try {
-    const { container, info, layout, browserProfile } = await managedScreen(
-      c.req.param("id"),
-      c.req.header("x-rakazo-bot-id"),
-      c.req.header("x-rakazo-space-id"),
-      c.req.header("x-rakazo-screen-id"),
-      c.req.header("x-rakazo-screen-lease-id"),
-    );
-    const control = computerControlEndpoint(info);
-    const observation = await preferComputerControl(
-      control
-        ? async () => {
-            const result = await controlDesktop(
-              control,
-              [],
-              layout.display,
-              browserProfile,
-              true,
-              0,
-            );
-            if (!result.observation) throw new Error("computer control returned no observation");
-            return result.observation;
-          }
-        : undefined,
-      () => observeContainer(container, layout.display),
-    );
-    return c.json(observation);
+    return await withManagedScreenWork(c, async ({ container, info, layout, browserProfile }) => {
+      const control = computerControlEndpoint(info);
+      const observation = await preferComputerControl(
+        control
+          ? async () => {
+              const result = await controlDesktop(
+                control,
+                [],
+                layout.display,
+                browserProfile,
+                true,
+                0,
+              );
+              if (!result.observation) throw new Error("computer control returned no observation");
+              return result.observation;
+            }
+          : undefined,
+        () => observeContainer(container, layout.display),
+      );
+      return c.json(observation);
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return c.json({ error: message }, 500);
@@ -586,41 +578,36 @@ app.post("/computers/:id/actions", async (c) => {
     })
     .parse(await c.req.json());
   try {
-    const { container, info, layout, browserProfile } = await managedScreen(
-      c.req.param("id"),
-      c.req.header("x-rakazo-bot-id"),
-      c.req.header("x-rakazo-space-id"),
-      c.req.header("x-rakazo-screen-id"),
-      c.req.header("x-rakazo-screen-lease-id"),
-    );
-    const control = computerControlEndpoint(info);
-    const attempt = await attemptComputerControl(
-      control
-        ? () =>
-            controlDesktop(
-              control,
-              body.actions,
-              layout.display,
-              browserProfile,
-              body.observe !== false,
-              body.settleMs ?? 0,
-            )
-        : undefined,
-    );
-    if (attempt.status === "failed") throw attempt.error;
-    const controlResult = attempt.status === "ok" ? attempt.value : undefined;
-    if (shouldReplayComputerActions(attempt) && body.actions.length)
-      await applyContainerActions(container, body.actions, layout.display, browserProfile);
-    if (shouldReplayComputerActions(attempt) && body.settleMs)
-      await new Promise((resolve) => setTimeout(resolve, body.settleMs));
-    return c.json({
-      completed: controlResult?.completed ?? body.actions.length,
-      ...(body.observe === false
-        ? {}
-        : {
-            observation:
-              controlResult?.observation ?? (await observeContainer(container, layout.display)),
-          }),
+    return await withManagedScreenWork(c, async ({ container, info, layout, browserProfile }) => {
+      const control = computerControlEndpoint(info);
+      const attempt = await attemptComputerControl(
+        control
+          ? () =>
+              controlDesktop(
+                control,
+                body.actions,
+                layout.display,
+                browserProfile,
+                body.observe !== false,
+                body.settleMs ?? 0,
+              )
+          : undefined,
+      );
+      if (attempt.status === "failed") throw attempt.error;
+      const controlResult = attempt.status === "ok" ? attempt.value : undefined;
+      if (shouldReplayComputerActions(attempt) && body.actions.length)
+        await applyContainerActions(container, body.actions, layout.display, browserProfile);
+      if (shouldReplayComputerActions(attempt) && body.settleMs)
+        await new Promise((resolve) => setTimeout(resolve, body.settleMs));
+      return c.json({
+        completed: controlResult?.completed ?? body.actions.length,
+        ...(body.observe === false
+          ? {}
+          : {
+              observation:
+                controlResult?.observation ?? (await observeContainer(container, layout.display)),
+            }),
+      });
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -759,50 +746,57 @@ app.post("/computers/:id/screen-mode", async (c) => {
     const screenId = c.req.header("x-rakazo-screen-id");
     const screenLeaseId = c.req.header("x-rakazo-screen-lease-id");
     const { container, info } = await managedContainer(id, botId, spaceId);
-    const { layout, viewToken } = await withComputerScreenLock(id, async () => {
-      const screen = await ensureManagedScreen(
-        id,
-        container,
-        botId,
-        screenId,
-        screenLeaseId,
-        !body.interactive && body.revokeControl === false,
-      );
-      if (body.interactive || body.revokeControl !== false) {
-        const assigned = computerScreens.get(id)!;
-        const slot = assigned.get(screen.screenKey)!;
-        const changesCurrentControl =
-          body.interactive || !body.controlToken || body.controlToken === slot.controlToken;
-        if (changesCurrentControl) {
-          delete slot.controlled;
-          delete slot.controlToken;
-        }
-        try {
-          const changed = await setInteractiveScreen(
-            container,
-            body.interactive,
-            body.controlToken,
-            screen.layout,
-          );
-          if (body.interactive) {
-            slot.controlled = true;
-            slot.controlToken = body.controlToken;
-            slot.controlVersion = (slot.controlVersion ?? 0) + 1;
-            grant = { container, screenKey: screen.screenKey, slot, version: slot.controlVersion };
-            delete slot.idleAt;
-          } else if (changed) {
+    const { layout, viewToken } = await withComputerScreenLifecycle(c, () =>
+      withComputerScreenLock(id, async () => {
+        const screen = await ensureManagedScreen(
+          id,
+          container,
+          botId,
+          screenId,
+          screenLeaseId,
+          !body.interactive && body.revokeControl === false,
+        );
+        if (body.interactive || body.revokeControl !== false) {
+          const assigned = computerScreens.get(id)!;
+          const slot = assigned.get(screen.screenKey)!;
+          const changesCurrentControl =
+            body.interactive || !body.controlToken || body.controlToken === slot.controlToken;
+          if (changesCurrentControl) {
             delete slot.controlled;
             delete slot.controlToken;
           }
-        } catch (error) {
-          if (changesCurrentControl) {
-            await teardownControlScreen(container, assigned, screen.screenKey, slot);
+          try {
+            const changed = await setInteractiveScreen(
+              container,
+              body.interactive,
+              body.controlToken,
+              screen.layout,
+            );
+            if (body.interactive) {
+              slot.controlled = true;
+              slot.controlToken = body.controlToken;
+              slot.controlVersion = (slot.controlVersion ?? 0) + 1;
+              grant = {
+                container,
+                screenKey: screen.screenKey,
+                slot,
+                version: slot.controlVersion,
+              };
+              delete slot.idleAt;
+            } else if (changed) {
+              delete slot.controlled;
+              delete slot.controlToken;
+            }
+          } catch (error) {
+            if (changesCurrentControl) {
+              await teardownControlScreen(container, assigned, screen.screenKey, slot);
+            }
+            throw error;
           }
-          throw error;
         }
-      }
-      return screen;
-    });
+        return screen;
+      }),
+    );
     const screenUrl = await publishedScreenUrl(
       container,
       info,
@@ -814,18 +808,25 @@ app.post("/computers/:id/screen-mode", async (c) => {
   } catch (error) {
     const failedGrant = grant;
     if (failedGrant) {
-      await withComputerScreenLock(c.req.param("id"), async () => {
-        const assigned = computerScreens.get(c.req.param("id"));
-        const slot = assigned?.get(failedGrant.screenKey);
-        if (
-          assigned &&
-          slot === failedGrant.slot &&
-          slot.controlVersion === failedGrant.version &&
-          slot.controlToken === body.controlToken
-        ) {
-          await teardownControlScreen(failedGrant.container, assigned, failedGrant.screenKey, slot);
-        }
-      });
+      await withComputerScreenLifecycle(c, () =>
+        withComputerScreenLock(c.req.param("id"), async () => {
+          const assigned = computerScreens.get(c.req.param("id"));
+          const slot = assigned?.get(failedGrant.screenKey);
+          if (
+            assigned &&
+            slot === failedGrant.slot &&
+            slot.controlVersion === failedGrant.version &&
+            slot.controlToken === body.controlToken
+          ) {
+            await teardownControlScreen(
+              failedGrant.container,
+              assigned,
+              failedGrant.screenKey,
+              slot,
+            );
+          }
+        }),
+      );
     }
     const message = error instanceof Error ? error.message : String(error);
     return c.json({ error: message }, 400);
@@ -849,27 +850,29 @@ app.post("/computers/:id/terminal", async (c) => {
     );
     const cwd = workspaceTarget(normalizeWorkspaceRelative(body.cwd));
     const terminalToken = randomUUID();
-    const layout = await withComputerScreenLock(id, async () => {
-      const screen = await ensureManagedScreen(
-        id,
-        container,
-        botId,
-        c.req.header("x-rakazo-screen-id"),
-        c.req.header("x-rakazo-screen-lease-id"),
-      );
-      const result = await runContainerCommand(
-        container,
-        [
-          "bash",
-          "-c",
-          terminalCommand(body.controlToken, terminalToken, cwd, undefined, screen.layout),
-        ],
-        { env: computerCommandEnv(screen.layout) },
-      );
-      if (result.code === 75) throw new TerminalControlReleasedError();
-      if (result.code !== 0) throw new Error(result.stderr || "terminal failed to start");
-      return screen.layout;
-    });
+    const layout = await withComputerScreenLifecycle(c, () =>
+      withComputerScreenLock(id, async () => {
+        const screen = await ensureManagedScreen(
+          id,
+          container,
+          botId,
+          c.req.header("x-rakazo-screen-id"),
+          c.req.header("x-rakazo-screen-lease-id"),
+        );
+        const result = await runContainerCommand(
+          container,
+          [
+            "bash",
+            "-c",
+            terminalCommand(body.controlToken, terminalToken, cwd, undefined, screen.layout),
+          ],
+          { env: computerCommandEnv(screen.layout) },
+        );
+        if (result.code === 75) throw new TerminalControlReleasedError();
+        if (result.code !== 0) throw new Error(result.stderr || "terminal failed to start");
+        return screen.layout;
+      }),
+    );
     const screenUrl = await publishedScreenUrl(container, info, layout.controlPort);
     return c.json({ terminalUrl: screenUrlWithToken(screenUrl, terminalToken) });
   } catch (error) {
@@ -884,7 +887,6 @@ app.post("/computers/:id/terminal", async (c) => {
 class TerminalControlReleasedError extends Error {}
 
 app.post("/computers/:id/input", async (c) => {
-  const id = c.req.param("id");
   const body = z
     .object({
       input: z.object({
@@ -902,22 +904,17 @@ app.post("/computers/:id/input", async (c) => {
     .parse(await c.req.json());
   const input = toSandboxInput(body.input);
   try {
-    const { container, layout } = await managedScreen(
-      id,
-      c.req.header("x-rakazo-bot-id"),
-      c.req.header("x-rakazo-space-id"),
-      c.req.header("x-rakazo-screen-id"),
-      c.req.header("x-rakazo-screen-lease-id"),
-    );
-    const result = await runContainerCommand(container, [
-      "env",
-      `DISPLAY=${layout.display}`,
-      ...xdotoolCommand(input),
-    ]);
-    if (result.code !== 0) {
-      return c.json({ ok: false, error: "input failed" }, 500);
-    }
-    return c.json({ ok: true, leaseId: body.leaseId ?? null });
+    return await withManagedScreenWork(c, async ({ container, layout }) => {
+      const result = await runContainerCommand(container, [
+        "env",
+        `DISPLAY=${layout.display}`,
+        ...xdotoolCommand(input),
+      ]);
+      if (result.code !== 0) {
+        return c.json({ ok: false, error: "input failed" }, 500);
+      }
+      return c.json({ ok: true, leaseId: body.leaseId ?? null });
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return c.json({ ok: false, error: message }, 500);
@@ -938,48 +935,56 @@ app.delete("/computers/:id/screen", async (c) => {
     const screenId = c.req.header("x-rakazo-screen-id") || c.req.header("x-rakazo-bot-id") || id;
     const cancelRunWork = c.req.header("x-rakazo-cancel-run-work") === "1";
     const screenLeaseId = c.req.header("x-rakazo-screen-lease-id");
-    await withComputerScreenLock(id, async () => {
-      const info = await container.inspect();
-      const assigned = currentComputerScreens(
-        computerScreens,
-        computerScreenBoots,
-        id,
-        info.State?.StartedAt,
-      );
-      const index = assigned ? releaseAssignedScreen(assigned, screenId, screenLeaseId) : undefined;
-      const stop = screenReleaseStopCommand(index, {
-        hasRegistry: Boolean(assigned),
-        cancelRunWork,
-        screenId,
-      });
-      if (assigned && index !== undefined) {
-        const slot = assigned.get(screenId)!;
-        delete slot.controlled;
-        delete slot.controlToken;
-        try {
-          await teardownReleasedScreen(
-            assigned,
-            screenId,
-            index,
-            () => runContainerCommand(container, ["bash", "-c", stop]),
-            { retainBrowser: !cancelRunWork },
-          );
-        } catch (error) {
-          if (cancelRunWork) throw error;
-          // Uncertain access revocation cannot be a successful warm release.
-          await teardownReleasedScreen(assigned, screenId, index, () =>
-            runContainerCommand(container, ["bash", "-c", stopExtraScreenCommand(index, screenId)]),
-          );
+    await withComputerScreenLifecycle(c, () =>
+      withComputerScreenLock(id, async () => {
+        const info = await container.inspect();
+        const assigned = currentComputerScreens(
+          computerScreens,
+          computerScreenBoots,
+          id,
+          info.State?.StartedAt,
+        );
+        const index = assigned
+          ? releaseAssignedScreen(assigned, screenId, screenLeaseId)
+          : undefined;
+        const stop = screenReleaseStopCommand(index, {
+          hasRegistry: Boolean(assigned),
+          cancelRunWork,
+          screenId,
+        });
+        if (assigned && index !== undefined) {
+          const slot = assigned.get(screenId)!;
+          delete slot.controlled;
+          delete slot.controlToken;
+          try {
+            await teardownReleasedScreen(
+              assigned,
+              screenId,
+              index,
+              () => runContainerCommand(container, ["bash", "-c", stop]),
+              { retainBrowser: !cancelRunWork },
+            );
+          } catch (error) {
+            if (cancelRunWork) throw error;
+            // Uncertain access revocation cannot be a successful warm release.
+            await teardownReleasedScreen(assigned, screenId, index, () =>
+              runContainerCommand(container, [
+                "bash",
+                "-c",
+                stopExtraScreenCommand(index, screenId),
+              ]),
+            );
+          }
+        } else if (stop) {
+          const result = await runContainerCommand(container, ["bash", "-c", stop]);
+          if (result.code !== 0) {
+            throw new Error(result.stderr || "computer screen failed to stop");
+          }
         }
-      } else if (stop) {
-        const result = await runContainerCommand(container, ["bash", "-c", stop]);
-        if (result.code !== 0) {
-          throw new Error(result.stderr || "computer screen failed to stop");
-        }
-      }
-      // Keep an emptied registry. A missing one means the supervisor lost track of the
-      // container, and the next screen request then resets every desktop process in it.
-    });
+        // Keep an emptied registry. A missing one means the supervisor lost track of the
+        // container, and the next screen request then resets every desktop process in it.
+      }),
+    );
     return c.json({ ok: true });
   } catch (error) {
     if (error instanceof ComputerIdentityError)
@@ -1232,6 +1237,50 @@ async function managedScreen(
   return withComputerScreenLock(id, () =>
     ensureManagedScreen(id, container, botId, screenId, screenLeaseId),
   );
+}
+
+function withComputerScreenLifecycle<T>(
+  c: Context<Env, "/computers/:id/*">,
+  operation: () => Promise<T>,
+) {
+  const id = c.req.param("id");
+  const screenKey = c.req.header("x-rakazo-screen-id") || c.req.header("x-rakazo-bot-id") || id;
+  return withKeyedLock(computerScreenLifecycleLocks, JSON.stringify([id, screenKey]), operation);
+}
+
+async function withManagedScreenWork<T>(
+  c: Context<Env, "/computers/:id/*">,
+  operation: (screen: Awaited<ReturnType<typeof ensureManagedScreen>>) => Promise<T>,
+) {
+  const signal = c.req.raw.signal;
+  signal.throwIfAborted();
+  return withComputerScreenLifecycle(c, async () => {
+    signal.throwIfAborted();
+    const id = c.req.param("id");
+    const botId = c.req.header("x-rakazo-bot-id");
+    const { container } = await managedContainer(id, botId, c.req.header("x-rakazo-space-id"));
+    const screen = await withComputerScreenLock(id, async () => {
+      const current = await ensureManagedScreen(
+        id,
+        container,
+        botId,
+        c.req.header("x-rakazo-screen-id"),
+        c.req.header("x-rakazo-screen-lease-id"),
+      );
+      const slot = computerScreens.get(id)!.get(current.screenKey)!;
+      slot.working = true;
+      return { ...current, slot };
+    });
+    try {
+      signal.throwIfAborted();
+      return await operation(screen);
+    } finally {
+      await withComputerScreenLock(id, async () => {
+        const slot = computerScreens.get(id)?.get(screen.screenKey);
+        if (slot === screen.slot) delete slot.working;
+      });
+    }
+  });
 }
 
 async function ensureManagedScreen(

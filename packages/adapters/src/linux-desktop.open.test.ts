@@ -46,16 +46,22 @@ function fixture() {
     environment: async () => env,
     run: async (_computer, command) => {
       commands.push(command);
-      if (command.includes("RAKAZO_DESKTOP="))
+      if (command.includes("RAKAZO_DESKTOP=")) {
+        const key = command.match(/slot="\$dir\/([a-f0-9]+)\.slot"/)?.[1];
+        if (!key) throw new Error("missing fixture allocation key");
+        const registry = path.join(runtime, "desktop-assignments");
+        mkdirSync(registry, { recursive: true });
+        writeFileSync(path.join(registry, `${key}.slot`), "0\nrun:1\nview-token\n\nactive\n\n\n\n");
         return { code: 0, stdout: "RAKAZO_DESKTOP=0:view-token\n" };
+      }
       const result = spawnSync(
         "bash",
         [
           "-eu",
           "-c",
-          command
+          `flock() { :; }\n${command
             .replaceAll("/tmp/rakazo/browser-launch-1", launcher)
-            .replaceAll("/tmp/rakazo", runtime),
+            .replaceAll("/tmp/rakazo", runtime)}`,
         ],
         {
           env: {

@@ -18,6 +18,7 @@ import {
   desktopControlCommand,
   desktopTerminalCommand,
   desktopUrl,
+  desktopWorkCommand,
   managedDesktopCommand,
   releaseDesktopCommand,
   screenPorts,
@@ -50,6 +51,14 @@ export interface LinuxDesktopHost {
     context: AdapterContext,
   ): Promise<{ code: number; stdout: string; stderr?: string }>;
   screenUrl(computer: ComputerRef, port: number, context: AdapterContext): Promise<string>;
+}
+
+interface EnsuredDesktop {
+  env: DesktopEnvironment;
+  key: string;
+  index: number;
+  token: string;
+  layout: { display: string; displayNumber: number; viewPort: number; controlPort: number };
 }
 
 interface PendingControlCleanup {
@@ -121,7 +130,7 @@ export class LinuxDesktop {
     return result.stdout;
   }
 
-  private async ensure(computer: ComputerRef, context: AdapterContext) {
+  private async ensure(computer: ComputerRef, context: AdapterContext): Promise<EnsuredDesktop> {
     const env = await this.host.environment(computer);
     for (const pending of this.pendingCleanups(computer, context))
       await this.retryCleanup(computer, context, env, pending);
@@ -140,7 +149,27 @@ export class LinuxDesktop {
       viewPort: Number(ports.viewPort),
       controlPort: Number(ports.controlPort),
     };
-    return { env, key, layout, token: match[2]! };
+    return { env, key, index, layout, token: match[2]! };
+  }
+
+  private runOnScreen(
+    computer: ComputerRef,
+    screen: EnsuredDesktop,
+    command: string,
+    context: AdapterContext,
+  ) {
+    return this.run(
+      computer,
+      desktopWorkCommand(
+        screen.key,
+        context.screenLeaseId,
+        screen.env,
+        screen.index,
+        screen.token,
+        command,
+      ),
+      context,
+    );
   }
 
   async connectScreen(
@@ -247,16 +276,21 @@ export class LinuxDesktop {
   }
 
   async observe(computer: ComputerRef, context: AdapterContext) {
-    const { layout } = await this.ensure(computer, context);
-    return this.observeLayout(computer, layout, context);
+    const screen = await this.ensure(computer, context);
+    return this.observeLayout(computer, screen, context);
   }
 
   private async observeLayout(
     computer: ComputerRef,
-    layout: { display: string; displayNumber: number },
+    screen: EnsuredDesktop,
     context: AdapterContext,
   ) {
-    const output = await this.run(computer, observeExtraDisplayCommand(layout), context);
+    const output = await this.runOnScreen(
+      computer,
+      screen,
+      observeExtraDisplayCommand(screen.layout),
+      context,
+    );
     const observed = parseExtraDisplayObservation(output);
     return computerObservation(observed.image, {
       mimeType: "image/png",
@@ -267,28 +301,40 @@ export class LinuxDesktop {
   }
 
   async sendInput(computer: ComputerRef, input: ComputerInput, context: AdapterContext) {
-    const { layout } = await this.ensure(computer, context);
-    await this.run(computer, extraDisplayInputCommand(layout, input), context);
+    const screen = await this.ensure(computer, context);
+    await this.runOnScreen(
+      computer,
+      screen,
+      extraDisplayInputCommand(screen.layout, input),
+      context,
+    );
   }
 
   async act(computer: ComputerRef, request: ComputerActionRequest, context: AdapterContext) {
-    const { layout, env, key } = await this.ensure(computer, context);
+    const screen = await this.ensure(computer, context);
+    const { layout, env, key } = screen;
     let completed = 0;
     for (const action of boundedComputerActions(request.actions)) {
-      await this.run(
+      await this.runOnScreen(
         computer,
+        screen,
         `export CHROME_USER_DATA_DIR=${shellQuote(browserProfilePathForScreen(key, env))} BROWSER=${browserLauncherPath(layout.displayNumber)}\n${browserActionCommand(action, layout, env)}`,
         context,
       );
       completed += 1;
     }
     if (request.settleMs)
-      await this.run(computer, `sleep ${clampRounded(request.settleMs, 0, 5000) / 1000}`, context);
+      await this.runOnScreen(
+        computer,
+        screen,
+        `sleep ${clampRounded(request.settleMs, 0, 5000) / 1000}`,
+        context,
+      );
     return {
       completed,
       ...(request.observe === false
         ? {}
-        : { observation: await this.observeLayout(computer, layout, context) }),
+        : { observation: await this.observeLayout(computer, screen, context) }),
     };
   }
 
