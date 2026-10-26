@@ -107,6 +107,39 @@ describe("computer image build context", () => {
   });
 });
 
+describe("file opening in the retained browser", () => {
+  it.each([
+    ["notes/a #%.txt", "file:///home/rakazo/notes/a%20%23%25.txt"],
+    ["notes/中文.html", "file:///home/rakazo/notes/%E4%B8%AD%E6%96%87.html"],
+    ["/notes/document.pdf", "file:///home/rakazo/notes/document.pdf"],
+  ])("routes %s to the same per-bot browser profile", (file, url) => {
+    expect(containerActionStep({ kind: "open", path: file! }, ":2", "/profile/bot-a")).toEqual({
+      argv: ["env", "DISPLAY=:2", "RAKAZO_BROWSER_PROFILE=/profile/bot-a", "rakazo-browser", url],
+    });
+  });
+
+  it("preserves HTTP forwarding and rejects a workspace traversal before execution", () => {
+    expect(
+      containerActionStep(
+        { kind: "open", path: "https://example.test/a#b" },
+        ":2",
+        "/profile/bot-a",
+      ),
+    ).toEqual({
+      argv: [
+        "env",
+        "DISPLAY=:2",
+        "RAKAZO_BROWSER_PROFILE=/profile/bot-a",
+        "xdg-open",
+        "https://example.test/a#b",
+      ],
+    });
+    expect(() => containerActionStep({ kind: "open", path: "notes/../private" })).toThrow(
+      "path escapes the computer workspace",
+    );
+  });
+});
+
 describe("computer screen readiness", () => {
   it("waits for the server to actually answer HTTP requests before succeeding", async () => {
     const server = http.createServer((_req, res) => res.end("ok"));

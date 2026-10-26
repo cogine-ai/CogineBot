@@ -73,6 +73,7 @@ import {
   isComputerControlUnavailable,
   nextScreenIndex,
   normalizeWorkspaceRelative,
+  oldestIdleScreen,
   parseObservation,
   preferComputerControl,
   quiesceBrowserProfilesCommand,
@@ -735,6 +736,9 @@ app.get("/computers/:id/screen", async (c) => {
 });
 
 app.post("/computers/:id/screen-mode", async (c) => {
+  let grant:
+    | { container: Docker.Container; screenKey: string; slot: ScreenAssignment; version: number }
+    | undefined;
   const body = z
     .object({
       interactive: z.boolean(),
@@ -756,9 +760,46 @@ app.post("/computers/:id/screen-mode", async (c) => {
     const screenLeaseId = c.req.header("x-rakazo-screen-lease-id");
     const { container, info } = await managedContainer(id, botId, spaceId);
     const { layout, viewToken } = await withComputerScreenLock(id, async () => {
-      const screen = await ensureManagedScreen(id, container, botId, screenId, screenLeaseId);
+      const screen = await ensureManagedScreen(
+        id,
+        container,
+        botId,
+        screenId,
+        screenLeaseId,
+        !body.interactive && body.revokeControl === false,
+      );
       if (body.interactive || body.revokeControl !== false) {
-        await setInteractiveScreen(container, body.interactive, body.controlToken, screen.layout);
+        const assigned = computerScreens.get(id)!;
+        const slot = assigned.get(screen.screenKey)!;
+        const changesCurrentControl =
+          body.interactive || !body.controlToken || body.controlToken === slot.controlToken;
+        if (changesCurrentControl) {
+          delete slot.controlled;
+          delete slot.controlToken;
+        }
+        try {
+          const changed = await setInteractiveScreen(
+            container,
+            body.interactive,
+            body.controlToken,
+            screen.layout,
+          );
+          if (body.interactive) {
+            slot.controlled = true;
+            slot.controlToken = body.controlToken;
+            slot.controlVersion = (slot.controlVersion ?? 0) + 1;
+            grant = { container, screenKey: screen.screenKey, slot, version: slot.controlVersion };
+            delete slot.idleAt;
+          } else if (changed) {
+            delete slot.controlled;
+            delete slot.controlToken;
+          }
+        } catch (error) {
+          if (changesCurrentControl) {
+            await teardownControlScreen(container, assigned, screen.screenKey, slot);
+          }
+          throw error;
+        }
       }
       return screen;
     });
@@ -771,6 +812,21 @@ app.post("/computers/:id/screen-mode", async (c) => {
       screenUrl: screenUrlWithToken(screenUrl, body.interactive ? body.controlToken! : viewToken),
     });
   } catch (error) {
+    const failedGrant = grant;
+    if (failedGrant) {
+      await withComputerScreenLock(c.req.param("id"), async () => {
+        const assigned = computerScreens.get(c.req.param("id"));
+        const slot = assigned?.get(failedGrant.screenKey);
+        if (
+          assigned &&
+          slot === failedGrant.slot &&
+          slot.controlVersion === failedGrant.version &&
+          slot.controlToken === body.controlToken
+        ) {
+          await teardownControlScreen(failedGrant.container, assigned, failedGrant.screenKey, slot);
+        }
+      });
+    }
     const message = error instanceof Error ? error.message : String(error);
     return c.json({ error: message }, 400);
   }
@@ -897,9 +953,24 @@ app.delete("/computers/:id/screen", async (c) => {
         screenId,
       });
       if (assigned && index !== undefined) {
-        await teardownReleasedScreen(assigned, screenId, index, () =>
-          runContainerCommand(container, ["bash", "-c", stop]),
-        );
+        const slot = assigned.get(screenId)!;
+        delete slot.controlled;
+        delete slot.controlToken;
+        try {
+          await teardownReleasedScreen(
+            assigned,
+            screenId,
+            index,
+            () => runContainerCommand(container, ["bash", "-c", stop]),
+            { retainBrowser: !cancelRunWork },
+          );
+        } catch (error) {
+          if (cancelRunWork) throw error;
+          // Uncertain access revocation cannot be a successful warm release.
+          await teardownReleasedScreen(assigned, screenId, index, () =>
+            runContainerCommand(container, ["bash", "-c", stopExtraScreenCommand(index, screenId)]),
+          );
+        }
       } else if (stop) {
         const result = await runContainerCommand(container, ["bash", "-c", stop]);
         if (result.code !== 0) {
@@ -1169,10 +1240,18 @@ async function ensureManagedScreen(
   botId: string | undefined,
   screenId: string | undefined,
   screenLeaseId: string | undefined,
+  restoreControl = true,
 ) {
   // Docker can restart independently of the supervisor's screen lock.
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const screen = await ensureManagedScreenAttempt(id, container, botId, screenId, screenLeaseId);
+    const screen = await ensureManagedScreenAttempt(
+      id,
+      container,
+      botId,
+      screenId,
+      screenLeaseId,
+      restoreControl,
+    );
     const info = await container.inspect();
     if (info.State?.StartedAt === screen.info.State?.StartedAt) {
       // Confirm the pending boot marker only after setup completes against the same boot.
@@ -1195,6 +1274,7 @@ async function ensureManagedScreenAttempt(
   botId: string | undefined,
   screenId: string | undefined,
   screenLeaseId: string | undefined,
+  restoreControl = true,
 ) {
   // Callers hold the screen lock: an inspection before waiting can describe an older boot.
   const info = await container.inspect();
@@ -1217,6 +1297,22 @@ async function ensureManagedScreenAttempt(
     if (info.State?.StartedAt) computerScreenBoots.set(id, info.State.StartedAt);
   }
   const screenKey = screenId || botId || id;
+  if (!assigned.has(screenKey) && assigned.size >= teamScreenLimit) {
+    const evictedScreenId = oldestIdleScreen(assigned, teamScreenLimit);
+    const evicted = evictedScreenId ? assigned.get(evictedScreenId) : undefined;
+    if (evictedScreenId && evicted) {
+      const evictedIndex = releaseAssignedScreen(assigned, evictedScreenId, evicted.leaseId);
+      if (evictedIndex !== undefined) {
+        await teardownReleasedScreen(assigned, evictedScreenId, evictedIndex, () =>
+          runContainerCommand(container, [
+            "bash",
+            "-c",
+            stopExtraScreenCommand(evictedIndex, evictedScreenId),
+          ]),
+        );
+      }
+    }
+  }
   const index = nextScreenIndex(assigned, screenKey, screenLeaseId, teamScreenLimit);
   const layout = screenPorts(index);
   const slot = assigned.get(screenKey)!;
@@ -1240,6 +1336,14 @@ async function ensureManagedScreenAttempt(
     if (assigned.size === 0) clearComputerScreenRegistry(computerScreens, computerScreenBoots, id);
     const detail = [ensured.stderr, browserLog.stdout].filter(Boolean).join("\n").trim();
     throw new Error(detail || `computer screen ${layout.display} failed to start`);
+  }
+  if (restoreControl && slot.controlToken) {
+    try {
+      await setInteractiveScreen(container, true, slot.controlToken, layout);
+    } catch (error) {
+      await teardownControlScreen(container, assigned, screenKey, slot);
+      throw error;
+    }
   }
   return {
     container,
@@ -1427,6 +1531,21 @@ async function setInteractiveScreen(
   ]);
   if (result.code !== 0) throw new Error(result.stderr || "control screen failed to start");
   return interactive || !controlToken || result.stdout.includes("RAKAZO_CONTROL_RELEASED\n");
+}
+
+// Callers hold the computer screen lock. An uncertain grant must not become restore authority.
+async function teardownControlScreen(
+  container: Docker.Container,
+  assigned: Map<string, ScreenAssignment>,
+  screenKey: string,
+  slot: ScreenAssignment,
+) {
+  delete slot.controlled;
+  delete slot.controlToken;
+  releaseAssignedScreen(assigned, screenKey);
+  await teardownReleasedScreen(assigned, screenKey, slot.index, () =>
+    runContainerCommand(container, ["bash", "-c", stopExtraScreenCommand(slot.index, screenKey)]),
+  );
 }
 
 // Each bot's computer gets its own Docker network so containers cannot reach

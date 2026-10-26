@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { TERMINAL_SERVER_PROGRAM } from "./terminal-server.js";
 // Each live Chrome needs a private debugger port. This is the TCP address-space
@@ -280,11 +280,15 @@ export function stopBrowserProfileCommand(profile: string, pidFile: string) {
   ].join("\n");
 }
 
-function stopProfileDirectoriesCommand(profileList: string) {
+function stopRuntimeBrowserProfileCommand() {
   const placeholder = "RAKAZO_INTERNAL_PROFILE";
-  const stop = stopBrowserProfileCommand(placeholder, '"$pid_file"')
+  return stopBrowserProfileCommand(placeholder, '"$pid_file"')
     .replaceAll(shellQuote(`--user-data-dir=${placeholder}`), '"--user-data-dir=$profile"')
     .replaceAll(shellQuote(placeholder), '"$profile"');
+}
+
+function stopProfileDirectoriesCommand(profileList: string) {
+  const stop = stopRuntimeBrowserProfileCommand();
   return [
     "set -eu",
     "failed=0",
@@ -398,6 +402,8 @@ function stopTerminalCommand(layout: ReturnType<typeof commandLayout>) {
     `pkill -f ${pattern} || true`,
     `for i in $(seq 1 10); do pgrep -f ${pattern} >/dev/null || break; sleep 0.1; done`,
     `pkill -KILL -f ${pattern} || true`,
+    `for i in $(seq 1 10); do pgrep -f ${pattern} >/dev/null || break; sleep 0.1; done`,
+    `if pgrep -f ${pattern} >/dev/null; then echo 'computer terminal failed to stop' >&2; exit 1; fi`,
     `rm -rf ${socketPrefix}* /tmp/rakazo/terminal-state-${layout.displayNumber}`,
   ].join("\n");
 }
@@ -462,13 +468,21 @@ function renderStopExtraScreenCommand(
   screenId: string,
   env = DEFAULT_DESKTOP_ENV,
 ) {
+  return renderStopDesktopCommand(index, stopBrowserCommand(screenId, env), env);
+}
+
+function renderStopDesktopCommand(
+  index: number | undefined,
+  stopBrowser: string,
+  env: DesktopEnvironment,
+) {
   const layout = commandLayout(index, env);
   const fluxHome = `/tmp/fluxbox-home-${layout.displayNumber}`;
   return [
     "set -eu",
     // Stop every client before touching browser state or recycling the display.
     renderStopScreenTransportsCommand(index, env),
-    stopBrowserCommand(screenId, env),
+    stopBrowser,
     `rm -f /tmp/rakazo/browser-profile-${layout.displayNumber} ${browserLauncherPath(layout.displayNumber)}`,
     ...(index === 0 && env.preservePrimaryDisplay
       ? []
@@ -587,6 +601,15 @@ export function interactiveScreenCommand(
   controlToken?: string,
   layout: ReturnType<typeof commandLayout> = screenPorts(0),
 ) {
+  return renderInteractiveScreenCommand(interactive, controlToken, layout);
+}
+
+function renderInteractiveScreenCommand(
+  interactive: boolean,
+  controlToken: string | undefined,
+  layout: ReturnType<typeof commandLayout>,
+  socketKey = controlToken ? browserKeyForScreen(controlToken) : "",
+) {
   const tokenFile = `/tmp/rakazo/control-token-${layout.displayNumber}`;
   const targetFile = `${TARGETS}/control-${layout.displayNumber}`;
   const stopProcesses = [
@@ -606,7 +629,7 @@ export function interactiveScreenCommand(
     ].join("\n");
   }
   if (!controlToken) throw new Error("interactive screen requires a control token");
-  const socket = `/tmp/rakazo/sockets/control-${layout.displayNumber}-${browserKeyForScreen(controlToken)}`;
+  const socket = `/tmp/rakazo/sockets/control-${layout.displayNumber}-${socketKey}`;
   return [
     `[ -f ${tokenFile} ] && [ "$(cat ${tokenFile})" = ${shellQuote(controlToken)} ] && [ -S ${socket} ] && pgrep -f ${quoteLayout(`^([^ ]*/)?x11vnc .* -unixsock ${socket}( |$)`)} >/dev/null && (echo >/dev/tcp/127.0.0.1/${layout.controlPort}) >/dev/null 2>&1 && exit 0 || true`,
     stopProcesses,
@@ -690,7 +713,49 @@ function registryLockCommand(screenId: string) {
     'exec 9>"$dir/.lock"',
     "flock -w 120 9",
     `slot="$dir/${browserKeyForScreen(screenId)}.slot"`,
+    "read_slot() {",
+    '  index=$(sed -n "1p" "$slot" 2>/dev/null || true)',
+    '  current=$(sed -n "2p" "$slot" 2>/dev/null || true)',
+    '  view_token=$(sed -n "3p" "$slot" 2>/dev/null || true)',
+    '  control_token=$(sed -n "4p" "$slot" 2>/dev/null || true)',
+    '  state=$(sed -n "5p" "$slot" 2>/dev/null || true)',
+    '  idle_at=$(sed -n "6p" "$slot" 2>/dev/null || true)',
+    '  revoking_token=$(sed -n "7p" "$slot" 2>/dev/null || true)',
+    '  control_version=$(sed -n "8p" "$slot" 2>/dev/null || true)',
+    '  [ -n "$state" ] || state=active',
+    "}",
+    "write_slot() {",
+    '  printf "%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n" "$index" "$current" "$view_token" "$control_token" "$state" "$idle_at" "$revoking_token" "$control_version" >"$slot.next"',
+    '  mv "$slot.next" "$slot"',
+    "}",
+    "read_slot",
   ];
+}
+
+const UNLOCK_REGISTRY = "flock -u 9; exec 9>&-";
+const LOCK_REGISTRY = 'exec 9>"$dir/.lock"; flock -w 120 9';
+
+function restoreControlCommand(env: DesktopEnvironment) {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: generated shell parameter expansion
+  const key = "${desktop_control_key}";
+  return [
+    ...layoutVariables(undefined, env),
+    `desktop_control_key=$(python3 -c ${shellQuote("import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:32])")} "$2")`,
+    renderInteractiveScreenCommand(
+      true,
+      TOKEN_PLACEHOLDER,
+      commandLayout(undefined, env),
+      key,
+    ).replaceAll(shellQuote(TOKEN_PLACEHOLDER), '"$2"'),
+  ].join("\n");
+}
+
+function reservedAccessFailureCommand(screenId: string, env: DesktopEnvironment) {
+  return [
+    "operation_status=$?",
+    `bash -eu -c ${shellQuote(renderStopExtraScreenCommand(undefined, screenId, env))} desktop "$index" || true`,
+    'exit "$operation_status"',
+  ].join("\n");
 }
 
 function acceptLeaseCommand(leaseId?: string, release = false) {
@@ -719,33 +784,80 @@ export function managedDesktopCommand(
   return [
     ...registryLockCommand(screenId),
     ...acceptLeaseCommand(leaseId),
-    'index=$(sed -n "1p" "$slot" 2>/dev/null || true)',
-    'view_token=$(sed -n "3p" "$slot" 2>/dev/null || true)',
+    'case "$state" in active|idle) ;; *) exit 75 ;; esac',
+    'if [ -n "$control_token" ]; then [[ "$control_token" =~ ^[A-Za-z0-9_-]{1,128}$ ]] && [[ "$control_version" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || exit 75; fi',
     'if [ -z "$index" ]; then',
-    `  index=$(python3 -c ${shellQuote(`import pathlib, sys
+    `  allocation=$(python3 -c ${shellQuote(`import pathlib, re, sys
 used = set()
+idle = []
 for slot in pathlib.Path(sys.argv[1]).glob("*.slot"):
     try:
-        with slot.open() as source: used.add(int(source.readline()))
-    except ValueError: pass
+        lines = slot.read_text().splitlines()
+        index = int(lines[0])
+        used.add(index)
+        if len(lines) >= 6 and lines[4] == 'idle' and not lines[3] and (len(lines) < 7 or not lines[6]) and lines[5].isdigit() and re.fullmatch('[a-f0-9]{32}', slot.stem):
+            idle.append((int(lines[5]), index, slot.stem))
+    except (OSError, ValueError, IndexError): pass
 # A damaged assignment must not make a live display available to another bot.
 for marker in pathlib.Path("/tmp/rakazo").glob("browser-profile-*"):
     display = marker.name.rsplit("-", 1)[-1]
     if display.isascii() and display.isdigit(): used.add(int(display) - ${env.displayStart})
 index = 0
 while index in used: index += 1
-if index > ${MAX_DESKTOP_DISPLAY - env.displayStart}: sys.exit(75)
-print(index)
+if index <= ${MAX_DESKTOP_DISPLAY - env.displayStart}:
+    print('free:' + str(index) + ':')
+elif idle:
+    _, index, key = min(idle)
+    print('idle:' + str(index) + ':' + key)
+else:
+    sys.exit(75)
 `)} "$dir")`,
+    '  IFS=: read -r allocation_kind index candidate_key <<<"$allocation"',
+    '  if [ "$allocation_kind" = idle ]; then',
+    '    [[ "$candidate_key" =~ ^[a-f0-9]{32}$ ]] || exit 75',
+    "    requested_slot=$slot; allocated_index=$index",
+    `    ${UNLOCK_REGISTRY}`,
+    '    exec 11>"$dir/$candidate_key.lifecycle-lock"',
+    "    flock -n 11 || exit 75",
+    `    ${LOCK_REGISTRY}`,
+    '    slot="$dir/$candidate_key.slot"; read_slot',
+    '    [ "$index" = "$allocated_index" ] && [ "$state" = idle ] && [ -z "$control_token" ] && [ -z "$revoking_token" ] || exit 75',
+    '    state=releasing; idle_at=""; write_slot',
+    `    ${UNLOCK_REGISTRY}`,
+    `    evict_profile=${shellQuote(env.browserProfilesDir)}/chromium-bot-"$candidate_key"`,
+    '    evict_pid="/tmp/rakazo/browser-pid-$candidate_key"',
+    `    bash -eu -c ${shellQuote(renderStopDesktopCommand(undefined, `profile=$2; pid_file=$3;\n${stopRuntimeBrowserProfileCommand()}`, env))} desktop "$index" "$evict_profile" "$evict_pid"`,
+    `    ${LOCK_REGISTRY}`,
+    '    rm -f -- "$slot"',
+    "    flock -u 11; exec 11>&-",
+    "    slot=$requested_slot; read_slot; index=$allocated_index",
+    "  fi",
     '  [ -n "$index" ] || exit 75',
-    `  view_token=${shellQuote(viewToken)}`,
     "fi",
+    "replace_access=0",
+    'if [ -n "$incoming" ] && [ -n "$current" ] && [ "$incoming" != "$current" ]; then',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: generated shell parameter expansion
+    '  [ "${incoming%:*}" = "${current%:*}" ] || replace_access=1',
+    "fi",
+    '[ -n "$incoming" ] && current=$incoming || true',
+    'if [ "$replace_access" = 1 ]; then',
+    '  control_token=""; revoking_token=""; control_version=""; view_token=""; idle_at=""; state=blocked; write_slot',
+    `  ${UNLOCK_REGISTRY}`,
+    `  bash -eu -c ${shellQuote(renderStopScreenTransportsCommand(undefined, env))} desktop "$index" || { ${reservedAccessFailureCommand(screenId, env)}; }`,
+    `  ${LOCK_REGISTRY}`,
+    "fi",
+    `[ -n "$view_token" ] || view_token=${shellQuote(viewToken)}`,
     "case \"$view_token\" in ''|*[!a-zA-Z0-9_-]*) exit 75 ;; esac",
-    '[ -n "$incoming" ] || incoming="$current"',
-    'printf "%s\\n%s\\n%s\\n" "$index" "$incoming" "$view_token" >"$slot.next"',
-    'mv "$slot.next" "$slot"',
-    "flock -u 9; exec 9>&-",
-    `bash -eu -c ${shellQuote(renderEnsureScreenCommand(undefined, screenId, TOKEN_PLACEHOLDER, env).replace(shellQuote(TOKEN_PLACEHOLDER), '"$2"'))} desktop "$index" "$view_token"`,
+    'restore_token=$control_token; idle_at=""; state=active',
+    'if [ -n "$restore_token" ]; then control_token=""; revoking_token=$restore_token; state=blocked; fi',
+    "write_slot",
+    UNLOCK_REGISTRY,
+    `bash -eu -c ${shellQuote(renderEnsureScreenCommand(undefined, screenId, TOKEN_PLACEHOLDER, env).replace(shellQuote(TOKEN_PLACEHOLDER), '"$2"'))} desktop "$index" "$view_token" || { ${reservedAccessFailureCommand(screenId, env)}; }`,
+    'if [ -n "$restore_token" ]; then',
+    `  bash -eu -c ${shellQuote(restoreControlCommand(env))} desktop "$index" "$restore_token" || { ${reservedAccessFailureCommand(screenId, env)}; }`,
+    `  ${LOCK_REGISTRY}`,
+    '  control_token=$restore_token; revoking_token=""; state=active; write_slot',
+    "fi",
     'printf "RAKAZO_DESKTOP=%s:%s\\n" "$index" "$view_token"',
   ].join("\n");
 }
@@ -755,22 +867,40 @@ export function releaseDesktopCommand(
   screenId: string,
   leaseId: string | undefined,
   env: DesktopEnvironment,
+  retainBrowser = false,
 ) {
   return [
     ...registryLockCommand(screenId),
     '[ -f "$slot" ] || exit 0',
     ...acceptLeaseCommand(leaseId, true),
-    'index=$(sed -n "1p" "$slot")',
-    "flock -u 9; exec 9>&-",
-    `bash -eu -c ${shellQuote(renderStopExtraScreenCommand(undefined, screenId, env))} desktop "$index"`,
-    // Chromium has stopped. Publish that before clearing the slot so a later
-    // lock or removal failure is not read as a browser that is still running.
-    // set -e leaves that failure non-zero, and the slot is removed only while
-    // the shared registry lock is held.
-    'printf "RAKAZO_DESKTOP_RELEASED=%s\\n" "$index"',
-    'exec 9>"$dir/.lock"',
-    "flock -w 120 9",
-    'rm -f -- "$slot"',
+    ...(retainBrowser
+      ? [
+          'if [ "$state" = idle ] && [ -z "$control_token" ] && [ -z "$revoking_token" ] && [ -z "$view_token" ]; then',
+          '  if [ -n "$incoming" ] && [ "$incoming" != "$current" ]; then current=$incoming; write_slot; fi',
+          '  printf "RAKAZO_DESKTOP_RETAINED=%s\\n" "$index"; exit 0',
+          "fi",
+        ]
+      : []),
+    '[ -n "$incoming" ] && current=$incoming || true',
+    'control_token=""; revoking_token=""; control_version=""; view_token=""; idle_at=""; state=releasing; write_slot',
+    UNLOCK_REGISTRY,
+    `bash -eu -c ${shellQuote(retainBrowser ? renderStopScreenTransportsCommand(undefined, env) : renderStopExtraScreenCommand(undefined, screenId, env))} desktop "$index"`,
+    ...(retainBrowser
+      ? [
+          LOCK_REGISTRY,
+          `idle_at=$(python3 -c ${shellQuote("import time; print(time.time_ns())")})`,
+          "state=idle; write_slot",
+          'printf "RAKAZO_DESKTOP_RETAINED=%s\\n" "$index"',
+        ]
+      : [
+          // Chromium has stopped. Publish that before clearing the slot so a later
+          // lock or removal failure is not read as a browser that is still running.
+          // set -e leaves that failure non-zero, and the slot is removed only while
+          // the shared registry lock is held.
+          'printf "RAKAZO_DESKTOP_RELEASED=%s\\n" "$index"',
+          LOCK_REGISTRY,
+          'rm -f -- "$slot"',
+        ]),
   ].join("\n");
 }
 
@@ -781,14 +911,34 @@ export function desktopControlCommand(
   env: DesktopEnvironment,
   interactive: boolean,
   token: string,
+  grantVersion?: string,
 ) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(token)) throw new Error("invalid control token");
+  if (grantVersion && !/^[A-Za-z0-9_-]{1,64}$/.test(grantVersion))
+    throw new Error("invalid control grant version");
   return [
     ...registryLockCommand(screenId),
     `[ -f "$slot" ] || exit ${interactive ? 75 : 0}`,
+    ...(!interactive && grantVersion
+      ? [`[ "$control_version" = ${shellQuote(grantVersion)} ] || exit 0`]
+      : []),
     ...acceptLeaseCommand(leaseId, !interactive),
-    'index=$(sed -n "1p" "$slot")',
-    "flock -u 9; exec 9>&-",
-    `bash -eu -c ${shellQuote([...layoutVariables(undefined, env), interactiveScreenCommand(interactive, token, commandLayout(undefined, env))].join("\n"))} desktop "$index"`,
+    'case "$state" in releasing) exit 75 ;; esac',
+    ...(interactive
+      ? ['case "$state" in blocked|releasing) exit 75 ;; esac']
+      : [
+          `if [ -n "$control_token" ] && [ "$control_token" != ${shellQuote(token)} ]; then exit 0; fi`,
+          `if [ "$control_token" != ${shellQuote(token)} ] && [ "$revoking_token" != ${shellQuote(token)} ] && [ "$(cat /tmp/rakazo/control-token-$((index + ${env.displayStart})) 2>/dev/null || true)" != ${shellQuote(token)} ]; then exit 0; fi`,
+        ]),
+    '[ -n "$incoming" ] && current=$incoming || true',
+    ...(interactive ? [`control_version=${shellQuote(grantVersion ?? randomUUID())}`] : []),
+    `control_token=""; revoking_token=${shellQuote(token)}; idle_at=""; state=blocked; write_slot`,
+    UNLOCK_REGISTRY,
+    `bash -eu -c ${shellQuote([...layoutVariables(undefined, env), interactiveScreenCommand(interactive, interactive ? token : undefined, commandLayout(undefined, env))].join("\n"))} desktop "$index" || { ${reservedAccessFailureCommand(screenId, env)}; }`,
+    LOCK_REGISTRY,
+    `control_token=${shellQuote(interactive ? token : "")}; revoking_token=""; state=active`,
+    ...(!interactive ? ['control_version=""'] : []),
+    "write_slot",
   ].join("\n");
 }
 
@@ -805,8 +955,11 @@ export function desktopTerminalCommand(
     ...registryLockCommand(screenId),
     '[ -f "$slot" ] || exit 75',
     ...acceptLeaseCommand(leaseId),
-    'index=$(sed -n "1p" "$slot")',
-    "flock -u 9; exec 9>&-",
+    'case "$state" in blocked|releasing) exit 75 ;; esac',
+    `[ "$control_token" = ${shellQuote(controlToken)} ] || exit 75`,
+    '[ -n "$incoming" ] && current=$incoming || true',
+    'idle_at=""; state=active; write_slot',
+    UNLOCK_REGISTRY,
     `bash -eu -c ${shellQuote([...layoutVariables(undefined, env), terminalCommand(controlToken, terminalToken, cwd, env, commandLayout(undefined, env))].join("\n"))} desktop "$index"`,
   ].join("\n");
 }

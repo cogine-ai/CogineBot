@@ -3384,18 +3384,26 @@ export function createRouter(deps: RouterDeps) {
           return { url: null };
         }
         const computer = bot.computer;
+        const interactive = hasActiveComputerControl(computer) && computer.controlBotId === bot.id;
+        const screenContext = await computerScreenContext(
+          deps.prisma,
+          context.actor,
+          computer.id,
+          bot.id,
+          "screen",
+        );
         const session = await deps.sandbox
           .connectScreen(
             toComputerRef(computer),
             {
               view: "stream",
-              interactive: hasActiveComputerControl(computer) && computer.controlBotId === bot.id,
+              interactive,
               controlToken:
                 computer.controlBotId === bot.id
                   ? (computer.controlLeaseId ?? undefined)
                   : undefined,
             },
-            await computerScreenContext(deps.prisma, context.actor, computer.id, bot.id, "screen"),
+            screenContext,
           )
           .catch(async (error: unknown) => {
             if (isComputerScreenUnavailable(error)) {
@@ -3404,11 +3412,36 @@ export function createRouter(deps: RouterDeps) {
             return clearGoneSandbox(deps, computer, error);
           });
         if (!session?.url) return { url: null };
+        const current = await repos.getBot(context.actor, input.botId);
+        const sameComputer =
+          current.computer?.id === computer.id &&
+          current.computer.providerRef === computer.providerRef &&
+          current.computer.kind === computer.kind &&
+          current.computer.homeKey === computer.homeKey &&
+          ["running", "booting"].includes(current.computer.state);
+        const sameHumanControl =
+          sameComputer &&
+          hasActiveComputerControl(current.computer) &&
+          current.computer?.controlBotId === bot.id &&
+          current.computer.controlLeaseId === computer.controlLeaseId;
+        if (
+          !sameComputer ||
+          current.screenGeneration !== bot.screenGeneration ||
+          current.computer?.screenGeneration !== computer.screenGeneration ||
+          (interactive && !sameHumanControl)
+        ) {
+          if (interactive && !sameHumanControl)
+            await revokeScreenControl(
+              deps,
+              computer,
+              screenContext,
+              computer.controlLeaseId ?? undefined,
+              { clearGoneRef: false },
+            );
+          throw new ORPCError("CONFLICT", { message: "Computer control changed; try again" });
+        }
         scheduleComputerSleep(deps.jobs, bot.computer.id);
-        const viewUrl = withViewOnly(
-          session.url,
-          !(hasActiveComputerControl(bot.computer) && bot.computer.controlBotId === bot.id),
-        );
+        const viewUrl = withViewOnly(session.url, !interactive);
         return {
           url: addScreenProxyCapability(viewUrl, deps.env.screenProxySecret, deps.env.webOrigin, {
             botId: bot.id,

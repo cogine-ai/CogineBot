@@ -1117,7 +1117,11 @@ describe("screen release status", () => {
     failStop = true;
     const released = await supervisorApp.request("/computers/release-failed/screen", {
       method: "DELETE",
-      headers: { ...headers, "x-rakazo-screen-lease-id": "run-1:1" },
+      headers: {
+        ...headers,
+        "x-rakazo-screen-lease-id": "run-1:1",
+        "x-rakazo-cancel-run-work": "1",
+      },
     });
     expect(released.status).toBe(500);
     await expect(released.json()).resolves.toEqual({ error: "computer screen failed to stop" });
