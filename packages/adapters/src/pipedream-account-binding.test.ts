@@ -1,5 +1,6 @@
 import type { AdapterContext, ConnectorCall, ConnectorEvent } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
+import { catalogIdForRoute } from "./lazy-tool-catalog.js";
 import { PipedreamConnector } from "./pipedream-connector.js";
 
 const config = {
@@ -110,6 +111,41 @@ async function execute(connector: PipedreamConnector, call: ConnectorCall, ctx =
 }
 
 describe("Pipedream authorized account binding", () => {
+  it("keeps the canonical catalog ID stable when one account grows into a folded multi-account tool", async () => {
+    const { connector } = server({ count: 21 });
+    const single = { ...context, connectedConnections: [context.connectedConnections![0]!] };
+    for (const ctx of [single, context]) {
+      const tools = await connector.discoverTools(ctx);
+      const load = tools.find((tool) => tool.name === "pipedream_load_tool")!;
+      const events = await execute(
+        connector,
+        {
+          tool: load.name,
+          route: load.route,
+          args: { id: "gmail/send_mail" },
+          executionId: "load",
+        },
+        ctx,
+      );
+      expect(events).toMatchObject([{ data: { id: "gmail:send_mail" } }]);
+    }
+    const tools = await connector.discoverTools(context);
+    const wrapper = tools.find((tool) => tool.name === "pipedream_execute_tool")!;
+    await expect(
+      connector.resolveCall(
+        {
+          tool: wrapper.name,
+          route: wrapper.route,
+          args: {
+            id: "gmail:send_mail",
+            arguments: { accountId: "business", mailbox: "personal-inbox" },
+          },
+          executionId: "no-selector",
+        },
+        context,
+      ),
+    ).rejects.toThrow(/invalid|select/i);
+  });
   it("discovers distinct account schemas under the unchanged tool name and preserves business accountId", async () => {
     const { connector, requests } = server();
     const [tool] = await connector.discoverTools(context);
@@ -151,25 +187,32 @@ describe("Pipedream authorized account binding", () => {
     expect(requests.filter((request) => request.method === "tools/call")).toHaveLength(1);
   });
 
-  it("uses the same explicit selection through lazy load and execute", async () => {
+  it.each([":", "/", "__"])("binds lazy aliases with %s", async (separator) => {
     const { connector, requests } = server({ count: 21 });
     const tools = await connector.discoverTools(context);
     const load = tools.find((tool) => tool.name === "pipedream_load_tool")!;
     const loadEvents = await execute(connector, {
       tool: load.name,
       route: load.route,
-      args: { id: "gmail:send_mail" },
+      args: { id: `gmail${separator}send_mail` },
       executionId: "load",
     });
     expect(loadEvents).toMatchObject([
-      { type: "result", data: { name: "send_mail", inputSchema: { anyOf: expect.any(Array) } } },
+      {
+        type: "result",
+        data: {
+          id: "gmail:send_mail",
+          name: "send_mail",
+          inputSchema: { anyOf: expect.any(Array) },
+        },
+      },
     ]);
     const wrapper = tools.find((tool) => tool.name === "pipedream_execute_tool")!;
     const call = {
       tool: wrapper.name,
       route: wrapper.route,
       args: {
-        id: "gmail:send_mail",
+        id: `gmail${separator}send_mail`,
         arguments: {
           __connectionId: "personal",
           accountId: "business-account",
@@ -180,6 +223,13 @@ describe("Pipedream authorized account binding", () => {
     };
     const resolved = await connector.resolveCall(call, context);
     expect(resolved!.call.route?.connectionId).toBe("personal");
+    expect(resolved!.call.args.__connectionId).toBe("personal");
+    expect(
+      catalogIdForRoute({
+        ...resolved!.call.route!,
+        resourceId: resolved!.call.route!.resourceId!,
+      }),
+    ).toBe("gmail:send_mail");
     expect(await execute(connector, call)).toMatchObject([{ type: "result" }]);
     expect(requests.filter((request) => request.method === "tools/call")).toEqual([
       expect.objectContaining({

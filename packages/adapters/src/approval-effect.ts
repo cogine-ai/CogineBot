@@ -1,5 +1,6 @@
 import type { AgentToolExecutionResult } from "@rakazo/adapter-kit";
 import type { Prisma } from "@rakazo/db";
+import { catalogIdForRoute } from "./lazy-tool-catalog.js";
 
 export type ApprovalPausedToolResult = AgentToolExecutionResult & { terminate: true };
 
@@ -59,7 +60,15 @@ export function approvedCatalogReplay(
   if (pending.toolName !== toolName && !renamedMcpWrapper) {
     return { error: `Approved request ${pending.toolName} must be replayed before ${toolName}.` };
   }
-  return { args: pending.args };
+  return { args: catalogApprovalArguments(pending) };
+}
+
+/** A bound approval already names its account; labels are not replay identity. */
+export function catalogApprovalArguments(catalog: {
+  args: Record<string, unknown>;
+  route?: BoundApprovalRoute;
+}): Record<string, unknown> {
+  return catalog.route ? { ...catalog.args, id: catalogIdForRoute(catalog.route) } : catalog.args;
 }
 
 export function approvedReplayArgs(
@@ -263,10 +272,6 @@ export function catalogToolPrefix(connectorId: string): string {
 
 export function catalogExecuteToolName(connectorId: string): string {
   return `${catalogToolPrefix(connectorId)}_execute_tool`;
-}
-
-export function catalogIdForRoute(route: BoundApprovalRoute): string {
-  return `${route.resourceId}:${encodeURIComponent(route.toolName)}`;
 }
 
 export function parseCatalogApprovalTarget(

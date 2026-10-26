@@ -25,6 +25,49 @@ import {
 } from "./approval-effect.js";
 
 describe("approved effect replay", () => {
+  it("rebuilds an old bound native wrapper ID without mutating approved arguments", () => {
+    const marker = "__rakazoCatalogTool";
+    const route = {
+      connectorId: "native",
+      resourceId: "google-calendar",
+      connectionId: "account:a",
+      resourceRevision: "auth-1",
+      toolName: "calendar.events.create",
+    };
+    const request = catalogApprovalRequest(
+      "native_execute_tool",
+      { id: "google-calendar:calendar.events.create", arguments: { title: "approved" } },
+      marker,
+      route,
+    );
+    const original = JSON.stringify(request);
+    const queue = createApprovedEffectReplayQueue([{ kind: "native_account_a_write", request }]);
+    const replay = approvedCatalogReplay(queue, "native_execute_tool", marker, true);
+    expect(replay.args).toEqual({
+      id: "google-calendar:account%3Aa:calendar.events.create",
+      arguments: { title: "approved" },
+    });
+    expect(JSON.stringify(request)).toBe(original);
+    const catalog = catalogApprovalDetails(request, marker)!;
+    expect(catalogApprovalMatchesLiveRoute(catalog, route)).toBe(true);
+    expect(catalogApprovalMatchesLiveRoute(catalog, { ...route, connectionId: "account:b" })).toBe(
+      false,
+    );
+    expect(catalogApprovalMatchesLiveRoute(catalog, { ...route, resourceRevision: "auth-2" })).toBe(
+      false,
+    );
+    const unbound = catalogApprovalRequest(
+      "native_execute_tool",
+      { id: "google-calendar:calendar.events.create", arguments: { title: "approved" } },
+      marker,
+    );
+    const legacy = catalogApprovalDetails(unbound, marker)!;
+    expect(catalogApprovalMatchesLiveRoute(legacy, route)).toBe(false);
+    const legacyQueue = createApprovedEffectReplayQueue([{ kind: "native_old", request: unbound }]);
+    expect(approvedCatalogReplay(legacyQueue, "native_execute_tool", marker, true).args).toBe(
+      legacy.args,
+    );
+  });
   it("replays persisted arguments instead of a changed model reconstruction", () => {
     const approved = { title: "Approved title", body: "Approved body" };
     const queue = createApprovedEffectReplayQueue([

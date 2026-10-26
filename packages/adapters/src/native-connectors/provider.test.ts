@@ -94,6 +94,80 @@ function setup(body: unknown = { items: [] }) {
   return { provider, fetch, authorization };
 }
 describe("native provider composition", () => {
+  it("keeps native catalog identity unique for two accounts with the same label", async () => {
+    const { provider, authorization, fetch } = setup();
+    const accounts = [
+      { ...selected, providerRef: "grant-a", revision: "grant-a:1" },
+      {
+        ...selected,
+        id: "connection-b",
+        providerRef: "grant-b",
+        revision: "grant-b:1",
+        displayName: "Another account",
+      },
+    ];
+    let revoked = false;
+    authorization.mockImplementation(async (id) => {
+      if (revoked && id === selected.id)
+        throw new NativeActionError("authorization_expired", "Reconnect this account.");
+      const account = accounts.find((candidate) => candidate.id === id)!;
+      const base = live();
+      return {
+        ...base,
+        connection: {
+          ...base.connection,
+          id,
+          providerRef: account.providerRef,
+          displayName: account.displayName,
+          metadata: { authRevision: account.revision },
+        },
+      };
+    });
+    const ctx = { ...context, connectedConnections: accounts };
+    const wrappers = await provider.discoverTools(ctx);
+    const events = [];
+    for await (const event of provider.execute(
+      {
+        tool: wrappers[0]!.name,
+        route: wrappers[0]!.route,
+        args: { query: "calendar.calendars.list" },
+        executionId: "search",
+      },
+      ctx,
+    ))
+      events.push(event);
+    const data = (events[0] as { data: { tools: Array<{ id: string }> } }).data;
+    expect(data.tools.map((tool) => tool.id)).toEqual(
+      expect.arrayContaining([
+        "google-calendar:connection-a:calendar.calendars.list",
+        "google-calendar:connection-b:calendar.calendars.list",
+      ]),
+    );
+    expect(new Set(data.tools.map((tool) => tool.id)).size).toBe(data.tools.length);
+    accounts[1]!.displayName = selected.displayName;
+    const index = await collect(
+      provider.execute(
+        { tool: wrappers[0]!.name, route: wrappers[0]!.route, args: {}, executionId: "index" },
+        ctx,
+      ),
+    );
+    const group = (index[0] as { data: { index: Array<{ group: string }> } }).data.index[0]!.group;
+    const call = {
+      tool: wrappers[2]!.name,
+      route: wrappers[2]!.route,
+      args: { id: `${group}/calendar.calendars.list`, arguments: {} },
+      executionId: "resolve",
+    };
+    await expect(provider.resolveCall(call, ctx)).rejects.toThrow(/ambiguous/i);
+    const id = "google-calendar:connection-a:calendar.calendars.list";
+    const resolved = await provider.resolveCall({ ...call, args: { id, arguments: {} } }, ctx);
+    expect(resolved!.call.route?.connectionId).toBe(selected.id);
+    revoked = true;
+    await expect(
+      provider.resolveCall({ ...call, args: { id, arguments: {} } }, ctx),
+    ).rejects.toThrow(/unknown|authorized/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("reports the provider Retry-After to callers without replaying a rate-limited request", async () => {
     const { provider, fetch } = setup();
     fetch.mockImplementation(

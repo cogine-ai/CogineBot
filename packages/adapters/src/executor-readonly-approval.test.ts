@@ -259,14 +259,14 @@ function fixture({
   const execute = vi.fn(async function* (call: ConnectorCall) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
-  let calls: { args: Record<string, unknown>; executionId: string }[] = [
+  let calls: { args: Record<string, unknown>; executionId: string; catalogId?: string }[] = [
     { args: { id: "item-1" }, executionId: "call-1" },
   ];
   const runtimeRun = vi.fn<AgentRuntime["run"]>(async function* (request: AgentRunRequest) {
     for (const call of calls) {
       const result = await request.executeTool!(
         catalog ? "demo_execute_tool" : name,
-        catalog ? { id: `resource-1:${name}`, arguments: call.args } : call.args,
+        catalog ? { id: call.catalogId ?? `resource-1:${name}`, arguments: call.args } : call.args,
         call.executionId,
       );
       results.push(result);
@@ -705,6 +705,54 @@ describe("disabled builtins", () => {
 });
 
 describe("executor connector account revalidation", () => {
+  it.each([":", "/", "__"])(
+    "persists a canonical approved target after a %s alias resolves",
+    async (separator) => {
+      const f = fixture({
+        catalog: true,
+        readOnly: false,
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "demo_get_item" }],
+      });
+      f.tool.route!.catalogGroup = "Mailbox";
+      f.tool.inputSchema = {
+        type: "object",
+        properties: { id: { type: "string" }, count: { type: "integer", default: 3 } },
+        required: ["id"],
+        additionalProperties: false,
+      };
+      f.setCalls([
+        {
+          args: { id: "approved-item" },
+          executionId: "request",
+          catalogId: `Mailbox${separator}demo_get_item`,
+        },
+      ]);
+      await f.run();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.effects).toHaveLength(1);
+      expect(f.effects[0]!.idempotencyKey).toBe(
+        approvalEffectKey("run-1", "demo_get_item", { id: "approved-item", count: 3 }),
+      );
+      expect(f.effects[0]!.request).toEqual([
+        "__rakazoCatalogTool",
+        "demo_execute_tool",
+        { id: "resource-1:demo_get_item", arguments: { id: "approved-item", count: 3 } },
+        { connectorId: "demo", resourceId: "resource-1", toolName: "demo_get_item" },
+      ]);
+      f.effects[0]!.status = "approved";
+      f.tool.route!.catalogGroup = "Renamed mailbox";
+      f.setCalls([
+        {
+          args: { id: "unapproved-item" },
+          executionId: "resume",
+          catalogId: `Mailbox${separator}demo_get_item`,
+        },
+      ]);
+      await f.run();
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.execute.mock.calls[0]![0].args).toEqual({ id: "approved-item", count: 3 });
+    },
+  );
   const account = (): TestConnection => ({
     id: "selected",
     connectorId: "demo",

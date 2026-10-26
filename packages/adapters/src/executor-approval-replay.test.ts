@@ -21,6 +21,36 @@ import {
 } from "./lazy-tool-catalog.js";
 
 describe("executor approval replay", () => {
+  it("uses the same account-specific native ID for bound catalog and direct continuations", () => {
+    const route = {
+      connectorId: "native",
+      resourceId: "gmail",
+      connectionId: "account:a",
+      resourceRevision: "auth-1",
+      toolName: "gmail.messages.send",
+    };
+    const args = { to: "recipient@example.test" };
+    const requests = [
+      catalogApprovalRequest(
+        "native_execute_tool",
+        { id: "gmail:gmail.messages.send", arguments: args },
+        "__rakazoCatalogTool",
+        route,
+      ),
+      boundDirectApprovalRequest(route, args, "__rakazoCatalogTool"),
+    ];
+    for (const request of requests) {
+      const original = JSON.stringify(request);
+      const continuation = buildApprovalContinuation(
+        [{ kind: "native_old_name", request }],
+        JSON.stringify,
+        { exposedToolNames: new Set(["native_execute_tool"]) },
+      );
+      expect(continuation).toContain('"id":"gmail:account%3Aa:gmail.messages.send"');
+      expect(continuation).toContain('"arguments":{"to":"recipient@example.test"}');
+      expect(JSON.stringify(request)).toBe(original);
+    }
+  });
   it.each([
     ["MCP", "install-mcp", "notes.write"],
     ["API", "install-api", "createContact"],
