@@ -293,6 +293,9 @@ it("reviews accepted and rejected OpenAPI operations before explicit installatio
   await fillSource("Display name", "Example API");
   await fillSource("https://example.com/openapi.json", "https://example.test/spec.yaml");
   await press("Preview");
+  expect(container.querySelector('[data-testid="openapi-import-review"]')?.textContent).toContain(
+    "Ready · 1",
+  );
   expect(container.textContent).toContain("listItems");
   expect(container.textContent).toContain("unsafeInput");
   expect(container.textContent).toContain("External references are not supported.");
@@ -1053,4 +1056,31 @@ it("locks the submitted native credential while a receipt is unknown", async () 
       (button) => button.textContent === "Check status" && !button.disabled,
     ),
   ).toBe(true);
+});
+
+it("hides Ready for an invalid native preview while retaining rejection diagnostics and Preview again", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((proc: string) =>
+    proc === "capabilities/previewOpenApi"
+      ? Promise.resolve({
+          ...importPreview,
+          status: "invalid",
+          operations: [],
+          reviewToken: null,
+          expiresAt: null,
+          diagnostics: [
+            { scope: "operation", code: "external_reference", operationId: "unsafeInput" },
+          ],
+          counts: { discovered: 1, accepted: 0, rejected: 1, omittedDiagnostics: 0 },
+        })
+      : original(proc),
+  );
+  await beginImport();
+  await press("Preview");
+  const review = container.querySelector('[data-testid="openapi-import-review"]');
+  expect(review?.textContent).not.toContain("Ready");
+  expect(review?.textContent).toContain("Not imported · 1");
+  expect(review?.textContent).toContain("unsafeInput");
+  expect(review?.textContent).toContain("External references are not supported.");
+  expect(review?.textContent).toContain("Preview again");
 });

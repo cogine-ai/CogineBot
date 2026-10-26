@@ -163,6 +163,9 @@ async function begin() {
 it("reviews accepted and rejected operations before confirming the reviewed input", async () => {
   await begin();
   await press("Preview");
+  expect(container.querySelector('[data-testid="openapi-import-review"]')?.textContent).toContain(
+    "Ready · 1",
+  );
   expect(container.textContent).toContain("listItems");
   expect(container.textContent).toContain("unsafeInput");
   expect(container.textContent).toContain("External references are not supported.");
@@ -266,6 +269,10 @@ it("shows useful all-invalid diagnostics without a confirmation action", async (
   });
   await begin();
   await press("Preview");
+  const review = container.querySelector('[data-testid="openapi-import-review"]');
+  expect(review?.textContent).not.toContain("Ready");
+  expect(review?.textContent).toContain("Not imported · 1");
+  expect(review?.textContent).toContain("Preview again");
   expect(container.textContent).toContain("unsafeInput");
   expect(container.textContent).toContain("Additional diagnostics omitted: 4");
   expect(

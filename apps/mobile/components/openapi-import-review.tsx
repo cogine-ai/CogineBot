@@ -29,7 +29,7 @@ export function OpenApiImportReview({
           {preview.target}
         </Text>
       ) : null}
-      {preview ? (
+      {preview?.status === "ready" ? (
         <>
           <Text style={styles.heading}>
             {t("Ready")} · {preview.counts.accepted}
@@ -44,12 +44,12 @@ export function OpenApiImportReview({
               </Text>
             </View>
           ))}
-          {preview.counts.rejected > 0 ? (
-            <Text style={styles.heading}>
-              {t("Not imported")} · {preview.counts.rejected}
-            </Text>
-          ) : null}
         </>
+      ) : null}
+      {preview && preview.counts.rejected > 0 ? (
+        <Text style={styles.heading}>
+          {t("Not imported")} · {preview.counts.rejected}
+        </Text>
       ) : null}
       {diagnostics.map((diagnostic, index) => (
         <View key={`${diagnostic.code}:${index}`}>

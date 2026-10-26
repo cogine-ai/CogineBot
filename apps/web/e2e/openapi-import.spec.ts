@@ -68,6 +68,7 @@ test("OpenAPI review shows accepted and rejected operations before one explicit 
   const advanced = await openImport(page);
   await advanced.getByRole("button", { name: "Preview", exact: true }).click();
   const review = page.getByTestId("openapi-import-review");
+  await expect(review.getByText("Ready · 1", { exact: true })).toBeVisible();
   await expect(review.getByText("listItems", { exact: true })).toBeVisible();
   await expect(review.getByText("createItem", { exact: true })).toBeVisible();
   await expect(
@@ -114,6 +115,9 @@ test("all-invalid OpenAPI review keeps operation diagnostics and offers no Add a
   const advanced = await openImport(page);
   await advanced.getByRole("button", { name: "Preview", exact: true }).click();
   const review = page.getByTestId("openapi-import-review");
+  await expect(review.getByText(/^Ready(?:\s|·|$)/)).toHaveCount(0);
+  await expect(review.getByText("Not imported · 1", { exact: true })).toBeVisible();
+  await expect(review.getByRole("button", { name: "Preview again", exact: true })).toBeVisible();
   await expect(review.getByText("createItem", { exact: true })).toBeVisible();
   await expect(
     review.getByText("Additional diagnostics omitted: 2", { exact: true }),

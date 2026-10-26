@@ -23,7 +23,7 @@ export function OpenApiImportReview({
     <div data-testid="openapi-import-review" className="space-y-3">
       {preview?.target ? <p className="break-words text-sm">{preview.target}</p> : null}
       <div className="max-h-72 space-y-3 overflow-y-auto break-words text-sm">
-        {preview ? (
+        {preview?.status === "ready" ? (
           <>
             <p className="font-medium">
               <Trans>Ready</Trans> · {preview.counts.accepted}
@@ -36,12 +36,12 @@ export function OpenApiImportReview({
                 </p>
               </div>
             ))}
-            {preview.counts.rejected > 0 ? (
-              <p className="font-medium">
-                <Trans>Not imported</Trans> · {preview.counts.rejected}
-              </p>
-            ) : null}
           </>
+        ) : null}
+        {preview && preview.counts.rejected > 0 ? (
+          <p className="font-medium">
+            <Trans>Not imported</Trans> · {preview.counts.rejected}
+          </p>
         ) : null}
         {diagnostics.map((diagnostic, index) => (
           <div key={`${diagnostic.code}:${index}`}>
