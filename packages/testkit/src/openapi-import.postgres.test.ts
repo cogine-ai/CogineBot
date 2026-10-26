@@ -43,6 +43,11 @@ const idnTargets = [
     representation: "ACE",
     hostname: domainToASCII(`${submitted}.example.test`),
   })),
+  ...["Straße", "e\u0301", "Ｆｕｌｌｗｉｄｔｈ"].map((submitted) => ({
+    submitted,
+    representation: "ACE",
+    hostname: domainToASCII(`${submitted}.example.test`),
+  })),
 ];
 const shortCredentials = ["kZ+124", "mN+1283"];
 const shortEchoCases = shortCredentials.flatMap((value) => [

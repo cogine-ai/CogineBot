@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { domainToASCII, domainToUnicode } from "node:url";
 import { ORPCError } from "@orpc/server";
 import {
   OpenApiCompileError,
@@ -132,6 +133,22 @@ function assertNoCredential(credential: string | undefined, value: unknown): voi
     Buffer.from(escaped.replaceAll("%", ""), "hex").toString("utf8"),
   );
   if (containsSecret(value, variants) || containsSecret(decoded, variants))
+    throw new CredentialInPublicPlan("Credential is not public configuration");
+}
+
+function assertPreparedHasNoCredential(credential: string | undefined, prepared: Prepared): void {
+  assertNoCredential(credential, prepared);
+  if (!credential || /[%/\\?#@:]/.test(credential)) return;
+  for (const character of credential)
+    if (character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127) return;
+  const ascii = domainToASCII(credential);
+  const unicode = domainToUnicode(ascii);
+  if (
+    ascii &&
+    unicode &&
+    (new URL(prepared.source).hostname.includes(ascii) ||
+      prepared.unicodeHostname.includes(unicode))
+  )
     throw new CredentialInPublicPlan("Credential is not public configuration");
 }
 
@@ -383,7 +400,7 @@ export function createOpenApiImportService(deps: Dependencies) {
         const prepared = await prepare(context, input, privateEndpointsAllowed);
         if ((await scope(context)) !== privateEndpointsAllowed)
           return invalidPreview("invalid_review");
-        assertNoCredential(input.credential, prepared);
+        assertPreparedHasNoCredential(input.credential, prepared);
         const common = {
           target: prepared.source,
           operations: prepared.config.operations.map((operation) => ({
@@ -457,7 +474,7 @@ export function createOpenApiImportService(deps: Dependencies) {
         if (allowed !== claims.privateEndpointsAllowed) throw new ChangedReview();
         if (!(await live(context, claims, lease))) return outcome(context, claims);
         const prepared = await prepare(context, input, allowed);
-        assertNoCredential(input.credential, prepared);
+        assertPreparedHasNoCredential(input.credential, prepared);
         if (!prepared.operationCount || fingerprint(input, prepared) !== claims.planDigest)
           throw new ChangedReview();
         if ((await scope(context)) !== claims.privateEndpointsAllowed) throw new ChangedReview();
