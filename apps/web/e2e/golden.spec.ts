@@ -345,7 +345,14 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
     .fill("https://api.example.test/openapi.json");
   await page.locator("select").selectOption("bearer");
   await page.getByPlaceholder("Credential").fill("fake-openapi-browser-credential");
-  await page.getByRole("button", { name: "Verify and add", exact: true }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  const apiReview = page.getByTestId("openapi-import-review");
+  await expect(apiReview.getByText("https://api.example.test/v1", { exact: true })).toBeVisible();
+  await expect(apiReview.getByText("Ready · 1", { exact: true })).toBeVisible();
+  await expect(apiReview.getByText("getContact", { exact: true })).toBeVisible();
+  await expect(apiReview.getByText("GET /contacts/{contactId}", { exact: true })).toBeVisible();
+  await apiReview.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(apiReview).toBeHidden();
   await expect(
     page.getByText(/API · https:\/\/api\.example\.test\/v1 · credential saved/),
   ).toBeVisible();

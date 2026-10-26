@@ -13,6 +13,116 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
+#: src/lib/openapi-diagnostic.ts
+msgid "A reference could not be resolved."
+msgstr "A reference could not be resolved."
+
+#. placeholder {0}: preview.counts.omittedDiagnostics
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Additional diagnostics omitted: {0}"
+msgstr "Additional diagnostics omitted: {0}"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Circular references are not supported."
+msgstr "Circular references are not supported."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Could not confirm installation."
+msgstr "Could not confirm installation."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Could not load the OpenAPI document."
+msgstr "Could not load the OpenAPI document."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Could not preview OpenAPI."
+msgstr "Could not preview OpenAPI."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "External references are not supported."
+msgstr "External references are not supported."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Import OpenAPI"
+msgstr "Import OpenAPI"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Installation pending."
+msgstr "Installation pending."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Not imported"
+msgstr "Not imported"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Preview"
+msgstr "Preview"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Preview again"
+msgstr "Preview again"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+#: src/lib/openapi-diagnostic.ts
+msgid "Preview again before adding."
+msgstr "Preview again before adding."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Previewing…"
+msgstr "Previewing…"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Ready"
+msgstr "Ready"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The API server is not supported."
+msgstr "The API server is not supported."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The input constraints cannot be preserved."
+msgstr "The input constraints cannot be preserved."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The operation limit was reached."
+msgstr "The operation limit was reached."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The reference is too deep."
+msgstr "The reference is too deep."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The schema is too large."
+msgstr "The schema is too large."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This HTTP method is not supported."
+msgstr "This HTTP method is not supported."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This OpenAPI version is not supported."
+msgstr "This OpenAPI version is not supported."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This header is not allowed."
+msgstr "This header is not allowed."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "This installation was removed."
+msgstr "This installation was removed."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This operation cannot be imported."
+msgstr "This operation cannot be imported."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This parameter cannot be sent safely."
+msgstr "This parameter cannot be sent safely."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Use one JSON or YAML OpenAPI document."
+msgstr "Use one JSON or YAML OpenAPI document."
+
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "{0, plural, one {# model} other {# models}}"
@@ -2849,10 +2959,6 @@ msgstr "Ignore"
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Image upload area"
 msgstr "Image upload area"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Import OpenAPI JSON"
-msgstr "Import OpenAPI JSON"
 
 #: src/lib/ticket-status.ts
 msgid "In progress"

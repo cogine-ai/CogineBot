@@ -9,7 +9,7 @@ import type {
   NativeBeginInput,
 } from "@rakazo/contracts";
 import { NativeAppIdSchema } from "@rakazo/contracts";
-import type { ConnectionApp } from "@rakazo/core";
+import type { ConnectionApp, OpenApiImportReviewState } from "@rakazo/core";
 import {
   abortableDelay,
   CONNECTION_CATALOG_PAGE_SIZE,
@@ -19,6 +19,7 @@ import {
   connectionCatalogKey,
   connectionMatchesCatalog,
   connectionRemovalState,
+  createOpenApiImportReview,
   filterConnectionApps,
   groupConnectionCatalog,
   humanizeToolName,
@@ -53,11 +54,12 @@ import {
   TabsTrigger,
 } from "@rakazo/ui-web";
 import { ChevronDown, ChevronLeft, ChevronUp, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IntegrationSetup } from "../components/integrations/IntegrationSetup";
 import { NativeAccountConnect } from "../components/integrations/NativeAccountConnect";
+import { OpenApiImportReview } from "../components/integrations/OpenApiImportReview";
 import { optionalCatalogFeedProbe } from "../lib/optional-catalog-feed";
-import { rpc, selectedSpaceId } from "../lib/rpc";
+import { createSpaceRpc, currentSpaceSelectionGeneration, rpc, selectedSpaceId } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 
 type SourceKind = "treg" | "executor" | "mcp" | "api" | "graphql";
@@ -114,6 +116,8 @@ export function PluginsOverlay({
   initialNativeApp,
   onConnected,
   onConnectionsChanged,
+  ownerKey = null,
+  spaceId = null,
 }: {
   onClose: () => void;
   onOpenMcp?: () => void;
@@ -121,6 +125,8 @@ export function PluginsOverlay({
   initialNativeApp?: NativeAppId;
   onConnected?: (item: ConnectionCatalogItem) => void;
   onConnectionsChanged?: () => void;
+  ownerKey?: string | null;
+  spaceId?: string | null;
 }) {
   const { t } = useLingui();
   const [setupOpen, setSetupOpen] = useState(false);
@@ -130,6 +136,7 @@ export function PluginsOverlay({
   const [connections, setConnections] = useState<Connection[]>([]);
   const [labelDrafts, setLabelDrafts] = useState<Record<string, string>>({});
   const [sources, setSources] = useState<CapabilityInstall[]>([]);
+  const sourceListGeneration = useRef(0);
   const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
   const [sourceName, setSourceName] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
@@ -140,6 +147,42 @@ export function PluginsOverlay({
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [sourceHint, setSourceHint] = useState<string | null>(null);
+  const [sourceReview, setSourceReview] = useState<OpenApiImportReviewState | null>(null);
+  const sourceFormGeneration = useRef(0);
+  const sourceImport = useRef<ReturnType<typeof createOpenApiImportReview> | null>(null);
+  const sourceAbort = useRef<AbortController | null>(null);
+  const manualSourceAttempt = useRef<object | null>(null);
+  const [manualSourcePending, setManualSourcePending] = useState(false);
+  const sourceAuthority = useRef<object | null>(null);
+  const selectedSourceSpace = selectedSpaceId();
+  const sourceSpaceGeneration = currentSpaceSelectionGeneration();
+  const sourceInputsLocked =
+    manualSourcePending ||
+    (!!sourceReview && ["confirming", "pending", "unknown"].includes(sourceReview.phase));
+  function invalidateSourceReview() {
+    sourceFormGeneration.current += 1;
+    manualSourceAttempt.current = null;
+    setManualSourcePending(false);
+    sourceAbort.current?.abort();
+    sourceImport.current = null;
+    setSourceReview(null);
+    setPending((current) => (current === "install-source" ? null : current));
+  }
+  useLayoutEffect(() => {
+    const authority = {};
+    sourceAuthority.current = authority;
+    sourceListGeneration.current += 1;
+    setSources([]);
+    invalidateSourceReview();
+    setCredential("");
+    setSourceKind(null);
+    setSourceError(null);
+    return () => {
+      if (sourceAuthority.current === authority) sourceAuthority.current = null;
+      sourceFormGeneration.current += 1;
+      sourceAbort.current?.abort();
+    };
+  }, [ownerKey, spaceId, selectedSourceSpace, sourceSpaceGeneration]);
   const [catalogFeedEnabled, setCatalogFeedEnabled] = useState(false);
   const [catalogFeedQuery, setCatalogFeedQuery] = useState("");
   const [catalogFeedResults, setCatalogFeedResults] = useState<IntegrationCatalogResult[]>([]);
@@ -172,6 +215,7 @@ export function PluginsOverlay({
 
   async function refresh() {
     const spaceId = selectedSpaceId();
+    const sourceGeneration = ++sourceListGeneration.current;
     const [items, installs, rows, catalogFeed] = await Promise.all([
       rpc.connections.catalog({}),
       rpc.capabilities.list(),
@@ -194,11 +238,13 @@ export function PluginsOverlay({
       }
       return next;
     });
-    setSources(
-      installs.filter(
-        (install) => install.kind === "mcp" || install.kind === "api" || install.kind === "graphql",
-      ),
-    );
+    if (sourceGeneration === sourceListGeneration.current && selectedSpaceId() === spaceId)
+      setSources(
+        installs.filter(
+          (install) =>
+            install.kind === "mcp" || install.kind === "api" || install.kind === "graphql",
+        ),
+      );
     setCatalogFeedEnabled(catalogFeed.enabled);
     if (selectedSpaceId() === spaceId) onConnectionsChanged?.();
     return { items, rows };
@@ -644,6 +690,7 @@ export function PluginsOverlay({
   }
 
   function beginSource(kind: SourceKind) {
+    invalidateSourceReview();
     setSourceKind(kind);
     setSourceError(null);
     setSourceHint(null);
@@ -675,6 +722,7 @@ export function PluginsOverlay({
     surface: IntegrationCatalogSurface,
   ) {
     if (!surface.source || (surface.kind !== "mcp" && surface.kind !== "openapi")) return;
+    invalidateSourceReview();
     setSourceKind(surface.kind === "mcp" ? "mcp" : "api");
     setSourceName(result.name);
     setSourceUrl(surface.source);
@@ -685,8 +733,83 @@ export function PluginsOverlay({
     setSourceError(null);
   }
 
+  async function previewOpenApi() {
+    invalidateSourceReview();
+    const generation = sourceFormGeneration.current;
+    const authority = sourceAuthority.current;
+    const selection = selectedSpaceId();
+    const selectionGeneration = currentSpaceSelectionGeneration();
+    const origin = window.location.origin;
+    const isCurrent = () =>
+      Boolean(ownerKey && spaceId && authority) &&
+      sourceAuthority.current === authority &&
+      generation === sourceFormGeneration.current &&
+      selection === selectedSpaceId() &&
+      selectionGeneration === currentSpaceSelectionGeneration() &&
+      (!selection || selection === spaceId) &&
+      origin === window.location.origin;
+    if (!isCurrent()) return;
+    const controller = new AbortController();
+    sourceAbort.current = controller;
+    const client = createSpaceRpc(spaceId, isCurrent);
+    const attempt = createOpenApiImportReview({
+      preview: (input) => client.capabilities.previewOpenApi(input, { signal: controller.signal }),
+      confirm: (input) => client.capabilities.confirmOpenApi(input, { signal: controller.signal }),
+      receipt: (input) => client.capabilities.openApiReceipt(input, { signal: controller.signal }),
+      isCurrent,
+      changed: setSourceReview,
+      installed: (install) => {
+        const sourceGeneration = ++sourceListGeneration.current;
+        setSources((current) => [...current.filter((row) => row.id !== install.id), install]);
+        setCredential("");
+        setSourceKind(null);
+        onConnectionsChanged?.();
+        void client.capabilities
+          .list()
+          .then((rows) => {
+            if (isCurrent() && sourceGeneration === sourceListGeneration.current)
+              setSources(
+                rows.filter(
+                  (row) => row.kind === "mcp" || row.kind === "api" || row.kind === "graphql",
+                ),
+              );
+          })
+          .catch(() => undefined);
+      },
+    });
+    sourceImport.current = attempt;
+    setSourceError(null);
+    await attempt.preview({
+      name: sourceName.trim() || t`Custom connector`,
+      source: sourceUrl.trim(),
+      credential: credential.trim() || undefined,
+      config: {
+        auth: { type: authType, ...(authType === "header" ? { name: authName.trim() } : {}) },
+      },
+    });
+  }
+
   async function installSource() {
-    if (!sourceKind) return;
+    if (!sourceKind || sourceKind === "api" || manualSourceAttempt.current) return;
+    const attempt = {};
+    manualSourceAttempt.current = attempt;
+    const generation = sourceFormGeneration.current;
+    const authority = sourceAuthority.current;
+    const selection = selectedSpaceId();
+    const selectionGeneration = currentSpaceSelectionGeneration();
+    const isCurrent = () =>
+      manualSourceAttempt.current === attempt &&
+      sourceAuthority.current === authority &&
+      authority !== null &&
+      generation === sourceFormGeneration.current &&
+      selection === selectedSpaceId() &&
+      selectionGeneration === currentSpaceSelectionGeneration();
+    if (!isCurrent()) {
+      manualSourceAttempt.current = null;
+      return;
+    }
+    setManualSourcePending(true);
+    const client = createSpaceRpc(spaceId ?? selection, isCurrent);
     setSourceError(null);
     setPending("install-source");
     try {
@@ -694,7 +817,7 @@ export function PluginsOverlay({
         type: authType,
         ...(authType === "header" ? { name: authName.trim() } : {}),
       };
-      await rpc.capabilities.install({
+      await client.capabilities.install({
         kind: sourceKind === "treg" || sourceKind === "executor" ? "mcp" : sourceKind,
         name:
           sourceName.trim() ||
@@ -710,22 +833,28 @@ export function PluginsOverlay({
         config:
           sourceKind === "treg"
             ? { preset: "treg", auth: { type: "bearer" } }
-            : sourceKind === "api"
-              ? { openApi: true, auth }
-              : sourceKind === "graphql"
-                ? { auth }
-                : {
-                    preset: "custom",
-                    auth: sourceKind === "executor" ? { type: "bearer" } : auth,
-                  },
+            : sourceKind === "graphql"
+              ? { auth }
+              : {
+                  preset: "custom",
+                  auth: sourceKind === "executor" ? { type: "bearer" } : auth,
+                },
       });
+      if (!isCurrent()) return;
       setCredential("");
       setSourceKind(null);
       await refresh();
     } catch (err) {
-      setSourceError(errorText(err, t`Could not install connector`));
+      if (isCurrent()) setSourceError(errorText(err, t`Could not install connector`));
     } finally {
-      setPending(null);
+      if (manualSourceAttempt.current === attempt) {
+        const current = isCurrent();
+        manualSourceAttempt.current = null;
+        if (current) {
+          setManualSourcePending(false);
+          setPending((pending) => (pending === "install-source" ? null : pending));
+        }
+      }
     }
   }
 
@@ -734,6 +863,7 @@ export function PluginsOverlay({
     setSourceError(null);
     try {
       await rpc.capabilities.remove({ id: install.id });
+      sourceListGeneration.current += 1;
       setSources((current) => current.filter((source) => source.id !== install.id));
     } catch (err) {
       setSourceError(errorText(err, t`Could not remove connector`));
@@ -1220,6 +1350,7 @@ export function PluginsOverlay({
                 className="group mt-8"
                 onToggle={(event) => {
                   if (!(event.currentTarget as HTMLDetailsElement).open) {
+                    invalidateSourceReview();
                     setSourceKind(null);
                     setSourceError(null);
                     setSourceHint(null);
@@ -1403,20 +1534,30 @@ export function PluginsOverlay({
                           ) : sourceKind === "graphql" ? (
                             <Trans>Add GraphQL endpoint</Trans>
                           ) : (
-                            <Trans>Import OpenAPI JSON</Trans>
+                            <Trans>Import OpenAPI</Trans>
                           )}
                         </CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-3">
                         <Input
+                          disabled={sourceInputsLocked}
                           value={sourceName}
-                          onChange={(event) => setSourceName(event.target.value)}
+                          onChange={(event) => {
+                            if (manualSourceAttempt.current || sourceInputsLocked) return;
+                            invalidateSourceReview();
+                            setSourceName(event.target.value);
+                          }}
                           placeholder={t`Display name`}
                         />
                         {sourceKind !== "treg" ? (
                           <Input
+                            disabled={sourceInputsLocked}
                             value={sourceUrl}
-                            onChange={(event) => setSourceUrl(event.target.value)}
+                            onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
+                              invalidateSourceReview();
+                              setSourceUrl(event.target.value);
+                            }}
                             placeholder={
                               sourceKind === "mcp"
                                 ? "https://example.com/mcp"
@@ -1431,8 +1572,13 @@ export function PluginsOverlay({
                         {sourceKind !== "treg" && sourceKind !== "executor" ? (
                           <NativeSelect
                             className="w-full"
+                            disabled={sourceInputsLocked}
                             value={authType}
-                            onChange={(event) => setAuthType(event.target.value as typeof authType)}
+                            onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
+                              invalidateSourceReview();
+                              setAuthType(event.target.value as typeof authType);
+                            }}
                           >
                             <NativeSelectOption value="none">
                               <Trans>No authentication</Trans>
@@ -1449,8 +1595,13 @@ export function PluginsOverlay({
                         sourceKind !== "treg" &&
                         sourceKind !== "executor" ? (
                           <Input
+                            disabled={sourceInputsLocked}
                             value={authName}
-                            onChange={(event) => setAuthName(event.target.value)}
+                            onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
+                              invalidateSourceReview();
+                              setAuthName(event.target.value);
+                            }}
                             placeholder={t`Header name`}
                           />
                         ) : null}
@@ -1460,8 +1611,13 @@ export function PluginsOverlay({
                           <Input
                             type="password"
                             autoComplete="new-password"
+                            disabled={sourceInputsLocked}
                             value={credential}
-                            onChange={(event) => setCredential(event.target.value)}
+                            onChange={(event) => {
+                              if (manualSourceAttempt.current || sourceInputsLocked) return;
+                              invalidateSourceReview();
+                              setCredential(event.target.value);
+                            }}
                             placeholder={
                               sourceKind === "treg"
                                 ? t`Treg token`
@@ -1477,29 +1633,58 @@ export function PluginsOverlay({
                         {sourceHint ? (
                           <p className="text-xs leading-5 text-muted-foreground">{sourceHint}</p>
                         ) : null}
+                        {sourceKind === "api" && sourceReview ? (
+                          <OpenApiImportReview
+                            state={sourceReview}
+                            onConfirm={() => void sourceImport.current?.confirm()}
+                            onCheck={() => void sourceImport.current?.check()}
+                            onPreview={() => void previewOpenApi()}
+                          />
+                        ) : null}
                         <div className="flex gap-2">
+                          {sourceKind !== "api" || !sourceReview ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              className="rounded-full"
+                              size="sm"
+                              disabled={
+                                manualSourcePending ||
+                                pending === "install-source" ||
+                                (sourceKind === "api" && (!ownerKey || !spaceId))
+                              }
+                              onClick={() =>
+                                sourceKind === "api" ? void previewOpenApi() : void installSource()
+                              }
+                            >
+                              {sourceKind === "api" ? (
+                                <Trans>Preview</Trans>
+                              ) : manualSourcePending ? (
+                                <Trans>Verifying…</Trans>
+                              ) : (
+                                <Trans>Verify and add</Trans>
+                              )}
+                            </Button>
+                          ) : null}
                           <Button
                             type="button"
                             variant="secondary"
                             className="rounded-full"
                             size="sm"
-                            disabled={pending === "install-source"}
-                            onClick={() => void installSource()}
+                            onClick={() => {
+                              invalidateSourceReview();
+                              setSourceKind(null);
+                            }}
                           >
-                            {pending === "install-source" ? (
-                              <Trans>Verifying…</Trans>
+                            {manualSourcePending ||
+                            (sourceReview &&
+                              ["confirming", "pending", "unknown", "terminal"].includes(
+                                sourceReview.phase,
+                              )) ? (
+                              <Trans>Close</Trans>
                             ) : (
-                              <Trans>Verify and add</Trans>
+                              <Trans>Cancel</Trans>
                             )}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            className="rounded-full"
-                            size="sm"
-                            onClick={() => setSourceKind(null)}
-                          >
-                            <Trans>Cancel</Trans>
                           </Button>
                         </div>
                       </CardContent>

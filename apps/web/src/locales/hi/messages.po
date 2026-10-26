@@ -13,6 +13,116 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
+#: src/lib/openapi-diagnostic.ts
+msgid "A reference could not be resolved."
+msgstr "एक संदर्भ हल नहीं किया जा सका।"
+
+#. placeholder {0}: preview.counts.omittedDiagnostics
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Additional diagnostics omitted: {0}"
+msgstr "अतिरिक्त छोड़े गए निदान: {0}"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Circular references are not supported."
+msgstr "चक्रीय संदर्भ समर्थित नहीं हैं।"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Could not confirm installation."
+msgstr "इंस्टॉलेशन की पुष्टि नहीं हो सकी।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Could not load the OpenAPI document."
+msgstr "OpenAPI दस्तावेज़ लोड नहीं हो सका।"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Could not preview OpenAPI."
+msgstr "OpenAPI का पूर्वावलोकन नहीं हो सका।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "External references are not supported."
+msgstr "बाहरी संदर्भ समर्थित नहीं हैं।"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Import OpenAPI"
+msgstr "OpenAPI आयात करें"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Installation pending."
+msgstr "इंस्टॉलेशन लंबित है।"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Not imported"
+msgstr "आयात नहीं किए गए"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Preview"
+msgstr "पूर्वावलोकन"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Preview again"
+msgstr "फिर पूर्वावलोकन करें"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+#: src/lib/openapi-diagnostic.ts
+msgid "Preview again before adding."
+msgstr "जोड़ने से पहले फिर पूर्वावलोकन करें।"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Previewing…"
+msgstr "पूर्वावलोकन हो रहा है…"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Ready"
+msgstr "तैयार"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The API server is not supported."
+msgstr "यह API सर्वर समर्थित नहीं है।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The input constraints cannot be preserved."
+msgstr "इनपुट प्रतिबंध सुरक्षित नहीं रखे जा सकते।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The operation limit was reached."
+msgstr "कार्रवाई की सीमा पूरी हो गई है।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The reference is too deep."
+msgstr "संदर्भ बहुत गहरा है।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The schema is too large."
+msgstr "स्कीमा बहुत बड़ा है।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This HTTP method is not supported."
+msgstr "यह HTTP विधि समर्थित नहीं है।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This OpenAPI version is not supported."
+msgstr "यह OpenAPI संस्करण समर्थित नहीं है।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This header is not allowed."
+msgstr "इस हेडर की अनुमति नहीं है।"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "This installation was removed."
+msgstr "यह इंस्टॉलेशन हटा दिया गया है।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This operation cannot be imported."
+msgstr "यह कार्रवाई आयात नहीं की जा सकती।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This parameter cannot be sent safely."
+msgstr "यह पैरामीटर सुरक्षित रूप से नहीं भेजा जा सकता।"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Use one JSON or YAML OpenAPI document."
+msgstr "एक JSON या YAML OpenAPI दस्तावेज़ का उपयोग करें।"
+
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "{0, plural, one {# model} other {# models}}"
@@ -2849,10 +2959,6 @@ msgstr ""
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Image upload area"
 msgstr "छवि अपलोड क्षेत्र"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Import OpenAPI JSON"
-msgstr "OpenAPI JSON इम्पोर्ट करें"
 
 #: src/lib/ticket-status.ts
 msgid "In progress"

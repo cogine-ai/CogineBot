@@ -4,9 +4,11 @@ import type {
   ConnectionCatalogItem,
   NativeAppId,
   NativeBeginInput,
+  OpenApiImportConfirmation,
+  OpenApiImportPreview,
 } from "@rakazo/contracts";
 import { Id, NativeAppIdSchema } from "@rakazo/contracts";
-import type { ConnectionApp } from "@rakazo/core";
+import type { ConnectionApp, OpenApiImportReviewState } from "@rakazo/core";
 import {
   abortableDelay,
   CONNECTION_CATALOG_PAGE_SIZE,
@@ -16,6 +18,7 @@ import {
   connectionCatalogKey,
   connectionMatchesCatalog,
   connectionRemovalState,
+  createOpenApiImportReview,
   EMPTY_PLUGIN_CATALOG_MESSAGE,
   filterConnectionApps,
   groupConnectionCatalog,
@@ -42,6 +45,7 @@ import { MenuPicker } from "../../components/menu-picker";
 import { NativeAccountConnect } from "../../components/native-account-connect";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSegmentedControl } from "../../components/native-segmented-control";
+import { OpenApiImportReview } from "../../components/openapi-import-review";
 import { Chevron } from "../../components/row-accessories";
 import type { ApiRequestContext } from "../../lib/api";
 import { captureApiRequestContext, rpc } from "../../lib/api";
@@ -56,6 +60,11 @@ import {
   writeIntegrationsCache,
 } from "../../lib/integrations-cache";
 import { loadLastBotId } from "../../lib/last-bot";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  subscribeMobileScope,
+} from "../../lib/mobile-scope";
 import { native, useThemedStyles } from "../../lib/native";
 import { errorText } from "../../lib/user-error";
 
@@ -117,6 +126,15 @@ export default function Integrations() {
   const [pending, setPending] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
+  const [sourceReview, setSourceReview] = useState<OpenApiImportReviewState | null>(null);
+  const sourceFormGeneration = useRef(0);
+  const sourceImport = useRef<ReturnType<typeof createOpenApiImportReview> | null>(null);
+  const sourceAbort = useRef<AbortController | null>(null);
+  const manualSourceAttempt = useRef<object | null>(null);
+  const [manualSourcePending, setManualSourcePending] = useState(false);
+  const sourceInputsLocked =
+    manualSourcePending ||
+    (!!sourceReview && ["confirming", "pending", "unknown"].includes(sourceReview.phase));
   const [lastBotId, setLastBotId] = useState("");
   const [catalogReady, setCatalogReady] = useState(false);
   const [labelDrafts, setLabelDrafts] = useState<Record<string, string>>({});
@@ -139,6 +157,27 @@ export default function Integrations() {
   const focusGeneration = useRef(0);
   const refreshGeneration = useRef(0);
   const sourcesGeneration = useRef(0);
+
+  function invalidateSourceReview() {
+    sourceFormGeneration.current += 1;
+    manualSourceAttempt.current = null;
+    setManualSourcePending(false);
+    sourceAbort.current?.abort();
+    sourceImport.current = null;
+    setSourceReview(null);
+    setPending((current) => (current === "source" ? null : current));
+  }
+
+  useEffect(
+    () =>
+      subscribeMobileScope(() => {
+        invalidateSourceReview();
+        setCredential("");
+        setSourceKind(null);
+        setSourceError(null);
+      }),
+    [],
+  );
 
   function applySnapshot(next: IntegrationsSnapshot) {
     snapshot.current = next;
@@ -224,7 +263,10 @@ export default function Integrations() {
 
   function clearStaleScope() {
     if (!cacheScope.current || isIntegrationsScopeCurrent(cacheScope.current)) return;
+    invalidateSourceReview();
     cacheScope.current = null;
+    setCredential("");
+    setSourceKind(null);
     sourceCard.current = null;
     refreshGeneration.current += 1;
     sourcesGeneration.current += 1;
@@ -264,7 +306,10 @@ export default function Integrations() {
     }
     const previous = cacheScope.current;
     if (previous && (previous.userId !== scope.userId || previous.spaceId !== scope.spaceId)) {
+      invalidateSourceReview();
       sourceCard.current = null;
+      setCredential("");
+      setSourceKind(null);
       applySnapshot({ catalog: [], connections: [] });
       setCatalogReady(false);
       setSources([]);
@@ -377,6 +422,7 @@ export default function Integrations() {
       });
       return () => {
         cancelled = true;
+        invalidateSourceReview();
         mounted.current = false;
         sourceCard.current = null;
         focusGeneration.current += 1;
@@ -421,6 +467,7 @@ export default function Integrations() {
   }, [detailKey, toolsTick]);
 
   function closeAdvanced() {
+    invalidateSourceReview();
     setAdvancedOpen(false);
     setSourceKind(null);
     setSourceError(null);
@@ -877,6 +924,7 @@ export default function Integrations() {
   }
 
   function beginSource(kind: SourceKind) {
+    invalidateSourceReview();
     setSourceKind(kind);
     setSourceError(null);
     setName(kind === "treg" ? "Treg" : kind === "executor" ? "Executor" : "");
@@ -885,43 +933,111 @@ export default function Integrations() {
     setRequiresAuth(kind === "treg" || kind === "executor");
   }
 
+  async function previewOpenApi() {
+    invalidateSourceReview();
+    const generation = sourceFormGeneration.current;
+    const connectionCurrent = captureConnectionScope();
+    const scope = captureMobileScope();
+    const isCurrent = () =>
+      generation === sourceFormGeneration.current &&
+      connectionCurrent() &&
+      isMobileScopeCurrent(scope);
+    if (!isCurrent()) return;
+    const controller = new AbortController();
+    sourceAbort.current = controller;
+    async function request<T>(procedure: string, input: unknown): Promise<T> {
+      const context = await captureApiRequestContext(scope.spaceId);
+      if (!isCurrent()) throw new Error("Import closed");
+      return rpc<T>(procedure, input, { requestContext: context, signal: controller.signal });
+    }
+    const attempt = createOpenApiImportReview({
+      preview: (input) => request<OpenApiImportPreview>("capabilities/previewOpenApi", input),
+      confirm: (input) => request<OpenApiImportConfirmation>("capabilities/confirmOpenApi", input),
+      receipt: (input) => request<OpenApiImportConfirmation>("capabilities/openApiReceipt", input),
+      isCurrent,
+      changed: setSourceReview,
+      installed: (install) => {
+        sourcesGeneration.current += 1;
+        setSources((current) => [...current.filter((row) => row.id !== install.id), install]);
+        setCredential("");
+        setSourceKind(null);
+        void refresh().catch(() => undefined);
+      },
+    });
+    sourceImport.current = attempt;
+    setSourceError(null);
+    await attempt.preview({
+      name: name.trim() || t("Custom connector"),
+      source: url.trim(),
+      credential: credential.trim() || undefined,
+      config: { auth: { type: requiresAuth ? "bearer" : "none" } },
+    });
+  }
+
   async function addSource() {
-    if (!sourceKind) return;
+    if (!sourceKind || sourceKind === "api" || manualSourceAttempt.current) return;
+    const attempt = {};
+    manualSourceAttempt.current = attempt;
+    const generation = sourceFormGeneration.current;
+    const connectionCurrent = captureConnectionScope();
+    const scope = captureMobileScope();
+    const isCurrent = () =>
+      manualSourceAttempt.current === attempt &&
+      generation === sourceFormGeneration.current &&
+      connectionCurrent() &&
+      isMobileScopeCurrent(scope);
+    if (!isCurrent()) {
+      manualSourceAttempt.current = null;
+      return;
+    }
+    setManualSourcePending(true);
     setPending("source");
     setSourceError(null);
     try {
-      await rpc("capabilities/install", {
-        kind: sourceKind === "treg" || sourceKind === "executor" ? "mcp" : sourceKind,
-        name:
-          name.trim() ||
-          (sourceKind === "treg"
-            ? "Treg"
-            : sourceKind === "executor"
-              ? "Executor"
-              : sourceKind === "graphql"
-                ? "GraphQL"
-                : t("Custom connector")),
-        source: url.trim(),
-        credential: credential.trim() || undefined,
-        config:
-          sourceKind === "treg"
-            ? { preset: "treg", auth: { type: "bearer" } }
-            : sourceKind === "api"
-              ? { openApi: true, auth: { type: requiresAuth ? "bearer" : "none" } }
+      const requestContext = await captureApiRequestContext(scope.spaceId);
+      if (!isCurrent()) return;
+      await rpc(
+        "capabilities/install",
+        {
+          kind: sourceKind === "treg" || sourceKind === "executor" ? "mcp" : sourceKind,
+          name:
+            name.trim() ||
+            (sourceKind === "treg"
+              ? "Treg"
+              : sourceKind === "executor"
+                ? "Executor"
+                : sourceKind === "graphql"
+                  ? "GraphQL"
+                  : t("Custom connector")),
+          source: url.trim(),
+          credential: credential.trim() || undefined,
+          config:
+            sourceKind === "treg"
+              ? { preset: "treg", auth: { type: "bearer" } }
               : sourceKind === "graphql"
                 ? { auth: { type: requiresAuth ? "bearer" : "none" } }
                 : {
                     preset: "custom",
                     auth: { type: sourceKind === "executor" || requiresAuth ? "bearer" : "none" },
                   },
-      });
+        },
+        { requestContext },
+      );
+      if (!isCurrent()) return;
       setCredential("");
       setSourceKind(null);
       await refresh();
     } catch (reason) {
-      setSourceError(errorText(reason, t("Could not add source")));
+      if (isCurrent()) setSourceError(errorText(reason, t("Could not add source")));
     } finally {
-      setPending(null);
+      if (manualSourceAttempt.current === attempt) {
+        const current = isCurrent();
+        manualSourceAttempt.current = null;
+        if (current) {
+          setManualSourcePending(false);
+          setPending((pending) => (pending === "source" ? null : pending));
+        }
+      }
     }
   }
 
@@ -930,6 +1046,7 @@ export default function Integrations() {
     setSourceError(null);
     try {
       await rpc("capabilities/remove", { id: source.id });
+      sourcesGeneration.current += 1;
       setSources((current) => current.filter((item) => item.id !== source.id));
     } catch (reason) {
       setSourceError(errorText(reason, t("Could not remove source")));
@@ -1339,19 +1456,29 @@ export default function Integrations() {
                             ? t("Remote MCP server")
                             : sourceKind === "graphql"
                               ? t("GraphQL endpoint")
-                              : t("OpenAPI JSON")}
+                              : t("OpenAPI")}
                     </Text>
                     <TextInput
+                      editable={!sourceInputsLocked}
                       value={name}
-                      onChangeText={setName}
+                      onChangeText={(value) => {
+                        if (manualSourceAttempt.current || sourceInputsLocked) return;
+                        invalidateSourceReview();
+                        setName(value);
+                      }}
                       placeholder={t("Display name")}
                       placeholderTextColor={native.tertiaryLabel}
                       style={styles.input}
                     />
                     {sourceKind !== "treg" ? (
                       <TextInput
+                        editable={!sourceInputsLocked}
                         value={url}
-                        onChangeText={setUrl}
+                        onChangeText={(value) => {
+                          if (manualSourceAttempt.current || sourceInputsLocked) return;
+                          invalidateSourceReview();
+                          setUrl(value);
+                        }}
                         autoCapitalize="none"
                         autoCorrect={false}
                         placeholder={
@@ -1370,7 +1497,12 @@ export default function Integrations() {
                     {sourceKind !== "treg" && sourceKind !== "executor" ? (
                       <Pressable
                         accessibilityRole="button"
-                        onPress={() => setRequiresAuth((value) => !value)}
+                        disabled={sourceInputsLocked}
+                        onPress={() => {
+                          if (manualSourceAttempt.current || sourceInputsLocked) return;
+                          invalidateSourceReview();
+                          setRequiresAuth((value) => !value);
+                        }}
                         style={styles.authToggle}
                       >
                         <Text style={styles.secondary}>
@@ -1380,8 +1512,13 @@ export default function Integrations() {
                     ) : null}
                     {sourceKind === "treg" || sourceKind === "executor" || requiresAuth ? (
                       <TextInput
+                        editable={!sourceInputsLocked}
                         value={credential}
-                        onChangeText={setCredential}
+                        onChangeText={(value) => {
+                          if (manualSourceAttempt.current || sourceInputsLocked) return;
+                          invalidateSourceReview();
+                          setCredential(value);
+                        }}
                         secureTextEntry
                         autoCapitalize="none"
                         autoCorrect={false}
@@ -1396,16 +1533,39 @@ export default function Integrations() {
                         style={styles.input}
                       />
                     ) : null}
-                    <View style={styles.accountActions}>
-                      <NativeActionButton
-                        busy={pending === "source"}
-                        label={t("Verify and add")}
-                        onPress={() => void addSource()}
-                        prominence="secondary"
+                    {sourceKind === "api" && sourceReview ? (
+                      <OpenApiImportReview
+                        state={sourceReview}
+                        onConfirm={() => void sourceImport.current?.confirm()}
+                        onCheck={() => void sourceImport.current?.check()}
+                        onPreview={() => void previewOpenApi()}
                       />
+                    ) : null}
+                    <View style={styles.accountActions}>
+                      {sourceKind !== "api" || !sourceReview ? (
+                        <NativeActionButton
+                          busy={manualSourcePending}
+                          label={sourceKind === "api" ? t("Preview") : t("Verify and add")}
+                          onPress={() =>
+                            sourceKind === "api" ? void previewOpenApi() : void addSource()
+                          }
+                          prominence="secondary"
+                        />
+                      ) : null}
                       <NativeActionButton
-                        label={t("Cancel")}
-                        onPress={() => setSourceKind(null)}
+                        label={
+                          manualSourcePending ||
+                          (sourceReview &&
+                            ["confirming", "pending", "unknown", "terminal"].includes(
+                              sourceReview.phase,
+                            ))
+                            ? t("Close")
+                            : t("Cancel")
+                        }
+                        onPress={() => {
+                          invalidateSourceReview();
+                          setSourceKind(null);
+                        }}
                         prominence="secondary"
                       />
                     </View>

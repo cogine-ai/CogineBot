@@ -925,6 +925,18 @@ export class ConnectorRegistry implements ConnectorProvider {
     const provider = this.providers.get(connectorId);
     return provider?.resolveCall?.({ ...call, tool: call.route?.toolName ?? call.tool }, context);
   }
+
+  async assertCallArgs(call: ConnectorCall, context: AdapterContext): Promise<boolean> {
+    const provider = call.route?.connectorId
+      ? this.providers.get(call.route.connectorId)
+      : undefined;
+    return (
+      (await provider?.assertCallArgs?.(
+        { ...call, tool: call.route?.toolName ?? call.tool },
+        context,
+      )) ?? false
+    );
+  }
 }
 
 /** @deprecated Use ConnectorRegistry. */

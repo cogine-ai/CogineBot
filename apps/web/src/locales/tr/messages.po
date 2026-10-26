@@ -13,6 +13,116 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
+#: src/lib/openapi-diagnostic.ts
+msgid "A reference could not be resolved."
+msgstr "Bir başvuru çözümlenemedi."
+
+#. placeholder {0}: preview.counts.omittedDiagnostics
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Additional diagnostics omitted: {0}"
+msgstr "Atlanan ek tanılamalar: {0}"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Circular references are not supported."
+msgstr "Döngüsel başvurular desteklenmiyor."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Could not confirm installation."
+msgstr "Yükleme doğrulanamadı."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Could not load the OpenAPI document."
+msgstr "OpenAPI belgesi yüklenemedi."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Could not preview OpenAPI."
+msgstr "OpenAPI önizlenemedi."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "External references are not supported."
+msgstr "Harici başvurular desteklenmiyor."
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Import OpenAPI"
+msgstr "OpenAPI içe aktar"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Installation pending."
+msgstr "Yükleme bekliyor."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Not imported"
+msgstr "İçe aktarılmadı"
+
+#: src/pages/PluginsOverlay.tsx
+msgid "Preview"
+msgstr "Önizleme"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Preview again"
+msgstr "Yeniden önizle"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+#: src/lib/openapi-diagnostic.ts
+msgid "Preview again before adding."
+msgstr "Eklemeden önce yeniden önizleyin."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Previewing…"
+msgstr "Önizleniyor…"
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "Ready"
+msgstr "Hazır"
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The API server is not supported."
+msgstr "API sunucusu desteklenmiyor."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The input constraints cannot be preserved."
+msgstr "Girdi kısıtlamaları korunamıyor."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The operation limit was reached."
+msgstr "İşlem sınırına ulaşıldı."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The reference is too deep."
+msgstr "Başvuru çok derin."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "The schema is too large."
+msgstr "Şema çok büyük."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This HTTP method is not supported."
+msgstr "Bu HTTP yöntemi desteklenmiyor."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This OpenAPI version is not supported."
+msgstr "Bu OpenAPI sürümü desteklenmiyor."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This header is not allowed."
+msgstr "Bu üst bilgiye izin verilmiyor."
+
+#: src/components/integrations/OpenApiImportReview.tsx
+msgid "This installation was removed."
+msgstr "Bu yükleme kaldırıldı."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This operation cannot be imported."
+msgstr "Bu işlem içe aktarılamaz."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "This parameter cannot be sent safely."
+msgstr "Bu parametre güvenle gönderilemiyor."
+
+#: src/lib/openapi-diagnostic.ts
+msgid "Use one JSON or YAML OpenAPI document."
+msgstr "Tek bir JSON veya YAML OpenAPI belgesi kullanın."
+
 #. placeholder {0}: group.entries.length
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "{0, plural, one {# model} other {# models}}"
@@ -2849,10 +2959,6 @@ msgstr ""
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Image upload area"
 msgstr "Görüntü yükleme alanı"
-
-#: src/pages/PluginsOverlay.tsx
-msgid "Import OpenAPI JSON"
-msgstr "OpenAPI JSON içe aktar"
 
 #: src/lib/ticket-status.ts
 msgid "In progress"

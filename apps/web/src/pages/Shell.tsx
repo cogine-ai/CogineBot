@@ -780,6 +780,18 @@ export function ShellPage() {
   const computerOpenRef = useRef(false);
   const computerBotIdRef = useRef<string | undefined>(undefined);
   const computerBootEpoch = useRef(0);
+  const computerBootObservation = useRef<(() => boolean) | null>(null);
+  const computerBootAttempt = useRef<{
+    botId: string;
+    isCurrent: () => boolean;
+    promise: Promise<ComputerStatus>;
+  } | null>(null);
+  function invalidateComputerBoot() {
+    computerBootEpoch.current += 1;
+    computerBootObservation.current = null;
+    computerBootAttempt.current = null;
+    setBooting(false);
+  }
   const openComputerRef = useRef<(botId?: string) => Promise<boolean>>(async () => false);
   const [computerViewport, setComputerViewport] = useState<{
     height: number;
@@ -966,6 +978,18 @@ export function ShellPage() {
       if (committedSettingsOwner.current === settingsOwner) committedSettingsOwner.current = null;
     };
   }, [settingsOwner]);
+  useLayoutEffect(() => {
+    if (computerBootObservation.current && !computerBootObservation.current()) {
+      invalidateComputerBoot();
+    }
+  }, [
+    settingsOwner,
+    settingsCurrentSpaceId,
+    active?.id,
+    groupId,
+    computerBot?.id,
+    computerBot?.computerMode,
+  ]);
   useLayoutEffect(() => {
     if (!userId || !creationSpaceId) return;
     const scope = {
@@ -1528,7 +1552,7 @@ export function ShellPage() {
     return snap;
   }
 
-  async function refreshThread(id: string, signal?: AbortSignal) {
+  async function refreshThread(id: string, signal?: AbortSignal, isCurrent?: () => boolean) {
     const scrollElement = messageScroll.current;
     const stickToEnd = !scrollElement || transcriptIsNearEnd(scrollElement);
     markOnce("rk:renderer:thread-request-start");
@@ -1537,9 +1561,11 @@ export function ShellPage() {
     const request = ++threadRefreshEpoch.current;
     // Apply threads.get as soon as it returns so stop/takeover status is not held behind
     // routines/skills/screen fetches (progress can advance the cursor meanwhile).
-    const snap = await rpc.threads.get({ botId: id }, signal ? { signal } : undefined);
+    const client = isCurrent ? createSpaceRpc(spaceId ?? null, isCurrent) : rpc;
+    const snap = await client.threads.get({ botId: id }, signal ? { signal } : undefined);
     markOnce("rk:renderer:thread-response");
     if (
+      isCurrent?.() === false ||
       signal?.aborted ||
       (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId ||
       activeBotId.current !== id ||
@@ -1567,9 +1593,10 @@ export function ShellPage() {
     void Promise.all([
       rpc.routines.list({ botId: id }).catch(() => null),
       rpc.skills.list({ botId: id }).catch(() => null),
-      refreshComputerScreen(id).catch(() => null),
+      refreshComputerScreen(id, isCurrent).catch(() => null),
     ]).then(([routines, skills]) => {
       if (
+        isCurrent?.() === false ||
         signal?.aborted ||
         (selectedSpaceId() ?? groupSettingsActor.current.spaceId) !== spaceId ||
         activeBotId.current !== id ||
@@ -1590,12 +1617,16 @@ export function ShellPage() {
     return snap;
   }
 
-  async function refreshComputerScreen(id: string) {
+  async function refreshComputerScreen(id: string, isCurrent?: () => boolean) {
     if (!computerVisible.current) return null;
     const request = ++screenRequest.current;
+    const client = isCurrent
+      ? createSpaceRpc(selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null, isCurrent)
+      : rpc;
     return loadComputerScreen({
-      load: () => rpc.computer.screenUrl({ botId: id }),
+      load: () => client.computer.screenUrl({ botId: id }),
       isCurrent: () =>
+        isCurrent?.() !== false &&
         request === screenRequest.current &&
         (activeBotId.current === id || computerBotIdRef.current === id) &&
         computerVisible.current,
@@ -2159,10 +2190,19 @@ export function ShellPage() {
     (spaceId: string, path: string) => {
       setMobileSidebarOpen(false);
       const previousSpaceId = selectedSpaceId();
+      const previousEffective = previousSpaceId ?? bootstrapMe?.spaceId;
+      const currentPath = activeGroupId.current
+        ? `/app/g/${activeGroupId.current}`
+        : activeBotId.current
+          ? `/app/${activeBotId.current}`
+          : null;
+      if (previousEffective === spaceId && path === currentPath) {
+        navigate(path);
+        return;
+      }
       // Persist the active space (including primary) so voice/RPC headers match the chat.
       const selectionStored = selectSpace(spaceId);
       if (!selectionStored) return;
-      const previousEffective = previousSpaceId ?? bootstrapMe?.spaceId;
       const boundaryChanged = previousEffective !== spaceId;
       // Soft-navigate within the same space; reload only when the auth boundary changes
       // so bootstrapped bots/groups match the request header.
@@ -3410,6 +3450,7 @@ export function ShellPage() {
   );
   const stopRun = useCallback(async () => {
     if (sending) return;
+    invalidateComputerBoot();
     sendingRef.current = true;
     setSending(true);
     try {
@@ -3616,31 +3657,69 @@ export function ShellPage() {
     overlay: boolean;
     force?: boolean;
   }) {
-    const epoch = ++computerBootEpoch.current;
-    const stillThisBoot = () => computerBootEpoch.current === epoch;
-    const stillThisBot = () =>
-      computerBotIdRef.current === targetBotId || activeBotId.current === targetBotId;
     const cached = computerCacheRef.current.get(targetBotId);
     const targetComputer = computer?.botId === targetBotId ? computer : (cached?.computer ?? null);
     const targetScreen = computer?.botId === targetBotId ? screenUrl : (cached?.screenUrl ?? null);
     const needsBoot = force || targetComputer?.state !== "running" || !targetScreen;
+    const pending = computerBootAttempt.current;
+    let provision = pending?.botId === targetBotId && pending.isCurrent() ? pending : null;
+    let stillThisBoot = provision?.isCurrent;
+    if (!stillThisBoot) {
+      const epoch = ++computerBootEpoch.current;
+      const owner = settingsOwner;
+      const spaceId = selectedSpaceId() ?? groupSettingsActor.current.spaceId;
+      const selectionGeneration = currentSpaceSelectionGeneration();
+      const apiOrigin = window.location.origin;
+      const activeId = activeBotId.current;
+      const groupId = activeGroupId.current;
+      const mode = botsRef.current.find((bot) => bot.id === targetBotId)?.computerMode;
+      const isCurrent = () =>
+        computerBootEpoch.current === epoch &&
+        committedSettingsOwner.current === owner &&
+        window.location.origin === apiOrigin &&
+        currentSpaceSelectionGeneration() === selectionGeneration &&
+        (selectedSpaceId() ?? groupSettingsActor.current.spaceId) === spaceId &&
+        activeBotId.current === activeId &&
+        activeGroupId.current === groupId &&
+        computerBotIdRef.current === targetBotId &&
+        botsRef.current.some(
+          (bot) => bot.id === targetBotId && bot.spaceId === spaceId && bot.computerMode === mode,
+        );
+      stillThisBoot = isCurrent;
+      if (needsBoot) {
+        const client = createSpaceRpc(spaceId ?? null, isCurrent);
+        // Claim the provision before dispatch so both views share only the in-flight boot.
+        const promise = Promise.resolve().then(() => client.computer.boot({ botId: targetBotId }));
+        const attempt = { botId: targetBotId, isCurrent, promise };
+        provision = attempt;
+        computerBootAttempt.current = attempt;
+        const clear = () => {
+          if (computerBootAttempt.current === attempt) computerBootAttempt.current = null;
+        };
+        void promise.then(clear, clear);
+      }
+    }
+    computerBootObservation.current = stillThisBoot;
     if (overlay && needsBoot) setBooting(true);
     setComputerError(null);
     setComputerErrorFromScreen(false);
     try {
-      if (needsBoot) {
-        const status = await rpc.computer.boot({ botId: targetBotId });
-        if (!stillThisBoot() || !stillThisBot()) return;
+      const status = provision ? await provision.promise : null;
+      if (!stillThisBoot()) return;
+      if (status) {
         commitComputer(status);
         cacheComputerFor(targetBotId, { computer: status });
       }
       if (takeControl) {
-        await rpc.computer.takeover({ botId: targetBotId });
-        if (!stillThisBoot() || !stillThisBot()) return;
+        await createSpaceRpc(
+          selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null,
+          stillThisBoot,
+        ).computer.takeover({ botId: targetBotId });
+        if (!stillThisBoot()) return;
       }
-      await refreshComputerFor(targetBotId);
+      await refreshComputerFor(targetBotId, stillThisBoot);
     } catch (error) {
-      if (!stillThisBoot() || !stillThisBot()) return;
+      if (!stillThisBoot()) return;
       setComputerError(errorText(error, t`Could not take control`));
       setComputerErrorFromScreen(false);
       throw error;
@@ -3649,17 +3728,21 @@ export function ShellPage() {
     }
   }
 
-  async function refreshComputerFor(targetBotId: string) {
+  async function refreshComputerFor(targetBotId: string, isCurrent?: () => boolean) {
+    if (isCurrent?.() === false) return;
     if (activeBotId.current === targetBotId) {
-      await refreshThread(targetBotId);
+      await refreshThread(targetBotId, undefined, isCurrent);
       return;
     }
     if (computerBotIdRef.current !== targetBotId) return;
-    const status = await rpc.computer.status({ botId: targetBotId });
-    if (computerBotIdRef.current !== targetBotId) return;
+    const client = isCurrent
+      ? createSpaceRpc(selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null, isCurrent)
+      : rpc;
+    const status = await client.computer.status({ botId: targetBotId });
+    if (isCurrent?.() === false || computerBotIdRef.current !== targetBotId) return;
     commitComputer(status);
     cacheComputerFor(targetBotId, { computer: status });
-    await refreshComputerScreen(targetBotId);
+    await refreshComputerScreen(targetBotId, isCurrent);
   }
 
   useEffect(() => {
@@ -3817,6 +3900,7 @@ export function ShellPage() {
     if (!id) return false;
     const bot = botsRef.current.find((candidate) => candidate.id === id);
     if (!bot) return false;
+    if (computerBotIdRef.current !== id) invalidateComputerBoot();
     computerBotIdRef.current = id;
     setComputerBotId(id);
     const cached = computerCacheRef.current.get(id);
@@ -5416,6 +5500,7 @@ export function ShellPage() {
                     <ComputerMaintenanceActions
                       botId={active.id}
                       computer={computer}
+                      onChanging={invalidateComputerBoot}
                       onChanged={async () => {
                         await refreshThread(active.id);
                       }}
@@ -5583,6 +5668,7 @@ export function ShellPage() {
                 onSkillsChange={setAgentSkills}
                 onSave={async ({ computerMode, ...patch }) => {
                   if (computerMode !== undefined && computerMode !== active.computerMode) {
+                    invalidateComputerBoot();
                     await rpc.bots.setComputer({
                       botId: active.id,
                       mode: computerMode,
@@ -6206,6 +6292,9 @@ export function ShellPage() {
 
         {creationAppsEditor && creationAppsEditor === botCreationEditor && panel === "create" ? (
           <PluginsOverlay
+            key={`${settingsOwnerKey}:${creationSpaceId}:${currentSpaceSelectionGeneration()}`}
+            ownerKey={userId ? settingsOwnerKey : null}
+            spaceId={creationSpaceId}
             onConnectionsChanged={connectionsChanged}
             onClose={() => setCreationAppsEditor(null)}
             onOpenMcp={() => {
@@ -6219,6 +6308,9 @@ export function ShellPage() {
         ) : null}
         {pluginsOpen ? (
           <PluginsOverlay
+            key={`${settingsOwnerKey}:${creationSpaceId}:${currentSpaceSelectionGeneration()}`}
+            ownerKey={userId ? settingsOwnerKey : null}
+            spaceId={creationSpaceId}
             activeBotId={activeBotId.current}
             onConnectionsChanged={connectionsChanged}
             onClose={() => setPluginsOpen(false)}
@@ -6403,6 +6495,7 @@ export function ShellPage() {
                   <ComputerMaintenanceActions
                     botId={computerBot.id}
                     computer={computer}
+                    onChanging={invalidateComputerBoot}
                     onChanged={async () => {
                       await refreshComputerFor(computerBot.id);
                     }}

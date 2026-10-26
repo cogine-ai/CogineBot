@@ -598,7 +598,7 @@ describe("OpenAPI connector import", () => {
         servers: [{ url: "https://api.example.test" }],
         paths: { "/contacts": { get: { summary: "List contacts" } } },
       }),
-    ).toThrow("operationId");
+    ).toThrow("invalid_operation");
   });
 
   it("refuses credentials embedded in an imported OpenAPI server URL", () => {
@@ -607,7 +607,7 @@ describe("OpenAPI connector import", () => {
         servers: [{ url: "https://api.example.test?token=fake-secret" }],
         paths: { "/contacts": { get: { operationId: "listContacts" } } },
       }),
-    ).toThrow("encrypted credential field");
+    ).toThrow("invalid_server");
   });
 
   it("refuses sensitive headers that would become model-controlled inputs", () => {
@@ -623,7 +623,7 @@ describe("OpenAPI connector import", () => {
           },
         },
       }),
-    ).toThrow("unsafe header Authorization");
+    ).toThrow("unsafe_header");
   });
 
   it("refuses credentials embedded in a persisted MCP URL", async () => {
