@@ -132,6 +132,7 @@ async function runRoutine(
     scratchpadItem: { findMany: vi.fn(async () => []) },
     externalEffect: { findMany: vi.fn(async () => []) },
     actionApprovalRule: { findMany: vi.fn(async () => []) },
+    actionAutoReviewPreference: { findUnique: vi.fn(async () => null) },
     artifact: { findMany: vi.fn(async () => []) },
   };
   const sandbox = {
