@@ -16,6 +16,70 @@ describe("DaytonaSandboxProvider", () => {
     vi.unstubAllEnvs();
   });
 
+  it("does not start a stopped computer for retained-screen cleanup", async () => {
+    const fixture = daytonaFixture({ state: "stopped" });
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await provider.releaseScreen(
+      { id: "daytona-box", botId: "home", kind: "daytona", providerRef: "daytona-box" },
+      { ...context, botId: "bot-a", screenLeaseId: "run-a:2" },
+      { onlyIfRunning: true },
+    );
+
+    expect(fixture.get).toHaveBeenCalledOnce();
+    expect(fixture.start).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+    expect(fixture.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it("cleans an existing running computer without connecting or preparing it", async () => {
+    const fixture = daytonaFixture();
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await provider.releaseScreen(
+      { id: "daytona-box", botId: "home", kind: "daytona", providerRef: "daytona-box" },
+      { ...context, botId: "bot-a", screenLeaseId: "run-a:2" },
+      { onlyIfRunning: true },
+    );
+
+    expect(fixture.get).toHaveBeenCalledOnce();
+    expect(fixture.executeCommand).toHaveBeenCalledOnce();
+    expect(fixture.executeCommand.mock.calls[0]?.[0]).toContain("run-a:2");
+    expect(fixture.start).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+  });
+
+  it("does not restart a computer that stops after the cleanup state read", async () => {
+    const fixture = daytonaFixture();
+    const stopped = new Error("sandbox stopped before exec");
+    fixture.executeCommand.mockRejectedValueOnce(stopped);
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await expect(
+      provider.releaseScreen(
+        { id: "daytona-box", botId: "home", kind: "daytona", providerRef: "daytona-box" },
+        { ...context, botId: "bot-a", screenLeaseId: "run-a:2" },
+        { onlyIfRunning: true },
+      ),
+    ).rejects.toBe(stopped);
+    expect(fixture.start).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+    expect(fixture.executeCommand).toHaveBeenCalledOnce();
+  });
+
+  it("treats a missing retained computer as already released without starting one", async () => {
+    const fixture = daytonaFixture();
+    fixture.get.mockRejectedValueOnce({ statusCode: 404 });
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await expect(
+      provider.releaseScreen(
+        { id: "daytona-box", botId: "home", kind: "daytona", providerRef: "daytona-box" },
+        { ...context, botId: "bot-a", screenLeaseId: "run-a:2" },
+        { onlyIfRunning: true },
+      ),
+    ).resolves.toBeUndefined();
+    expect(fixture.start).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+    expect(fixture.executeCommand).not.toHaveBeenCalled();
+  });
+
   it("forwards an optional snapshot name to create()", async () => {
     const fixture = daytonaFixture();
     const provider = new DaytonaSandboxProvider(

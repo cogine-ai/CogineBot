@@ -504,7 +504,11 @@ export class DockerSandboxProvider implements SandboxProvider {
     return { id: `docker-snap-${computer.id}`, createdAt: new Date().toISOString() };
   }
 
-  async releaseScreen(computer: ComputerRef, context: AdapterContext): Promise<void> {
+  async releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { onlyIfRunning?: boolean },
+  ): Promise<void> {
     if (!context.botId) return;
     // Run cancellation must not skip cleanup, but cleanup still needs its own deadline.
     const deadline = requestDeadline(SCREEN_RELEASE_TIMEOUT_MS, "sandbox screen release timed out");
@@ -512,7 +516,10 @@ export class DockerSandboxProvider implements SandboxProvider {
       const res = await withAbort(
         fetch(this.url(`/computers/${computer.id}/screen`), {
           method: "DELETE",
-          headers: this.headers(context, computer.botId),
+          headers: {
+            ...this.headers(context, computer.botId),
+            ...(options?.onlyIfRunning ? { "x-rakazo-screen-only-if-running": "1" } : {}),
+          },
           signal: deadline.signal,
         }),
         deadline.signal,

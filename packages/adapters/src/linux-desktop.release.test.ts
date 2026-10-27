@@ -69,6 +69,19 @@ function shellHost() {
 }
 
 describe("LinuxDesktop.releaseScreen", () => {
+  it("uses only the non-starting host supplied for retained-screen cleanup", async () => {
+    const original = host({ code: 0, stdout: "" });
+    original.environment = async () => {
+      throw new Error("ordinary environment may start a computer");
+    };
+    original.run = async () => {
+      throw new Error("ordinary execution may start a computer");
+    };
+    const desktop = new LinuxDesktop(original);
+    const cleanup = host({ code: 0, stdout: "RAKAZO_DESKTOP_RELEASED=1" });
+    await expect(desktop.releaseScreen(computer, context, cleanup)).resolves.toBeUndefined();
+  });
+
   it("drains captured pending cleanup after a successful ordinary release", async () => {
     const f = shellHost();
     let runs = 0;

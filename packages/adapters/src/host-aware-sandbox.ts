@@ -188,8 +188,12 @@ export class HostAwareSandbox implements SandboxProvider {
     return this.route(computer).keepAlive?.(computer) ?? Promise.resolve();
   }
 
-  releaseScreen(computer: ComputerRef, context: AdapterContext) {
-    return this.route(computer).releaseScreen?.(computer, context) ?? Promise.resolve();
+  releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { onlyIfRunning?: boolean },
+  ) {
+    return this.route(computer).releaseScreen?.(computer, context, options) ?? Promise.resolve();
   }
 
   setScreenControl(

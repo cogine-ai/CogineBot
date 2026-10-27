@@ -227,6 +227,7 @@ import {
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
   teamBotWorkspaceDirectory,
+  toComputerRef,
 } from "./computer-support.js";
 import type { UnchangedVisualStreak } from "./computer-tools.js";
 import {
@@ -3447,7 +3448,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
       let leaseValid = true;
       let lastLeaseCheckAt = 0;
       let retainComputerLease = false;
-      let screenRelease: { computer: ComputerRef; context: AdapterContext } | undefined;
+      let screenRelease:
+        | {
+            computer: ComputerRef;
+            context: AdapterContext;
+            retained?: { computerId: string; screenGeneration: number };
+          }
+        | undefined;
       let runAbortController: AbortController | null = null;
       let detachShutdown: (() => void) | undefined;
       const heartbeat = setInterval(() => {
@@ -3618,6 +3625,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           })),
           connectedProviders: connectedComposio.map((row) => row.provider),
         };
+        const computerKind = (await deps.sandbox.provisionKind?.()) ?? deps.sandbox.describe().id;
+        const registerRetainedScreen = () => {
+          const computer = bot.computer;
+          if (takeoverResume && computer?.providerRef && computer.kind === computerKind) {
+            screenRelease ??= {
+              computer: toComputerRef(computer),
+              context,
+              retained: {
+                computerId: computer.id,
+                screenGeneration: computer.screenGeneration,
+              },
+            };
+          }
+        };
+        // A previous attempt kept its screen while waiting for the user. Even a
+        // model-setup failure owes that release, without starting the computer again.
+        registerRetainedScreen();
         const memoryScope = configuredMemory
           ? effectiveMemoryScope(bot.memoryScope, configuredMemory.defaultScope)
           : null;
@@ -3903,7 +3927,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           },
           () => runAbortController?.abort(),
         );
-        const computerKind = (await deps.sandbox.provisionKind?.()) ?? deps.sandbox.describe().id;
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(async () => {
           if (!runComputer.ready) return;
           await checkpointRunComputerWorkspace(deps, storedComputer, runComputer.ready, context);
@@ -3978,6 +4001,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             await settleTakeoverCards();
           }
         }
+        // The user can hand back control while this attempt is setting up.
+        registerRetainedScreen();
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.
         const sourceClientNonce =
           (run.trigger === "user" || run.trigger === "follow_up") && run.sourceMessageId
@@ -7658,9 +7683,32 @@ export function createRunExecutor(deps: ExecutorDeps) {
         clearInterval(heartbeat);
         if (!retainComputerLease) {
           if (screenRelease) {
-            await deps.sandbox
-              .releaseScreen?.(screenRelease.computer, screenRelease.context)
-              .catch(() => undefined);
+            const { computer, context, retained } = screenRelease;
+            // Reset, maintenance, a provider switch, or a new user takeover wins over
+            // cleanup from the earlier attempt. The provider also forbids auto-resume.
+            const canRelease =
+              !retained ||
+              (await deps.prisma.computer
+                .findFirst({
+                  where: {
+                    id: retained.computerId,
+                    screenGeneration: retained.screenGeneration,
+                    providerRef: computer.providerRef,
+                    kind: computer.kind,
+                    state: "running",
+                    maintenanceId: null,
+                    controlLeaseId: null,
+                    controlHolder: { not: "user" },
+                  },
+                  select: { id: true },
+                })
+                .catch(() => null));
+            if (canRelease) {
+              const release = retained
+                ? deps.sandbox.releaseScreen?.(computer, context, { onlyIfRunning: true })
+                : deps.sandbox.releaseScreen?.(computer, context);
+              await release?.catch(() => undefined);
+            }
           }
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
         }

@@ -118,6 +118,18 @@ describe("host-aware sandbox", () => {
     expect(provisionHost).not.toHaveBeenCalled();
   });
 
+  it("preserves the no-start cleanup option when routing an existing reference", async () => {
+    const isolated = new FakeSandboxProvider();
+    const host = new DesktopSandboxProvider();
+    const sandbox = new HostAwareSandbox(isolated, host, async () => true);
+    const release = vi.spyOn(isolated, "releaseScreen").mockResolvedValue();
+    const provision = vi.spyOn(isolated, "provision");
+    const computer: ComputerRef = { id: "old", botId: "home", kind: "fake", providerRef: "old" };
+    await sandbox.releaseScreen(computer, ctx, { onlyIfRunning: true });
+    expect(release).toHaveBeenCalledWith(computer, ctx, { onlyIfRunning: true });
+    expect(provision).not.toHaveBeenCalled();
+  });
+
   it("provisions on the host provider when enabled", async () => {
     const isolated = new FakeSandboxProvider();
     const host = new DesktopSandboxProvider();

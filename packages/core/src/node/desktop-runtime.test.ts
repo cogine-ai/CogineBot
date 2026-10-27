@@ -113,6 +113,42 @@ function fixture() {
 }
 
 describe("shared Linux desktop lifecycle", () => {
+  it.each(["active", "revoking"])(
+    "preserves %s human control when a retained attempt releases the screen",
+    (state) => {
+      const f = fixture();
+      expect(f.ensure("a").status).toBe(0);
+      expect(
+        f.run(desktopControlCommand("a", "run:1", env, true, "human-a", "grant-1")).status,
+      ).toBe(0);
+      const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+      if (state === "revoking") {
+        const fields = readFileSync(slot, "utf8").split("\n");
+        fields[3] = "";
+        fields[4] = "blocked";
+        fields[6] = "human-a";
+        writeFileSync(slot, fields.join("\n"));
+      }
+      const before = readFileSync(slot, "utf8");
+      expect(f.run(releaseDesktopCommand("a", "run:2", env, true, true)).status).toBe(0);
+      expect(readFileSync(slot, "utf8")).toBe(before);
+    },
+  );
+
+  it("does not retain a screen just because a historical control version remains", () => {
+    const f = fixture();
+    expect(f.ensure("a").status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    const fields = readFileSync(slot, "utf8").split("\n");
+    fields[7] = "old-grant";
+    writeFileSync(slot, fields.join("\n"));
+    expect(f.run(releaseDesktopCommand("a", "run:2", env, true, true)).status).toBe(0);
+    const released = readFileSync(slot, "utf8").split("\n");
+    expect(released[1]).toBe("run:2");
+    expect(released[4]).toBe("idle");
+    expect(released[7]).toBe("");
+  });
+
   it("retains an ordinary release slot and fence, then rotates the retired view token", () => {
     const f = fixture();
     expect(f.ensure("a").status).toBe(0);

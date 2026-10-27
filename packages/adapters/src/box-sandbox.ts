@@ -424,8 +424,23 @@ export class BoxSandboxProvider implements SandboxProvider {
     });
   }
 
-  async releaseScreen(computer: ComputerRef, context: AdapterContext): Promise<void> {
-    return this.desktops.releaseScreen(computer, context);
+  async releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { onlyIfRunning?: boolean },
+  ): Promise<void> {
+    if (options?.onlyIfRunning) {
+      const current = await this.client
+        .get({ boxId: this.id(computer) }, { signal: context.signal })
+        .catch((error) => {
+          if (isUnrecoverableBoxError(error)) return undefined;
+          throw error;
+        });
+      if (!current || !["ready", "idle", "running"].includes(current.box.state)) return;
+    }
+    return this.desktops.releaseScreen(computer, context, undefined, {
+      preserveActiveControl: options?.onlyIfRunning,
+    });
   }
 
   async stop(computer: ComputerRef, context: AdapterContext): Promise<void> {

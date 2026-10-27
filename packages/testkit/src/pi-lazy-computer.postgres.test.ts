@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ComposioEmulator } from "@rakazo/adapters";
+import { ComposioEmulator, FakeSandboxProvider } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
 import { createThreadMessage } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
@@ -373,6 +373,208 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
         ).toBe(0);
       } finally {
         finishBlockedWork();
+        try {
+          await stop?.();
+        } finally {
+          await model.close();
+          await rm(dataDir, { recursive: true, force: true });
+          vi.restoreAllMocks();
+          vi.unstubAllEnvs();
+        }
+      }
+    },
+    30_000,
+  );
+
+  it.each(["done", "skipped"] as const)(
+    "releases a retained screen after a text-only %s takeover continuation",
+    async (reason) => {
+      const fixtureKey = "offline-takeover-screen-fixture-key";
+      const model = await startModelEmulator({
+        apiKey: fixtureKey,
+        steps: [
+          {
+            expect() {},
+            response: {
+              type: "tool",
+              id: "retained-screen",
+              name: "request_takeover",
+              arguments: { reason: "Choose an option on the current screen." },
+            },
+          },
+          { expect() {}, response: { type: "text", text: "Control handoff received." } },
+          {
+            expect() {},
+            response: {
+              type: "tool",
+              id: "following-screen",
+              name: "request_takeover",
+              arguments: { reason: "Wait on the current computer." },
+            },
+          },
+        ],
+      });
+      const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-pi-retained-screen-"));
+      vi.stubEnv("SANDBOX_IDLE_MS", "300000");
+      let stop: (() => Promise<void>) | undefined;
+      try {
+        const { createApp } = await import("../../../apps/api/src/app.ts");
+        const handles = await createApp({
+          databaseUrl: process.env.DATABASE_URL!,
+          realtimeDatabaseUrl: process.env.DATABASE_URL!,
+          authUrl: fixtureOrigin,
+          webOrigin: fixtureOrigin,
+          dataDir,
+          sandboxProvider: "fake",
+          agentRuntime: "pi",
+          wakeupDriver: "memory",
+          signupsEnabled: "true",
+          composio: new ComposioEmulator(),
+          encryptionKey: "offline-retained-screen-fixture-encryption-key",
+        });
+        stop = handles.stop;
+        expect(handles.sandbox).toBeInstanceOf(FakeSandboxProvider);
+        const sandbox = handles.sandbox as FakeSandboxProvider;
+        const signup = await handles.app.request("/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: fixtureOrigin },
+          body: JSON.stringify({
+            email: `offline-screen-${randomUUID()}@rakazo.test`,
+            password: "password12",
+            name: "Retained screen fixture",
+          }),
+        });
+        expect(signup.status).toBeLessThan(400);
+        const cookie = sessionCookieHeader(signup);
+        const credential = await rpc<ModelCredential>(handles.app, cookie, "models/connect", {
+          provider: model.model.provider,
+          modelId: model.model.id,
+          baseUrl: model.baseUrl,
+          apiKey: fixtureKey,
+          contextWindow: 160_000,
+          maxTokens: 4096,
+        });
+        await rpc(handles.app, cookie, "models/setDefault", {
+          provider: model.model.provider,
+          modelId: model.model.id,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
+        });
+        const bot = await rpc<{ id: string }>(handles.app, cookie, "bots/create", {
+          name: "Retained screen fixture",
+          title: "",
+          description: "",
+          instructions: "Continue only from observed state.",
+          notifyOnFinish: false,
+          computerMode: "team",
+        });
+        await discardBotIntroRun(handles, cookie, bot.id);
+        await rpc(handles.app, cookie, "bots/update", {
+          botId: bot.id,
+          modelProvider: model.model.provider,
+          modelId: model.model.id,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
+        });
+        const provision = vi.spyOn(sandbox, "provision");
+        const releaseScreen = vi.spyOn(sandbox, "releaseScreen");
+        const waitForRun = async (runId: string, status: string) => {
+          await expect
+            .poll(
+              async () => (await handles.prisma.run.findUnique({ where: { id: runId } }))?.status,
+              { timeout: 15_000, interval: 50 },
+            )
+            .toBe(status);
+          await handles.awaitIdle?.();
+        };
+        const sent = await rpc<{ runId: string }>(handles.app, cookie, "threads/send", {
+          botId: bot.id,
+          text: "Check the screen, then wait for my manual confirmation.",
+        });
+        await waitForRun(sent.runId, "waiting_takeover");
+        const waiting = await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } });
+        const held = await handles.prisma.computerExecutionLease.findFirstOrThrow({
+          where: { runId: sent.runId },
+        });
+        const ref = await provision.mock.results[0]!.value;
+        const box = sandbox.boxes.get(ref.id)!;
+        const originalContext = provision.mock.calls[0]![1];
+        const oldLeaseId = `${sent.runId}:${held.fence}`;
+        const userMessages = await handles.prisma.message.findMany({
+          where: { threadId: waiting.threadId, role: "user" },
+          select: { id: true },
+          orderBy: { seq: "asc" },
+        });
+        expect(provision).toHaveBeenCalledOnce();
+        expect(originalContext.screenLeaseId).toBe(oldLeaseId);
+        // The real watch API claims the fake provider's actual fenced screen slot.
+        expect(
+          await rpc<{ url: string | null }>(handles.app, cookie, "computer/screenUrl", {
+            botId: bot.id,
+          }),
+        ).toMatchObject({ url: expect.any(String) });
+        expect(box.screenLeases.get(bot.id)).toBe(oldLeaseId);
+        await rpc(handles.app, cookie, "computer/takeover", { botId: bot.id });
+        await rpc(handles.app, cookie, "computer/release", { botId: bot.id, reason });
+        await waitForRun(sent.runId, "completed");
+        expect(model.requests).toHaveLength(2);
+        expect(provision).toHaveBeenCalledOnce();
+        const finishedLease = await handles.prisma.computerExecutionLease.findFirstOrThrow({
+          where: { runId: sent.runId },
+        });
+        expect(finishedLease.fence).toBeGreaterThan(held.fence);
+        expect(finishedLease.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+        expect(
+          await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } }),
+        ).toMatchObject({
+          status: "completed",
+          threadId: waiting.threadId,
+          sourceMessageId: waiting.sourceMessageId,
+        });
+        expect(
+          await handles.prisma.message.findMany({
+            where: { threadId: waiting.threadId, role: "user" },
+            select: { id: true },
+            orderBy: { seq: "asc" },
+          }),
+        ).toEqual(userMessages);
+        // A completed continuation must release provider ownership even without a computer tool.
+        expect(box.screenLeases.get(bot.id)).toBeUndefined();
+        expect(
+          releaseScreen.mock.calls.some(
+            ([, context]) => context.screenLeaseId === `${sent.runId}:${finishedLease.fence}`,
+          ),
+        ).toBe(true);
+
+        const following = await rpc<{ runId: string }>(handles.app, cookie, "threads/send", {
+          botId: bot.id,
+          text: "Wait for me on the current computer.",
+        });
+        await waitForRun(following.runId, "waiting_takeover");
+        const nextLease = await handles.prisma.computerExecutionLease.findFirstOrThrow({
+          where: { runId: following.runId },
+        });
+        expect(nextLease.fence).toBeGreaterThan(finishedLease.fence);
+        await rpc(handles.app, cookie, "computer/screenUrl", { botId: bot.id });
+        const nextLeaseId = `${following.runId}:${nextLease.fence}`;
+        expect(box.screenLeases.get(bot.id)).toBe(nextLeaseId);
+        await sandbox.releaseScreen(ref, { ...originalContext, screenLeaseId: oldLeaseId });
+        expect(box.screenLeases.get(bot.id)).toBe(nextLeaseId);
+        await rpc(handles.app, cookie, "threads/stop", { botId: bot.id });
+        await waitForRun(following.runId, "cancelled");
+        expect(box.screenLeases.get(bot.id)).toBeUndefined();
+        expect(
+          await handles.prisma.computerExecutionLease.count({
+            where: { botId: bot.id, expiresAt: { gt: new Date() } },
+          }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.attempt.count({
+            where: { run: { botId: bot.id }, status: "running" },
+          }),
+        ).toBe(0);
+        model.assertComplete();
+      } finally {
         try {
           await stop?.();
         } finally {
