@@ -65,6 +65,120 @@ async function snapshot(id: string, screen: string, lease: string, home = "home"
   });
 }
 
+const browserCommands = ["navigate", "act", "snapshot"] as const;
+
+async function browserRequest(id: string, command: (typeof browserCommands)[number]) {
+  return supervisorApp.request(`/computers/${id}/browser`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "home",
+      "x-rakazo-space-id": "space",
+      "x-rakazo-screen-id": "first",
+      "x-rakazo-screen-lease-id": "run:1",
+    },
+    body: JSON.stringify(
+      command === "navigate"
+        ? { command, url: "https://example.test/next" }
+        : command === "act"
+          ? { command, actions: [{ kind: "click", ref: "current-ref" }] }
+          : { command },
+    ),
+  });
+}
+
+it.each(
+  browserCommands.flatMap((command) =>
+    (["nonzero", "killed", "malformed", "transport", "null", "array", "empty"] as const).map(
+      (failure) => ({
+        command,
+        failure,
+      }),
+    ),
+  ),
+)("preserves unknown $command outcomes after helper $failure", async ({ command, failure }) => {
+  const defaultExec = mock.exec.getMockImplementation()!;
+  mock.exec.mockImplementation(async (options: { Cmd: string[] }) => {
+    if (!options.Cmd.includes("/usr/local/bin/rakazo-page-browser")) return defaultExec(options);
+    return {
+      start: async () => {
+        if (failure === "transport") throw new Error("Fixture helper transport disconnected");
+        return Duplex.from({
+          readable: Readable.from([
+            failure === "malformed"
+              ? '{"ok":'
+              : failure === "null"
+                ? "null"
+                : failure === "array"
+                  ? "[]"
+                  : failure === "empty"
+                    ? "{}"
+                    : "",
+          ]),
+          writable: new Writable({
+            write(_chunk, _encoding, callback) {
+              callback();
+            },
+          }),
+        });
+      },
+      inspect: async () => ({
+        ExitCode: failure === "killed" ? 137 : failure === "nonzero" ? 1 : 0,
+      }),
+    };
+  });
+
+  const response = await browserRequest(`computer-helper-${command}-${failure}`, command);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    ok: false,
+    fallback: "computer_act",
+    uncertain: command !== "snapshot",
+  });
+  expect(
+    mock.exec.mock.calls.filter(([options]) =>
+      options.Cmd.includes("/usr/local/bin/rakazo-page-browser"),
+    ),
+  ).toHaveLength(1);
+});
+
+it.each(browserCommands)("preserves the helper's acknowledged %s failure", async (command) => {
+  const payload = {
+    ok: false,
+    uncertain: false,
+    timedOut: true,
+    ...(command === "navigate" ? { navigationOutcomeKnown: true } : {}),
+    ...(command === "act" ? { completed: 1 } : {}),
+    url: "https://example.test/current",
+    title: "Current page",
+    tree: "Current page",
+    elements: [],
+    error: "Navigation wait exhausted",
+    fallback: "computer_act",
+  };
+  const defaultExec = mock.exec.getMockImplementation()!;
+  mock.exec.mockImplementation(async (options: { Cmd: string[] }) => {
+    if (!options.Cmd.includes("/usr/local/bin/rakazo-page-browser")) return defaultExec(options);
+    return {
+      start: async () =>
+        Duplex.from({
+          readable: Readable.from([JSON.stringify(payload)]),
+          writable: new Writable({
+            write(_chunk, _encoding, callback) {
+              callback();
+            },
+          }),
+        }),
+      inspect: async () => ({ ExitCode: 0 }),
+    };
+  });
+
+  const response = await browserRequest(`computer-helper-acknowledged-${command}`, command);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(payload);
+});
+
 it("resolves the owned display and refuses an older fence before running the helper", async () => {
   expect(await (await snapshot("computer-lease", "first", "run:2")).json()).toMatchObject({
     ok: true,
