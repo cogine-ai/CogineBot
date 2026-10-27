@@ -49,15 +49,20 @@ class PageBrowserTest(unittest.TestCase):
         client.call.assert_not_called()
 
     def test_rejects_navigation_error(self):
-        client = Mock()
+        client = Mock(deadline=helper.time.monotonic() + 22)
         client.call.return_value = {"errorText": "net::ERR_NAME_NOT_RESOLVED"}
-        with self.assertRaisesRegex(RuntimeError, "ERR_NAME_NOT_RESOLVED"):
-            helper.navigate(client, "session", "https://example.test")
+        with patch.object(helper, "track_navigation"), patch.object(helper, "snapshot", return_value={"ok": True}):
+            result = helper.navigate(client, "session", "https://example.test")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertIn("ERR_NAME_NOT_RESOLVED", result["error"])
 
     def test_preserves_completed_actions_when_next_response_is_lost(self):
-        with patch.object(helper, "ensure_helpers"), patch.object(helper, "eval_json") as evaluate:
+        with patch.object(helper, "ensure_helpers"), patch.object(helper, "eval_json") as evaluate, \
+                patch.object(helper, "track_navigation"), patch.object(helper, "follow_navigation", return_value=False), \
+                patch.object(helper, "snapshot", return_value={"ok": True}):
             evaluate.side_effect = [True, {}, True, TimeoutError("lost response")]
-            result = helper.act(Mock(), "session", [
+            result = helper.act(Mock(deadline=helper.time.monotonic() + 22), "session", [
                 {"kind": "click", "ref": "first"}, {"kind": "click", "ref": "second"},
             ])
         self.assertEqual(result["completed"], 1)
@@ -72,9 +77,10 @@ class PageBrowserTest(unittest.TestCase):
 
     def test_binds_saved_login_fill_to_its_origin_in_the_same_evaluation(self):
         with patch.object(helper, "ensure_helpers"), patch.object(helper, "snapshot", return_value={"ok": True}), \
-                patch.object(helper, "eval_json") as evaluate:
+                patch.object(helper, "eval_json") as evaluate, patch.object(helper, "track_navigation"), \
+                patch.object(helper, "follow_navigation", return_value=False):
             evaluate.side_effect = [True, {}]
-            helper.act(Mock(), "session", [
+            helper.act(Mock(deadline=helper.time.monotonic() + 22), "session", [
                 {"kind": "fill", "ref": "e1", "text": "fake-password", "origin": "https://login.example.test"},
             ])
         self.assertEqual(
@@ -105,7 +111,7 @@ class PageBrowserTest(unittest.TestCase):
         client = helper.CdpClient("ws://127.0.0.1:9222/test")
         calls = []
 
-        def fake_call(method, params=None, *, session_id=None, timeout_s=30.0):
+        def fake_call(method, params=None, *, session_id=None, timeout_s=30.0, deadline=None):
             calls.append(method)
             if method == "Page.getFrameTree":
                 return {"frameTree": {"frame": {"id": "frame-1"}}}
@@ -142,7 +148,7 @@ class PageBrowserTest(unittest.TestCase):
     def test_ensure_world_creates_when_missing(self):
         client = helper.CdpClient("ws://127.0.0.1:9222/test")
 
-        def fake_call(method, params=None, *, session_id=None, timeout_s=30.0):
+        def fake_call(method, params=None, *, session_id=None, timeout_s=30.0, deadline=None):
             if method == "Page.getFrameTree":
                 return {"frameTree": {"frame": {"id": "frame-1"}}}
             if method == "Runtime.enable":

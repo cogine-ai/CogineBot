@@ -1,11 +1,12 @@
 import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   browserActFromTool,
   browserNavigateFromTool,
   browserSnapshotFromTool,
   parseBrowserActions,
 } from "./browser-tools.js";
+import { ComputerBrowserProvider } from "./computer-browser.js";
 import { filterPageBrowserTools, PAGE_BROWSER_TOOL_NAMES } from "./executor.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
 
@@ -25,6 +26,46 @@ const computer: ComputerRef = {
 };
 
 describe("browser tools", () => {
+  it("reports timed-out partial navigation without replaying or exposing saved values", async () => {
+    const secret = "synthetic-password-for-navigation";
+    const liveDriver = vi.fn(async () => ({
+      ok: false,
+      completed: 1,
+      uncertain: false,
+      timedOut: true,
+      url: "https://example.test/current",
+      title: "Current page",
+      tree: `- textbox value=${secret}`,
+      elements: [{ ref: "new", role: "textbox", name: "Name", value: secret }],
+      error: "Navigation wait timed out",
+    }));
+    const result = await browserActFromTool(
+      new ComputerBrowserProvider({ liveDriver }),
+      { ...computer, kind: "docker" },
+      context,
+      {
+        actions: [
+          { kind: "click", ref: "old" },
+          { kind: "click", ref: "also-old" },
+        ],
+      },
+      { redactions: () => [secret] },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      completed: 1,
+      uncertain: false,
+      timedOut: true,
+      url: "https://example.test/current",
+      title: "Current page",
+      fallback: "computer_act",
+      elements: [{ ref: "new", role: "textbox", name: "Name" }],
+      note: expect.stringContaining("Do not replay completed or uncertain actions"),
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(liveDriver).toHaveBeenCalledTimes(1);
+  });
+
   it("parses click/fill/type actions and rejects bad batches", () => {
     expect(
       parseBrowserActions([

@@ -78,8 +78,9 @@ export class ComputerBrowserProvider implements BrowserProvider {
     const live = await this.runLive(computer, { command: "navigate", url: request.url }, context);
     if (live?.ok !== true || live.fallback === "computer_act") {
       return {
-        url: request.url,
-        title: "",
+        url: typeof live?.url === "string" ? live.url : request.url,
+        title: typeof live?.title === "string" ? live.title : "",
+        ...navigationObservation(live),
         fallback: "computer_act",
         error: live?.error || DETACHED_MESSAGE,
       };
@@ -87,6 +88,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
     return {
       url: typeof live.url === "string" ? live.url : request.url,
       title: typeof live.title === "string" ? live.title : "",
+      ...navigationObservation(live),
     };
   }
 
@@ -138,18 +140,17 @@ export class ComputerBrowserProvider implements BrowserProvider {
         uncertain: live?.uncertain ?? true,
         url: typeof live?.url === "string" ? live.url : "",
         title: typeof live?.title === "string" ? live.title : "",
+        ...navigationObservation(live),
         fallback: "computer_act",
         error: live?.error || DETACHED_MESSAGE,
       };
     }
-    const elements = Array.isArray(live.elements) ? live.elements : undefined;
     return {
       ok: true,
       completed: typeof live.completed === "number" ? live.completed : request.actions.length,
       url: typeof live.url === "string" ? live.url : "",
       title: typeof live.title === "string" ? live.title : "",
-      tree: typeof live.tree === "string" ? live.tree : elements ? formatTree(elements) : undefined,
-      elements,
+      ...navigationObservation(live),
     };
   }
 
@@ -197,13 +198,30 @@ export class ComputerBrowserProvider implements BrowserProvider {
     } catch (error) {
       context.signal.throwIfAborted();
       return {
-        uncertain: request.command === "act",
+        uncertain: request.command !== "snapshot",
         ok: false,
         error: error instanceof Error ? error.message : String(error),
         fallback: "computer_act",
       };
     }
   }
+}
+
+function navigationObservation(live: LivePayload | undefined) {
+  const fields: {
+    tree?: string;
+    elements?: BrowserSnapshotNode[];
+    timedOut?: boolean;
+    uncertain?: boolean;
+  } = {};
+  if (Array.isArray(live?.elements)) {
+    fields.elements = live.elements;
+    fields.tree = formatTree(live.elements);
+  }
+  if (typeof live?.tree === "string") fields.tree = live.tree;
+  if (typeof live?.timedOut === "boolean") fields.timedOut = live.timedOut;
+  if (typeof live?.uncertain === "boolean") fields.uncertain = live.uncertain;
+  return fields;
 }
 
 function formatTree(elements: BrowserSnapshotNode[]): string {

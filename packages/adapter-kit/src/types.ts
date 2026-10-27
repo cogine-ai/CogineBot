@@ -905,6 +905,13 @@ export interface BrowserNavigateRequest {
 export interface BrowserNavigateResult {
   url: string;
   title: string;
+  /** Navigation may have started before its response was lost. Observe before continuing. */
+  uncertain?: boolean;
+  /** Current observation after navigation, when the page remains readable. */
+  tree?: string;
+  elements?: BrowserSnapshotNode[];
+  /** The bounded navigation/observation wait expired; this does not imply a failed mutation. */
+  timedOut?: boolean;
   /** When set, the page tool could not operate; use computer_act instead. */
   fallback?: "computer_act";
   error?: string;
@@ -955,6 +962,8 @@ export interface BrowserActResult {
   completed: number;
   /** An action may have taken effect before its response was lost. Observe before continuing. */
   uncertain?: boolean;
+  /** The bounded navigation/observation wait expired; completed actions must not be replayed. */
+  timedOut?: boolean;
   url: string;
   title: string;
   /** Snapshot after the actions when available. */

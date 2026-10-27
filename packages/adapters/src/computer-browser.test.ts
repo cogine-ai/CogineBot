@@ -244,6 +244,146 @@ describe("page browser safety", () => {
     ).toMatchObject({ ok: false, uncertain: true, completed: 1 });
   });
 
+  const currentPage = {
+    url: "https://example.test/after-redirect",
+    title: "Current page",
+    tree: '- button "Continue" [current]',
+    elements: [{ ref: "current", role: "button", name: "Continue" }],
+  };
+
+  it.each([true, false])(
+    "keeps current navigation observation and timeout when ok=%s",
+    async (ok) => {
+      const driver = vi.fn(async () => ({
+        ok,
+        ...currentPage,
+        timedOut: true,
+        ...(!ok && {
+          error: "Navigation observation timed out",
+          fallback: "computer_act" as const,
+        }),
+      }));
+      const provider = new ComputerBrowserProvider({ liveDriver: driver });
+      const result = await provider.navigate(
+        computer,
+        { url: "https://example.test/before-redirect" },
+        baseContext,
+      );
+      expect(result).toMatchObject({ ...currentPage, timedOut: true });
+      expect(result.fallback).toBe(ok ? undefined : "computer_act");
+      expect(driver).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps acknowledged actions successful when only the navigation wait expires", async () => {
+    const driver = vi.fn(async () => ({
+      ok: true,
+      completed: 1,
+      uncertain: false,
+      timedOut: true,
+      ...currentPage,
+    }));
+    const provider = new ComputerBrowserProvider({ liveDriver: driver });
+    expect(
+      await provider.act(computer, { actions: [{ kind: "click", ref: "old" }] }, baseContext),
+    ).toMatchObject({ ok: true, completed: 1, timedOut: true, ...currentPage });
+    expect(driver).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves unconfirmed navigation and its readable current page without retrying", async () => {
+    const driver = vi.fn(async () => ({
+      ok: false,
+      uncertain: true,
+      timedOut: true,
+      ...currentPage,
+      error: "Navigation response was lost",
+    }));
+    const provider = new ComputerBrowserProvider({ liveDriver: driver });
+    expect(
+      await provider.navigate(computer, { url: "https://example.test/start" }, baseContext),
+    ).toMatchObject({
+      ...currentPage,
+      uncertain: true,
+      timedOut: true,
+      fallback: "computer_act",
+    });
+    expect(driver).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a lost navigation transport as unconfirmed instead of safe to repeat", async () => {
+    const driver = vi.fn(async () => {
+      throw new Error("Connection closed after dispatch");
+    });
+    const provider = new ComputerBrowserProvider({ liveDriver: driver });
+    expect(
+      await provider.navigate(computer, { url: "https://example.test/start" }, baseContext),
+    ).toMatchObject({ uncertain: true, fallback: "computer_act" });
+    expect(driver).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    "keeps partial timeout progress and current observation without changing uncertainty=%s",
+    async (uncertain) => {
+      const driver = vi.fn(async () => ({
+        ok: false,
+        completed: 1,
+        uncertain,
+        timedOut: true,
+        error: "Observation exceeded its navigation budget",
+        ...currentPage,
+      }));
+      const provider = new ComputerBrowserProvider({ liveDriver: driver });
+      expect(
+        await provider.act(
+          computer,
+          {
+            actions: [
+              { kind: "click", ref: "old" },
+              { kind: "click", ref: "also-old" },
+            ],
+          },
+          baseContext,
+        ),
+      ).toMatchObject({
+        ok: false,
+        completed: 1,
+        uncertain,
+        timedOut: true,
+        fallback: "computer_act",
+        ...currentPage,
+      });
+      expect(driver).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not accept partial or uncertain actions as success because a new page is visible", async () => {
+    for (const progress of [
+      { completed: 1, uncertain: false },
+      { completed: 2, uncertain: true },
+    ]) {
+      const driver = vi.fn(async () => ({
+        ok: true,
+        timedOut: true,
+        ...currentPage,
+        ...progress,
+      }));
+      const provider = new ComputerBrowserProvider({ liveDriver: driver });
+      expect(
+        await provider.act(
+          computer,
+          {
+            actions: [
+              { kind: "click", ref: "old" },
+              { kind: "click", ref: "also-old" },
+            ],
+          },
+          baseContext,
+        ),
+      ).toMatchObject({ ok: false, uncertain: true, fallback: "computer_act" });
+      expect(driver).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("propagates cancellation instead of suggesting another action", async () => {
     const signal = AbortSignal.abort();
     const driver = vi.fn(async () => ({ ok: true }));
