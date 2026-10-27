@@ -1,7 +1,15 @@
-import type { AdapterContext, AgentRunRequest, ComputerRef } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  AgentRunRequest,
+  ComputerRef,
+  SandboxProvider,
+} from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BoxSandboxEmulator } from "./box-emulator.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { SingleScreenClaimTracker } from "./computer-screens.js";
+import { DaytonaSandboxEmulator } from "./daytona-emulator.js";
+import { ManagedSandboxEmulator } from "./e2b-emulator.js";
 import { createRunExecutor } from "./executor.js";
 
 const provisionComputer = vi.hoisted(() => vi.fn());
@@ -35,6 +43,7 @@ async function runRoutine(
     takeover?: boolean;
     abortBeforeTools?: boolean;
     modelId?: string;
+    emulator?: ManagedSandboxEmulator;
     resume?: {
       checkpoint: "takeover" | "takeover-skipped" | null;
       releasedDuringSetup?: "takeover" | "takeover-skipped";
@@ -265,6 +274,8 @@ async function runRoutine(
     artifact: { findMany: vi.fn(async () => []) },
   };
   const provisionKind = options.computer?.provisionKind;
+  const emulatorProvider: SandboxProvider | undefined = options.emulator;
+  const emulatorProvisionKind = emulatorProvider?.provisionKind?.bind(emulatorProvider);
   const screens = new SingleScreenClaimTracker();
   let screenReleased = false;
   if (options.resume)
@@ -278,16 +289,35 @@ async function runRoutine(
       screenLeaseId: "run-1:7",
       signal: new AbortController().signal,
     });
+  if (options.emulator && options.resume) {
+    options.emulator.boxes.set(COMPUTER.id, {
+      ref: { ...COMPUTER, kind: storedComputer.kind },
+      running: true,
+      files: new Map(),
+      screens: new Map([[run.botId, "ready"]]),
+      screenLeases: new Map([[run.botId, "run-1:7"]]),
+    });
+  }
   const sandbox = {
-    describe: () => ({
-      id: options.computer?.providerKind ?? "e2b",
-      capabilities: { graphical: options.computer?.graphical ?? false },
-    }),
-    ...(provisionKind ? { provisionKind: vi.fn(async () => provisionKind) } : {}),
+    describe: () =>
+      emulatorProvider?.describe() ?? {
+        id: options.computer?.providerKind ?? "e2b",
+        capabilities: { graphical: options.computer?.graphical ?? false },
+      },
+    ...(emulatorProvisionKind
+      ? { provisionKind: vi.fn(emulatorProvisionKind) }
+      : provisionKind
+        ? { provisionKind: vi.fn(async () => provisionKind) }
+        : {}),
     listFiles: vi.fn(async () => [{ path: "notes.txt", kind: "file", size: 4 }]),
     writeFile: vi.fn(async () => undefined),
     releaseScreen: vi.fn(async (computer: ComputerRef, context: AdapterContext) => {
-      screenReleased = screens.release(computer.id, context);
+      if (options.emulator) {
+        await options.emulator.releaseScreen(computer, context);
+        screenReleased = !options.emulator.boxes.get(computer.id)?.screenLeases.has(run.botId);
+      } else {
+        screenReleased = screens.release(computer.id, context);
+      }
     }),
     async *exportWorkspace() {
       yield* [];
@@ -363,6 +393,40 @@ afterEach(() => {
 });
 
 describe("run computer provisioning", () => {
+  for (const checkpoint of ["takeover", "takeover-skipped"] as const) {
+    it.each([
+      { kind: "e2b" as const, create: () => new ManagedSandboxEmulator() },
+      { kind: "daytona" as const, create: () => new DaytonaSandboxEmulator() },
+      { kind: "box" as const, create: () => new BoxSandboxEmulator() },
+    ])(
+      `cleans an actual $kind emulator's retained screen on text-only ${checkpoint}`,
+      async ({ kind, create }) => {
+        const emulator = create();
+        const provision = vi.spyOn(emulator, "provision");
+        const { finalizeRun, sandbox, retainedLease, screenReleased } = await runRoutine([], {
+          resume: { checkpoint },
+          computer: { storedKind: kind, providerKind: kind, graphical: true },
+          emulator,
+        });
+
+        expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
+        expect(provision).not.toHaveBeenCalled();
+        expect(provisionComputer).not.toHaveBeenCalled();
+        expect(sandbox.listFiles).not.toHaveBeenCalled();
+        expect(emulator.boxes.get(COMPUTER.id)?.screenLeases.has("bot-1")).toBe(false);
+        expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(
+          { ...COMPUTER, kind },
+          expect.objectContaining({ botId: "bot-1", screenLeaseId: "run-1:8" }),
+          { onlyIfRunning: true },
+        );
+        expect(screenReleased).toBe(true);
+        expect(emulator.boxes.get(COMPUTER.id)?.screens.has("bot-1")).toBe(false);
+        expect(retainedLease.fence).toBe(8);
+        expect(retainedLease.expiresAt).toEqual(new Date(0));
+      },
+    );
+  }
+
   it("never starts the computer for a run that does not use it", async () => {
     const { finalizeRun, sandbox, sleepJobs } = await runRoutine([]);
 

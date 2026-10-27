@@ -3789,12 +3789,18 @@ export function ShellPage() {
       // A newer committed snapshot can reject the refresh response as stale.
       const snap = snapshotRef.current;
       if (snap?.botId !== botId) return;
-      const screen = snap.computer?.state === "running" ? await refreshComputerScreen(botId) : null;
+      // Status events update the computer independently of the thread snapshot.
+      const observed = computerRef.current;
+      const state = (observed?.botId === botId ? observed : snap.computer)?.state;
+      const screen = state === "running" ? await refreshComputerScreen(botId) : null;
       if (cancelled || activeBotId.current !== botId) return;
       const current = snapshotRef.current;
+      const latest = computerRef.current;
+      const currentComputer = latest?.botId === botId ? latest : current?.computer;
+      const currentScreen = computerCacheRef.current.get(botId)?.screenUrl ?? screen;
       if (
         current?.botId !== botId ||
-        !computerPanelNeedsScreen(current.computer?.state, screen) ||
+        !computerPanelNeedsScreen(currentComputer?.state, currentScreen) ||
         autoBooted.current === botId
       )
         return;
