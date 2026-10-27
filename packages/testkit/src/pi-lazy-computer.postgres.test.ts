@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
+import { createThreadMessage } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -21,6 +22,7 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
       computerTools: false,
       stopDuringStart: false,
       stopBeforeStart: false,
+      stopDuringHistory: false,
       task: "Reply with a short greeting.",
     },
     {
@@ -28,6 +30,7 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
       computerTools: true,
       stopDuringStart: false,
       stopBeforeStart: false,
+      stopDuringHistory: false,
       task: "List files, save hello in notes/result.txt, and read it.",
     },
     {
@@ -35,6 +38,7 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
       computerTools: true,
       stopDuringStart: true,
       stopBeforeStart: false,
+      stopDuringHistory: false,
       task: "Save hello in notes/result.txt.",
     },
     {
@@ -42,13 +46,22 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
       computerTools: true,
       stopDuringStart: false,
       stopBeforeStart: true,
+      stopDuringHistory: false,
+      task: "Save hello in notes/result.txt.",
+    },
+    {
+      name: "Stop while preparing an earlier attachment",
+      computerTools: true,
+      stopDuringStart: false,
+      stopBeforeStart: false,
+      stopDuringHistory: true,
       task: "Save hello in notes/result.txt.",
     },
   ])(
     "keeps the required computer lifecycle for $name",
-    async ({ computerTools, stopDuringStart, stopBeforeStart, task }) => {
+    async ({ computerTools, stopDuringStart, stopBeforeStart, stopDuringHistory, task }) => {
       const fixtureKey = "offline-lazy-computer-fixture-key";
-      const stopped = stopBeforeStart || stopDuringStart;
+      const stopped = stopBeforeStart || stopDuringStart || stopDuringHistory;
       let modelWaiting = false;
       let finishBlockedWork = () => {};
       const allowReturn = new Promise<void>((resolve) => {
@@ -163,6 +176,30 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
           modelCredentialId: credential.id,
           expectedRevision: credential.connectionRevision,
         });
+        let historyCopyPath = "";
+        if (stopDuringHistory) {
+          const artifact = await rpc<{ id: string }>(handles.app, cookie, "artifacts/create", {
+            botId: bot.id,
+            name: "earlier.txt",
+            mimeType: "text/plain",
+            contentBase64: Buffer.from("old").toString("base64"),
+          });
+          const thread = await handles.prisma.thread.findFirstOrThrow({ where: { botId: bot.id } });
+          await createThreadMessage(handles.prisma, {
+            threadId: thread.id,
+            role: "user",
+            blocks: [
+              {
+                kind: "file",
+                artifactId: artifact.id,
+                name: "earlier.txt",
+                mimeType: "text/plain",
+                size: 3,
+              },
+            ],
+          });
+          historyCopyPath = `bots/${bot.id}/attachments/${artifact.id}.txt`;
+        }
         const startComputer = handles.sandbox.provision.bind(handles.sandbox);
         const provision = vi.spyOn(handles.sandbox, "provision");
         let providerReady = false;
@@ -175,7 +212,19 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
             return computer;
           });
         }
+        const copyFile = handles.sandbox.writeFile.bind(handles.sandbox);
         const writeFile = vi.spyOn(handles.sandbox, "writeFile");
+        let historyCopyReady = false;
+        if (stopDuringHistory) {
+          writeFile.mockImplementation(async (computer, file, context) => {
+            if (file.path === historyCopyPath) {
+              historyCopyReady = true;
+              // An earlier-file copy is already dispatched; pause before its write settles.
+              await allowReturn;
+            }
+            return copyFile(computer, file, context);
+          });
+        }
         const exportWorkspace = vi.spyOn(handles.sandbox, "exportWorkspace");
         const releaseScreen = vi.spyOn(handles.sandbox, "releaseScreen");
         const enqueue = vi.spyOn(handles.jobs, "enqueue");
@@ -196,16 +245,26 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
         });
         if (stopped) {
           await expect
-            .poll(() => (stopBeforeStart ? modelWaiting : providerReady), {
-              timeout: 15_000,
-              interval: 20,
-            })
+            .poll(
+              () =>
+                stopBeforeStart
+                  ? modelWaiting
+                  : stopDuringHistory
+                    ? historyCopyReady
+                    : providerReady,
+              {
+                timeout: 15_000,
+                interval: 20,
+              },
+            )
             .toBe(true);
           await rpc(handles.app, cookie, "threads/stop", { botId: bot.id });
           expect(
             await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } }),
           ).toMatchObject({ status: "cancelled" });
-          expect(writeFile).not.toHaveBeenCalled();
+          expect(writeFile.mock.calls.filter(([, file]) => file.path !== historyCopyPath)).toEqual(
+            [],
+          );
           finishBlockedWork();
         }
         await expect
@@ -222,16 +281,21 @@ describe.skipIf(!databaseAvailable)("lazy computer through the Pi model request"
         if (stopped) {
           expect
             .soft({
-              writes: writeFile.mock.calls.map(([, file, context]) => ({
-                path: file.path,
-                runId: context.runId,
-              })),
+              writes: writeFile.mock.calls
+                .filter(([, file]) => file.path !== historyCopyPath)
+                .map(([, file, context]) => ({
+                  path: file.path,
+                  runId: context.runId,
+                })),
               exports: exportWorkspace.mock.calls.length,
               requests: model.requests.length,
             })
             .toEqual({ writes: [], exports: 0, requests: 1 });
         }
         model.assertComplete();
+        expect(
+          writeFile.mock.calls.filter(([, file]) => file.path === historyCopyPath),
+        ).toHaveLength(stopDuringHistory ? 1 : 0);
         const firstUserContext = model.requests[0]!.messages.filter(
           (message) => message.role === "user",
         )

@@ -3894,6 +3894,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 computer: async () => computer,
               });
             }
+            // Restoring earlier attachments can outlast the run that requested this start.
+            await requireCurrentComputerRun();
             return computer;
           },
           () => runAbortController?.abort(),

@@ -131,6 +131,7 @@ async function runRoutine(
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
     externalEffect: { findMany: vi.fn(async () => []) },
+    actionApprovalRule: { findMany: vi.fn(async () => []) },
     artifact: { findMany: vi.fn(async () => []) },
   };
   const sandbox = {
@@ -150,7 +151,7 @@ async function runRoutine(
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
   const enqueue = vi.fn(async () => undefined);
   const executor = createRunExecutor({
-    prisma: withEmptyModels(prisma),
+    prisma,
     deploymentModelKey: "fake-deployment-key",
     shutdownSignal: shutdown.signal,
     web,
@@ -256,17 +257,3 @@ describe("run computer provisioning", () => {
     expect(provisionComputer).toHaveBeenCalledOnce();
   });
 });
-
-/** Models the run reads but these tests do not care about behave as empty tables. */
-function withEmptyModels<T extends object>(prisma: T): T {
-  const empty = {
-    findMany: async () => [],
-    findFirst: async () => null,
-    findUnique: async () => null,
-    count: async () => 0,
-    updateMany: async () => ({ count: 0 }),
-  };
-  return new Proxy(prisma, {
-    get: (target, key) => (key in target ? target[key as keyof T] : empty),
-  });
-}
