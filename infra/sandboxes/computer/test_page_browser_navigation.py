@@ -435,6 +435,92 @@ class NavigationProtocolTests(unittest.TestCase):
         self.assertEqual(result["url"], "http://page.test/next")
         self.assertAlmostEqual(clock.now, 0.08)
 
+    def test_semantic_same_document_history_can_report_a_different_loader(self):
+        for kind in ("sameDocument", "historySameDocument"):
+            with self.subTest(kind=kind):
+                def emit(peer):
+                    peer.started_navigation("http://page.test/old#back", "history-entry-loader", kind)
+                    peer.within_navigation("http://page.test/old#back", "fragment")
+
+                result, peer, clock = self.run_events(emit)
+                self.assertTrue(result["ok"])
+                self.assertFalse(result.get("timedOut", False), result)
+                self.assertEqual(result["url"], "http://page.test/old#back")
+                self.assertLessEqual(clock.now, 0.351)
+                self.assertEqual(peer.mutations, 1)
+
+    def test_later_semantic_same_document_signal_does_not_clear_known_cross_pending(self):
+        def emit(peer):
+            peer.request_navigation()
+            peer.started_navigation()
+            peer.started_navigation("http://page.test/old#side", "history-entry-loader", "historySameDocument")
+            peer.within_navigation("http://page.test/old#side", "fragment")
+            peer.scheduled.append((peer.clock.now + 0.1, peer.commit_navigation))
+
+        result, peer, clock = self.run_events(emit, actions=[{"kind": "click", "ref": "old-ref"}] * 2)
+        self.assertEqual(peer.mutations, 1, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["url"], "http://page.test/next")
+        self.assertFalse(result.get("timedOut", False))
+        self.assertAlmostEqual(clock.now, 0.12)
+
+    def test_unrelated_commit_cannot_satisfy_a_later_different_loader_ack(self):
+        for next_commits in (True, False):
+            with self.subTest(next_commits=next_commits):
+                def emit(peer):
+                    peer.commit_navigation("http://page.test/intermediate", "intermediate")
+                    if next_commits:
+                        peer.scheduled.append((peer.clock.now + 0.18, peer.commit_navigation))
+
+                result, peer, clock = self.run_events(emit, explicit=True, ack_delay=0.10)
+                self.assertEqual(result["ok"], next_commits, result)
+                self.assertFalse(result["uncertain"])
+                self.assertTrue(result["navigationOutcomeKnown"])
+                self.assertEqual(result["url"], "http://page.test/next" if next_commits else "http://page.test/intermediate")
+                self.assertEqual(bool(result.get("timedOut")), not next_commits)
+                self.assertAlmostEqual(clock.now, 0.20 if next_commits else 5.10)
+
+    def test_matching_target_commit_before_successor_and_late_ack_stays_settled(self):
+        def emit(peer):
+            peer.commit_navigation()
+            peer.request_navigation("http://page.test/final")
+            peer.started_navigation("http://page.test/final", "final")
+            peer.commit_navigation("http://page.test/final", "final")
+
+        result, peer, clock = self.run_events(emit, explicit=True, ack_delay=0.10)
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result.get("timedOut", False))
+        self.assertEqual(result["url"], "http://page.test/final")
+        self.assertAlmostEqual(clock.now, 0.10)
+
+    def test_target_commit_evidence_survives_a_later_commit_without_started_event(self):
+        def emit(peer):
+            peer.commit_navigation()
+            peer.commit_navigation("http://page.test/final", "final")
+
+        result, peer, clock = self.run_events(emit, explicit=True, ack_delay=0.10)
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result.get("timedOut", False))
+        self.assertEqual(result["url"], "http://page.test/final")
+        self.assertAlmostEqual(clock.now, 0.10)
+
+    def test_proven_successor_commit_before_old_ack_does_not_reopen_old_target(self):
+        for dcl_ready in (True, False):
+            with self.subTest(dcl_ready=dcl_ready):
+                def emit(peer):
+                    peer.request_navigation("http://page.test/final")
+                    peer.started_navigation("http://page.test/final", "final")
+                    peer.commit_navigation("http://page.test/final", "final")
+
+                result, peer, clock = self.run_events(
+                    emit, explicit=True, ack_delay=0.10, mode="queued" if dcl_ready else "loading",
+                )
+                self.assertEqual(result["ok"], dcl_ready, result)
+                self.assertEqual(bool(result.get("timedOut")), not dcl_ready)
+                self.assertEqual(result["url"], "http://page.test/final")
+                self.assertAlmostEqual(clock.now, 0.10 if dcl_ready else 10.02)
+
     def test_queued_navigation_observes_new_document_after_exactly_one_click(self):
         clock = Clock()
         with patch.object(PRODUCT, "time", clock):

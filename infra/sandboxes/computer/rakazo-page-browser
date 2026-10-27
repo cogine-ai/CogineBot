@@ -126,6 +126,8 @@ class NavigationState:
         self.pending_url: str | None = None
         self.pending_cross_document = False
         self.expected_loader: str | None = None
+        self.committed_loaders: set[str] = set()
+        self.last_cross_expectation: tuple[str, str | None, int] | None = None
         self.requested = 0
         self.within_document = 0
         self.committed = 0
@@ -135,6 +137,11 @@ class NavigationState:
 
     def mark(self) -> tuple[int, int, int]:
         return (self.requested, self.within_document, self.committed)
+
+    def begin_action(self) -> tuple[int, int, int]:
+        # Loader evidence belongs only to the action being marked, not the helper's past work.
+        self.committed_loaders.clear()
+        return self.mark()
 
     @property
     def pending(self) -> bool:
@@ -148,14 +155,20 @@ class NavigationState:
         self.pending_cross_document = self.pending_cross_document or cross_document
 
     def expect_navigation(self, loader_id: str, url: str, mark: tuple[int, int, int]) -> None:
-        if self.committed != mark[2]:
+        if loader_id in self.committed_loaders:
             return
-        # Events processed while awaiting the reply may already name a successor loader.
-        if not self.pending or self.requested == mark[0]:
-            self.request(url, True)
-            self.expected_loader = loader_id
-        else:
-            self.pending_cross_document = True
+        successor = self.last_cross_expectation
+        if successor is not None and successor[2] > mark[0]:
+            target, expected_loader, _ = successor
+            distinct = target != url or (expected_loader is not None and expected_loader != loader_id)
+            settled = self.committed != mark[2] and (
+                expected_loader == self.loader_id if expected_loader is not None else target == self.document_url
+            )
+            if distinct and (self.pending or settled):
+                # A newer observed expectation survives even after it has committed.
+                return
+        self.request(url, True)
+        self.expected_loader = loader_id
 
     def event(self, message: dict[str, Any]) -> None:
         if message.get("sessionId") != self.session_id:
@@ -168,6 +181,8 @@ class NavigationState:
                 self.loader_id = frame.get("loaderId")
                 self.document_url = str(frame.get("url") or "") + str(frame.get("urlFragment") or "")
                 self.committed += 1
+                if isinstance(self.loader_id, str):
+                    self.committed_loaders.add(self.loader_id)
                 self.committed_at = time.monotonic()
                 self.dom_loaded = params.get("type") == "BackForwardCacheRestore"
                 if (self.expected_loader is None or self.expected_loader == self.loader_id) and (
@@ -185,13 +200,14 @@ class NavigationState:
                 self.request(target, not fragment)
                 if not fragment:
                     self.expected_loader = None
+                    self.last_cross_expectation = (self.pending_url or "", None, self.requested)
             elif method == "Page.frameStartedNavigating":
                 loader_id = params.get("loaderId")
-                same_document = (params.get("navigationType") in ("sameDocument", "historySameDocument")
-                                 and loader_id == self.loader_id)
+                same_document = params.get("navigationType") in ("sameDocument", "historySameDocument")
                 self.request(params.get("url"), not same_document)
                 if not same_document and isinstance(loader_id, str) and loader_id:
                     self.expected_loader = loader_id
+                    self.last_cross_expectation = (self.pending_url or "", loader_id, self.requested)
             elif method == "Page.navigatedWithinDocument":
                 self.within_document += 1
                 self.document_url = str(params.get("url") or "")
@@ -749,7 +765,7 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
     uncertain = False
     try:
         navigation = track_navigation(client, session_id, deadline)
-        mark = navigation.mark()
+        mark = navigation.begin_action()
         remaining_time(deadline)
         uncertain = True
         result = client.call("Page.navigate", {"url": url}, session_id=session_id, timeout_s=15.0,
@@ -808,7 +824,7 @@ def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> di
                 arguments += ", " + json.dumps(step["text"])
             if step.get("origin"):
                 arguments += ", " + json.dumps(step["origin"])
-            mark = navigation.mark()
+            mark = navigation.begin_action()
             remaining_time(deadline)
             uncertain = True
             data = eval_json(client, session_id, f"window.__rakazoPageBrowser.{kind}({arguments})", deadline)
