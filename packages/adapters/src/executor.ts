@@ -3628,7 +3628,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const computerKind = (await deps.sandbox.provisionKind?.()) ?? deps.sandbox.describe().id;
         const registerRetainedScreen = () => {
           const computer = bot.computer;
-          if (takeoverResume && computer?.providerRef && computer.kind === computerKind) {
+          if (resumeHeldLease && computer?.providerRef && computer.kind === computerKind) {
             screenRelease ??= {
               computer: toComputerRef(computer),
               context,
@@ -3639,8 +3639,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             };
           }
         };
-        // A previous attempt kept its screen while waiting for the user. Even a
-        // model-setup failure owes that release, without starting the computer again.
+        // A previous waiting attempt kept its screen. Track that debt before a
+        // handback can race with setup; current user control still fences cleanup.
         registerRetainedScreen();
         const memoryScope = configuredMemory
           ? effectiveMemoryScope(bot.memoryScope, configuredMemory.defaultScope)

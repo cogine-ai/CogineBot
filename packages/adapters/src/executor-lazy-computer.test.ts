@@ -38,6 +38,8 @@ async function runRoutine(
     resume?: {
       checkpoint: "takeover" | "takeover-skipped" | null;
       releasedDuringSetup?: "takeover" | "takeover-skipped";
+      releasedWhileLoadingMemory?: "takeover" | "takeover-skipped";
+      pendingCard?: boolean;
       providerRef?: string | null;
       currentComputer?: {
         kind?: ComputerRef["kind"];
@@ -66,8 +68,8 @@ async function runRoutine(
     spaceId: "space-1",
     userId: "user-1",
     status: options.resume?.checkpoint === null ? "waiting_takeover" : "queued",
-    trigger: "routine",
-    routineId: "routine-1",
+    trigger: options.resume?.pendingCard ? "user" : "routine",
+    routineId: options.resume?.pendingCard ? null : "routine-1",
     retryOfRunId: null,
     leaseFence: options.resume ? 3 : 0,
     checkpoint: options.resume?.checkpoint ?? null,
@@ -175,7 +177,25 @@ async function runRoutine(
       })),
     },
     message: {
-      findMany: vi.fn(async () => []),
+      findMany: vi.fn(async () =>
+        options.resume?.pendingCard
+          ? [
+              {
+                id: "takeover-card",
+                threadId: run.threadId,
+                seq: 0,
+                role: "bot",
+                botId: run.botId,
+                runId: run.id,
+                blocks: [{ kind: "computer", state: "Needs you", text: "Sign in to the inbox." }],
+                createdAt: new Date(),
+                replyToMessageId: null,
+                replyQuote: null,
+                replyTo: null,
+              },
+            ]
+          : [],
+      ),
       findUnique: vi.fn(async () => null),
       count: vi.fn(async () => 0),
     },
@@ -291,7 +311,17 @@ async function runRoutine(
     runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
     sandbox,
     home: { commit: vi.fn(async () => "fixture-revision") },
-    memory: { read: async () => ({ documents: [] }) },
+    memory: {
+      read: async () => {
+        await Promise.resolve();
+        if (options.resume?.releasedWhileLoadingMemory) {
+          run.checkpoint = options.resume.releasedWhileLoadingMemory;
+          currentComputer.controlHolder = "none";
+          currentComputer.controlLeaseId = null;
+        }
+        return { documents: [] };
+      },
+    },
     memoryProviders: { resolve: async () => null },
     artifacts: { get: vi.fn() },
     events: {
@@ -426,17 +456,73 @@ describe("run computer provisioning", () => {
     expect(screenReleased).toBe(true);
   });
 
+  it("releases a screen handed back during setup before model validation fails", async () => {
+    const { finalizeRun, sandbox, runtimeRun, retainedLease, screenReleased, run } =
+      await runRoutine([], {
+        modelId: "",
+        resume: {
+          checkpoint: null,
+          releasedWhileLoadingMemory: "takeover",
+          currentComputer: { controlHolder: "user", controlLeaseId: "user-control-1" },
+        },
+      });
+
+    expect(finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        error: "Connect a model in Settings before running bots.",
+      }),
+    );
+    expect(run.status).toBe("failed");
+    expect(run.checkpoint).toBe("takeover");
+    expect(runtimeRun).not.toHaveBeenCalled();
+    expect(provisionComputer).not.toHaveBeenCalled();
+    expect(retainedLease.fence).toBe(8);
+    expect(retainedLease.expiresAt).toEqual(new Date(0));
+    expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(
+      COMPUTER,
+      expect.objectContaining({ botId: "bot-1", runId: "run-1", screenLeaseId: "run-1:8" }),
+      { onlyIfRunning: true },
+    );
+    expect(screenReleased).toBe(true);
+  });
+
   it("keeps the retained screen while the user still holds takeover", async () => {
-    const { finalizeRun, sandbox, runtimeRun, prisma, screenReleased } = await runRoutine([], {
-      resume: { checkpoint: null },
+    const { finalizeRun, sandbox, runtimeRun, screenReleased } = await runRoutine([], {
+      resume: {
+        checkpoint: null,
+        currentComputer: { controlHolder: "user", controlLeaseId: "user-control-1" },
+      },
     });
 
     expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
     expect(runtimeRun).toHaveBeenCalledOnce();
     expect(provisionComputer).not.toHaveBeenCalled();
-    expect(prisma.computer.findFirst).not.toHaveBeenCalled();
     expect(sandbox.releaseScreen).not.toHaveBeenCalled();
     expect(screenReleased).toBe(false);
+  });
+
+  it("releases an unheld pending takeover screen when the run completes", async () => {
+    const { finalizeRun, sandbox, runtimeRun, screenReleased, run } = await runRoutine([], {
+      resume: { checkpoint: null, pendingCard: true },
+    });
+
+    expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
+    expect(run.status).toBe("completed");
+    expect(run.checkpoint).toBeNull();
+    expect(runtimeRun).toHaveBeenCalledOnce();
+    const request = runtimeRun.mock.calls[0]![0];
+    expect(request.history.find((message) => message.id === "takeover-card")?.content).toContain(
+      "Sign in to the inbox.",
+    );
+    expect(request.resumeFromCheckpoint).toBeUndefined();
+    expect(provisionComputer).not.toHaveBeenCalled();
+    expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(
+      COMPUTER,
+      expect.objectContaining({ botId: "bot-1", runId: "run-1", screenLeaseId: "run-1:8" }),
+      { onlyIfRunning: true },
+    );
+    expect(screenReleased).toBe(true);
   });
 
   it("releases retained cleanup registered after a held takeover ends during setup", async () => {
