@@ -325,14 +325,131 @@ function button(name: string, scope: ParentNode = document) {
 async function click(target: HTMLElement) {
   await act(async () => target.click());
 }
-async function openPanel() {
+async function openPanelAndStartComputer() {
   await click(button("Agent computer"));
+  if (currentComputer.state !== "running") {
+    expect(bootCalls).toEqual([]);
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+  }
   expect(bootCalls).toEqual(["chief"]);
 }
 
-it("keeps the successful Chief auto-panel boot when the full computer opens before it finishes", async () => {
+it.each(["stopped", "error", undefined] as const)(
+  "keeps a %s computer passive when its side panel opens",
+  async (state) => {
+    const initial = { ...snapshot(status()), computer: state ? status("chief", state) : null };
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+    const otherwise = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation((path: string, ...args: unknown[]) =>
+      path === "threads.get" ? Promise.resolve(initial) : otherwise(path, ...args),
+    );
+    await render();
+    expect(bootCalls).toEqual([]);
+    await click(button("Agent computer"));
+    expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeTruthy();
+    expect.soft(bootCalls).toEqual([]);
+    expect(document.body.textContent).not.toContain("Booting up");
+    expect(boundary.call.mock.calls.filter(([path]) => path === "computer.recover")).toHaveLength(
+      0,
+    );
+  },
+);
+
+it("restores a saved computer panel without booting an idle computer", async () => {
+  window.localStorage.setItem(
+    "rakazo:right-panel-state:user-1:space-1:bot:chief",
+    JSON.stringify({ panel: "computer" }),
+  );
   await render();
-  await openPanel();
+  expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeTruthy();
+  expect(bootCalls).toEqual([]);
+  expect(document.body.textContent).not.toContain("Booting up");
+});
+
+it("keeps restored computer panels passive across bot switches", async () => {
+  for (const botId of ["chief", "worker"])
+    window.localStorage.setItem(
+      `rakazo:right-panel-state:user-1:space-1:bot:${botId}`,
+      JSON.stringify({ panel: "computer" }),
+    );
+  await render();
+  await act(async () => navigate("/app/worker"));
+  expect(container.querySelector('[data-testid="computer-preview"]')?.textContent).toContain(
+    "Computer is stopped",
+  );
+  expect.soft(bootCalls).toEqual([]);
+  expect(document.body.textContent).not.toContain("Booting up");
+  await act(async () => navigate("/app/chief"));
+  expect(bootCalls).toEqual([]);
+  expect(document.body.textContent).not.toContain("Booting up");
+});
+
+it("refreshes a stale booting snapshot before deciding to leave the panel stopped", async () => {
+  boundary.bootstrap.mockResolvedValue({
+    ...bootstrap(),
+    thread: snapshot(status("chief", "booting")),
+  });
+  await render();
+  await click(button("Agent computer"));
+  expect(container.querySelector('[data-testid="computer-preview"]')?.textContent).toContain(
+    "Computer is stopped",
+  );
+  expect(bootCalls).toEqual([]);
+  expect(document.body.textContent).not.toContain("Booting up");
+});
+
+it("reconnects a refreshed running computer without a screen through boot while watching", async () => {
+  currentComputer = status("chief", "running");
+  const otherwise = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path: string, ...args: unknown[]) =>
+    path === "computer.screenUrl" ? Promise.resolve({ url: null }) : otherwise(path, ...args),
+  );
+  await render();
+  await click(button("Agent computer"));
+  expect(bootCalls).toEqual(["chief"]);
+  expect(document.body.textContent).not.toContain("Booting up");
+  expect(document.querySelector('[data-testid="computer-chrome"]')).toBeNull();
+  expect(boundary.call.mock.calls.filter(([path]) => path === "computer.recover")).toHaveLength(0);
+  expect(boundary.call.mock.calls.filter(([path]) => path === "computer.takeover")).toHaveLength(0);
+  await act(async () => firstBoot.resolve(currentComputer));
+  expect(bootCalls).toEqual(["chief"]);
+});
+
+it("watches a running computer with a screen without booting or taking control", async () => {
+  currentComputer = status("chief", "running");
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  await render();
+  await click(button("Agent computer"));
+  expect(container.querySelector('iframe[title="Bot screen preview"]')?.getAttribute("src")).toBe(
+    "http://localhost/screen",
+  );
+  expect(bootCalls).toEqual([]);
+  expect(boundary.call.mock.calls.filter(([path]) => path === "computer.recover")).toHaveLength(0);
+  expect(boundary.call.mock.calls.filter(([path]) => path === "computer.takeover")).toHaveLength(0);
+});
+
+it("keeps a committed stopped computer passive when an older running snapshot returns", async () => {
+  const committed = { ...snapshot(status()), cursor: 20 };
+  const older = { ...snapshot(status("chief", "running")), cursor: 10 };
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: committed });
+  const otherwise = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path: string, ...args: unknown[]) => {
+    if (path === "threads.get") return Promise.resolve(older);
+    if (path === "computer.screenUrl") return Promise.resolve({ url: null });
+    return otherwise(path, ...args);
+  });
+  await render();
+  await click(button("Agent computer"));
+  expect(container.querySelector('[data-testid="computer-preview"]')?.textContent).toContain(
+    "Computer is stopped",
+  );
+  expect(bootCalls).toEqual([]);
+  expect(boundary.call.mock.calls.filter(([path]) => path === "computer.recover")).toHaveLength(0);
+});
+
+it("keeps the successful Chief Open boot when the full computer opens again before it finishes", async () => {
+  await render();
+  await openPanelAndStartComputer();
   await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
   currentComputer = status("chief", "running");
   await act(async () => firstBoot.resolve(currentComputer));
@@ -350,7 +467,7 @@ it("abandons a former bot's boot without letting its finally clear the new bot's
   const workerBoot = deferred<ComputerStatus>();
   boots.push(workerBoot);
   await render();
-  await openPanel();
+  await openPanelAndStartComputer();
   await act(async () => navigate("/app/worker"));
   if (!container.querySelector('[data-testid="computer-preview-open"]'))
     await click(button("Agent computer"));
@@ -374,7 +491,7 @@ it.each(["actor", "session", "space"])(
     const nextBoot = deferred<ComputerStatus>();
     boots.push(nextBoot);
     await render();
-    await openPanel();
+    await openPanelAndStartComputer();
     if (boundaryKind === "actor") boundary.session.data.user.id = "user-2";
     else if (boundaryKind === "session") boundary.session.data.session.id = "session-2";
     else {
@@ -414,7 +531,7 @@ it("invalidates a screen recovery boot only when the confirmed reset dispatches"
     return otherwise(path, ...args);
   });
   await render();
-  await openPanel();
+  await openPanelAndStartComputer();
   await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
   await click(button("More computer actions"));
   await click(button("Reset computer"));
@@ -452,7 +569,7 @@ it("invalidates a screen recovery boot before changing the computer mode", async
     return otherwise(path, ...args);
   });
   await render();
-  await openPanel();
+  await openPanelAndStartComputer();
   await click(button("Show settings"));
   await click(button("Private"));
   await click(button("Save"));
@@ -498,7 +615,7 @@ it("does not restore a boot observation after Stop dispatches", async () => {
     return otherwise(path, ...args);
   });
   await render();
-  await openPanel();
+  await openPanelAndStartComputer();
   await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
   await click(button("Stop"));
   expect(boundary.call.mock.calls.filter(([path]) => path === "threads.stop")).toHaveLength(1);
@@ -516,7 +633,7 @@ it("does not restore a boot observation after Stop dispatches", async () => {
 
 it("ignores a late post-boot refresh after the Space selection changes", async () => {
   await render();
-  await openPanel();
+  await openPanelAndStartComputer();
   await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
   const refresh = deferred<ThreadSnapshot>();
   const otherwise = boundary.call.getMockImplementation()!;
@@ -541,7 +658,7 @@ it("does not reuse a boot after visiting a group and returning to the bot", asyn
   const nextBoot = deferred<ComputerStatus>();
   boots.push(nextBoot);
   await render();
-  await openPanel();
+  await openPanelAndStartComputer();
   await act(async () => navigate("/app/g/ops"));
   await act(async () => navigate("/app/chief"));
   if (!container.querySelector('[data-testid="computer-preview-open"]'))
@@ -601,7 +718,7 @@ it("keeps a valid computer provision when only the same bot's conversation histo
     path === "computer.screenUrl" ? Promise.resolve({ url: null }) : otherwise(path, ...args),
   );
   await render();
-  await openPanel();
+  await openPanelAndStartComputer();
   await click(button("Show settings"));
   await click(button("Clear conversation"));
   await click(button("Clear"));
@@ -627,7 +744,7 @@ it.each(["space-1", null])(
       path === "computer.screenUrl" ? Promise.resolve({ url: null }) : otherwise(path, ...args),
     );
     await render();
-    await openPanel();
+    await openPanelAndStartComputer();
     expect(document.body.textContent).not.toContain("Booting up");
     const chiefRow = container.querySelector<HTMLElement>('[data-roster-bot-id="chief"]')!;
     expect(chiefRow.getAttribute("aria-current")).toBe("page");

@@ -121,7 +121,8 @@ export async function materializeCurrentTurnFiles(
   blocks: MessageBlock[] | undefined,
   input: {
     context: AdapterContext & { botId: string };
-    computer: ComputerRef;
+    /** Starts the computer; called only when there is a file to copy onto it. */
+    computer: () => Promise<ComputerRef>;
     computerMode: ComputerMode;
     markWorkspaceDirty?: () => void;
   },
@@ -157,6 +158,7 @@ async function materializeThreadFiles(
   const materialized: MaterializedThreadFile[] = [];
 
   for (const block of fileBlocks) {
+    input.context.signal.throwIfAborted();
     const row = byId.get(block.artifactId);
     if (!row) throw new Error(`Attached file is unavailable: ${block.name}`);
     const relativePath = `attachments/${row.id}${attachmentExtensionForMimeType(row.mimeType)}`;
@@ -165,10 +167,15 @@ async function materializeThreadFiles(
       input.context.botId,
       relativePath,
     );
+    let computer: ComputerRef | undefined;
+    if (preserveExisting) {
+      computer = await input.computer();
+      input.context.signal.throwIfAborted();
+    }
     const probeMaxBytes = 1;
     const exists = preserveExisting
       ? await deps.sandbox
-          .readFile(input.computer, workspacePath, input.context, { maxBytes: probeMaxBytes })
+          .readFile(computer!, workspacePath, input.context, { maxBytes: probeMaxBytes })
           .then(
             () => true,
             (error: unknown) => {
@@ -208,16 +215,18 @@ async function materializeThreadFiles(
             },
           )
       : false;
-    if (preserveExisting) input.context.signal.throwIfAborted();
+    input.context.signal.throwIfAborted();
     if (!exists) {
       const bytes = await deps.artifacts.get(row.storageKey, input.context);
-      if (preserveExisting) input.context.signal.throwIfAborted();
+      input.context.signal.throwIfAborted();
       if (bytes.byteLength > ATTACHMENT_MAX_BYTES) {
         throw new Error(`Attached file exceeds the 10 MiB limit: ${row.name}`);
       }
+      computer ??= await input.computer();
+      input.context.signal.throwIfAborted();
       input.markWorkspaceDirty?.();
       await deps.sandbox.writeFile(
-        input.computer,
+        computer,
         { path: workspacePath, content: bytes },
         input.context,
       );
@@ -263,6 +272,47 @@ export async function materializeRecentThreadFiles(
     }
   }
   return materialized;
+}
+
+/**
+ * The earlier attachments a run can expect on its computer, without starting it. The run
+ * copies them with materializeRecentThreadFiles once something first uses the computer.
+ */
+export async function listRecentThreadFiles(
+  deps: Pick<Parameters<typeof materializeCurrentTurnFiles>[0], "prisma">,
+  history: ReadonlyArray<{ id?: string; role: string }>,
+  messages: ReadonlyArray<{ id: string; blocks: MessageBlock[] }>,
+  input: {
+    context: AdapterContext;
+    skipMessageId?: string | null;
+    maxTurns: number;
+  },
+): Promise<MaterializedThreadFile[]> {
+  const blocks = recentAttachmentBlocks(history, messages, input);
+  if (!blocks.length) return [];
+  const rows = await deps.prisma.artifact.findMany({
+    where: {
+      id: { in: blocks.map((block) => block.artifactId) },
+      spaceId: input.context.spaceId,
+      userId: input.context.userId,
+    },
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const limit = ATTACHMENT_MAX_BYTES;
+  return blocks
+    .flatMap((block) => {
+      const row = byId.get(block.artifactId);
+      if (!row || row.size > limit) return [];
+      return [
+        {
+          name: row.name,
+          mimeType: row.mimeType,
+          size: row.size,
+          path: `attachments/${row.id}${attachmentExtensionForMimeType(row.mimeType)}`,
+        },
+      ];
+    })
+    .slice(0, ATTACHMENT_MAX_COUNT);
 }
 
 /** Newest attachments from the effective history's last attachment-bearing user turns. */

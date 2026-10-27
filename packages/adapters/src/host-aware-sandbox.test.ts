@@ -103,6 +103,21 @@ describe("host-aware sandbox", () => {
     await desktop.destroy(computer, ctx);
   });
 
+  it("reports the selected kind without starting either provider", async () => {
+    const isolated = new FakeSandboxProvider();
+    const host = new DesktopSandboxProvider();
+    const provisionIsolated = vi.spyOn(isolated, "provision");
+    const provisionHost = vi.spyOn(host, "provision");
+    let enabled = false;
+    const sandbox = new HostAwareSandbox(isolated, host, async () => enabled);
+
+    expect(await sandbox.provisionKind()).toBe("fake");
+    enabled = true;
+    expect(await sandbox.provisionKind()).toBe("desktop");
+    expect(provisionIsolated).not.toHaveBeenCalled();
+    expect(provisionHost).not.toHaveBeenCalled();
+  });
+
   it("provisions on the host provider when enabled", async () => {
     const isolated = new FakeSandboxProvider();
     const host = new DesktopSandboxProvider();

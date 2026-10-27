@@ -10,6 +10,67 @@ import {
   signup,
 } from "./helpers";
 
+test("a stopped computer panel waits for explicit Open before booting", async ({
+  page,
+}, testInfo) => {
+  await signup(
+    page,
+    `passive-computer-${Date.now()}@rakazo.test`,
+    "password12",
+    "Passive Computer",
+  );
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  await expect
+    .poll(
+      async () =>
+        (await rpc<{ run: { status: string } | null }>(page, "threads/get", { botId })).run
+          ?.status ?? "idle",
+    )
+    .toBe("idle");
+  await expect(rpc<ComputerStatus>(page, "computer/status", { botId })).resolves.toMatchObject({
+    state: "stopped",
+  });
+  let boots = 0;
+  let recoveries = 0;
+  let takeovers = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/computer/boot")) boots += 1;
+    if (request.url().endsWith("/rpc/computer/recover")) recoveries += 1;
+    if (request.url().endsWith("/rpc/computer/takeover")) takeovers += 1;
+  });
+  await openComputerPanel(page);
+  const preview = page.getByTestId("computer-preview");
+  await expect(preview).toContainText("Computer is stopped");
+  await expect(page.getByText(/Booting up .+ computer/)).toHaveCount(0);
+  await expect(page.getByTestId("side-panel").getByTestId("computer-more-button")).toHaveCount(0);
+  await expect(rpc<ComputerStatus>(page, "computer/status", { botId })).resolves.toMatchObject({
+    state: "stopped",
+  });
+  await captureScreenshot(page, testInfo, "b41-stopped-computer-side-panel");
+  expect(boots).toBe(0);
+  expect(recoveries).toBe(0);
+  expect(takeovers).toBe(0);
+
+  await preview.hover();
+  await preview.getByTestId("computer-preview-open").click();
+  const chrome = page.getByTestId("computer-chrome");
+  await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+  await expect(chrome.getByRole("button", { name: "Take control", exact: true })).toBeVisible();
+  await expect(rpc<ComputerStatus>(page, "computer/status", { botId })).resolves.toMatchObject({
+    state: "running",
+  });
+  expect(boots).toBe(1);
+  expect(recoveries).toBe(0);
+  expect(takeovers).toBe(0);
+  await captureScreenshot(page, testInfo, "b41-explicit-open-watches-computer");
+  await chrome.getByRole("button", { name: "Take control", exact: true }).click();
+  await expect(chrome.getByText("You have control", { exact: true })).toBeVisible();
+  expect(boots).toBe(1);
+  expect(recoveries).toBe(0);
+  expect(takeovers).toBe(1);
+});
+
 test("Team Computer gives bots a home folder plus shared space while Private stays isolated", async ({
   page,
 }, testInfo) => {
@@ -23,6 +84,10 @@ test("Team Computer gives bots a home folder plus shared space while Private sta
   const chiefId = activeBotId(page);
 
   await openComputerPanel(page);
+  await page.getByTestId("computer-preview").hover();
+  await page.getByTestId("computer-preview-open").click();
+  await expect(page.getByRole("button", { name: "Close computer" })).toBeVisible();
+  await page.getByRole("button", { name: "Close computer" }).click();
   await expect
     .poll(() => rpc<ComputerStatus>(page, "computer/status", { botId: chiefId }))
     .toMatchObject({ mode: "team", state: "running" });
