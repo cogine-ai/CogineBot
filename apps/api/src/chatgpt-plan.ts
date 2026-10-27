@@ -26,7 +26,8 @@ import {
   withModelCredentialLock,
 } from "@rakazo/adapters";
 import type { ModelCatalogEntry } from "@rakazo/contracts";
-import type { Prisma, PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 
 const REGISTRATION_KIND = "chatgpt-plan-registration";
 type Scope = { userId: string; spaceId: string };
@@ -54,6 +55,16 @@ export type ChatGPTPlanConnectionCredential = ChatGPTPlanCredential & {
   registrationId: string;
   chatgptPlanModels: ReturnType<typeof readChatGPTPlanModels>;
 };
+
+/** Order finalization and disconnect even before the first credential exists. */
+export async function lockChatGPTPlanConnection(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  userId: string,
+): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT pg_advisory_xact_lock(hashtext('coginebot-chatgpt-plan-connection'), hashtext(${userId}))::text AS "lock"
+  `);
+}
 
 export function isLocalChatGPTPlanOrigin(origin: string): boolean {
   try {
@@ -530,6 +541,7 @@ export async function disconnectChatGPTPlan(
   if (selected) {
     await withModelCredentialLock(selected.secretId, async () => {
       await withChatGPTPlanCredentialLock(deps.prisma, selected.secretId, async (tx) => {
+        await lockChatGPTPlanConnection(tx, actor.userId);
         await options.validateRemoval?.(tx);
         const latest = await tx.userModelCredential.findFirst({
           where: { id: selected.id, userId: actor.userId, provider: CHATGPT_PLAN_PROVIDER_ID },
@@ -561,6 +573,7 @@ export async function disconnectChatGPTPlan(
     catalogCache.delete(selected.secretId);
   } else if (removeCredentials) {
     await deps.prisma.$transaction(async (tx) => {
+      await lockChatGPTPlanConnection(tx, actor.userId);
       await options.validateRemoval?.(tx);
       const appeared = await tx.userModelCredential.findFirst({
         where: {

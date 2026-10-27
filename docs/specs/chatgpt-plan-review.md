@@ -34,6 +34,7 @@ the following concrete gaps; each was fixed with regression coverage:
 | A failed profile lookup looked like an empty account list | Only ChatGPT authorization is disabled with scoped recovery copy; unrelated model settings remain usable |
 | A binding could appear after disconnect reference checks | Binding `FOR SHARE` and disconnect `FOR UPDATE` serialize the pin write and removal; real PostgreSQL tests cover both orders and a stale Serializable snapshot |
 | A reconnect could change the target while disconnect waited | Exact credential/secret/revision fences and an absent-to-present check refuse stale removal before any remote revocation |
+| First credential publication could race past an empty disconnect check | Finalization and disconnect share a user/provider transaction lock; a PostgreSQL control reproduces the original absence gap and both guarded orderings pass |
 | Usage failures were generic and lacked the promised recovery link | Actual Pi error normalization exposes a fixed recovery action on web/mobile; settings/error E2E screenshots verify the trusted link |
 | A disconnected placeholder claimed one available model | It now displays only the sign-in state until account discovery succeeds |
 

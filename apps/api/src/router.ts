@@ -253,6 +253,7 @@ import {
   disconnectChatGPTPlan,
   isLocalChatGPTPlanOrigin,
   listChatGPTPlanProfiles,
+  lockChatGPTPlanConnection,
 } from "./chatgpt-plan.js";
 import {
   executionBlocksUserTakeover,
@@ -7526,6 +7527,8 @@ async function persistModelCredential(
       deps.prisma.$transaction(
         async (tx) => {
           throwIfAborted(input.signal);
+          if (input.provider === CHATGPT_PLAN_PROVIDER_ID)
+            await lockChatGPTPlanConnection(tx, actor.userId);
           const existing = input.credentialId
             ? await tx.userModelCredential.findFirst({
                 where: { id: input.credentialId, userId: actor.userId, provider: input.provider },

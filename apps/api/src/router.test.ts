@@ -2220,6 +2220,7 @@ describe("model credential persistence", () => {
       upsert,
     };
     const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       userModelCredential,
       secret: { create: vi.fn().mockResolvedValue({}) },
       spaceModelPreference,
@@ -2245,7 +2246,7 @@ describe("model credential persistence", () => {
         agentRuntime: "pi",
       },
     } as unknown as RouterDeps;
-    return { upsert, finish, deps, handler: new RPCHandler(createRouter(deps)) };
+    return { upsert, finish, deps, tx, handler: new RPCHandler(createRouter(deps)) };
   }
 
   async function call(handler: RPCHandler<never>, path: string, body: unknown): Promise<Response> {
@@ -2259,6 +2260,46 @@ describe("model credential persistence", () => {
     );
     return response;
   }
+
+  it("locks the ChatGPT user/provider slot before finalization reads or creates its first credential", async () => {
+    const { finish, tx, handler } = persistDeps();
+    finish.mockImplementation(async (_loginId, _actor, persist) => ({
+      status: "connected" as const,
+      value: await persist({
+        status: "connected",
+        provider: "chatgpt-plan",
+        credential: {
+          type: "oauth",
+          access: "fake-access",
+          refresh: "fake-refresh",
+          expires: Date.now() + 60_000,
+          clientId: "oaiapp_fixture",
+          issuer: "https://auth.openai.com",
+          subject: "fixture-subject",
+          hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
+          idToken: "fake-id-token",
+          scopes: ["chatgpt.tokens.use.direct"],
+          chatgptPlanModels: [{ id: "account-model", name: "Account model" }],
+        },
+        signal: new AbortController().signal,
+      }),
+    }));
+    const response = await call(handler, "models/finishOAuth", { loginId: "login-plan" });
+    expect(response.status).toBe(200);
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
+    expect(tx.$queryRaw.mock.calls[0]![0]).toMatchObject({
+      values: [actor.userId],
+      strings: expect.arrayContaining([
+        expect.stringContaining("coginebot-chatgpt-plan-connection"),
+      ]),
+    });
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.userModelCredential.findFirst.mock.invocationCallOrder[0]!,
+    );
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.userModelCredential.create.mock.invocationCallOrder[0]!,
+    );
+  });
 
   it("does not persist a stringified null model id from subscription sign-in", async () => {
     const { upsert, finish, handler } = persistDeps();

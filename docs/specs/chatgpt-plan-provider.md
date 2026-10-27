@@ -204,6 +204,16 @@ to the user. Keep the issued client/verified identity and host ID for later
 authorization, but clear retained login hints. Do not delete another provider's
 credentials or another user's registrations.
 
+Final credential publication and disconnect share a transaction advisory lock
+keyed to the product user and this provider, including when no credential exists
+yet. OAuth exchange, identity verification and model discovery finish before the
+publication transaction takes this lock. The API process cancels its pending
+sign-ins before disconnect; another process's overlapping finalization and
+disconnect serialize in lock order. A first finalization committed ahead of an
+empty disconnect is detected as a changed connection. A finalization ordered
+after disconnect may establish a new connection only after removal commits.
+This is transaction serialization, with no distributed cancellation generation.
+
 Before revocation, validate the selected connection revision and existing
 references. ChatGPT binding writes hold a shared row lock; disconnect holds an
 exclusive row lock through reference validation and removal. Re-read the exact

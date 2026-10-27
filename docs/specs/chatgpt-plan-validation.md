@@ -31,8 +31,9 @@ into accepted behavior.
 
 | Check | Result | Practical limit |
 | --- | --- | --- |
-| Full default offline run after review | 845 suites passed / 78 skipped; 13,860 tests passed / 841 skipped | Opt-in suites remain skipped; no real-provider success is inferred |
-| PostgreSQL validation after rebase | 5 tests passed against an isolated PostgreSQL 17 container | Credential advisory locks and binding/removal row locks; no production database |
+| Full default offline run at `dc444133` before the first-connection follow-up | 845 suites passed / 78 skipped; 13,860 tests passed / 841 skipped | Opt-in suites remain skipped; final-head CI is recorded on the PR |
+| PostgreSQL validation after review follow-up | 8 tests passed on PostgreSQL 17 and again through the official PostgreSQL 16 integration harness | Credential locks, binding/removal row locks and first-finalization ordering; all three suites are registered in repository CI |
+| First-connection disconnect follow-up | API TypeScript and 165 focused tests passed | Shared user/provider lock serializes overlapping transactions; pending sign-in cancellation remains process-local |
 | Model-settings browser E2E after rebase | 1 expanded test passed; four screenshots inspected | Synthetic accounts and quota failure with scripted runtime |
 | Repository TypeScript after rebase | `pnpm check`: 22 tasks successful | Native installation/device acceptance is separate |
 | Web production build | Passed | Vite reported its normal large-chunk advisory |
@@ -70,7 +71,10 @@ they do not verify real OpenAI authorization or backend-derived account labels.
 The harness and ephemeral database were stopped after validation.
 
 See [PostgreSQL validation](chatgpt-plan-postgres-validation.md) for the opt-in
-command, actual lock contention evidence and checkpoint commit/rollback checks.
+command, actual lock contention evidence, checkpoint commit/rollback checks and
+the first-finalization/disconnect regression. Its unguarded control reproduces
+the absent-row insert gap; both guarded transaction orders are covered. OAuth
+exchange and model discovery complete before the publication lock is acquired.
 The disposable lock-validation container was also stopped and removed.
 
 ## Acceptance traceability
@@ -84,6 +88,7 @@ The disposable lock-validation container was also stopped and removed.
 | Metadata/limits retention, token redaction, refresh timing | `chatgpt-plan-integration.test.ts` |
 | Encrypted registrations, user isolation, corrupt-record repair, account-switch races, unavailable/empty catalogs | `apps/api/src/chatgpt-plan.test.ts` |
 | Optional provider routes, hosted restrictions, transport injection, disconnect deletion, legacy provider compatibility | `apps/api/src/chatgpt-plan-router.test.ts`, `router.test.ts` |
+| First finalization versus empty disconnect, including the unguarded absence gap | `apps/api/src/chatgpt-plan-finalization.postgres.test.ts`, `router.test.ts` |
 | Native callback safety, local-web polling, account picker and mobile degradation | Desktop/web/mobile focused suites and browser E2E |
 
 ## Unperformed acceptance and scope limits
