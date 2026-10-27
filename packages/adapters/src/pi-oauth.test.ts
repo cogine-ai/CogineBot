@@ -135,6 +135,52 @@ describe("model secrets", () => {
     expect(secretValuesToRedact(parsed)).toEqual(["access-token", "refresh-token"]);
   });
 
+  it.each([
+    { clientId: "another-provider-client" },
+    { hostId: "another-provider-host" },
+    { clientId: "another-provider-client", hostId: "another-provider-host" },
+  ])("preserves unrelated OAuth provider fields in bare and wrapped storage: %j", (fields) => {
+    const credential = oauthCred({ ...fields, issuer: "https://provider.example.test" });
+    expect(parseModelSecret(JSON.stringify(credential))).toEqual({ kind: "oauth", credential });
+    const wrapped = { kind: "oauth" as const, credential, maxTokens: 1024 };
+    expect(parseModelSecret(serializeModelSecret(wrapped))).toEqual(wrapped);
+  });
+
+  it.each([null, [], {}])(
+    "keeps a ChatGPT catalog marker on the strict credential-validation path: %j",
+    (chatgptPlanModels) => {
+      const credential = oauthCred({ clientId: "another-client", chatgptPlanModels });
+      for (const stored of [credential, { kind: "oauth", credential, maxTokens: 1024 }]) {
+        expect(() => parseModelSecret(JSON.stringify(stored))).toThrow(/corrupt/);
+      }
+    },
+  );
+
+  it("does not downgrade malformed ChatGPT plan credentials to generic OAuth", () => {
+    const credential = oauthCred({
+      clientId: "oaiapp_fixture",
+      issuer: "https://auth.openai.com",
+      subject: "fixture-subject",
+      hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
+      idToken: "fake-id-token",
+      scopes: ["chatgpt.tokens.use.direct"],
+      chatgptPlanModels: [],
+    });
+    expect(parseModelSecret(JSON.stringify(credential))).toEqual({ kind: "oauth", credential });
+    for (const patch of [
+      { clientId: "dynamic_agent_client" },
+      { hostId: "invalid-host" },
+      { issuer: "https://provider.example.test" },
+      { subject: "" },
+      { scopes: [] },
+    ]) {
+      const malformed = { ...credential, ...patch };
+      for (const stored of [malformed, { kind: "oauth", credential: malformed, maxTokens: 1024 }]) {
+        expect(() => parseModelSecret(JSON.stringify(stored))).toThrow(/corrupt/);
+      }
+    }
+  });
+
   it("round-trips openai-compatible credentials", () => {
     const parsed = parseModelSecret(
       serializeModelSecret({

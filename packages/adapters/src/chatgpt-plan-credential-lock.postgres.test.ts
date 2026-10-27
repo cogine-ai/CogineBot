@@ -37,6 +37,7 @@ describe.skipIf(!enabled)("ChatGPT plan credential lock (PostgreSQL)", () => {
   });
 
   it("blocks an independent client until the first credential transaction commits", async () => {
+    const secretId = `fixture-secret-${randomUUID()}`;
     const order: string[] = [];
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -46,35 +47,42 @@ describe.skipIf(!enabled)("ChatGPT plan credential lock (PostgreSQL)", () => {
     const firstEntered = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    const firstOperation = withChatGPTPlanCredentialLock(
-      first.prisma,
-      "same-fixture-secret",
-      async () => {
-        order.push("first-enter");
-        entered();
-        await gate;
-        order.push("first-exit");
-      },
-    );
+    const firstOperation = withChatGPTPlanCredentialLock(first.prisma, secretId, async () => {
+      order.push("first-enter");
+      entered();
+      await gate;
+      order.push("first-exit");
+    });
     await firstEntered;
-    const secondOperation = withChatGPTPlanCredentialLock(
-      second.prisma,
-      "same-fixture-secret",
-      async () => {
-        order.push("second-enter");
-      },
-    );
+    // poolMax=1 keeps this backend attached to the waiting transaction below.
+    const backend = await second.pool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+    const secondPid = backend.rows[0]!.pid;
+    const isWaitingFor = async (lockSecretId: string) => {
+      const result = await first.pool.query<{ waiting: boolean }>(
+        `SELECT EXISTS (
+          SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory' AND NOT granted AND pid = $1
+            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+            AND classid = (hashtext('coginebot-chatgpt-plan')::bigint & 4294967295)::oid
+            AND objid = (hashtext($2)::bigint & 4294967295)::oid
+            AND objsubid = 2
+        ) AS waiting`,
+        [secondPid, lockSecretId],
+      );
+      return result.rows[0]?.waiting === true;
+    };
+    const secondOperation = withChatGPTPlanCredentialLock(second.prisma, secretId, async () => {
+      order.push("second-enter");
+    });
     try {
       let waiting = false;
       const deadline = Date.now() + 5_000;
       while (!waiting && Date.now() < deadline) {
-        const result = await first.pool.query<{ waiting: boolean }>(
-          "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted) AS waiting",
-        );
-        waiting = result.rows[0]?.waiting === true;
+        waiting = await isWaitingFor(secretId);
         if (!waiting) await delay(10);
       }
       expect(waiting).toBe(true);
+      expect(await isWaitingFor(`${secretId}-unrelated`)).toBe(false);
       expect(order).toEqual(["first-enter"]);
     } finally {
       release();

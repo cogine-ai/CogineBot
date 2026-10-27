@@ -465,6 +465,7 @@ msgstr "Adicione um nome de servidor."
 msgid "Add a stdio command."
 msgstr "Adicione um comando stdio."
 
+#: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Add account"
 msgstr "Adicionar conta"
@@ -2767,8 +2768,8 @@ msgstr "Localizando…"
 #. placeholder {0}: new URL(oauth.verificationUri).hostname
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-msgid "Finish signing in at <0>{0}</0>. The final page may not load; paste its URL or code here."
-msgstr "Conclua o login em <0>{0}</0>. A página final não pode ser carregada; cole seu URL ou código aqui."
+msgid "Finish signing in at <0>{0}</0>."
+msgstr "Conclua o login em <0>{0}</0>."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Finish subscription sign-in, then test again."
@@ -6302,3 +6303,30 @@ msgstr "{provider} demorou demais para responder. Tente novamente."
 
 msgid "{summary} Resets {date}."
 msgstr "{summary} Será redefinido em {date}."
+
+#: src/components/RunErrorDetails.tsx
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Manage usage"
+msgstr "Gerenciar uso"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "ChatGPT account"
+msgstr "Conta do ChatGPT"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Could not load ChatGPT accounts"
+msgstr "Não foi possível carregar as contas do ChatGPT"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings."
+msgstr "Desconectado localmente. A revogação remota não foi confirmada; desconecte o aplicativo nas configurações do ChatGPT."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "Your ChatGPT plan usage limit was reached. Review your usage settings."
+msgstr "O limite de uso do seu plano do ChatGPT foi atingido. Verifique suas configurações de uso."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
+msgstr "O uso do plano do ChatGPT não está disponível. Verifique suas configurações de uso ou reconecte o ChatGPT."

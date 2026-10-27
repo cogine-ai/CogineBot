@@ -34,6 +34,9 @@ into accepted behavior.
 | Full default offline run at `dc444133` before the first-connection follow-up | 845 suites passed / 78 skipped; 13,860 tests passed / 841 skipped | Opt-in suites remain skipped; final-head CI is recorded on the PR |
 | PostgreSQL validation after review follow-up | 8 tests passed on PostgreSQL 17 and again through the official PostgreSQL 16 integration harness | Credential locks, binding/removal row locks and first-finalization ordering; all three suites are registered in repository CI |
 | First-connection disconnect follow-up | API TypeScript and 165 focused tests passed | Shared user/provider lock serializes overlapping transactions; pending sign-in cancellation remains process-local |
+| OAuth compatibility follow-up | 120 OAuth tests and 87 credential, integration, selection and executor regressions passed; adapter TypeScript passed | The existing ChatGPT catalog marker identifies strict plan records; unrelated client/host extensions remain compatible |
+| Localization follow-up | Ten relevant catalogs compiled; 51 focused web tests and web TypeScript passed | Updated messages and placeholders covered; no native or per-locale visual acceptance is inferred |
+| Lock-probe precision follow-up | Both credential-lock tests passed again on fresh PostgreSQL 17 | Exact backend/database/key matching and an unrelated-key negative assertion |
 | Model-settings browser E2E after rebase | 1 expanded test passed; four screenshots inspected | Synthetic accounts and quota failure with scripted runtime |
 | Repository TypeScript after rebase | `pnpm check`: 22 tasks successful | Native installation/device acceptance is separate |
 | Web production build | Passed | Vite reported its normal large-chunk advisory |

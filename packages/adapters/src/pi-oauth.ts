@@ -358,7 +358,9 @@ function isOAuthCredential(value: Credential): value is OAuthCredential {
 function readOAuthCredential(value: unknown): OAuthCredential | undefined {
   if (!value || typeof value !== "object") return undefined;
   const parsed = value as Record<string, unknown>;
-  if (parsed.clientId !== undefined || parsed.hostId !== undefined) {
+  // Product ChatGPT connections always persist their account catalog. Generic Pi
+  // providers may also retain clientId or hostId, so those fields cannot identify it.
+  if (Object.hasOwn(parsed, "chatgptPlanModels")) {
     return readChatGPTPlanCredential(parsed);
   }
   if (

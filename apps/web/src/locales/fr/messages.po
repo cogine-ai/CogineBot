@@ -465,6 +465,7 @@ msgstr "Ajoutez un nom de serveur."
 msgid "Add a stdio command."
 msgstr "Ajoutez une commande stdio."
 
+#: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Add account"
 msgstr "Ajouter un compte"
@@ -2767,8 +2768,8 @@ msgstr "Recherche en cours…"
 #. placeholder {0}: new URL(oauth.verificationUri).hostname
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-msgid "Finish signing in at <0>{0}</0>. The final page may not load; paste its URL or code here."
-msgstr "Terminez la connexion sur <0>{0}</0>. La page finale peut ne pas se charger ; collez son URL ou code ici."
+msgid "Finish signing in at <0>{0}</0>."
+msgstr "Terminez la connexion sur <0>{0}</0>."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Finish subscription sign-in, then test again."
@@ -6302,3 +6303,30 @@ msgstr "{provider} a mis trop de temps à répondre. Réessayez."
 
 msgid "{summary} Resets {date}."
 msgstr "{summary} Réinitialisation le {date}."
+
+#: src/components/RunErrorDetails.tsx
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Manage usage"
+msgstr "Gérer l’utilisation"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "ChatGPT account"
+msgstr "Compte ChatGPT"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Could not load ChatGPT accounts"
+msgstr "Impossible de charger les comptes ChatGPT"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings."
+msgstr "Déconnecté localement. La révocation à distance n’a pas été confirmée ; déconnectez l’application dans les paramètres ChatGPT."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "Your ChatGPT plan usage limit was reached. Review your usage settings."
+msgstr "La limite d’utilisation de votre forfait ChatGPT est atteinte. Consultez vos paramètres d’utilisation."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
+msgstr "L’utilisation du forfait ChatGPT est indisponible. Consultez vos paramètres d’utilisation ou reconnectez ChatGPT."

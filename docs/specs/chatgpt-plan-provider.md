@@ -178,6 +178,11 @@ reference, verified identity and account-specific model descriptors. Token
 material never appears in profile/catalog/credential RPC responses, browser
 storage or telemetry. Retained ID tokens join the redaction set.
 
+The stored credential's own `chatgptPlanModels` property identifies this
+provider for strict credential validation. Generic OAuth extensions such as
+`clientId` and `hostId` remain valid for unrelated providers; they do not select
+ChatGPT validation. An invalid marked ChatGPT credential must fail validation.
+
 Refresh uses the saved issued client ID and resource, omits scope, respects
 earliest_refresh_at, and replaces access/expiry/scopes/rotating refresh token
 together. The existing process lock is paired with a PostgreSQL transaction
@@ -267,13 +272,13 @@ same model resolution path. No product-specific orchestration enters the UI.
 | --- | --- |
 | Registration | Exact initial/returning parameters; issued ID saved before exchange; missing/mismatched/duplicate ID rejected; expired code can restart |
 | Identity | Valid generated-key JWT accepted; bad signature/issuer/aud/nonce/expiry/subject rejected; same-email registrations separate |
-| Callback | Listener before browser; correct127 host/path/state; error and replay; cancellation and port conflict; fullclientID preserved |
+| Callback | Listener before browser; correct `127.0.0.1` host, path and state; error and replay; cancellation and port conflict; full client ID preserved |
 | Storage | Encrypted records, restart/reauthorization, ownership isolation, failed replacement preserves active connection, disconnect retains registration |
-| Refresh | SavedclientID/resource, rotation, earliest refresh, concurrent request serialization, transient failure preserves credential, terminal failure fencing |
-| Catalog | Account bearer and correctendpoint, visibility/order/slug, limits, malformed/empty catalogs, no stale cross-account/default fallback |
+| Refresh | Saved client ID and resource, rotation, earliest refresh, concurrent request serialization, transient failure preserves credential, terminal failure fencing |
+| Catalog | Account bearer and correct endpoint, visibility/order/slug, limits, malformed/empty catalogs, no stale cross-account/default fallback |
 | Inference | Actual old-Pi serializer/parser with mock SSE; text and tool round trip; unsupported fields removed after hooks; failed/incomplete/EOF fail |
-| Product | Optional provider appears, authorizedmodel selectable; activeBot uses correctcredential; otherproviders/productlogin unchanged |
-| Surfaces | Desktopfullcallback +localwebpolling; mobile/remote newauthorization fails safely; connectedmodel use retained |
+| Product | Optional provider appears, authorized model selectable; active bot uses the correct credential; other providers and product login unchanged |
+| Surfaces | Desktop full callback and local web polling; mobile/remote new authorization fails safely; connected model use retained |
 
 Run focused Vitest suites for new modules plus existing OAuth, credential,
 catalog, runtime, router, desktop and web/mobile model-auth coverage. Run TypeScript

@@ -345,6 +345,38 @@ describe("lingui catalogs", () => {
     );
   });
 
+  it.each(["en", "de", "es", "fr", "hi", "ko", "pt-BR", "ru", "tr", "zh-CN"])(
+    "translates ChatGPT account and usage recovery controls in %s",
+    (locale) => {
+      const catalog = readFileSync(
+        fileURLToPath(new URL(`../locales/${locale}/messages.po`, import.meta.url)),
+        "utf8",
+      );
+      const messages = [
+        "Manage usage",
+        "ChatGPT account",
+        "Could not load ChatGPT accounts",
+        "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings.",
+        "Finish signing in at <0>{0}</0>.",
+        "Your ChatGPT plan usage limit was reached. Review your usage settings.",
+        "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.",
+      ];
+      for (const message of messages) {
+        const entries = catalog
+          .split("\n\n")
+          .filter((block) => block.includes(`msgid ${JSON.stringify(message)}\n`));
+        expect(entries, `${locale}: ${message}`).toHaveLength(1);
+        const translation = JSON.parse(entries[0]!.split("msgstr ")[1]!.split("\n")[0]!);
+        expect(translation.trim(), `${locale}: ${message}`).not.toBe("");
+        if (locale !== "en") expect(translation).not.toBe(message);
+        if (message.includes("<0>{0}</0>")) expect(translation).toContain("<0>{0}</0>");
+      }
+      expect(catalog).not.toContain(
+        'msgid "Finish signing in at <0>{0}</0>. The final page may not load; paste its URL or code here."',
+      );
+    },
+  );
+
   it("translates the terminal empty state in every non-English catalog", () => {
     const translations: Record<string, string> = {
       de: "Noch keine Bot-Aktivität.",

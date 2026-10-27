@@ -465,6 +465,7 @@ msgstr "सर्वर का नाम दर्ज करें।"
 msgid "Add a stdio command."
 msgstr "एक stdio कमांड दर्ज करें।"
 
+#: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Add account"
 msgstr "खाता जोड़ें"
@@ -2767,8 +2768,8 @@ msgstr "खोजा जा रहा है…"
 #. placeholder {0}: new URL(oauth.verificationUri).hostname
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-msgid "Finish signing in at <0>{0}</0>. The final page may not load; paste its URL or code here."
-msgstr "<0>{0}</0> पर साइन इन पूरा करें। अंतिम पेज शायद लोड न हो; उसका URL या कोड यहां पेस्ट करें।"
+msgid "Finish signing in at <0>{0}</0>."
+msgstr "<0>{0}</0> पर साइन-इन पूरा करें।"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Finish subscription sign-in, then test again."
@@ -6302,3 +6303,30 @@ msgstr "{provider} ने जवाब देने में बहुत स�
 
 msgid "{summary} Resets {date}."
 msgstr "{summary} {date} को रीसेट होगा।"
+
+#: src/components/RunErrorDetails.tsx
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Manage usage"
+msgstr "उपयोग प्रबंधित करें"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "ChatGPT account"
+msgstr "ChatGPT खाता"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Could not load ChatGPT accounts"
+msgstr "ChatGPT खाते लोड नहीं हो सके"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings."
+msgstr "स्थानीय कनेक्शन हटा दिया गया। रिमोट अनुमति रद्द होने की पुष्टि नहीं हुई; ChatGPT सेटिंग में ऐप का कनेक्शन हटाएँ।"
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "Your ChatGPT plan usage limit was reached. Review your usage settings."
+msgstr "आपके ChatGPT प्लान की उपयोग सीमा पूरी हो गई है। अपनी उपयोग सेटिंग की समीक्षा करें।"
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
+msgstr "ChatGPT प्लान का उपयोग उपलब्ध नहीं है। अपनी उपयोग सेटिंग की समीक्षा करें या ChatGPT को फिर से कनेक्ट करें।"

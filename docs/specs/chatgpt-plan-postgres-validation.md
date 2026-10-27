@@ -34,6 +34,9 @@ harness, so the repository CI integration lane will execute them.
 - With empty disconnect ahead of first finalization, publication blocked at the
   exact gap after the absent-row check until the removal transaction committed.
   The finalization transaction used the production Serializable isolation level.
+- The credential-lock probe was subsequently narrowed to its exact backend,
+  database, advisory key and two-integer lock form. Both credential-lock tests
+  passed again on fresh PostgreSQL 17, including an unrelated-key negative check.
 
 Reproduction uses the repository's existing opt-in PostgreSQL test conventions:
 
