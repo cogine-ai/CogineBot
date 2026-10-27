@@ -259,6 +259,7 @@ describe("page browser safety", () => {
         ...currentPage,
         timedOut: true,
         uncertain: false,
+        navigationOutcomeKnown: true,
         ...(!ok && {
           error: "Navigation observation timed out",
           fallback: "computer_act" as const,
@@ -333,6 +334,28 @@ describe("page browser safety", () => {
     ).toMatchObject({ uncertain: true, fallback: "computer_act" });
     expect(driver).toHaveBeenCalledTimes(1);
   });
+
+  it.each([undefined, false])(
+    "does not trust a legacy navigation failure's false uncertainty without confirmation=%s",
+    async (navigationOutcomeKnown) => {
+      const driver = vi.fn(async () => ({
+        ok: false,
+        uncertain: false,
+        navigationOutcomeKnown,
+        error: "Navigation response lost",
+        fallback: "computer_act" as const,
+      }));
+      const provider = new ComputerBrowserProvider({ liveDriver: driver });
+      const result = await provider.navigate(
+        computer,
+        { url: "https://example.test/start" },
+        baseContext,
+      );
+      expect(result).toMatchObject({ uncertain: true, fallback: "computer_act" });
+      expect(result).not.toHaveProperty("navigationOutcomeKnown");
+      expect(driver).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([false, true])(
     "keeps partial timeout progress and current observation without changing uncertainty=%s",

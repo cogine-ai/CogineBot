@@ -979,7 +979,11 @@ export type PageBrowserCommand =
   | { command: "snapshot" }
   | { command: "act"; actions: BrowserActStep[] };
 
-export type PageBrowserResult = Partial<BrowserSnapshotResult & BrowserActResult> & { ok: boolean };
+export type PageBrowserResult = Partial<BrowserSnapshotResult & BrowserActResult> & {
+  ok: boolean;
+  /** Internal compatibility marker: failed navigation confirmation has the helper's new semantics. */
+  navigationOutcomeKnown?: boolean;
+};
 
 /** Vendor-neutral status for a remote cloud coding agent. */
 export type CloudAgentStatus = "running" | "finished" | "failed" | "cancelled";

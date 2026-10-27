@@ -2,6 +2,8 @@
 
 import importlib.machinery
 import importlib.util
+import contextlib
+import io
 import json
 import pathlib
 import socket
@@ -259,6 +261,7 @@ class NavigationProtocolTests(unittest.TestCase):
             result = PRODUCT.navigate(client, "selected", "http://page.test/next")
         self.assertFalse(result["ok"])
         self.assertTrue(result.get("uncertain"))
+        self.assertIs(result.get("navigationOutcomeKnown"), False)
         self.assertTrue(result.get("timedOut"))
         self.assertEqual(result["url"], "http://page.test/next")
         self.assertEqual(peer.commands.count("Page.navigate"), 1)
@@ -274,8 +277,74 @@ class NavigationProtocolTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result.get("timedOut"))
         self.assertFalse(result["uncertain"])
+        self.assertIs(result.get("navigationOutcomeKnown"), True)
         self.assertEqual(result["url"], "http://page.test/old")
         self.assertAlmostEqual(clock.now, 5.0)
+
+    def test_acknowledged_navigation_marks_current_outcome_known(self):
+        clock = Clock()
+        with patch.object(PRODUCT, "time", clock):
+            peer = ProtocolSocket(clock)
+            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client._sock = peer
+            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertIs(result.get("navigationOutcomeKnown"), True)
+        self.assertEqual(result["url"], "http://page.test/next")
+        self.assertEqual(peer.commands.count("Page.navigate"), 1)
+
+    def test_acknowledged_navigation_dcl_timeout_keeps_known_outcome(self):
+        clock = Clock()
+        with patch.object(PRODUCT, "time", clock):
+            peer = ProtocolSocket(clock)
+            peer.mode = "loading"
+            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client._sock = peer
+            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertTrue(result["timedOut"])
+        self.assertIs(result.get("navigationOutcomeKnown"), True)
+        self.assertEqual(result["url"], "http://page.test/next")
+        self.assertEqual(peer.commands.count("Page.navigate"), 1)
+
+    def test_navigation_observation_failure_keeps_acknowledged_outcome_known(self):
+        clock = Clock()
+        with patch.object(PRODUCT, "time", clock):
+            peer = ProtocolSocket(clock)
+            peer.lose_snapshot_ack = True
+            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client._sock = peer
+            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertTrue(result["timedOut"])
+        self.assertIs(result.get("navigationOutcomeKnown"), True)
+        self.assertNotIn("tree", result)
+        self.assertEqual(peer.commands.count("Page.navigate"), 1)
+
+    def test_navigation_budget_failure_before_dispatch_marks_no_command_known(self):
+        clock = Clock()
+        with patch.object(PRODUCT, "time", clock):
+            peer = ProtocolSocket(clock)
+            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.0)
+            client._sock = peer
+            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertIs(result.get("navigationOutcomeKnown"), True)
+        self.assertEqual(peer.commands, [])
+
+    def test_outer_cli_setup_failure_does_not_invent_navigation_knowledge(self):
+        output = io.StringIO()
+        with patch.object(PRODUCT, "wait_for_cdp", side_effect=RuntimeError("setup unavailable")), \
+                patch.dict(PRODUCT.os.environ, {"RAKAZO_BROWSER_ARGS_STDIN": "0", "RAKAZO_BROWSER_WATCH_STDIN": "0"}), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(PRODUCT.run(["page-browser", "navigate", '{"url":"https://page.test"}']), 0)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertNotIn("navigationOutcomeKnown", result)
 
     def test_no_navigation_and_arbitrary_late_timer_return_after_signal_grace(self):
         for mode in ("none", "late", "foreign"):

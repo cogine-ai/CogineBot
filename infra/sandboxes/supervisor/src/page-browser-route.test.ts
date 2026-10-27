@@ -148,6 +148,7 @@ it.each(browserCommands)("preserves the helper's acknowledged %s failure", async
     ok: false,
     uncertain: false,
     timedOut: true,
+    ...(command === "navigate" ? { navigationOutcomeKnown: true } : {}),
     ...(command === "act" ? { completed: 1 } : {}),
     url: "https://example.test/current",
     title: "Current page",

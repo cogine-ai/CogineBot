@@ -715,11 +715,11 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
             navigation.requested += 1
             navigation.requested_at = time.monotonic()
         timed_out = follow_navigation(client, navigation, mark, deadline)
-        return observed_result(client, session_id, {"ok": True, "uncertain": False,
+        return observed_result(client, session_id, {"ok": True, "uncertain": False, "navigationOutcomeKnown": True,
                               **({"timedOut": True} if timed_out else {})})
     except Exception as exc:
         return observed_result(client, session_id, {"ok": False, "error": str(exc),
-                              "uncertain": uncertain, "fallback": "computer_act",
+                              "uncertain": uncertain, "navigationOutcomeKnown": not uncertain, "fallback": "computer_act",
                               **({"timedOut": True} if isinstance(exc, TimeoutError) else {})})
 
 

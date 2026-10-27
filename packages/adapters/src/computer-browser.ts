@@ -78,10 +78,10 @@ export class ComputerBrowserProvider implements BrowserProvider {
     const live = await this.runLive(computer, { command: "navigate", url: request.url }, context);
     if (live?.ok !== true || live.fallback === "computer_act") {
       return {
-        uncertain: live?.uncertain ?? true,
         url: typeof live?.url === "string" ? live.url : request.url,
         title: typeof live?.title === "string" ? live.title : "",
         ...navigationObservation(live),
+        uncertain: live?.uncertain !== false || live?.navigationOutcomeKnown !== true,
         fallback: "computer_act",
         error: live?.error || DETACHED_MESSAGE,
       };
@@ -175,6 +175,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
               error: DETACHED_MESSAGE,
               fallback: "computer_act" as const,
               uncertain: false,
+              navigationOutcomeKnown: true,
             };
       if (result?.ok === true) {
         if (typeof result.url !== "string" || typeof result.title !== "string") {
