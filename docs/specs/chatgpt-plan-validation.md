@@ -24,20 +24,26 @@ succeeds. Disconnect/revocation and credential removal share the same lock.
 
 ## Automated evidence
 
+The candidate was rebased to `ec89d1ef`, independently reviewed and fixed;
+see [review findings](chatgpt-plan-review.md). Final current-head CI
+evidence belongs to the PR and does not retroactively turn live-provider gaps
+into accepted behavior.
+
 | Check | Result | Practical limit |
 | --- | --- | --- |
-| Focused unit/integration run | 24 suites, 582 tests passed | Includes legacy regression coverage; not the full repository suite |
-| Default database suite gate | 1 suite / 2 tests skipped in the ordinary run | Executed separately against real PostgreSQL below |
-| PostgreSQL validation | 2 tests passed against an isolated PostgreSQL 17 container | Two independent Prisma clients; no production database |
-| Model-settings browser E2E | 1 test passed, screenshots visually inspected | Mock model/profile/OAuth routes with scripted runtime |
-| TypeScript | All 8 affected package/application checks passed | Native installation/device acceptance is separate |
+| Full default offline run after review | 845 suites passed / 78 skipped; 13,860 tests passed / 841 skipped | Opt-in suites remain skipped; no real-provider success is inferred |
+| PostgreSQL validation after rebase | 5 tests passed against an isolated PostgreSQL 17 container | Credential advisory locks and binding/removal row locks; no production database |
+| Model-settings browser E2E after rebase | 1 expanded test passed; four screenshots inspected | Synthetic accounts and quota failure with scripted runtime |
+| Repository TypeScript after rebase | `pnpm check`: 22 tasks successful | Native installation/device acceptance is separate |
 | Web production build | Passed | Vite reported its normal large-chunk advisory |
-| Biome | 50 changed code files checked, no remaining fixes | Checks formatting/lint, not external-service behavior |
+| Repository Biome after rebase | `pnpm lint` passed | Existing warnings remain; no blocking errors |
 | Patch whitespace | `git diff --check` passed | Local uncommitted review artifact |
 
-The main focused run is reproducible with:
+The complete default run and the focused regression run are reproducible with:
 
 ```sh
+NODE_ENV=test pnpm run test --maxWorkers=2 --reporter=dot
+
 pnpm exec vitest run \
   chatgpt-plan pi-oauth pi-credentials model-selection model-vision pi-models \
   pi-runtime-models pi-runtime-fallback executor-oauth-retire \
@@ -100,11 +106,11 @@ The disposable lock-validation container was also stopped and removed.
 
 ## Review and rollback
 
-Implementation and this spec remain together on `feat/chatgpt-plan-provider` in
-an isolated worktree. No commit, pull request, merge, release or deployment was
-performed. Unrelated changes in the original checkout were preserved. The
-worktree is retained for review; installed dependencies account for most of its
-approximately 1.8 GiB footprint.
+Implementation and this spec remain together on `feat/chatgpt-plan-provider`,
+rebased onto the current connection-binding contracts and committed for PR
+review. No merge, release or deployment is part of this work. Unrelated changes
+in the original checkout were preserved. The isolated worktree is retained for
+review.
 
 Rollback removes the optional provider registration and integration code while
 leaving existing encrypted user data intact. No Pi version or database migration

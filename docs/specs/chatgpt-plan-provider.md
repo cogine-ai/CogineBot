@@ -99,6 +99,13 @@ No static API-key/Codex catalog substitutes for failed or empty discovery.
 Switching registrations invalidates the old catalog. Execution refuses a model
 outside the active connection's discovered catalog.
 
+Preserve the current connection ID/revision binding contract for space defaults,
+bots, routines, backups and helper models. A static catalog match or saved default
+is never evidence that a ChatGPT registration can execute another model.
+Switching to another saved registration must not carry over the previous
+account's selected model ID. If saved registrations cannot be loaded, disable
+ChatGPT authorization and show the scoped error while retaining other providers.
+
 ### Authorization lifecycle
 
 1. Choose a saved registration or explicitly add another. Reuse the stable
@@ -197,6 +204,18 @@ to the user. Keep the issued client/verified identity and host ID for later
 authorization, but clear retained login hints. Do not delete another provider's
 credentials or another user's registrations.
 
+Before revocation, validate the selected connection revision and existing
+references. ChatGPT binding writes hold a shared row lock; disconnect holds an
+exclusive row lock through reference validation and removal. Re-read the exact
+credential ID, secret pointer and revision after acquiring the refresh lock; a
+reconnected successor or a newly appeared first connection causes a conflict,
+not revocation/deletion under a stale snapshot.
+
+All documented terminal refresh errors survive safe error formatting and only
+retire credentials with terminal OAuth rejection statuses. Transient errors and
+quoted/lookalike markers do not retire a session. Pending-rotation recognition
+follows bounded, cycle-safe error causes because Pi wraps provider errors.
+
 ## Pi runtime integration
 
 Register a custom provider with the existing Pi 0.87.1 APIs. Reuse the installed
@@ -223,6 +242,11 @@ If discovery fails, keep unrelated providers and a non-executable ChatGPT
 connection placeholder available. Never advertise a stale account catalog as a
 successful response. Distinct saved registrations have stable display suffixes
 even when their verified email addresses match.
+
+Settings and recognized usage failures expose `Manage usage` linking to the
+fixed `https://chatgpt.com/settings/usage` address. Never render a recovery URL
+supplied by a provider response. The disconnected placeholder shows a sign-in
+action without claiming an available model count.
 
 The provider must work for bots, scheduled tasks and delegated runs through the
 same model resolution path. No product-specific orchestration enters the UI.
