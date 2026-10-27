@@ -217,18 +217,58 @@ function fixture() {
 }
 
 describe("LinuxDesktop finite work allocation", () => {
-  it("keeps a repeated idle watch reclaimable at the existing display ceiling", async () => {
-    const f = fixture();
-    await f.idle();
-    const idleAt = f.state()[5];
-    await f.watch();
-    expect(f.state()[4]).toBe("idle");
-    expect(f.state()[5]).toBe(idleAt);
-    expect(f.state()[2]).not.toBe("");
-    await f.watch(f.peer);
-    expect(existsSync(f.slot())).toBe(false);
-    expect(f.state("b")[0]).toBe("0");
-  });
+  it.each(["run:1", undefined])(
+    "keeps an idle watch with lease %s reclaimable at the existing display ceiling",
+    async (screenLeaseId) => {
+      const f = fixture();
+      await f.idle();
+      const idleAt = f.state()[5];
+      await f.watch({ ...context, screenLeaseId });
+      expect(f.state()[4]).toBe("idle");
+      expect(f.state()[5]).toBe(idleAt);
+      expect(f.state()[2]).not.toBe("");
+      await f.watch(f.peer);
+      expect(existsSync(f.slot())).toBe(false);
+      expect(f.state("b")[0]).toBe("0");
+    },
+  );
+
+  it.each([
+    { screenLeaseId: "run:2", legacy: false },
+    { screenLeaseId: "next:2", legacy: false },
+    { screenLeaseId: "next:2", legacy: true },
+  ])(
+    "protects a retained desktop claimed by $screenLeaseId (legacy=$legacy) until release",
+    async ({ screenLeaseId, legacy }) => {
+      const f = fixture();
+      await f.idle();
+      if (legacy) {
+        const slot = f.state();
+        slot[1] = "";
+        writeFileSync(f.slot(), slot.join("\n"));
+      }
+      const current = { ...context, screenLeaseId };
+      await f.watch(current);
+      expect(f.state()[1]).toBe(screenLeaseId);
+      expect(f.state()[4]).toBe("active");
+      expect(f.state()[5]).toBe("");
+      const claimed = readFileSync(f.slot(), "utf8");
+
+      await expect(f.watch(f.peer)).rejects.toBeInstanceOf(ComputerScreenUnavailableError);
+      await expect(f.watch()).rejects.toBeInstanceOf(ComputerScreenUnavailableError);
+      await f.desktop.releaseScreen(computer, context);
+      expect(readFileSync(f.slot(), "utf8")).toBe(claimed);
+      expect(existsSync(f.slot("b"))).toBe(false);
+
+      await f.desktop.sendInput(computer, { kind: "clipboard", text: "current-run" }, current);
+      expect(f.entries()).toBe("type current-run\n");
+      await f.desktop.releaseScreen(computer, current);
+      expect(f.state()[4]).toBe("idle");
+      await f.watch(f.peer);
+      expect(existsSync(f.slot())).toBe(false);
+      expect(f.state("b")[0]).toBe("0");
+    },
+  );
 
   it.each(["act", "input", "observe"])(
     "rejects cached %s after release and another bot reuses the display",
