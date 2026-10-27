@@ -122,6 +122,10 @@ class NavigationState:
         self.session_id = session_id
         self.frame_id = frame["id"]
         self.loader_id = frame.get("loaderId")
+        self.document_url = str(frame.get("url") or "") + str(frame.get("urlFragment") or "")
+        self.pending_url: str | None = None
+        self.pending_cross_document = False
+        self.expected_loader: str | None = None
         self.requested = 0
         self.within_document = 0
         self.committed = 0
@@ -132,6 +136,27 @@ class NavigationState:
     def mark(self) -> tuple[int, int, int]:
         return (self.requested, self.within_document, self.committed)
 
+    @property
+    def pending(self) -> bool:
+        return self.pending_url is not None
+
+    def request(self, url: Any, cross_document: bool) -> None:
+        if not self.pending:
+            self.requested_at = time.monotonic()
+        self.requested += 1
+        self.pending_url = url if isinstance(url, str) else ""
+        self.pending_cross_document = self.pending_cross_document or cross_document
+
+    def expect_navigation(self, loader_id: str, url: str, mark: tuple[int, int, int]) -> None:
+        if self.committed != mark[2]:
+            return
+        # Events processed while awaiting the reply may already name a successor loader.
+        if not self.pending or self.requested == mark[0]:
+            self.request(url, True)
+            self.expected_loader = loader_id
+        else:
+            self.pending_cross_document = True
+
     def event(self, message: dict[str, Any]) -> None:
         if message.get("sessionId") != self.session_id:
             return
@@ -139,16 +164,40 @@ class NavigationState:
         if method == "Page.frameNavigated":
             frame = params.get("frame") or {}
             if frame.get("id") == self.frame_id:
+                previous_loader = self.loader_id
                 self.loader_id = frame.get("loaderId")
+                self.document_url = str(frame.get("url") or "") + str(frame.get("urlFragment") or "")
                 self.committed += 1
                 self.committed_at = time.monotonic()
                 self.dom_loaded = params.get("type") == "BackForwardCacheRestore"
+                if (self.expected_loader is None or self.expected_loader == self.loader_id) and (
+                    not self.pending_cross_document or self.loader_id != previous_loader or self.dom_loaded
+                ):
+                    self.pending_url = None
+                    self.pending_cross_document = False
+                    self.expected_loader = None
         elif params.get("frameId") == self.frame_id:
             if method == "Page.frameRequestedNavigation" and params.get("disposition") == "currentTab":
-                self.requested += 1
-                self.requested_at = time.monotonic()
+                target = params.get("url")
+                fragment = (isinstance(target, str) and "#" in target and self.document_url
+                            and target.split("#", 1)[0] == self.document_url.split("#", 1)[0]
+                            and params.get("reason") in ("anchorClick", "scriptInitiated"))
+                self.request(target, not fragment)
+                if not fragment:
+                    self.expected_loader = None
+            elif method == "Page.frameStartedNavigating":
+                loader_id = params.get("loaderId")
+                same_document = (params.get("navigationType") in ("sameDocument", "historySameDocument")
+                                 and loader_id == self.loader_id)
+                self.request(params.get("url"), not same_document)
+                if not same_document and isinstance(loader_id, str) and loader_id:
+                    self.expected_loader = loader_id
             elif method == "Page.navigatedWithinDocument":
                 self.within_document += 1
+                self.document_url = str(params.get("url") or "")
+                if not self.pending_cross_document and self.pending_url == params.get("url"):
+                    self.pending_url = None
+                    self.expected_loader = None
             elif (method == "Page.lifecycleEvent" and params.get("loaderId") == self.loader_id
                   and params.get("name") == "DOMContentLoaded"):
                 self.dom_loaded = True
@@ -656,23 +705,27 @@ def track_navigation(client: CdpClient, session_id: str, deadline: float) -> Nav
 def follow_navigation(client: CdpClient, navigation: NavigationState,
                       mark: tuple[int, int, int], deadline: float) -> bool:
     """Follow the selected document without redispatching its action. Return timeout only."""
-    client.pump_until(lambda: navigation.mark() != mark,
+    client.pump_until(lambda: navigation.pending_cross_document or navigation.committed != mark[2],
                       min(deadline, time.monotonic() + NAVIGATION_GRACE_S))
-    if navigation.within_document != mark[1]:
-        return False
-    if navigation.requested == mark[0] and navigation.committed == mark[2]:
+    dom_deadline = None
+    while True:
+        if navigation.pending:
+            commit_deadline = min(deadline, navigation.requested_at + NAVIGATION_COMMIT_S)
+            if dom_deadline is not None:
+                commit_deadline = min(commit_deadline, dom_deadline)
+            if not client.pump_until(lambda: not navigation.pending, commit_deadline):
+                return True
+        if navigation.committed != mark[2]:
+            if dom_deadline is None:
+                dom_deadline = min(deadline, navigation.committed_at + NAVIGATION_DOM_S)
+            if navigation.dom_loaded:
+                return False
+            if not client.pump_until(lambda: navigation.pending or navigation.dom_loaded, dom_deadline):
+                return True
+            if navigation.pending:
+                continue
+            return False
         return time.monotonic() >= deadline
-    if navigation.committed == mark[2]:
-        committed = client.pump_until(
-            lambda: navigation.committed != mark[2] or navigation.within_document != mark[1],
-            min(deadline, navigation.requested_at + NAVIGATION_COMMIT_S),
-        )
-        if not committed:
-            return True
-    if navigation.within_document != mark[1]:
-        return False
-    return not client.pump_until(lambda: navigation.dom_loaded,
-                                 min(deadline, navigation.committed_at + NAVIGATION_DOM_S))
 
 
 def observed_result(client: CdpClient, session_id: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -704,10 +757,9 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
         uncertain = False
         if result.get("errorText") or result.get("isDownload"):
             raise RuntimeError(result.get("errorText") or "Navigation started a download")
-        if result.get("loaderId") and navigation.committed == mark[2]:
+        if result.get("loaderId"):
             # A command-initiated navigation need not emit frameRequestedNavigation.
-            navigation.requested += 1
-            navigation.requested_at = time.monotonic()
+            navigation.expect_navigation(str(result["loaderId"]), url, mark)
         if follow_navigation(client, navigation, mark, deadline):
             raise TimeoutError("Navigation did not settle before its deadline")
         return observed_result(client, session_id, {"ok": True, "uncertain": False, "navigationOutcomeKnown": True})

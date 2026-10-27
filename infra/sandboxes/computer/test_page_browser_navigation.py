@@ -48,6 +48,7 @@ class ProtocolSocket:
         self.buffer = bytearray()
         self.scheduled = []
         self.document = "old"
+        self.current_url = "http://page.test/old"
         self.loader = "old"
         self.mutations = 0
         self.commands = []
@@ -55,6 +56,8 @@ class ProtocolSocket:
         self.lose_action_ack = False
         self.lose_snapshot_ack = False
         self.mode = "queued"
+        self.navigate_ack_delay = 0.0
+        self.navigate_result_loader = "next"
 
     def settimeout(self, value):
         self.timeout = value
@@ -68,12 +71,37 @@ class ProtocolSocket:
     def event(self, method, params, session="selected"):
         self.queue({"method": method, "params": params, "sessionId": session})
 
+    def frame(self):
+        url, separator, fragment = self.current_url.partition("#")
+        return {"id": "main", "loaderId": self.loader, "url": url,
+                **({"urlFragment": separator + fragment} if separator else {})}
+
+    def request_navigation(self, url="http://page.test/next", reason="scriptInitiated"):
+        self.event("Page.frameRequestedNavigation", {
+            "frameId": "main", "disposition": "currentTab", "url": url, "reason": reason,
+        })
+
+    def within_navigation(self, url, navigation_type="historyApi"):
+        self.current_url = url
+        self.event("Page.navigatedWithinDocument", {
+            "frameId": "main", "url": url, "navigationType": navigation_type,
+        })
+
+    def started_navigation(self, url="http://page.test/next", loader="next", kind="differentDocument"):
+        self.event("Page.frameStartedNavigating", {
+            "frameId": "main", "url": url, "loaderId": loader, "navigationType": kind,
+        })
+
     def navigation(self):
         if self.mode == "foreign":
             self.event("Page.frameRequestedNavigation", {"frameId": "main", "disposition": "currentTab"}, "foreign")
             self.event("Page.frameNavigated", {"frame": {"id": "child", "loaderId": "child"}})
             return
-        self.event("Page.frameRequestedNavigation", {"frameId": "main", "disposition": "currentTab"})
+        if self.mode == "same-document":
+            self.document = "spa"
+            self.within_navigation("http://page.test/spa")
+            return
+        self.request_navigation()
         if self.mode == "request-only":
             return
         if self.mode == "stopped":
@@ -83,16 +111,13 @@ class ProtocolSocket:
             self.event("Page.frameStoppedLoading", {"frameId": "main"})
             self.scheduled.append((self.clock.now + 0.1, self.commit_navigation))
             return
-        if self.mode == "same-document":
-            self.document = "spa"
-            self.event("Page.navigatedWithinDocument", {"frameId": "main", "url": "http://page.test/spa"})
-            return
         self.commit_navigation()
 
-    def commit_navigation(self):
+    def commit_navigation(self, url="http://page.test/next", loader="next"):
         self.document = "next"
-        self.loader = "next"
-        self.event("Page.frameNavigated", {"frame": {"id": "main", "loaderId": "next"}})
+        self.current_url = url
+        self.loader = loader
+        self.event("Page.frameNavigated", {"frame": self.frame()})
         self.event("Runtime.executionContextDestroyed", {"executionContextId": 7})
         if self.mode in ("loading", "loading-stopped"):
             if self.mode == "loading-stopped":
@@ -104,12 +129,13 @@ class ProtocolSocket:
             self.event("Page.frameNavigated", {"frame": {"id": "main", "loaderId": "next"}, "type": "BackForwardCacheRestore"})
         elif self.mode == "redirect":
             self.document = "final"
+            self.current_url = "http://page.test/final"
             self.loader = "final"
-            self.event("Page.frameNavigated", {"frame": {"id": "main", "loaderId": "final"}})
+            self.event("Page.frameNavigated", {"frame": self.frame()})
             self.event("Page.lifecycleEvent", {"frameId": "main", "loaderId": "next", "name": "DOMContentLoaded"})
             self.scheduled.append((self.clock.now + 0.05, lambda: self.event("Page.lifecycleEvent", {"frameId": "main", "loaderId": "final", "name": "DOMContentLoaded"})))
         else:
-            self.event("Page.lifecycleEvent", {"frameId": "main", "loaderId": "next", "name": "DOMContentLoaded"})
+            self.event("Page.lifecycleEvent", {"frameId": "main", "loaderId": self.loader, "name": "DOMContentLoaded"})
 
     def schedule_navigation(self):
         if self.mode not in ("none", "no-commit-event"):
@@ -131,14 +157,18 @@ class ProtocolSocket:
         method, params = request["method"], request.get("params", {})
         result = {}
         if method == "Page.getFrameTree":
-            result = {"frameTree": {"frame": {"id": "main", "loaderId": self.loader}}}
+            result = {"frameTree": {"frame": self.frame()}}
         elif method == "Page.createIsolatedWorld":
             result = {"executionContextId": 7 if self.loader == "old" else 8}
         elif method == "Page.navigate":
             self.schedule_navigation()
             if self.lose_navigation_ack:
                 return
-            result = {"frameId": "main", "loaderId": "next"}
+            result = {"frameId": "main", **({"loaderId": self.navigate_result_loader} if self.navigate_result_loader else {})}
+            if self.navigate_ack_delay:
+                self.scheduled.append((self.clock.now + self.navigate_ack_delay,
+                                       lambda: self.queue({"id": request["id"], "result": result})))
+                return
         elif method == "Runtime.evaluate":
             expression = params["expression"]
             value = True
@@ -153,7 +183,7 @@ class ProtocolSocket:
             elif ".snapshot()" in expression:
                 if self.lose_snapshot_ack:
                     return
-                value = {"url": "http://page.test/" + self.document, "title": self.document,
+                value = {"url": self.current_url, "title": self.document,
                          "tree": self.document, "elements": []}
             result = {"result": {"value": value}}
         self.queue({"id": request["id"], "result": result})
@@ -224,6 +254,186 @@ class NavigationProtocolTests(unittest.TestCase):
             client._sock = peer
             result = PRODUCT.act(client, "selected", actions or [{"kind": "click", "ref": "old-ref"}])
         return result, peer, clock
+
+    def run_events(self, emit, *, explicit=False, mode="queued", ack_delay=0.0, actions=None):
+        clock = Clock()
+        with patch.object(PRODUCT, "time", clock):
+            peer = ProtocolSocket(clock)
+            peer.mode = mode
+            peer.navigate_ack_delay = ack_delay
+            peer.navigation = lambda: emit(peer)
+            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client._sock = peer
+            result = (PRODUCT.navigate(client, "selected", "http://page.test/next") if explicit
+                      else PRODUCT.act(client, "selected", actions or [{"kind": "click", "ref": "old-ref"}]))
+        return result, peer, clock
+
+    def mixed_events(self, peer, order, *, commit=True):
+        if order == "within-first":
+            peer.within_navigation("http://page.test/old#side", "fragment")
+        peer.request_navigation()
+        if order == "request-first":
+            peer.within_navigation("http://page.test/old#side", "fragment")
+        peer.started_navigation()
+        if commit:
+            peer.scheduled.append((peer.clock.now + 0.1, peer.commit_navigation))
+
+    def test_mixed_within_and_cross_requests_wait_for_commit_in_both_orders(self):
+        for order in ("within-first", "request-first"):
+            with self.subTest(order=order):
+                result, peer, clock = self.run_events(
+                    lambda peer: self.mixed_events(peer, order),
+                    actions=[{"kind": "click", "ref": "old-ref"}] * 2,
+                )
+                self.assertEqual(peer.mutations, 1, result)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["completed"], 1)
+                self.assertEqual(result["url"], "http://page.test/next")
+                self.assertFalse(result.get("timedOut", False))
+                self.assertAlmostEqual(clock.now, 0.12)
+
+    def test_mixed_within_never_resolves_uncommitted_cross_request(self):
+        for order in ("within-first", "request-first"):
+            with self.subTest(order=order):
+                result, peer, clock = self.run_events(
+                    lambda peer: self.mixed_events(peer, order, commit=False),
+                    actions=[{"kind": "click", "ref": "old-ref"}] * 2,
+                )
+                self.assertEqual(peer.mutations, 1, result)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["completed"], 1)
+                self.assertTrue(result.get("timedOut"))
+                self.assertAlmostEqual(clock.now, 5.02)
+
+    def test_mixed_within_cannot_skip_dcl_for_new_document(self):
+        for order in ("within-first", "request-first"):
+            with self.subTest(order=order):
+                result, peer, clock = self.run_events(
+                    lambda peer: self.mixed_events(peer, order), mode="loading",
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["completed"], 1)
+                self.assertTrue(result.get("timedOut"), result)
+                self.assertEqual(result["url"], "http://page.test/next")
+                self.assertEqual(peer.mutations, 1)
+                self.assertAlmostEqual(clock.now, 10.12)
+
+    def test_standalone_requested_hash_matches_only_a_later_matching_within(self):
+        def emit(peer):
+            peer.request_navigation("http://page.test/old#part", "anchorClick")
+            peer.within_navigation("http://page.test/old#part", "fragment")
+
+        result, peer, clock = self.run_events(emit)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result.get("timedOut", False))
+        self.assertEqual(result["url"], "http://page.test/old#part")
+        self.assertLessEqual(clock.now, 0.351)
+        self.assertEqual(peer.mutations, 1)
+
+    def test_unrelated_or_earlier_within_cannot_complete_requested_hash(self):
+        for earlier in (False, True):
+            with self.subTest(earlier=earlier):
+                def emit(peer):
+                    if earlier:
+                        peer.within_navigation("http://page.test/old#part", "fragment")
+                    peer.request_navigation("http://page.test/old#part", "anchorClick")
+                    if not earlier:
+                        peer.within_navigation("http://page.test/old#other", "fragment")
+
+                result, peer, clock = self.run_events(emit)
+                self.assertTrue(result["ok"])
+                self.assertTrue(result.get("timedOut"), result)
+                self.assertEqual(peer.mutations, 1)
+                self.assertAlmostEqual(clock.now, 5.02)
+
+    def test_standalone_spa_and_hash_without_request_need_no_dcl(self):
+        for url, kind in (("http://page.test/spa", "historyApi"), ("http://page.test/old#part", "fragment")):
+            with self.subTest(kind=kind):
+                result, peer, clock = self.run_events(lambda peer: peer.within_navigation(url, kind))
+                self.assertTrue(result["ok"])
+                self.assertFalse(result.get("timedOut", False))
+                self.assertEqual(result["url"], url)
+                self.assertLessEqual(clock.now, 0.351)
+                self.assertEqual(peer.mutations, 1)
+
+    def test_same_url_reload_and_started_cross_are_not_completed_by_within(self):
+        for reload in (False, True):
+            with self.subTest(reload=reload):
+                def emit(peer):
+                    url = "http://page.test/old" if reload else "http://page.test/next"
+                    if reload:
+                        peer.request_navigation(url, "reload")
+                    peer.started_navigation(url, "next", "reload" if reload else "differentDocument")
+                    peer.within_navigation("http://page.test/old#side", "fragment")
+                    peer.scheduled.append((peer.clock.now + 0.1, lambda: peer.commit_navigation(url)))
+
+                result, peer, clock = self.run_events(emit, actions=[{"kind": "click", "ref": "old-ref"}] * 2)
+                self.assertEqual(peer.mutations, 1, result)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["completed"], 1)
+                self.assertEqual(result["title"], "next")
+                self.assertAlmostEqual(clock.now, 0.12)
+
+    def test_successor_pending_and_matching_dcl_win_over_older_dcl_and_within(self):
+        def emit(peer):
+            peer.request_navigation()
+            peer.started_navigation()
+
+            def successor():
+                peer.document, peer.loader, peer.current_url = "next", "next", "http://page.test/next"
+                peer.event("Page.frameNavigated", {"frame": peer.frame()})
+                peer.request_navigation("http://page.test/final")
+                peer.started_navigation("http://page.test/final", "final")
+                peer.within_navigation("http://page.test/next#side", "fragment")
+                peer.event("Page.lifecycleEvent", {"frameId": "main", "loaderId": "next", "name": "DOMContentLoaded"})
+
+            peer.scheduled.append((peer.clock.now + 0.03, successor))
+            peer.scheduled.append((peer.clock.now + 0.1, lambda: peer.commit_navigation("http://page.test/final", "final")))
+
+        result, peer, clock = self.run_events(emit)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result.get("timedOut", False))
+        self.assertEqual(result["url"], "http://page.test/final")
+        self.assertAlmostEqual(clock.now, 0.12)
+
+    def test_explicit_loader_ack_cannot_be_completed_by_old_document_within(self):
+        result, peer, clock = self.run_events(
+            lambda peer: peer.within_navigation("http://page.test/old#side", "fragment"), explicit=True,
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertTrue(result.get("timedOut"))
+        self.assertFalse(result["uncertain"])
+        self.assertTrue(result["navigationOutcomeKnown"])
+        self.assertEqual(peer.commands.count("Page.navigate"), 1)
+        self.assertAlmostEqual(clock.now, 5.0)
+
+    def test_late_explicit_ack_does_not_overwrite_newer_expected_loader(self):
+        def emit(peer):
+            peer.request_navigation()
+            peer.started_navigation()
+
+            def successor():
+                peer.request_navigation("http://page.test/final")
+                peer.started_navigation("http://page.test/final", "final")
+                peer.within_navigation("http://page.test/old#side", "fragment")
+
+            peer.scheduled.append((peer.clock.now + 0.02, successor))
+            peer.scheduled.append((peer.clock.now + 0.1, lambda: peer.commit_navigation("http://page.test/final", "final")))
+
+        result, peer, clock = self.run_events(emit, explicit=True, ack_delay=0.08)
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["uncertain"])
+        self.assertTrue(result["navigationOutcomeKnown"])
+        self.assertEqual(result["url"], "http://page.test/final")
+        self.assertAlmostEqual(clock.now, 0.12)
+
+    def test_late_explicit_ack_after_matching_commit_and_dcl_does_not_restart_wait(self):
+        result, peer, clock = self.run_events(lambda peer: peer.commit_navigation(), explicit=True, ack_delay=0.08)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result.get("timedOut", False))
+        self.assertTrue(result["navigationOutcomeKnown"])
+        self.assertEqual(result["url"], "http://page.test/next")
+        self.assertAlmostEqual(clock.now, 0.08)
 
     def test_queued_navigation_observes_new_document_after_exactly_one_click(self):
         clock = Clock()
@@ -370,7 +580,7 @@ class NavigationProtocolTests(unittest.TestCase):
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["url"], "http://page.test/" + document)
                 self.assertFalse(result.get("timedOut", False))
-                self.assertLess(clock.now, 0.1)
+                self.assertLessEqual(clock.now, 0.351 if mode == "same-document" else 0.1)
 
     def test_matching_current_loader_dcl_is_required_after_redirect(self):
         result, peer, clock = self.act("redirect")
