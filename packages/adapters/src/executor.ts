@@ -3625,10 +3625,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
           })),
           connectedProviders: connectedComposio.map((row) => row.provider),
         };
-        const computerKind = (await deps.sandbox.provisionKind?.()) ?? deps.sandbox.describe().id;
+        const retainedComputerKind =
+          resumeHeldLease && bot.computer?.providerRef
+            ? ((await deps.sandbox.provisionKind?.()) ?? deps.sandbox.describe().id)
+            : undefined;
         const registerRetainedScreen = () => {
           const computer = bot.computer;
-          if (resumeHeldLease && computer?.providerRef && computer.kind === computerKind) {
+          if (resumeHeldLease && computer?.providerRef && computer.kind === retainedComputerKind) {
             screenRelease ??= {
               computer: toComputerRef(computer),
               context,
@@ -3885,6 +3888,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
         if (!bot.computer) throw new Error("Bot has no computer");
         const storedComputer = bot.computer;
+        const computerKind =
+          retainedComputerKind ??
+          (await deps.sandbox.provisionKind?.()) ??
+          deps.sandbox.describe().id;
         const computerMode = parseComputerMode(storedComputer.scope);
         const artifacts = deps.artifacts;
         const recentFilesInput = {

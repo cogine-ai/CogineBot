@@ -497,6 +497,27 @@ describe("run computer provisioning", () => {
     },
   );
 
+  it("rejects a missing model before probing the computer provider", async () => {
+    const emulator = new ManagedSandboxEmulator();
+    const probe = vi.spyOn(emulator, "provisionKind").mockRejectedValue(new Error("provider down"));
+    const { finalizeRun, sandbox, runtimeRun } = await runRoutine([], {
+      modelId: "",
+      emulator,
+    });
+
+    expect(finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        error: "Connect a model in Settings before running bots.",
+      }),
+    );
+    expect(probe).not.toHaveBeenCalled();
+    expect(sandbox.provisionKind).not.toHaveBeenCalled();
+    expect(runtimeRun).not.toHaveBeenCalled();
+    expect(provisionComputer).not.toHaveBeenCalled();
+    expect(sandbox.releaseScreen).not.toHaveBeenCalled();
+  });
+
   it("releases a retained takeover screen when model validation fails before the runtime", async () => {
     const { finalizeRun, sandbox, runtimeRun, retainedLease, screenReleased, run } =
       await runRoutine([], { modelId: "", resume: { checkpoint: "takeover" } });
