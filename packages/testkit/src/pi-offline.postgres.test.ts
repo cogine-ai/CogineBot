@@ -205,6 +205,173 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       }
     }
   }, 30_000);
+
+  it.each([
+    {
+      reason: "done" as const,
+      note: "The user handed the computer back. Continue from where you left off. Do not request takeover again.",
+    },
+    {
+      reason: "skipped" as const,
+      note: "The takeover ended without the user completing it. Continue without assuming that step was done. Do not request takeover again unless you still cannot proceed.",
+    },
+  ])(
+    "passes a neutral $reason takeover resume through the Pi model request",
+    async ({ reason, note }) => {
+      const fixtureKey = "offline-takeover-fixture-key";
+      const task = "Check the login screen, then wait for my manual confirmation.";
+      const model = await startModelEmulator({
+        apiKey: fixtureKey,
+        steps: [
+          {
+            expect(request) {
+              const current = request.messages.findLast((message) => message.role === "user");
+              expect(JSON.stringify(current?.content)).toContain(task);
+              expect(JSON.stringify(current?.content)).not.toContain(note);
+            },
+            response: {
+              type: "tool",
+              id: "manual-screen-choice",
+              name: "request_takeover",
+              arguments: { reason: "Choose an option on the current screen." },
+            },
+          },
+          {
+            expect(request) {
+              expect(request.messages.findLast((message) => message.role === "user")).toBeDefined();
+            },
+            response: { type: "text", text: "Control handoff received." },
+          },
+        ],
+      });
+      const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-offline-takeover-"));
+      let stop: (() => Promise<void>) | undefined;
+      try {
+        const { createApp } = await import("../../../apps/api/src/app.ts");
+        const handles = await createApp({
+          databaseUrl: process.env.DATABASE_URL!,
+          realtimeDatabaseUrl: process.env.DATABASE_URL!,
+          authUrl: fixtureOrigin,
+          webOrigin: fixtureOrigin,
+          dataDir,
+          sandboxProvider: "fake",
+          agentRuntime: "pi",
+          wakeupDriver: "memory",
+          signupsEnabled: "true",
+          composio: new ComposioEmulator(),
+          encryptionKey: "offline-takeover-fixture-encryption-key",
+        });
+        stop = handles.stop;
+        const signup = await handles.app.request("/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: fixtureOrigin },
+          body: JSON.stringify({
+            email: `offline-takeover-${randomUUID()}@rakazo.test`,
+            password: "password12",
+            name: "Takeover fixture",
+          }),
+        });
+        expect(signup.status).toBeLessThan(400);
+        const cookie = sessionCookieHeader(signup);
+        const credential = await rpc<ModelCredential>(handles.app, cookie, "models/connect", {
+          provider: model.model.provider,
+          modelId: model.model.id,
+          baseUrl: model.baseUrl,
+          apiKey: fixtureKey,
+          contextWindow: 160_000,
+          maxTokens: 4096,
+        });
+        await rpc(handles.app, cookie, "models/setDefault", {
+          provider: model.model.provider,
+          modelId: model.model.id,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
+        });
+        const bot = await rpc<{ id: string }>(handles.app, cookie, "bots/create", {
+          name: "Screen fixture",
+          title: "",
+          description: "",
+          instructions: "Continue only from observed state.",
+          notifyOnFinish: false,
+          computerMode: "dedicated",
+        });
+        await discardBotIntroRun(handles, cookie, bot.id);
+        await rpc(handles.app, cookie, "bots/update", {
+          botId: bot.id,
+          modelProvider: model.model.provider,
+          modelId: model.model.id,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
+        });
+        const sent = await rpc<{ runId: string }>(handles.app, cookie, "threads/send", {
+          botId: bot.id,
+          text: task,
+        });
+        await expect
+          .poll(
+            async () =>
+              (await handles.prisma.run.findUnique({ where: { id: sent.runId } }))?.status,
+            { timeout: 15_000, interval: 50 },
+          )
+          .toBe("waiting_takeover");
+        const waiting = await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } });
+        const userMessages = await handles.prisma.message.findMany({
+          where: { threadId: waiting.threadId, role: "user" },
+          select: { id: true },
+          orderBy: { seq: "asc" },
+        });
+        expect(userMessages).toContainEqual({ id: waiting.sourceMessageId });
+        await rpc(handles.app, cookie, "computer/boot", { botId: bot.id });
+        await rpc(handles.app, cookie, "computer/takeover", { botId: bot.id });
+        await rpc(handles.app, cookie, "computer/release", { botId: bot.id, reason });
+        await expect
+          .poll(
+            async () => {
+              const run = await handles.prisma.run.findUnique({ where: { id: sent.runId } });
+              if (run?.status === "failed") model.assertComplete();
+              return run?.status;
+            },
+            { timeout: 15_000, interval: 50 },
+          )
+          .toBe("completed");
+        model.assertComplete();
+        expect(model.requests).toHaveLength(2);
+        const resumed = model.requests[1]!;
+        const currentUser = resumed.messages.findLast((message) => message.role === "user");
+        const prompt = JSON.stringify(currentUser?.content);
+        expect(prompt).toContain(note);
+        expect(prompt.split(note)).toHaveLength(2);
+        expect(prompt).not.toMatch(/The user (?:finished|skipped) the login/i);
+        const userContext = resumed.messages
+          .filter((message) => message.role === "user")
+          .map((message) => JSON.stringify(message.content))
+          .join("\n");
+        expect(userContext.split(task)).toHaveLength(2);
+        expect(
+          await handles.prisma.message.findMany({
+            where: { threadId: waiting.threadId, role: "user" },
+            select: { id: true },
+            orderBy: { seq: "asc" },
+          }),
+        ).toEqual(userMessages);
+        expect(
+          await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } }),
+        ).toMatchObject({
+          threadId: waiting.threadId,
+          sourceMessageId: waiting.sourceMessageId,
+          status: "completed",
+        });
+      } finally {
+        try {
+          await stop?.();
+        } finally {
+          await model.close();
+          await rm(dataDir, { recursive: true, force: true });
+        }
+      }
+    },
+    30_000,
+  );
 });
 
 async function rpc<T>(
