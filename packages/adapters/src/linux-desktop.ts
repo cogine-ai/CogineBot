@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import type {
   AdapterContext,
   ComputerAction,
@@ -17,6 +18,7 @@ import {
   desktopControlCommand,
   desktopTerminalCommand,
   desktopUrl,
+  desktopWorkCommand,
   managedDesktopCommand,
   releaseDesktopCommand,
   screenPorts,
@@ -51,9 +53,74 @@ export interface LinuxDesktopHost {
   screenUrl(computer: ComputerRef, port: number, context: AdapterContext): Promise<string>;
 }
 
+interface EnsuredDesktop {
+  env: DesktopEnvironment;
+  key: string;
+  index: number;
+  token: string;
+  layout: { display: string; displayNumber: number; viewPort: number; controlPort: number };
+}
+
+interface PendingControlCleanup {
+  token: string;
+  version: string;
+  leaseId: string | undefined;
+}
+
 /** Provider SDKs supply only command execution, workspace paths, and protected port URLs. */
 export class LinuxDesktop {
+  private readonly pendingControlCleanups = new Map<string, Map<string, PendingControlCleanup>>();
+
   constructor(private readonly host: LinuxDesktopHost) {}
+
+  private cleanupKey(computer: ComputerRef, context: AdapterContext) {
+    return JSON.stringify([
+      computer.kind,
+      computer.id,
+      computer.providerRef,
+      context.spaceId,
+      screenSessionKey(context),
+    ]);
+  }
+
+  private pendingCleanups(computer: ComputerRef, context: AdapterContext) {
+    return [
+      ...(this.pendingControlCleanups.get(this.cleanupKey(computer, context))?.values() ?? []),
+    ];
+  }
+
+  private forgetCleanup(
+    computer: ComputerRef,
+    context: AdapterContext,
+    entry: PendingControlCleanup,
+  ) {
+    const key = this.cleanupKey(computer, context);
+    const pending = this.pendingControlCleanups.get(key);
+    if (pending?.get(entry.version) !== entry) return;
+    pending.delete(entry.version);
+    if (pending.size === 0) this.pendingControlCleanups.delete(key);
+  }
+
+  private async retryCleanup(
+    computer: ComputerRef,
+    context: AdapterContext,
+    env: DesktopEnvironment,
+    entry: PendingControlCleanup,
+  ) {
+    await this.run(
+      computer,
+      desktopControlCommand(
+        screenSessionKey(context),
+        entry.leaseId,
+        env,
+        false,
+        entry.token,
+        entry.version,
+      ),
+      context,
+    );
+    this.forgetCleanup(computer, context, entry);
+  }
 
   private async run(computer: ComputerRef, command: string, context: AdapterContext) {
     context.signal.throwIfAborted();
@@ -63,8 +130,10 @@ export class LinuxDesktop {
     return result.stdout;
   }
 
-  private async ensure(computer: ComputerRef, context: AdapterContext) {
+  private async ensure(computer: ComputerRef, context: AdapterContext): Promise<EnsuredDesktop> {
     const env = await this.host.environment(computer);
+    for (const pending of this.pendingCleanups(computer, context))
+      await this.retryCleanup(computer, context, env, pending);
     const key = screenSessionKey(context);
     const output = await this.run(
       computer,
@@ -80,7 +149,27 @@ export class LinuxDesktop {
       viewPort: Number(ports.viewPort),
       controlPort: Number(ports.controlPort),
     };
-    return { env, key, layout, token: match[2]! };
+    return { env, key, index, layout, token: match[2]! };
+  }
+
+  private runOnScreen(
+    computer: ComputerRef,
+    screen: EnsuredDesktop,
+    command: string,
+    context: AdapterContext,
+  ) {
+    return this.run(
+      computer,
+      desktopWorkCommand(
+        screen.key,
+        context.screenLeaseId,
+        screen.env,
+        screen.index,
+        screen.token,
+        command,
+      ),
+      context,
+    );
   }
 
   async connectScreen(
@@ -90,21 +179,51 @@ export class LinuxDesktop {
   ): Promise<ScreenSession> {
     const screen = await this.ensure(computer, context);
     let token = screen.token;
+    const grantVersion = request.interactive ? randomUUID() : undefined;
     if (request.interactive) {
       if (!request.controlToken) throw new Error("interactive screen requires a control token");
       token = request.controlToken;
       await this.run(
         computer,
-        desktopControlCommand(screen.key, context.screenLeaseId, screen.env, true, token),
+        desktopControlCommand(
+          screen.key,
+          context.screenLeaseId,
+          screen.env,
+          true,
+          token,
+          grantVersion,
+        ),
         context,
       );
     }
-    const url = await this.host.screenUrl(
-      computer,
-      request.interactive ? screen.layout.controlPort : screen.layout.viewPort,
-      context,
-    );
-    return { url: desktopUrl(url, token), mimeType: "text/html", close: async () => undefined };
+    try {
+      const url = await this.host.screenUrl(
+        computer,
+        request.interactive ? screen.layout.controlPort : screen.layout.viewPort,
+        context,
+      );
+      return { url: desktopUrl(url, token), mimeType: "text/html", close: async () => undefined };
+    } catch (error) {
+      if (request.interactive) {
+        const key = this.cleanupKey(computer, context);
+        let pending = this.pendingControlCleanups.get(key);
+        if (!pending) {
+          pending = new Map();
+          this.pendingControlCleanups.set(key, pending);
+        }
+        const entry = { token, version: grantVersion!, leaseId: context.screenLeaseId };
+        pending.set(entry.version, entry);
+        try {
+          await this.retryCleanup(computer, context, screen.env, entry);
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "screen publication and control cleanup failed",
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   async connectTerminal(computer: ComputerRef, request: TerminalRequest, context: AdapterContext) {
@@ -139,6 +258,9 @@ export class LinuxDesktop {
     const env = interactive
       ? (await this.ensure(computer, context)).env
       : await this.host.environment(computer);
+    const pending = interactive
+      ? []
+      : this.pendingCleanups(computer, context).filter((entry) => entry.token === token);
     await this.run(
       computer,
       desktopControlCommand(
@@ -150,19 +272,25 @@ export class LinuxDesktop {
       ),
       context,
     );
+    for (const entry of pending) this.forgetCleanup(computer, context, entry);
   }
 
   async observe(computer: ComputerRef, context: AdapterContext) {
-    const { layout } = await this.ensure(computer, context);
-    return this.observeLayout(computer, layout, context);
+    const screen = await this.ensure(computer, context);
+    return this.observeLayout(computer, screen, context);
   }
 
   private async observeLayout(
     computer: ComputerRef,
-    layout: { display: string; displayNumber: number },
+    screen: EnsuredDesktop,
     context: AdapterContext,
   ) {
-    const output = await this.run(computer, observeExtraDisplayCommand(layout), context);
+    const output = await this.runOnScreen(
+      computer,
+      screen,
+      observeExtraDisplayCommand(screen.layout),
+      context,
+    );
     const observed = parseExtraDisplayObservation(output);
     return computerObservation(observed.image, {
       mimeType: "image/png",
@@ -173,28 +301,40 @@ export class LinuxDesktop {
   }
 
   async sendInput(computer: ComputerRef, input: ComputerInput, context: AdapterContext) {
-    const { layout } = await this.ensure(computer, context);
-    await this.run(computer, extraDisplayInputCommand(layout, input), context);
+    const screen = await this.ensure(computer, context);
+    await this.runOnScreen(
+      computer,
+      screen,
+      extraDisplayInputCommand(screen.layout, input),
+      context,
+    );
   }
 
   async act(computer: ComputerRef, request: ComputerActionRequest, context: AdapterContext) {
-    const { layout, env, key } = await this.ensure(computer, context);
+    const screen = await this.ensure(computer, context);
+    const { layout, env, key } = screen;
     let completed = 0;
     for (const action of boundedComputerActions(request.actions)) {
-      await this.run(
+      await this.runOnScreen(
         computer,
+        screen,
         `export CHROME_USER_DATA_DIR=${shellQuote(browserProfilePathForScreen(key, env))} BROWSER=${browserLauncherPath(layout.displayNumber)}\n${browserActionCommand(action, layout, env)}`,
         context,
       );
       completed += 1;
     }
     if (request.settleMs)
-      await this.run(computer, `sleep ${clampRounded(request.settleMs, 0, 5000) / 1000}`, context);
+      await this.runOnScreen(
+        computer,
+        screen,
+        `sleep ${clampRounded(request.settleMs, 0, 5000) / 1000}`,
+        context,
+      );
     return {
       completed,
       ...(request.observe === false
         ? {}
-        : { observation: await this.observeLayout(computer, layout, context) }),
+        : { observation: await this.observeLayout(computer, screen, context) }),
     };
   }
 
@@ -204,21 +344,33 @@ export class LinuxDesktop {
   }
 
   async releaseScreen(computer: ComputerRef, context: AdapterContext) {
+    const pending = this.pendingCleanups(computer, context).filter(
+      (entry) => entry.leaseId === context.screenLeaseId,
+    );
     const env = await this.host.environment(computer);
     // A stale release is a successful no-op. A failed stop must retain the slot
     // for retry. Once the browser has stopped, a later slot-cleanup error must
     // not look like Chromium is still running.
     const result = await this.host.run(
       computer,
-      releaseDesktopCommand(screenSessionKey(context), context.screenLeaseId, env),
+      releaseDesktopCommand(
+        screenSessionKey(context),
+        context.screenLeaseId,
+        env,
+        !context.cancelRunWork,
+      ),
       context,
     );
     if (result.stdout.includes("RAKAZO_DESKTOP_RELEASED=")) {
       if (result.code !== 0 && result.code !== 75) throw new BrowserStoppedReleaseError();
+      if (result.code === 0)
+        for (const entry of pending) this.forgetCleanup(computer, context, entry);
       return;
     }
     if (result.code !== 0 && result.code !== 75)
       throw new Error(result.stderr || "computer desktop failed to stop");
+    if (result.code === 0)
+      for (const entry of pending) this.forgetCleanup(computer, context, entry);
   }
 }
 
@@ -235,8 +387,10 @@ function browserActionCommand(
     return `cd ${shellQuote(env.workspaceDir)}\n${command}`;
   }
   const browser =
-    action.kind === "open" && /^https?:\/\//i.test(action.path)
-      ? action.path
+    action.kind === "open"
+      ? /^https?:\/\//i.test(action.path)
+        ? action.path
+        : pathToFileURL(workspacePath(env.workspaceDir, action.path), { windows: false }).href
       : action.kind === "launch" && BROWSER_APPLICATIONS.has(action.application.toLowerCase())
         ? (action.uri ?? "about:blank")
         : undefined;
@@ -244,7 +398,7 @@ function browserActionCommand(
     return `nohup ${browserLauncherPath(layout.displayNumber)} ${shellQuote(browser)} </dev/null >/tmp/rakazo/browser-open-${layout.displayNumber}.log 2>&1 &`;
   }
   const workspace = env.workspaceDir;
-  return `cd ${shellQuote(workspace)}\n${extraDisplayActionCommand(layout, action.kind === "open" ? { ...action, path: workspacePath(workspace, action.path) } : action)}`;
+  return `cd ${shellQuote(workspace)}\n${extraDisplayActionCommand(layout, action)}`;
 }
 
 // Chrome-family WM_CLASS components. Matched whole, so "xterm" does not raise "uxterm".

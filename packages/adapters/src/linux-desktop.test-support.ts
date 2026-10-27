@@ -17,6 +17,9 @@ export function desktopCommandResponder() {
       slots.delete(key);
       return { exitCode: 0, stdout: "", stderr: "" };
     }
+    if (key && command.includes("RAKAZO_DESKTOP_RETAINED=")) {
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
     if (command.includes("base64") && command.includes("CURSOR"))
       return { exitCode: 0, stdout: "AQID\nCURSOR X=10 Y=20\n", stderr: "" };
     return undefined;

@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -9,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -28,6 +30,7 @@ import {
   screenPorts,
   shellQuote,
   stopExtraScreenCommand,
+  stopScreenTransportsCommand,
   terminalCommand,
 } from "./desktop-runtime.js";
 
@@ -110,6 +113,217 @@ function fixture() {
 }
 
 describe("shared Linux desktop lifecycle", () => {
+  it("retains an ordinary release slot and fence, then rotates the retired view token", () => {
+    const f = fixture();
+    expect(f.ensure("a").status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    const released = f.run(releaseDesktopCommand("a", "run:1", env, true));
+    expect(released.status).toBe(0);
+    expect(released.stdout).toContain("RAKAZO_DESKTOP_RETAINED=0");
+    expect(released.stdout).not.toContain("RAKAZO_DESKTOP_RELEASED=");
+    const retained = readFileSync(slot, "utf8").split("\n");
+    expect(retained.slice(0, 4)).toEqual(["0", "run:1", "", ""]);
+    expect(retained[4]).toBe("idle");
+    expect(Number(retained[5])).toBeGreaterThan(0);
+    expect(f.run(releaseDesktopCommand("a", "run:1", env, true)).status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[5]).toBe(retained[5]);
+    expect(f.run(managedDesktopCommand("a", "run:2", env, "next-view")).stdout).toContain(
+      "RAKAZO_DESKTOP=0:next-view",
+    );
+    expect(readFileSync(slot, "utf8").split("\n")[4]).toBe("idle");
+    expect(readFileSync(slot, "utf8").split("\n")[5]).toBe(retained[5]);
+  });
+
+  it("keeps execution fencing outside versioned cleanup", () => {
+    const f = fixture();
+    expect(f.ensure("a").status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    expect(f.run(desktopControlCommand("a", "run:1", env, true, "human-a", "grant-1")).status).toBe(
+      0,
+    );
+    expect(f.ensure("a", "run:2").status).toBe(0);
+    const before = readFileSync(slot, "utf8");
+    expect(f.run(desktopControlCommand("a", "run:1", env, false, "human-a")).status).toBe(75);
+    expect(readFileSync(slot, "utf8")).toBe(before);
+    expect(
+      f.run(desktopControlCommand("a", "run:1", env, false, "human-a", "grant-1")).status,
+    ).toBe(0);
+    const cleaned = readFileSync(slot, "utf8").split("\n");
+    expect(cleaned[1]).toBe("run:2");
+    expect(cleaned[3]).toBe("");
+    expect(cleaned[7]).toBe("");
+    expect(f.ensure("a", "run:1").status).toBe(75);
+    expect(f.run(desktopControlCommand("a", "run:2", env, true, "human-a", "grant-2")).status).toBe(
+      0,
+    );
+    const replacement = readFileSync(slot, "utf8");
+    expect(
+      f.run(desktopControlCommand("a", "run:1", env, false, "other-token", "grant-2")).status,
+    ).toBe(0);
+    expect(readFileSync(slot, "utf8")).toBe(replacement);
+  });
+
+  it.each([65, 128])("keeps an opaque %s-character control receipt through recovery", (length) => {
+    const f = fixture();
+    const token = "a".repeat(length);
+    expect(f.ensure("a").status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    expect(f.run(desktopControlCommand("a", "run:1", env, true, token)).status).toBe(0);
+    expect(f.ensure("a", "run:2").status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[3]).toBe(token);
+    expect(f.run(desktopControlCommand("a", "run:2", env, false, token)).status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[3]).toBe("");
+  });
+
+  it("restores only a successful unrevoked receipt across the same Run's next fence", () => {
+    const f = fixture();
+    expect(f.ensure("a").status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    expect(f.run(desktopControlCommand("a", "run:1", env, true, "human-a")).status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[3]).toBe("human-a");
+    expect(f.ensure("a", "run:2").status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[3]).toBe("human-a");
+    expect(f.run(desktopControlCommand("a", "run:2", env, true, "human-b")).status).toBe(0);
+    expect(f.run(desktopControlCommand("a", "run:2", env, false, "human-a")).status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[3]).toBe("human-b");
+    expect(f.run(desktopControlCommand("a", "run:2", env, false, "human-b")).status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[3]).toBe("");
+    expect(f.ensure("a", "run:3").status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[3]).toBe("");
+  });
+
+  it("keeps failed grant and release tombstones reserved until matching cleanup succeeds", () => {
+    const f = fixture();
+    expect(f.ensure("a").status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    expect(f.run(desktopControlCommand("a", "run:1", env, true, "human-a"), true).status).toBe(1);
+    let state = readFileSync(slot, "utf8").split("\n");
+    expect(state[3]).toBe("");
+    expect(state[4]).toBe("blocked");
+    expect(state[6]).toBe("human-a");
+    expect(f.ensure("a").status).toBe(75);
+    expect(f.run(desktopControlCommand("a", "run:1", env, false, "human-a")).status).toBe(0);
+    expect(f.ensure("a").status).toBe(0);
+    expect(f.run(releaseDesktopCommand("a", "run:1", env, true), true).status).toBe(1);
+    state = readFileSync(slot, "utf8").split("\n");
+    expect(state[4]).toBe("releasing");
+    expect(f.ensure("a").status).toBe(75);
+    expect(f.run(releaseDesktopCommand("a", "run:1", env, true)).status).toBe(0);
+    expect(readFileSync(slot, "utf8").split("\n")[4]).toBe("idle");
+  });
+
+  it("fails transport teardown while an old terminal server still survives", () => {
+    const f = fixture();
+    const script = stopScreenTransportsCommand(0, env).replaceAll("/tmp/rakazo", f.root);
+    const result = spawnSync(
+      "bash",
+      [
+        "-eu",
+        "-c",
+        [
+          "pkill() { :; }",
+          'pgrep() { case "$*" in *rakazo-terminal.py*) return 0 ;; *) return 1 ;; esac; }',
+          "sleep() { :; }",
+          script,
+        ].join("\n"),
+      ],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("terminal failed to stop");
+  });
+
+  it("reclaims only the oldest eligible idle slot at the existing display boundary", () => {
+    const f = fixture();
+    const limited = { ...env, displayStart: MAX_DESKTOP_DISPLAY - 1 };
+    expect(f.run(managedDesktopCommand("a", "run:1", limited, "view-a")).status).toBe(0);
+    expect(f.run(managedDesktopCommand("b", "run:1", limited, "view-b")).status).toBe(0);
+    const slots = readdirSync(f.root).filter((name) => name.endsWith(".slot"));
+    const first = slots.find((name) =>
+      readFileSync(path.join(f.root, name), "utf8").startsWith("0\n"),
+    )!;
+    const second = slots.find((name) => name !== first)!;
+    writeFileSync(path.join(f.root, first), "0\nrun:1\n\n\nidle\n10\n\n");
+    writeFileSync(path.join(f.root, second), "1\nrun:1\n\n\nidle\n20\n\n");
+    const third = f.run(managedDesktopCommand("c", "run:1", limited, "view-c"));
+    expect(third.status, third.stderr).toBe(0);
+    expect(third.stdout).toContain("RAKAZO_DESKTOP=0:view-c");
+    expect(readdirSync(f.root)).not.toContain(first);
+    expect(readFileSync(path.join(f.root, second), "utf8")).toContain("idle\n20");
+  });
+
+  it.each(["controlled", "blocked", "releasing"])(
+    "does not reclaim a %s assignment at the address ceiling",
+    (state) => {
+      const f = fixture();
+      const limited = { ...env, displayStart: MAX_DESKTOP_DISPLAY - 1 };
+      expect(f.run(managedDesktopCommand("a", "run:1", limited, "view-a")).status).toBe(0);
+      expect(f.run(managedDesktopCommand("b", "run:1", limited, "view-b")).status).toBe(0);
+      const slots = readdirSync(f.root).filter((name) => name.endsWith(".slot"));
+      const first = slots.find((name) =>
+        readFileSync(path.join(f.root, name), "utf8").startsWith("0\n"),
+      )!;
+      writeFileSync(
+        path.join(f.root, first),
+        [
+          "0",
+          "run:1",
+          "",
+          state === "controlled" ? "human-a" : "",
+          state === "controlled" ? "idle" : state,
+          "10",
+          state === "blocked" ? "human-a" : "",
+          "grant-a",
+          "",
+        ].join("\n"),
+      );
+      const before = slots.map((name) => readFileSync(path.join(f.root, name), "utf8"));
+      expect(f.run(managedDesktopCommand("c", "run:1", limited, "view-c")).status).toBe(75);
+      expect(slots.map((name) => readFileSync(path.join(f.root, name), "utf8"))).toEqual(before);
+    },
+  );
+
+  it.each(["teardown", "remove"])(
+    "reserves an idle victim when %s fails before reuse",
+    (failure) => {
+      const f = fixture();
+      const limited = { ...env, displayStart: MAX_DESKTOP_DISPLAY };
+      expect(f.run(managedDesktopCommand("a", "run:1", limited, "view-a")).status).toBe(0);
+      const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+      writeFileSync(slot, "0\nrun:1\n\n\nidle\n10\n\n\n");
+      const command = managedDesktopCommand("c", "run:1", limited, "view-c");
+      const result = f.run(
+        failure === "remove" ? `rm() { return 1; }\n${command}` : command,
+        failure === "teardown",
+      );
+      expect(result.status).toBe(1);
+      expect(readFileSync(slot, "utf8").split("\n")[4]).toBe("releasing");
+      expect(readdirSync(f.root).filter((name) => name.endsWith(".slot"))).toHaveLength(1);
+      expect(f.run(managedDesktopCommand("c", "run:1", limited, "view-c")).status).toBe(75);
+      expect(f.run(releaseDesktopCommand("a", "run:1", limited)).status).toBe(0);
+      expect(f.run(managedDesktopCommand("c", "run:1", limited, "view-c")).stdout).toContain(
+        "RAKAZO_DESKTOP=0:view-c",
+      );
+    },
+  );
+
+  it("releases the global descriptor before a nonblocking idle-victim lifecycle lock", () => {
+    const f = fixture();
+    const limited = { ...env, displayStart: MAX_DESKTOP_DISPLAY };
+    expect(f.run(managedDesktopCommand("a", "run:1", limited, "view-a")).status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    const idle = "0\nrun:1\n\n\nidle\n10\n\n\n";
+    writeFileSync(slot, idle);
+    const result = f.run(
+      [
+        'flock() { if [ "$1" = -n ] && [ "$2" = 11 ]; then [ ! -e /dev/fd/9 ] || exit 99; return 1; fi; return 0; }',
+        managedDesktopCommand("c", "run:1", limited, "view-c"),
+      ].join("\n"),
+    );
+    expect(result.status).toBe(75);
+    expect(readFileSync(slot, "utf8")).toBe(idle);
+  });
+
   it("allocates live slots past 1000 bots, keeps assignments across callers, and rejects stale leases", () => {
     const f = fixture();
     expect(f.ensure("a").stdout).toContain("RAKAZO_DESKTOP=0:view-a");
@@ -210,6 +424,7 @@ describe("shared Linux desktop lifecycle", () => {
     expect(f.run(desktopTerminalCommand("missing", "run:1", env, "c", "t", ".")).status).toBe(75);
     expect(f.ensure("a").status).toBe(0);
     expect(f.run(desktopTerminalCommand("a", "old:0", env, "c", "t", ".")).status).toBe(75);
+    expect(f.run(desktopControlCommand("a", "run:1", env, true, "c")).status).toBe(0);
     expect(f.run(desktopTerminalCommand("a", "run:1", env, "c", "t", ".")).status).toBe(0);
     expect(() => terminalCommand("c", "bad token", ".")).toThrow("invalid terminal token");
   });
@@ -228,6 +443,59 @@ describe("shared Linux desktop lifecycle", () => {
     expect(unsetAt).toBeGreaterThan(-1);
     expect(execAt).toBeGreaterThan(unsetAt);
   });
+
+  it.each(["missing", "empty", "mismatched"])(
+    "repairs a %s control route while its socket and gateway remain live",
+    async (damage) => {
+      const root = mkdtempSync("/tmp/control-route-");
+      roots.push(root);
+      const targets = path.join(root, "desktop-targets");
+      mkdirSync(targets);
+      mkdirSync(path.join(root, "sockets"));
+      const token = "human-a";
+      const key = createHash("sha256").update(token).digest("hex").slice(0, 32);
+      const socket = path.join(root, "sockets", `control-1-${key}`);
+      const input = createServer();
+      const gateway = createServer();
+      await new Promise<void>((resolve) => input.listen(socket, resolve));
+      await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = gateway.address();
+        if (!address || typeof address === "string") throw new Error("missing gateway port");
+        const layout = { ...screenPorts(0), controlPort: String(address.port) };
+        const target = path.join(targets, "control-1");
+        if (damage !== "missing")
+          writeFileSync(target, damage === "empty" ? "" : "old: unix_socket:/old\n");
+        writeFileSync(path.join(root, "control-token-1"), token);
+        const stopped = path.join(root, "stopped");
+        const result = spawnSync(
+          "bash",
+          [
+            "-eu",
+            "-c",
+            [
+              // Process health is controlled; the socket and listening gateway are real.
+              "pgrep() { return 0; }; flock() { :; }; websockify() { return 1; }",
+              `pkill() { printf stopped >>${shellQuote(stopped)}; }`,
+              interactiveScreenCommand(true, token, layout)
+                .replaceAll("/tmp/rakazo", root)
+                .replaceAll("/usr/share/novnc", root),
+            ].join("\n"),
+          ],
+          { encoding: "utf8", timeout: 5000 },
+        );
+        expect(result.status, result.stderr).toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(`${token}: unix_socket:${socket}\n`);
+        expect(spawnSync("test", ["-e", stopped]).status).toBe(1);
+      } finally {
+        await Promise.all(
+          [input, gateway].map(
+            (server) => new Promise<void>((resolve) => server.close(() => resolve())),
+          ),
+        );
+      }
+    },
+  );
 
   it("stops the terminal with the control lease and the screen transports", () => {
     expect(interactiveScreenCommand(false)).toMatch(/pkill -f .*rakazo-terminal\.py/);

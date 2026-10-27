@@ -5,6 +5,7 @@ import {
   shellQuote,
   stopBrowserCommand,
   stopExtraScreenCommand,
+  stopScreenTransportsCommand,
 } from "@rakazo/core/node/desktop-runtime";
 
 export {
@@ -20,6 +21,7 @@ export {
 
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { canReleaseScreenLease, canTakeScreenLease } from "@rakazo/core";
 import { z } from "zod";
 import { type SandboxInput, xdotoolCommand } from "./computer-spec.js";
@@ -220,7 +222,10 @@ export function nextScreenIndex(
       ) {
         throw new Error("This Team Computer screen is owned by a newer execution.");
       }
-      if (canTakeScreenLease(existing.leaseId, leaseId)) existing.leaseId = leaseId;
+      if (existing.leaseId !== leaseId && canTakeScreenLease(existing.leaseId, leaseId)) {
+        existing.leaseId = leaseId;
+        delete existing.idleAt;
+      }
     }
     return existing.index;
   }
@@ -262,10 +267,37 @@ export async function teardownReleasedScreen(
   screenId: string,
   index: number,
   teardown: () => Promise<{ code: number; stderr: string }>,
+  options: { retainBrowser?: boolean } = {},
 ) {
   const result = await teardown();
   if (result.code !== 0) throw new Error(result.stderr || "computer screen failed to stop");
-  completeReleasedScreen(assigned, screenId, index);
+  const slot = assigned.get(screenId);
+  if (options.retainBrowser && slot?.releasing && slot.index === index) {
+    delete slot.releasing;
+    delete slot.controlled;
+    delete slot.controlToken;
+    delete slot.viewToken;
+    slot.idleAt = Date.now();
+  } else {
+    completeReleasedScreen(assigned, screenId, index);
+  }
+}
+
+export function oldestIdleScreen(assigned: Map<string, ScreenAssignment>, limit: number) {
+  return [...assigned.entries()]
+    .filter(
+      ([, slot]) =>
+        !slot.releasing &&
+        !slot.working &&
+        !slot.controlled &&
+        !slot.controlToken &&
+        slot.idleAt !== undefined &&
+        slot.index < limit,
+    )
+    .sort(
+      ([screenA, a], [screenB, b]) =>
+        (a.idleAt ?? 0) - (b.idleAt ?? 0) || a.index - b.index || screenA.localeCompare(screenB),
+    )[0]?.[0];
 }
 
 export interface ScreenAssignment {
@@ -273,6 +305,11 @@ export interface ScreenAssignment {
   leaseId?: string;
   releasing?: boolean;
   viewToken?: string;
+  idleAt?: number;
+  controlled?: boolean;
+  controlToken?: string;
+  controlVersion?: number;
+  working?: boolean;
 }
 
 /** Forget screen assignments and their boot marker together on every cleanup path. */
@@ -285,7 +322,7 @@ export function clearComputerScreenRegistry(
   boots.delete(containerId);
 }
 
-/** Screen processes do not survive a container restart (crash, OOM kill, daemon restart).
+/** Screen processes do not survive a container restart (crash or OOM kill).
  * A registry recorded under an earlier boot describes processes that no longer exist, and
  * a slot it left "releasing" would otherwise refuse every later screen and release request. */
 export function currentComputerScreens(
@@ -303,7 +340,7 @@ export function currentComputerScreens(
   return assigned;
 }
 
-/** Choose the stop command for DELETE /screen cancel/release.
+/** Revoke released access; only cancellation stops the browser.
  * Callers must hold the per-computer screen lock across this decision and any stop. */
 export function screenReleaseStopCommand(
   index: number | undefined,
@@ -314,7 +351,9 @@ export function screenReleaseStopCommand(
   },
 ): string {
   if (index !== undefined) {
-    return stopExtraScreenCommand(index, options.screenId);
+    return options.cancelRunWork
+      ? stopExtraScreenCommand(index, options.screenId)
+      : ["set -eu", stopScreenTransportsCommand(index)].join("\n");
   }
   // Missing registry after a supervisor restart: cancel still tears down the
   // matching bot's orphaned Chromium process without touching another bot.
@@ -383,14 +422,16 @@ export function containerActionStep(
       action.direction === "up" ? "4" : "5",
     ];
   } else if (action.kind === "open") {
-    const target = /^https?:\/\//i.test(action.path)
+    const isHttpUrl = /^https?:\/\//i.test(action.path);
+    const target = isHttpUrl
       ? action.path
-      : workspaceTarget(normalizeWorkspaceRelative(action.path));
+      : pathToFileURL(workspaceTarget(normalizeWorkspaceRelative(action.path)), { windows: false })
+          .href;
     argv = [
       "env",
       `DISPLAY=${display}`,
       ...(browserProfile ? [`RAKAZO_BROWSER_PROFILE=${browserProfile}`] : []),
-      "xdg-open",
+      isHttpUrl ? "xdg-open" : "rakazo-browser",
       target,
     ];
   } else {

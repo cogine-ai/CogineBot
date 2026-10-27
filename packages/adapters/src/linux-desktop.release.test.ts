@@ -1,5 +1,9 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { BrowserStoppedReleaseError } from "./computer-screens.js";
 import { LinuxDesktop } from "./linux-desktop.js";
 
@@ -32,15 +36,460 @@ function host(result: { code: number; stdout: string; stderr?: string }) {
   };
 }
 
+function shellHost() {
+  const root = mkdtempSync(path.join(tmpdir(), "linux-publication-"));
+  roots.push(root);
+  return {
+    root,
+    slot: () => path.join(root, readdirSync(root).find((name) => name.endsWith(".slot"))!),
+    host: {
+      ...host({ code: 0, stdout: "" }),
+      run: async (_computer: ComputerRef, command: string, _context: AdapterContext) => {
+        if (command.includes("base64") && command.includes("CURSOR"))
+          return { code: 0, stdout: "AQID\nCURSOR X=10 Y=20\n", stderr: "" };
+        const result = spawnSync(
+          "bash",
+          [
+            "-eu",
+            "-c",
+            [
+              "flock() { :; }",
+              "bash() { return 0; }",
+              command
+                .replaceAll("/tmp/rakazo/desktop-assignments", root)
+                .replaceAll("/tmp/rakazo", root),
+            ].join("\n"),
+          ],
+          { encoding: "utf8", timeout: 5_000 },
+        );
+        return { code: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+      },
+    },
+  };
+}
+
 describe("LinuxDesktop.releaseScreen", () => {
+  it("drains captured pending cleanup after a successful ordinary release", async () => {
+    const f = shellHost();
+    let runs = 0;
+    let urls = 0;
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        if (++runs === 3) throw new Error("cleanup unavailable");
+        return f.host.run(...args);
+      },
+      screenUrl: async () => {
+        if (++urls === 1) throw new Error("publication failed");
+        return "http://screen.example";
+      },
+    });
+    const current = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        current,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    await desktop.releaseScreen(computer, current);
+    const before = runs;
+    await desktop.connectScreen(computer, { view: "stream", interactive: false }, current);
+    expect(runs - before).toBe(1);
+    expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("");
+  });
+
+  it.each(["computer", "screen"])("isolates pending cleanup by %s identity", async (identity) => {
+    const first = shellHost();
+    const other = shellHost();
+    const commands: string[] = [];
+    let urls = 0;
+    const transport = new Error("first screen cleanup unavailable");
+    const desktop = new LinuxDesktop({
+      ...first.host,
+      run: async (ref, command, current) => {
+        if (ref.id === computer.id && current.botId === context.botId) {
+          commands.push(command);
+          if (commands.length >= 3) throw transport;
+        }
+        return (ref.id === computer.id ? first.host : other.host).run(ref, command, current);
+      },
+      screenUrl: async () => {
+        if (++urls === 1) throw new Error("publication failed");
+        return "http://screen.example";
+      },
+    });
+    const current = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        current,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    const peer =
+      identity === "computer"
+        ? { ...computer, id: "other-computer", providerRef: "other" }
+        : computer;
+    const peerContext = identity === "screen" ? { ...current, botId: "other-bot" } : current;
+    await desktop.connectScreen(peer, { view: "stream", interactive: false }, peerContext);
+    await expect(
+      desktop.connectScreen(computer, { view: "stream", interactive: false }, current),
+    ).rejects.toBe(transport);
+    expect(commands.at(-1)).not.toContain("RAKAZO_DESKTOP=");
+  });
+
+  it.each(["run:1", "next:2"])(
+    "retries an unconfirmed publication cleanup before %s ensures",
+    async (nextLease) => {
+      const f = shellHost();
+      let runs = 0;
+      let urls = 0;
+      const transport = new Error("cleanup transport failed before execution");
+      const desktop = new LinuxDesktop({
+        ...f.host,
+        run: async (...args) => {
+          runs += 1;
+          if (runs === 3) throw transport;
+          return f.host.run(...args);
+        },
+        screenUrl: async () => {
+          if (++urls === 1) throw new Error("publication failed");
+          return "http://screen.example";
+        },
+      });
+      const current = { ...context, screenLeaseId: "run:1" };
+      await expect(
+        desktop.connectScreen(
+          computer,
+          { view: "stream", interactive: true, controlToken: "human-a" },
+          current,
+        ),
+      ).rejects.toBeInstanceOf(AggregateError);
+      expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("human-a");
+      await desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: false },
+        { ...current, screenLeaseId: nextLease },
+      );
+      expect(readFileSync(f.slot(), "utf8").split("\n")[1]).toBe(nextLease);
+      expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("");
+    },
+  );
+
+  it("cleans a preserved failed grant after another caller advances the same Run", async () => {
+    const f = shellHost();
+    let runs = 0;
+    let urls = 0;
+    let afterCleanup: string[] | undefined;
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        if (++runs === 3) throw new Error("cleanup unavailable before execution");
+        const result = await f.host.run(...args);
+        if (runs === 4) afterCleanup = readFileSync(f.slot(), "utf8").split("\n");
+        return result;
+      },
+      screenUrl: async () => {
+        if (++urls === 1) throw new Error("publication failed");
+        return "http://screen.example";
+      },
+    });
+    const original = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        original,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+    const reclaimed = { ...original, screenLeaseId: "run:2" };
+    await new LinuxDesktop(f.host).connectScreen(
+      computer,
+      { view: "stream", interactive: false },
+      reclaimed,
+    );
+    const preserved = readFileSync(f.slot(), "utf8").split("\n");
+    expect(preserved[1]).toBe("run:2");
+    expect(preserved[3]).toBe("human-a");
+    expect(preserved[7]).toBe(version);
+    await desktop.connectScreen(computer, { view: "stream", interactive: false }, reclaimed);
+    expect(afterCleanup?.[1]).toBe("run:2");
+    expect(afterCleanup?.[3]).toBe("");
+    expect(afterCleanup?.[7]).toBe("");
+    expect(readFileSync(f.slot(), "utf8").split("\n")[1]).toBe("run:2");
+    expect(runs).toBe(5);
+  });
+
+  it("cleans the first failed publication after another caller preserves its grant", async () => {
+    const f = shellHost();
+    let runs = 0;
+    let afterCleanup: string[] | undefined;
+    let entered!: () => void;
+    let fail!: (error: Error) => void;
+    const publishing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<string>((_resolve, reject) => {
+      fail = reject;
+    });
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        const result = await f.host.run(...args);
+        if (++runs === 3) afterCleanup = readFileSync(f.slot(), "utf8").split("\n");
+        return result;
+      },
+      screenUrl: async () => {
+        entered();
+        return held;
+      },
+    });
+    const original = { ...context, screenLeaseId: "run:1" };
+    const pending = desktop
+      .connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        original,
+      )
+      .catch((error: unknown) => error);
+    await publishing;
+    const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+    await new LinuxDesktop(f.host).connectScreen(
+      computer,
+      { view: "stream", interactive: false },
+      { ...original, screenLeaseId: "run:2" },
+    );
+    const preserved = readFileSync(f.slot(), "utf8").split("\n");
+    expect(preserved[1]).toBe("run:2");
+    expect(preserved[3]).toBe("human-a");
+    expect(preserved[7]).toBe(version);
+    const failure = new Error("publication failed after reclaim");
+    fail(failure);
+    expect(await pending).toBe(failure);
+    expect(afterCleanup?.[1]).toBe("run:2");
+    expect(afterCleanup?.[3]).toBe("");
+    expect(afterCleanup?.[7]).toBe("");
+    expect(runs).toBe(3);
+  });
+
+  it("cleans a preserved failed grant when another interactive grant never dispatches", async () => {
+    const f = shellHost();
+    let runs = 0;
+    let urls = 0;
+    let afterCleanup: string[] | undefined;
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        if (++runs === 3) throw new Error("old cleanup unavailable before execution");
+        const result = await f.host.run(...args);
+        if (runs === 4) afterCleanup = readFileSync(f.slot(), "utf8").split("\n");
+        return result;
+      },
+      screenUrl: async () => {
+        if (++urls === 1) throw new Error("old publication failed");
+        return "http://screen.example";
+      },
+    });
+    const original = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        original,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+    const reclaimed = { ...original, screenLeaseId: "run:2" };
+    let otherRuns = 0;
+    let otherPublished = false;
+    let unexecutedGrant = "";
+    const dispatchFailure = new Error("replacement grant transport failed before execution");
+    const other = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        if (++otherRuns === 2) {
+          unexecutedGrant = args[1];
+          throw dispatchFailure;
+        }
+        return f.host.run(...args);
+      },
+      screenUrl: async () => {
+        otherPublished = true;
+        return "http://screen.example";
+      },
+    });
+    await expect(
+      other.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        reclaimed,
+      ),
+    ).rejects.toBe(dispatchFailure);
+    const unexecutedVersion = unexecutedGrant.match(/control_version='([^']+)'/)?.[1];
+    expect(unexecutedVersion).toBeDefined();
+    expect(unexecutedVersion).not.toBe(version);
+    expect(otherPublished).toBe(false);
+    const preserved = readFileSync(f.slot(), "utf8").split("\n");
+    expect(preserved[1]).toBe("run:2");
+    expect(preserved[3]).toBe("human-a");
+    expect(preserved[7]).toBe(version);
+    await desktop.connectScreen(computer, { view: "stream", interactive: false }, reclaimed);
+    expect(afterCleanup?.[1]).toBe("run:2");
+    expect(afterCleanup?.[3]).toBe("");
+    expect(afterCleanup?.[7]).toBe("");
+    expect(runs).toBe(5);
+  });
+
+  it("refuses ensure while publication cleanup is still unconfirmed", async () => {
+    const f = shellHost();
+    const commands: string[] = [];
+    const transport = new Error("cleanup unavailable");
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      run: async (...args) => {
+        commands.push(args[1]);
+        if (commands.length >= 3) throw transport;
+        return f.host.run(...args);
+      },
+      screenUrl: async () => {
+        throw new Error("publication failed");
+      },
+    });
+    const current = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        current,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    await expect(
+      desktop.connectScreen(computer, { view: "stream", interactive: false }, current),
+    ).rejects.toBe(transport);
+    expect(commands[3]).not.toContain("RAKAZO_DESKTOP=");
+    expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("human-a");
+  });
+
+  it.each(["human-a", "human-b"])(
+    "does not clear replacement %s while retrying an old cleanup",
+    async (replacement) => {
+      const f = shellHost();
+      let runs = 0;
+      let urls = 0;
+      const desktop = new LinuxDesktop({
+        ...f.host,
+        run: async (...args) => {
+          if (++runs === 3) throw new Error("cleanup unavailable");
+          return f.host.run(...args);
+        },
+        screenUrl: async () => {
+          if (++urls === 1) throw new Error("publication failed");
+          return "http://screen.example";
+        },
+      });
+      const current = { ...context, screenLeaseId: "run:1" };
+      await expect(
+        desktop.connectScreen(
+          computer,
+          { view: "stream", interactive: true, controlToken: "human-a" },
+          current,
+        ),
+      ).rejects.toBeInstanceOf(AggregateError);
+      const next = { ...current, screenLeaseId: "next:2" };
+      const otherCaller = new LinuxDesktop(f.host);
+      await otherCaller.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: replacement },
+        next,
+      );
+      const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+      await desktop.connectScreen(computer, { view: "stream", interactive: false }, next);
+      const saved = readFileSync(f.slot(), "utf8").split("\n");
+      expect(saved[3]).toBe(replacement);
+      expect(saved[7]).toBe(version);
+    },
+  );
+
+  it("cleans up a successful grant when publishing its screen URL fails", async () => {
+    const f = shellHost();
+    const failure = new Error("screen URL unavailable");
+    const desktop = new LinuxDesktop({
+      ...f.host,
+      screenUrl: async () => {
+        throw failure;
+      },
+    });
+    const current = { ...context, screenLeaseId: "run:1" };
+    await expect(
+      desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: "human-a" },
+        current,
+      ),
+    ).rejects.toBe(failure);
+    expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("");
+    await desktop.observe(computer, current);
+    expect(readFileSync(f.slot(), "utf8").split("\n")[3]).toBe("");
+  });
+
+  it.each(["human-a", "human-b"])(
+    "does not revoke replacement %s when an older screen publication fails",
+    async (replacement) => {
+      const f = shellHost();
+      let reject!: (error: Error) => void;
+      let started!: () => void;
+      const publishing = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const held = new Promise<string>((_resolve, fail) => {
+        reject = fail;
+      });
+      let calls = 0;
+      const desktop = new LinuxDesktop({
+        ...f.host,
+        screenUrl: async () => {
+          calls += 1;
+          if (calls === 1) {
+            started();
+            return held;
+          }
+          return "http://screen.example";
+        },
+      });
+      const current = { ...context, screenLeaseId: "run:1" };
+      const failed = desktop
+        .connectScreen(
+          computer,
+          { view: "stream", interactive: true, controlToken: "human-a" },
+          current,
+        )
+        .catch((error: unknown) => error);
+      await publishing;
+      await desktop.connectScreen(
+        computer,
+        { view: "stream", interactive: true, controlToken: replacement },
+        current,
+      );
+      const version = readFileSync(f.slot(), "utf8").split("\n")[7];
+      const failure = new Error("old URL failed");
+      reject(failure);
+      expect(await failed).toBe(failure);
+      const saved = readFileSync(f.slot(), "utf8").split("\n");
+      expect(saved[3]).toBe(replacement);
+      expect(saved[7]).toBe(version);
+    },
+  );
+
   it("reports the browser stopped when slot cleanup fails after the release marker", async () => {
     const desktop = new LinuxDesktop(
       host({ code: 1, stdout: "RAKAZO_DESKTOP_RELEASED=0\n", stderr: "slot lock failed" }),
     );
 
-    await expect(desktop.releaseScreen(computer, context)).rejects.toBeInstanceOf(
-      BrowserStoppedReleaseError,
-    );
+    await expect(
+      desktop.releaseScreen(computer, { ...context, cancelRunWork: true }),
+    ).rejects.toBeInstanceOf(BrowserStoppedReleaseError);
   });
 
   it("keeps a release that never stops the browser as a failure", async () => {
@@ -50,4 +499,57 @@ describe("LinuxDesktop.releaseScreen", () => {
 
     await expect(desktop.releaseScreen(computer, context)).rejects.toThrow("browser still running");
   });
+
+  it.each(["e2b", "daytona", "box"] as const)(
+    "retains an ordinary %s browser slot and fully releases it on cancel",
+    async (kind) => {
+      const root = mkdtempSync(path.join(tmpdir(), "linux-release-"));
+      roots.push(root);
+      const desktop = new LinuxDesktop({
+        ...host({ code: 0, stdout: "" }),
+        run: async (_computer, command) => {
+          const result = spawnSync(
+            "bash",
+            [
+              "-eu",
+              "-c",
+              [
+                "flock() { :; }",
+                "bash() { return 0; }",
+                command
+                  .replaceAll("/tmp/rakazo/desktop-assignments", root)
+                  .replaceAll("/tmp/rakazo", root),
+              ].join("\n"),
+            ],
+            { encoding: "utf8", timeout: 5_000 },
+          );
+          return { code: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+        },
+      });
+      const ref = { ...computer, kind };
+      const current = { ...context, screenLeaseId: "run:1" };
+      const before = await desktop.connectScreen(
+        ref,
+        { view: "stream", interactive: false },
+        current,
+      );
+      await desktop.releaseScreen(ref, current);
+      const slots = readdirSync(root).filter((name) => name.endsWith(".slot"));
+      expect(slots).toHaveLength(1);
+      expect(readFileSync(path.join(root, slots[0]!), "utf8").split("\n")[4]).toBe("idle");
+      const after = await desktop.connectScreen(
+        ref,
+        { view: "stream", interactive: false },
+        current,
+      );
+      expect(after.url).not.toBe(before.url);
+      await desktop.releaseScreen(ref, { ...current, cancelRunWork: true });
+      expect(readdirSync(root).filter((name) => name.endsWith(".slot"))).toEqual([]);
+    },
+  );
+});
+
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
