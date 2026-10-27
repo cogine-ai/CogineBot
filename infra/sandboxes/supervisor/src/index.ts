@@ -524,14 +524,18 @@ app.post("/computers/:id/browser", async (c) => {
       if (result.code !== 0 || Buffer.byteLength(result.stdout) > 512 * 1024) {
         throw new Error("Page browser unavailable or interrupted");
       }
-      return c.json(JSON.parse(result.stdout));
+      const payload = JSON.parse(result.stdout);
+      if (typeof payload?.ok !== "boolean") {
+        throw new Error("Page browser unavailable or interrupted");
+      }
+      return c.json(payload);
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return c.json({
       ok: false,
       fallback: "computer_act",
-      uncertain: body.command === "act",
+      uncertain: body.command !== "snapshot",
       error:
         detail && detail !== "Page browser unavailable or interrupted"
           ? detail

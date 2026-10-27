@@ -258,6 +258,7 @@ describe("page browser safety", () => {
         ok,
         ...currentPage,
         timedOut: true,
+        uncertain: false,
         ...(!ok && {
           error: "Navigation observation timed out",
           fallback: "computer_act" as const,
@@ -269,7 +270,7 @@ describe("page browser safety", () => {
         { url: "https://example.test/before-redirect" },
         baseContext,
       );
-      expect(result).toMatchObject({ ...currentPage, timedOut: true });
+      expect(result).toMatchObject({ ...currentPage, timedOut: true, uncertain: false });
       expect(result.fallback).toBe(ok ? undefined : "computer_act");
       expect(driver).toHaveBeenCalledTimes(1);
     },
@@ -314,6 +315,18 @@ describe("page browser safety", () => {
     const driver = vi.fn(async () => {
       throw new Error("Connection closed after dispatch");
     });
+    const provider = new ComputerBrowserProvider({ liveDriver: driver });
+    expect(
+      await provider.navigate(computer, { url: "https://example.test/start" }, baseContext),
+    ).toMatchObject({ uncertain: true, fallback: "computer_act" });
+    expect(driver).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a structured navigation failure without dispatch confirmation as uncertain", async () => {
+    const driver = vi.fn(async () => ({
+      ok: false,
+      error: "Navigation interrupted",
+    }));
     const provider = new ComputerBrowserProvider({ liveDriver: driver });
     expect(
       await provider.navigate(computer, { url: "https://example.test/start" }, baseContext),

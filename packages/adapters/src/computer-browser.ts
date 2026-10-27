@@ -78,6 +78,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
     const live = await this.runLive(computer, { command: "navigate", url: request.url }, context);
     if (live?.ok !== true || live.fallback === "computer_act") {
       return {
+        uncertain: live?.uncertain ?? true,
         url: typeof live?.url === "string" ? live.url : request.url,
         title: typeof live?.title === "string" ? live.title : "",
         ...navigationObservation(live),
