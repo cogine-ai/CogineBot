@@ -163,8 +163,9 @@ starting registration; it does not silently attempt a container-local callback.
 ### Credentials and registrations
 
 Use the existing SecretStore and user-scoped Secret records, with record-bound
-encryption. A separate encrypted registration record survives disconnect; no
-database schema migration is required. A registration ID is opaque and checked
+encryption. A separate encrypted registration record survives disconnect. One
+forward migration adds its explicit kind to the account-scoped secret allowlist;
+tables, columns and other scope boundaries remain unchanged. A registration ID is opaque and checked
 against the authenticated user before use. Separate registrations remain
 separate even when their email/sub display values match.
 
@@ -301,8 +302,11 @@ registration state and backend model credentials are separate security domains.
 
 Rollback: remove the optional provider UI/runtime registration and new code.
 Existing encrypted records remain inert; do not delete user data on rollback.
-No Pi version or database migration needs reversing. Never replace an existing
-provider's stored credential with this provider's tokens.
+No Pi version change needs reversing. Retain the forward scope-constraint
+migration and inert registration records when rolling application code back.
+Restoring the old constraint would reject existing account-level registrations;
+do not delete user data to make it fit. Never replace an existing provider's
+stored credential with this provider's tokens.
 
 Implementation completion must record actual commands/results and remaining
 acceptance gaps here or in a companion validation report. A written spec,

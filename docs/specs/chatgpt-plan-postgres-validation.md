@@ -12,6 +12,22 @@ All eight tests also passed through the official integration harness on its
 isolated PostgreSQL 16 databases. The three suites are registered in that
 harness, so the repository CI integration lane will execute them.
 
+Real browser callback acceptance then exposed a missing scope allowlist entry
+for account-level registration secrets. Before the forward migration, both new
+registration tests failed on `secrets_scope_check` (`23514`). After applying the
+migration to a fresh PostgreSQL 17 database, all four suites passed together:
+**10 of 10 tests passed**. The new suite is also registered in the official
+integration harness.
+
+The regression uses the production login factory, encrypted secret store and
+Prisma persistence wrapper. A separate database query verifies the registration
+is committed and encrypted before the synthetic token endpoint is called. It
+also checks incomplete-registration retention, returning-client reuse, owner
+isolation, and the account-only/space-only scope matrix for existing, new and
+unknown secret kinds. Only OAuth HTTP is mocked. The same wrapped registration
+write passed with an intentional rollback in the isolated live acceptance
+database after its migration; no probe records remained.
+
 - PostgreSQL reported a waiting advisory lock for the second client. Its callback
   could enter only after the first credential transaction committed.
 - A recognized pending-rotation error committed the synthetic checkpoint row
@@ -42,14 +58,15 @@ Reproduction uses the repository's existing opt-in PostgreSQL test conventions:
 
 ```sh
 pnpm test:integration -- --sandbox=fake --runtime=scripted \
-  '--spec=(chatgpt-plan-(credential-lock|finalization)|model-bindings)\.postgres\.test\.ts'
+  '--spec=(chatgpt-plan-(credential-lock|finalization|registration)|model-bindings)\.postgres\.test\.ts'
 
 # To use a separately managed disposable PostgreSQL database:
 DATABASE_URL='<disposable PostgreSQL URL>' pnpm --filter @rakazo/db migrate
 VERIFY_DATABASE=1 DATABASE_URL='<disposable PostgreSQL URL>' pnpm exec vitest run \
   packages/adapters/src/chatgpt-plan-credential-lock.postgres.test.ts \
   apps/api/src/model-bindings.postgres.test.ts \
-  apps/api/src/chatgpt-plan-finalization.postgres.test.ts
+  apps/api/src/chatgpt-plan-finalization.postgres.test.ts \
+  apps/api/src/chatgpt-plan-registration.postgres.test.ts
 ```
 
 The credential-lock suite creates and drops its own randomly named table. The

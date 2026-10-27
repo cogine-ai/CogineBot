@@ -123,6 +123,7 @@ async function main() {
         "apps/api/src/model-connections.postgres.test.ts",
         "apps/api/src/model-bindings.postgres.test.ts",
         "apps/api/src/chatgpt-plan-finalization.postgres.test.ts",
+        "apps/api/src/chatgpt-plan-registration.postgres.test.ts",
         "packages/adapters/src/chatgpt-plan-credential-lock.postgres.test.ts",
         "packages/db/src/readiness.postgres.test.ts",
         "packages/db/src/model-connection-migration.postgres.test.ts",

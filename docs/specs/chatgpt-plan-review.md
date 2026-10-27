@@ -3,8 +3,9 @@
 Date: 2026-10-28. Comparison base: `ec89d1ef`.
 
 The implementation was reapplied to the current model connection/revision
-contracts before review. Pi remains pinned to `0.87.1`; there is no runtime or
-database schema migration in this patch.
+contracts before review. Pi remains pinned to `0.87.1`. Real-account acceptance
+identified a required forward migration expanding the account-scoped secret
+allowlist for ChatGPT registration records; no runtime replacement is introduced.
 
 ## Standards
 
@@ -39,6 +40,7 @@ the following concrete gaps; each was fixed with regression coverage:
 | Web catalogs lacked new messages and retained the previous sign-in ID | Relevant extracted entries and translations cover all ten locales, with catalog compilation and per-locale regressions |
 | A database-wide lock probe could count an unrelated waiter | The probe matches backend, database, exact advisory key and two-integer lock form; an unrelated-key negative check and real PostgreSQL validation pass |
 | Acceptance criteria contained joined words | Host address, client IDs, model and surface criteria retain their meaning with readable spacing and punctuation |
+| Real callback reached the listener but registration storage failed before token exchange | The existing database scope constraint rejected the new registration kind; a narrow forward migration and real PostgreSQL registration-path regression cover the storage boundary |
 | Usage failures were generic and lacked the promised recovery link | Actual Pi error normalization exposes a fixed recovery action on web/mobile; settings/error E2E screenshots verify the trusted link |
 | A disconnected placeholder claimed one available model | It now displays only the sign-in state until account discovery succeeds |
 

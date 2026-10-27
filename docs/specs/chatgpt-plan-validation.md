@@ -6,8 +6,9 @@ Date: 2026-10-28.
 
 The optional `chatgpt-plan` provider is implemented against the existing Pi
 `0.87.1` runtime. Both Pi dependency pins and the package lockfile are unchanged.
-No production database migration is introduced. Product login and other model
-providers retain their existing paths.
+One forward migration explicitly permits account-scoped ChatGPT registration
+records in the existing secret scope constraint. Tables and columns are
+unchanged. Product login and other model providers retain their existing paths.
 
 The implementation includes official dynamic registration and returning-client
 authorization, verified ID tokens, encrypted registration/credential storage,
@@ -96,9 +97,13 @@ The disposable lock-validation container was also stopped and removed.
 
 ## Unperformed acceptance and scope limits
 
-- No real ChatGPT account was authorized and no real OpenAI inference was sent.
-  Account eligibility, actual model entitlements, quota behavior, token rotation
-  against the live service and actual session revocation remain unverified.
+- Real browser consent and callback delivery were exercised. The callback reached
+  the loopback listener with the expected parameter structure and returned HTTP
+  200, but registration persistence failed before token exchange because the
+  existing secret scope constraint rejected its new kind. A local synthetic
+  write reproduced SQLSTATE `23514`. End-to-end authorization, real discovery,
+  inference, refresh and remote revocation remain unaccepted until the repaired
+  path is exercised successfully; browser consent alone is not a passing result.
 - Native desktop E2E was not run on the local machine, as required by repository
   guidance. Actual installed macOS/Windows/Linux and mobile device acceptance
   remains unperformed.
@@ -116,11 +121,14 @@ The disposable lock-validation container was also stopped and removed.
 
 Implementation and this spec remain together on `feat/chatgpt-plan-provider`,
 rebased onto the current connection-binding contracts and committed for PR
-review. No merge, release or deployment is part of this work. Unrelated changes
+review. Merge is authorized only after real-account acceptance and final checks
+pass; no release or deployment is part of this work. Unrelated changes
 in the original checkout were preserved. The isolated worktree is retained for
 review.
 
 Rollback removes the optional provider registration and integration code while
-leaving existing encrypted user data intact. No Pi version or database migration
-needs reversing. Real-account acceptance should be recorded separately before
+leaving existing encrypted user data intact. No Pi version change needs
+reversing. Keep the forward scope-constraint migration on application rollback:
+restoring the old check would reject retained registration rows. Do not remove
+user records as a rollback step. Real-account acceptance must be recorded before
 claiming a production-ready integration.
