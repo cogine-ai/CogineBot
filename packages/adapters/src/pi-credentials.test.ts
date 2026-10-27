@@ -1,6 +1,10 @@
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { ModelCredentialFailedState, ModelCredentialRetireReason } from "@rakazo/adapter-kit";
+import type {
+  AgentModelOAuthCredential,
+  ModelCredentialFailedState,
+  ModelCredentialRetireReason,
+} from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import { PiRuntimeCredentialStore } from "./pi-credentials.js";
 import {
@@ -21,6 +25,99 @@ function credential(overrides: Partial<OAuthCredential> = {}): OAuthCredential {
 }
 
 describe("PiRuntimeCredentialStore", () => {
+  it("reloads current ChatGPT credentials under a shared lock before each request-local refresh", async () => {
+    let saved = credential({ access: "old-access", expires: 0 });
+    let chain = Promise.resolve();
+    let rotations = 0;
+    let publications = 0;
+    const synchronize = async (
+      operation: (
+        current: AgentModelOAuthCredential,
+      ) => Promise<AgentModelOAuthCredential | undefined>,
+    ) => {
+      const previous = chain;
+      let release!: () => void;
+      chain = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        const next = await operation(saved);
+        if (next && JSON.stringify(next) !== JSON.stringify(saved)) {
+          saved = { ...next };
+          publications++;
+        }
+        return saved;
+      } finally {
+        release();
+      }
+    };
+    const stores = [
+      new PiRuntimeCredentialStore("chatgpt-plan", saved, undefined, undefined, synchronize),
+      new PiRuntimeCredentialStore("chatgpt-plan", saved, undefined, undefined, synchronize),
+    ];
+    await Promise.all(
+      stores.map((store) =>
+        store.modify("chatgpt-plan", async (current) => {
+          if (current?.type !== "oauth" || current.expires > Date.now()) return undefined;
+          rotations++;
+          return credential({ access: "new-access", refresh: "rotated-refresh" });
+        }),
+      ),
+    );
+    expect(rotations).toBe(1);
+    expect(publications).toBe(1);
+    expect(stores.map((store) => store.accessToken)).toEqual(["new-access", "new-access"]);
+  });
+
+  it("commits a ChatGPT successor before reporting cancellation after refresh", async () => {
+    const controller = new AbortController();
+    let saved = credential({ access: "old-access", expires: 0 });
+    const persist = vi.fn();
+    const store = new PiRuntimeCredentialStore(
+      "chatgpt-plan",
+      saved,
+      persist,
+      undefined,
+      async (operation) => {
+        const next = await operation(saved);
+        saved = next ? { ...next } : saved;
+        return saved;
+      },
+    );
+    await expect(
+      store.modify(
+        "chatgpt-plan",
+        async () => {
+          controller.abort();
+          return credential({ access: "successor-access", refresh: "successor-refresh" });
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(saved).toMatchObject({ access: "successor-access", refresh: "successor-refresh" });
+    expect(store.accessToken).toBe("successor-access");
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a synchronized ChatGPT credential before its transaction commits", async () => {
+    const before = credential({ access: "before" });
+    const store = new PiRuntimeCredentialStore(
+      "chatgpt-plan",
+      before,
+      undefined,
+      undefined,
+      async (operation) => {
+        await operation(before);
+        throw new Error("commit failed");
+      },
+    );
+    await expect(
+      store.modify("chatgpt-plan", async () => credential({ access: "uncommitted" })),
+    ).rejects.toThrow("commit failed");
+    expect(store.accessToken).toBe("before");
+  });
+
   it("does not configure openai-codex without a stored OAuth credential", async () => {
     expect(await builtinModels().getAuth("openai-codex")).toBeUndefined();
   });

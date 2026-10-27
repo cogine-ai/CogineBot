@@ -461,6 +461,12 @@ export interface AgentRunModel {
   oauth?: {
     credential: AgentModelOAuthCredential;
     persist?: (credential: AgentModelOAuthCredential) => Promise<void>;
+    /** Reload and publish a rotating credential under the deployment's shared lock. */
+    synchronize?: (
+      operation: (
+        current: AgentModelOAuthCredential,
+      ) => Promise<AgentModelOAuthCredential | undefined>,
+    ) => Promise<AgentModelOAuthCredential | undefined>;
     /** Drop the stored credential after a terminal provider rejection. */
     retire?: (
       reason: ModelCredentialRetireReason,

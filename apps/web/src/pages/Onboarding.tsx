@@ -531,7 +531,8 @@ export function OnboardingPage() {
     if (!selected?.id) return;
     void startSubscriptionSignIn({
       provider: selected.provider,
-      modelId: selected.id,
+      modelId:
+        selected.provider === "chatgpt-plan" && selected.placeholder ? undefined : selected.id,
       thinkingLevel: clampCatalogThinkingLevel(
         thinkingLevel,
         selected.thinkingLevels,
@@ -815,26 +816,28 @@ export function OnboardingPage() {
                               >
                                 {new URL(oauth.verificationUri).hostname}
                               </a>
-                              . The final page may not load; paste its URL or code here.
+                              .
                             </Trans>
                           )}
                         </p>
-                        <div className="mt-3 flex items-center gap-2">
-                          <Input
-                            value={pasteCode}
-                            onChange={(e) => setPasteCode(e.target.value)}
-                            aria-label={t`Authorization code or callback URL`}
-                            autoComplete="off"
-                            spellCheck={false}
-                            placeholder="http://localhost:53692/callback?code=…"
-                          />
-                          <Button
-                            disabled={!pasteCode.trim()}
-                            onClick={() => void submitOAuthCode()}
-                          >
-                            <Trans>Submit</Trans>
-                          </Button>
-                        </div>
+                        {oauth.callbackTransport !== "loopback" ? (
+                          <div className="mt-3 flex items-center gap-2">
+                            <Input
+                              value={pasteCode}
+                              onChange={(e) => setPasteCode(e.target.value)}
+                              aria-label={t`Authorization code or callback URL`}
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder="http://localhost:53692/callback?code=…"
+                            />
+                            <Button
+                              disabled={!pasteCode.trim()}
+                              onClick={() => void submitOAuthCode()}
+                            >
+                              <Trans>Submit</Trans>
+                            </Button>
+                          </div>
+                        ) : null}
                         <p className="mt-2 text-sm text-muted-foreground">
                           <Plural
                             value={Math.ceil(oauth.expiresInSeconds / 60)}

@@ -196,6 +196,9 @@ import {
   browserSnapshotFromTool,
 } from "./browser-tools.js";
 import { agentConnectionTools, builtinAgentTools, sharedMemorySaveError } from "./builtin-tools.js";
+import { chatGPTPlanRotationCheckpoint } from "./chatgpt-plan-auth.js";
+import { withChatGPTPlanCredentialLock } from "./chatgpt-plan-credential-lock.js";
+import { CHATGPT_PLAN_PROVIDER_ID, readChatGPTPlanModels } from "./chatgpt-plan-provider.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import { cloudAgentsEnabled } from "./cloud-agent-factory.js";
@@ -3086,6 +3089,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         ? {
             credential: resolved.oauth,
             persist: resolved.persistOAuth,
+            synchronize: resolved.synchronizeOAuth,
             retire: resolved.retireOAuth,
           }
         : undefined,
@@ -3179,6 +3183,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ? {
               credential: resolved.oauth,
               persist: resolved.persistOAuth,
+              synchronize: resolved.synchronizeOAuth,
               retire: resolved.retireOAuth,
             }
           : undefined,
@@ -4611,6 +4616,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         ? {
                             credential: judgeKey.oauth,
                             persist: judgeKey.persistOAuth,
+                            synchronize: judgeKey.synchronizeOAuth,
                             retire: judgeKey.retireOAuth,
                           }
                         : undefined,
@@ -6869,6 +6875,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ? {
                       credential: resolved.oauth,
                       persist: resolved.persistOAuth,
+                      synchronize: resolved.synchronizeOAuth,
                       retire: resolved.retireOAuth,
                     }
                   : undefined,
@@ -8801,6 +8808,7 @@ async function resolveModelKey(
   maxImagesPerPrompt?: number;
   oauth?: AgentModelOAuthCredential;
   persistOAuth?: (credential: AgentModelOAuthCredential) => Promise<void>;
+  synchronizeOAuth?: NonNullable<AgentRunRequest["model"]["oauth"]>["synchronize"];
   retireOAuth?: (
     reason: ModelCredentialRetireReason,
     detail?: string,
@@ -8810,139 +8818,254 @@ async function resolveModelKey(
 }> {
   if (credential) {
     return withModelCredentialLock(credential.secretId, async () => {
-      const row = await deps.prisma.secret.findFirst({
-        where: { id: credential.secretId, userId, spaceId: null },
-      });
-      if (!row) {
-        if (requireStoredSecret || credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
-          throw new UnavailableModelForAuthError("Model connection is unavailable");
-        }
-        cloudflareGatewayProviderEnv({ provider });
-        return { modelCredentialId: null, apiKey: deploymentKeyFor(deps, provider), redact: [] };
-      }
-      const plaintext = await deps.secretStore.load(row.ciphertext, row.id);
-      registerSecrets?.(secretValuesToRedact(parseModelSecret(plaintext)));
-      const persist = persistStoredModelSecret(
-        deps.prisma,
-        deps.secretStore,
-        { userId, spaceId },
-        row.id,
-      );
-      // Retire exactly this credential. Two fences keep a stale failure from
-      // deleting newer material: secretId guards a reconnect that swapped the
-      // secret row, and matchesFailedSecret guards a concurrent successful
-      // refresh that rewrote the same row's ciphertext in place.
-      const retire = (
-        _reason: ModelCredentialRetireReason,
-        _detail: string | undefined,
-        failed?: ModelCredentialFailedState,
-      ) =>
-        retireModelCredential(deps.prisma, {
-          userId,
-          credentialId: credential.id,
-          secretId: credential.secretId,
-          matchesFailedSecret: failed
-            ? matchesFailedOAuthSecret(
-                (ciphertext, secretId) => deps.secretStore.load(ciphertext, secretId),
-                failed,
-              )
-            : undefined,
+      const resolve = async (prisma: Pick<PrismaClient, "secret">) => {
+        const row = await prisma.secret.findFirst({
+          where: { id: credential.secretId, userId, spaceId: null },
         });
-      const resolveAuth = () =>
-        resolveModelAuth(plaintext, credential.provider, { persist, retire });
-      let resolved: Awaited<ReturnType<typeof resolveAuth>> | undefined;
-      const authError = validateModelAuthAvailability(provider, modelId, plaintext);
-      if (authError) {
-        // A statically excluded Codex model may still run when the backend's
-        // per-account catalog lists it for this credential. The catalog path
-        // never refreshes or writes credentials, so resolve inside this lock
-        // first — rotating a stale token the way any run would — then ask.
-        let liveListed = false;
-        if (deps.codexCatalog && parseModelSecret(plaintext).kind === "oauth") {
-          resolved = await resolveAuth();
-          liveListed = await codexLiveListsModel(
-            deps.codexCatalog,
-            userId,
-            resolved.secret,
-            modelId,
-            { waitMs: CODEX_LIVE_RUN_WAIT_MS },
-          );
+        if (!row) {
+          if (provider === CHATGPT_PLAN_PROVIDER_ID) throw new Error("Connect ChatGPT again");
+          if (requireStoredSecret || credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
+            throw new UnavailableModelForAuthError("Model connection is unavailable");
+          }
+          cloudflareGatewayProviderEnv({ provider });
+          return { modelCredentialId: null, apiKey: deploymentKeyFor(deps, provider), redact: [] };
         }
-        if (!liveListed) throw new UnavailableModelForAuthError(authError);
-      }
-      resolved ??= await resolveAuth();
-      assertCompatibleModelEnabled(credential, resolved.secret, modelId);
-      const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
-      const baseUrl =
-        resolved.secret.kind === "openai_compatible" ? resolved.secret.baseUrl : undefined;
-      const acceptsImages =
-        credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
-        resolved.secret.kind === "openai_compatible" &&
-        (modelIdSupportsImages(resolved.secret.visionModelIds, modelId) ||
-          // Legacy secrets have no per-model list, so keep their existing
-          // capability scoped to the model saved in the space preference.
-          (resolved.secret.visionModelIds === undefined &&
-            credential.supportsImages === true &&
-            credential.defaultModel?.trim() === modelId.trim()));
-      const accountId = resolved.secret.kind === "api_key" ? resolved.secret.accountId : undefined;
-      const gatewayId = resolved.secret.kind === "api_key" ? resolved.secret.gatewayId : undefined;
-      cloudflareGatewayProviderEnv({ provider, accountId, gatewayId });
-      return {
-        modelCredentialId: credential.id,
-        apiKey: resolved.apiKey,
-        accountId,
-        gatewayId,
-        baseUrl,
-        cacheCapabilities:
-          resolved.secret.kind !== "oauth" ? resolved.secret.cacheCapabilities : undefined,
-        contextWindow: resolved.secret.kind !== "oauth" ? resolved.secret.contextWindow : undefined,
-        reasoning:
-          resolved.secret.kind === "openai_compatible" ? resolved.secret.reasoning : undefined,
-        maxTokens: resolved.secret.maxTokens,
-        thinkingLevel:
-          resolved.secret.kind === "openai_compatible" ? resolved.secret.thinkingLevel : undefined,
-        acceptsImages,
-        maxImagesPerPrompt:
-          resolved.secret.kind === "openai_compatible"
-            ? resolved.secret.maxImagesPerPrompt
-            : undefined,
-        oauth,
-        persistOAuth: oauth
-          ? async (next) => {
-              await withModelCredentialLock(credential.secretId, async () => {
-                const currentRow = await deps.prisma.secret.findFirst({
-                  where: { id: credential.secretId, userId, spaceId: null },
-                });
-                if (!currentRow) return;
-                const current = parseModelSecret(
-                  await deps.secretStore.load(currentRow.ciphertext, currentRow.id),
-                );
-                if (current.kind === "oauth") {
-                  const stored = current.credential;
-                  if (stored.expires > next.expires) return;
-                  if (
-                    stored.access === next.access &&
-                    stored.refresh === next.refresh &&
-                    stored.expires === next.expires
-                  ) {
-                    return;
+        const plaintext = await deps.secretStore.load(row.ciphertext, row.id);
+        registerSecrets?.(secretValuesToRedact(parseModelSecret(plaintext)));
+        const persist = persistStoredModelSecret(
+          prisma,
+          deps.secretStore,
+          { userId, spaceId },
+          row.id,
+        );
+        // Retire exactly this credential. Two fences keep a stale failure from
+        // deleting newer material: secretId guards a reconnect that swapped the
+        // secret row, and matchesFailedSecret guards a concurrent successful
+        // refresh that rewrote the same row's ciphertext in place.
+        const retire = (
+          _reason: ModelCredentialRetireReason,
+          _detail: string | undefined,
+          failed?: ModelCredentialFailedState,
+        ) =>
+          retireModelCredential(deps.prisma, {
+            userId,
+            credentialId: credential.id,
+            secretId: credential.secretId,
+            matchesFailedSecret: failed
+              ? matchesFailedOAuthSecret(
+                  (ciphertext, secretId) => deps.secretStore.load(ciphertext, secretId),
+                  failed,
+                )
+              : undefined,
+          });
+        const resolveAuth = () =>
+          resolveModelAuth(plaintext, credential.provider, { persist, retire });
+        let resolved: Awaited<ReturnType<typeof resolveAuth>> | undefined;
+        const authError = validateModelAuthAvailability(provider, modelId, plaintext);
+        if (authError) {
+          // A statically excluded Codex model may still run when the backend's
+          // per-account catalog lists it for this credential. The catalog path
+          // never refreshes or writes credentials, so resolve inside this lock
+          // first — rotating a stale token the way any run would — then ask.
+          let liveListed = false;
+          if (
+            provider !== CHATGPT_PLAN_PROVIDER_ID &&
+            deps.codexCatalog &&
+            parseModelSecret(plaintext).kind === "oauth"
+          ) {
+            resolved = await resolveAuth();
+            liveListed = await codexLiveListsModel(
+              deps.codexCatalog,
+              userId,
+              resolved.secret,
+              modelId,
+              { waitMs: CODEX_LIVE_RUN_WAIT_MS },
+            );
+          }
+          if (!liveListed) throw new UnavailableModelForAuthError(authError);
+        }
+        resolved ??= await resolveAuth();
+        assertCompatibleModelEnabled(credential, resolved.secret, modelId);
+        const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
+        const baseUrl =
+          resolved.secret.kind === "openai_compatible" ? resolved.secret.baseUrl : undefined;
+        const chatGPTPlanModel =
+          provider === CHATGPT_PLAN_PROVIDER_ID && resolved.secret.kind === "oauth"
+            ? readChatGPTPlanModels(resolved.secret.credential).find(
+                (entry) => entry.id === modelId,
+              )
+            : undefined;
+        const acceptsImages =
+          provider === CHATGPT_PLAN_PROVIDER_ID
+            ? Boolean(chatGPTPlanModel?.input?.includes("image"))
+            : credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
+              resolved.secret.kind === "openai_compatible" &&
+              (modelIdSupportsImages(resolved.secret.visionModelIds, modelId) ||
+                // Legacy secrets have no per-model list, so keep their existing
+                // capability scoped to the model saved in the space preference.
+                (resolved.secret.visionModelIds === undefined &&
+                  credential.supportsImages === true &&
+                  credential.defaultModel?.trim() === modelId.trim()));
+        const accountId =
+          resolved.secret.kind === "api_key" ? resolved.secret.accountId : undefined;
+        const gatewayId =
+          resolved.secret.kind === "api_key" ? resolved.secret.gatewayId : undefined;
+        cloudflareGatewayProviderEnv({ provider, accountId, gatewayId });
+        return {
+          modelCredentialId: credential.id,
+          apiKey: resolved.apiKey,
+          accountId,
+          gatewayId,
+          baseUrl,
+          cacheCapabilities:
+            resolved.secret.kind !== "oauth" ? resolved.secret.cacheCapabilities : undefined,
+          contextWindow:
+            resolved.secret.kind !== "oauth" ? resolved.secret.contextWindow : undefined,
+          reasoning:
+            resolved.secret.kind === "openai_compatible" ? resolved.secret.reasoning : undefined,
+          maxTokens: resolved.secret.maxTokens,
+          thinkingLevel:
+            resolved.secret.kind === "openai_compatible"
+              ? resolved.secret.thinkingLevel
+              : undefined,
+          acceptsImages,
+          maxImagesPerPrompt:
+            resolved.secret.kind === "openai_compatible"
+              ? resolved.secret.maxImagesPerPrompt
+              : undefined,
+          oauth,
+          persistOAuth: oauth
+            ? async (next: AgentModelOAuthCredential) => {
+                await withModelCredentialLock(credential.secretId, async () => {
+                  const currentRow = await deps.prisma.secret.findFirst({
+                    where: { id: credential.secretId, userId, spaceId: null },
+                  });
+                  if (!currentRow) return;
+                  const current = parseModelSecret(
+                    await deps.secretStore.load(currentRow.ciphertext, currentRow.id),
+                  );
+                  if (current.kind === "oauth") {
+                    const stored = current.credential;
+                    if (stored.expires > next.expires) return;
+                    if (
+                      stored.access === next.access &&
+                      stored.refresh === next.refresh &&
+                      stored.expires === next.expires
+                    ) {
+                      return;
+                    }
                   }
-                }
-                await persist(
-                  serializeModelSecret({
-                    kind: "oauth",
-                    credential: toOAuthCredential(next),
-                    ...(current.maxTokens !== undefined ? { maxTokens: current.maxTokens } : {}),
-                  }),
-                );
-              });
-            }
-          : undefined,
-        retireOAuth: retire,
-        redact: [...secretValuesToRedact(resolved.secret), resolved.apiKey].filter(
-          (value): value is string => Boolean(value),
-        ),
+                  await persistStoredModelSecret(
+                    deps.prisma,
+                    deps.secretStore,
+                    { userId, spaceId },
+                    row.id,
+                  )(
+                    serializeModelSecret({
+                      kind: "oauth",
+                      credential: toOAuthCredential(next),
+                      ...(current.maxTokens !== undefined ? { maxTokens: current.maxTokens } : {}),
+                    }),
+                  );
+                });
+              }
+            : undefined,
+          synchronizeOAuth:
+            oauth && provider === CHATGPT_PLAN_PROVIDER_ID
+              ? (
+                  operation: (
+                    current: AgentModelOAuthCredential,
+                  ) => Promise<AgentModelOAuthCredential | undefined>,
+                ) =>
+                  withModelCredentialLock(credential.secretId, () =>
+                    withChatGPTPlanCredentialLock(
+                      deps.prisma,
+                      credential.secretId,
+                      async (transaction) => {
+                        const active = await transaction.userModelCredential.findFirst({
+                          where: {
+                            id: credential.id,
+                            userId,
+                            provider,
+                            secretId: credential.secretId,
+                          },
+                          select: { id: true },
+                        });
+                        if (!active) return undefined;
+                        const latestRow = await transaction.secret.findFirst({
+                          where: { id: credential.secretId, userId, spaceId: null },
+                          select: { id: true, ciphertext: true },
+                        });
+                        if (!latestRow) return undefined;
+                        const current = parseModelSecret(
+                          await deps.secretStore.load(latestRow.ciphertext, latestRow.id),
+                        );
+                        if (current.kind !== "oauth") return undefined;
+                        registerSecrets?.(secretValuesToRedact(current));
+                        const authError = validateModelAuthAvailability(
+                          provider,
+                          modelId,
+                          serializeModelSecret(current),
+                        );
+                        if (authError) throw new UnavailableModelForAuthError(authError);
+                        let next: AgentModelOAuthCredential | undefined;
+                        try {
+                          next = await operation(toOAuthCredential(current.credential));
+                        } catch (error) {
+                          const checkpoint = chatGPTPlanRotationCheckpoint(error);
+                          if (checkpoint) {
+                            registerSecrets?.(
+                              secretValuesToRedact({ ...current, credential: checkpoint }),
+                            );
+                            await persistStoredModelSecret(
+                              transaction,
+                              deps.secretStore,
+                              { userId, spaceId },
+                              latestRow.id,
+                            )(serializeModelSecret({ ...current, credential: checkpoint }));
+                          }
+                          throw error;
+                        }
+                        if (next && JSON.stringify(next) !== JSON.stringify(current.credential)) {
+                          registerSecrets?.(
+                            secretValuesToRedact({
+                              ...current,
+                              credential: toOAuthCredential(next),
+                            }),
+                          );
+                          await persistStoredModelSecret(
+                            transaction,
+                            deps.secretStore,
+                            { userId, spaceId },
+                            latestRow.id,
+                          )(
+                            serializeModelSecret({
+                              ...current,
+                              credential: toOAuthCredential(next),
+                            }),
+                          );
+                        }
+                        return next ?? current.credential;
+                      },
+                    ),
+                  )
+              : undefined,
+          retireOAuth: retire,
+          redact: [...secretValuesToRedact(resolved.secret), resolved.apiKey].filter(
+            (value): value is string => Boolean(value),
+          ),
+        };
       };
+      return provider === CHATGPT_PLAN_PROVIDER_ID
+        ? withChatGPTPlanCredentialLock(deps.prisma, credential.secretId, async (transaction) => {
+            const active = await transaction.userModelCredential.findFirst({
+              where: { id: credential.id, userId, provider, secretId: credential.secretId },
+              select: { id: true },
+            });
+            if (!active) throw new Error("Connect ChatGPT again");
+            return resolve(transaction);
+          })
+        : resolve(deps.prisma);
     });
   }
   if (requireStoredSecret) throw new Error("Backup model credential is no longer available");

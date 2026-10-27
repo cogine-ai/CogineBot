@@ -1,9 +1,10 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ModelOAuthSignInMode, ThinkingLevel } from "@rakazo/contracts";
+import { CHATGPT_PLAN_PROVIDER_ID, registerChatGPTPlanCatalog } from "./chatgpt-plan-provider.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { LOCAL_PROVIDER_ID, registerLocalProvider } from "./pi-local-provider.js";
-import { SUBSCRIPTION_SIGN_IN_PROVIDERS } from "./pi-oauth.js";
+import { loadProviderOAuth, SUBSCRIPTION_SIGN_IN_PROVIDERS } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   probeOpenAiCompatibleModels,
@@ -63,7 +64,11 @@ function pinnedCatalogProbeBaseUrl(
   providerId: string,
   models: ReadonlyArray<{ api: string; baseUrl?: string }>,
 ): string | null {
-  if (providerId === OPENAI_COMPATIBLE_PROVIDER_ID || providerId === LOCAL_PROVIDER_ID) {
+  if (
+    providerId === OPENAI_COMPATIBLE_PROVIDER_ID ||
+    providerId === LOCAL_PROVIDER_ID ||
+    providerId === CHATGPT_PLAN_PROVIDER_ID
+  ) {
     return null;
   }
   const urls = new Set<string>();
@@ -97,6 +102,8 @@ function buildPiCatalog(): PiCatalogEntry[] {
   const models = registerOpenAiCompatibleCatalog(
     registerLocalProvider(supplementPiModels(builtinModels())),
   );
+  const chatGPTPlanOAuth = loadProviderOAuth(CHATGPT_PLAN_PROVIDER_ID);
+  registerChatGPTPlanCatalog(models, chatGPTPlanOAuth ? { oauth: chatGPTPlanOAuth } : undefined);
   const entries: PiCatalogEntry[] = [];
   for (const provider of models.getProviders()) {
     const apiKey = Boolean(provider.auth.apiKey);
@@ -132,7 +139,10 @@ function buildPiCatalog(): PiCatalogEntry[] {
         thinkingLevels,
         // Compatibility metadata does not prove a model is served by a user's
         // endpoint. Keep each custom connection scoped to its entered model ID.
-        ...(provider.id === OPENAI_COMPATIBLE_PROVIDER_ID ? { placeholder: true } : {}),
+        ...(provider.id === OPENAI_COMPATIBLE_PROVIDER_ID ||
+        provider.id === CHATGPT_PLAN_PROVIDER_ID
+          ? { placeholder: true }
+          : {}),
         ...(probeBaseUrl ? { catalogProbe: true } : {}),
       });
     }

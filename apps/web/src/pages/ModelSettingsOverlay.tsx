@@ -18,6 +18,7 @@ import {
   sameOpenAiCompatibleBaseUrl,
 } from "@rakazo/contracts";
 import {
+  CHATGPT_USAGE_SETTINGS_URL,
   COMPATIBLE_THINKING_LEVELS,
   canUseCompatibleModelAsDefault,
   clampCatalogThinkingLevel,
@@ -102,6 +103,11 @@ export function ModelSettingsOverlay({
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
   const [connectionSave, setConnectionSave] = useState<ModelConnectionSave | null>(null);
+  const [chatgptProfiles, setChatgptProfiles] = useState<
+    Awaited<ReturnType<typeof rpc.models.chatgptProfiles>>
+  >([]);
+  const [chatgptRegistrationId, setChatgptRegistrationId] = useState("");
+  const [chatgptProfilesError, setChatgptProfilesError] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [provider, setProvider] = useState("");
   const [connectionId, setConnectionId] = useState<string | null>(null);
@@ -213,6 +219,13 @@ export function ModelSettingsOverlay({
       rpc.models.credentials(),
       rpc.me(),
     ]);
+    const profilesResult = nextCatalog.some((entry) => entry.provider === "chatgpt-plan")
+      ? await rpc.models.chatgptProfiles().then(
+          (profiles) => ({ profiles, error: null }),
+          () => ({ profiles: [], error: t`Could not load ChatGPT accounts` }),
+        )
+      : { profiles: [], error: null };
+    const nextProfiles = profilesResult.profiles;
     if (
       !mountedRef.current ||
       !contextCurrent() ||
@@ -246,6 +259,15 @@ export function ModelSettingsOverlay({
           ));
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
+    setChatgptProfiles(nextProfiles);
+    setChatgptProfilesError(profilesResult.error);
+    setChatgptRegistrationId((current) =>
+      nextProfiles.some((profile) => profile.id === current)
+        ? current
+        : (nextProfiles.find((profile) => profile.status === "connected")?.id ??
+          nextProfiles[0]?.id ??
+          ""),
+    );
     setMe(nextMe);
     if (selectionRevision === selectionRevisionRef.current) {
       invalidatePreflight();
@@ -434,7 +456,11 @@ export function ModelSettingsOverlay({
     probeModels,
   );
   const defaultModelOptions = [...new Set([...enabledModelIds, modelId])].filter(Boolean);
-  const builtinLimitSave = !isOpenAiCompatible && Boolean(credential) && apiKey.trim().length === 0;
+  const builtinLimitSave =
+    !isOpenAiCompatible &&
+    provider !== "chatgpt-plan" &&
+    Boolean(credential) &&
+    apiKey.trim().length === 0;
 
   function invalidatePreflight() {
     preflightRevisionRef.current += 1;
@@ -874,7 +900,7 @@ export function ModelSettingsOverlay({
     setPending("disconnect");
     try {
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
-      await rpc.models.disconnect(
+      const result = await rpc.models.disconnect(
         {
           provider: selected.provider,
           credentialId: credential.id,
@@ -888,7 +914,13 @@ export function ModelSettingsOverlay({
       await refresh();
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       detailScrollRef.current?.scrollTo({ top: 0 });
-      setNotice(t`Disconnected ${selected.providerName ?? selected.provider}.`);
+      if (result?.remoteRevocationConfirmed === false) {
+        setError(
+          t`Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings.`,
+        );
+      } else {
+        setNotice(t`Disconnected ${selected.providerName ?? selected.provider}.`);
+      }
     } catch (err) {
       if (operationCurrent(revision, scope, spaceGeneration))
         setError(errorText(err, t`Could not disconnect this provider`));
@@ -902,8 +934,8 @@ export function ModelSettingsOverlay({
     onClose();
   }
 
-  function beginSelectedSubscriptionSignIn() {
-    if (!selected) return;
+  function beginSelectedSubscriptionSignIn(newRegistration = false) {
+    if (!selected || (selected.provider === "chatgpt-plan" && chatgptProfilesError)) return;
     oauthScopeRef.current = {
       scope: me,
       selectionRevision: selectionRevisionRef.current,
@@ -912,12 +944,26 @@ export function ModelSettingsOverlay({
     setNotice(null);
     void startSubscriptionSignIn({
       provider: selected.provider,
-      modelId: selected.id,
+      modelId:
+        selected.provider === "chatgpt-plan" &&
+        (selected.placeholder ||
+          newRegistration ||
+          !chatgptProfiles.some(
+            (profile) => profile.id === chatgptRegistrationId && profile.status === "connected",
+          ))
+          ? undefined
+          : selected.id,
       thinkingLevel: clampCatalogThinkingLevel(
         thinkingLevel,
         selected.thinkingLevels,
       ) as ThinkingLevel | null,
       label: selected.providerName ?? selected.provider,
+      ...(selected.provider === "chatgpt-plan"
+        ? {
+            registrationId: newRegistration ? undefined : chatgptRegistrationId || undefined,
+            newRegistration,
+          }
+        : {}),
     });
   }
 
@@ -940,7 +986,9 @@ export function ModelSettingsOverlay({
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[15px] text-foreground">{group.name}</span>
           <span className="mt-0.5 block truncate text-[12px] text-muted-foreground/80">
-            {connectedSection && savedModelLabel ? (
+            {group.id === "chatgpt-plan" && group.entries.every((entry) => entry.placeholder) ? (
+              <Trans>Sign in</Trans>
+            ) : connectedSection && savedModelLabel ? (
               savedModelLabel
             ) : (
               <>
@@ -962,7 +1010,7 @@ export function ModelSettingsOverlay({
 
   // The staged model's own configuration block: picker, effort, billing note.
   const catalogModelConfig =
-    !isOpenAiCompatible && selected ? (
+    !isOpenAiCompatible && selected && !(provider === "chatgpt-plan" && selected.placeholder) ? (
       <>
         <div className="block text-[13.5px] text-muted-foreground">
           <span>
@@ -987,18 +1035,20 @@ export function ModelSettingsOverlay({
               setNotice(null);
             }}
           />
-          <ModelThinkingOptions
-            showThinking={false}
-            disabled={busy}
-            advancedLabel={t`Advanced`}
-            maxTokens={maxTokens}
-            onMaxTokensChange={(value) => {
-              selectionRevisionRef.current += 1;
-              setMaxTokens(value);
-              setNotice(null);
-            }}
-            maxTokensLabel={t`Maximum output tokens`}
-          />
+          {provider !== "chatgpt-plan" ? (
+            <ModelThinkingOptions
+              showThinking={false}
+              disabled={busy}
+              advancedLabel={t`Advanced`}
+              maxTokens={maxTokens}
+              onMaxTokensChange={(value) => {
+                selectionRevisionRef.current += 1;
+                setMaxTokens(value);
+                setNotice(null);
+              }}
+              maxTokensLabel={t`Maximum output tokens`}
+            />
+          ) : null}
         </div>
         {catalogThinkingLevels.length ? (
           <label
@@ -1038,12 +1088,54 @@ export function ModelSettingsOverlay({
       </>
     ) : null;
 
+  const chatgptUsageLink =
+    provider === "chatgpt-plan" ? (
+      <a
+        href={CHATGPT_USAGE_SETTINGS_URL}
+        target="_blank"
+        rel="noreferrer"
+        className="ms-3 text-[13px] text-foreground underline underline-offset-4"
+      >
+        <Trans>Manage usage</Trans>
+      </a>
+    ) : null;
+
   // Sign-in/key controls shared between the unconnected connect flow and the
   // connected maintenance area.
   const connectionControls = !isOpenAiCompatible ? (
     <>
       {subscriptionSignIn ? (
         <div className="mt-5 first:mt-0">
+          {provider === "chatgpt-plan" && chatgptProfilesError ? (
+            <p role="alert" className="mb-3 text-sm text-destructive">
+              {chatgptProfilesError}
+            </p>
+          ) : null}
+          {provider === "chatgpt-plan" && !oauth && chatgptProfiles.length > 0 ? (
+            <div className="mb-3 flex items-center gap-2">
+              <NativeSelect
+                aria-label={t`ChatGPT account`}
+                disabled={busy}
+                value={chatgptRegistrationId}
+                onChange={(event) => setChatgptRegistrationId(event.target.value)}
+              >
+                {chatgptProfiles.map((profile) => (
+                  <NativeSelectOption key={profile.id} value={profile.id}>
+                    {profile.label}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => beginSelectedSubscriptionSignIn(true)}
+              >
+                <Trans>Add account</Trans>
+              </Button>
+            </div>
+          ) : null}
           {oauth ? (
             <div className="rounded-xl border border-border px-4 py-3">
               {oauth.mode === "auth-url" ? (
@@ -1073,30 +1165,32 @@ export function ModelSettingsOverlay({
                         >
                           {new URL(oauth.verificationUri).hostname}
                         </a>
-                        . The final page may not load; paste its URL or code here.
+                        .
                       </Trans>
                     )}
                   </p>
-                  <div className="mt-3 flex items-center gap-2">
-                    <Input
-                      value={pasteCode}
-                      onChange={(e) => setPasteCode(e.target.value)}
-                      aria-label={t`Authorization code or callback URL`}
-                      autoComplete="off"
-                      spellCheck={false}
-                      placeholder="http://localhost:53692/callback?code=…"
-                      className="text-foreground md:text-[13px]"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={!pasteCode.trim()}
-                      onClick={() => void submitOAuthCode()}
-                    >
-                      <Trans>Submit</Trans>
-                    </Button>
-                  </div>
+                  {oauth.callbackTransport !== "loopback" ? (
+                    <div className="mt-3 flex items-center gap-2">
+                      <Input
+                        value={pasteCode}
+                        onChange={(e) => setPasteCode(e.target.value)}
+                        aria-label={t`Authorization code or callback URL`}
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder="http://localhost:53692/callback?code=…"
+                        className="text-foreground md:text-[13px]"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!pasteCode.trim()}
+                        onClick={() => void submitOAuthCode()}
+                      >
+                        <Trans>Submit</Trans>
+                      </Button>
+                    </div>
+                  ) : null}
                   <p className="mt-2 text-sm text-muted-foreground">
                     <Plural
                       value={Math.ceil(oauth.expiresInSeconds / 60)}
@@ -1178,7 +1272,7 @@ export function ModelSettingsOverlay({
               type="button"
               variant="outline"
               size="sm"
-              disabled={busy}
+              disabled={busy || (provider === "chatgpt-plan" && Boolean(chatgptProfilesError))}
               onClick={() => beginSelectedSubscriptionSignIn()}
             >
               {oauthPending ? (
@@ -1203,6 +1297,7 @@ export function ModelSettingsOverlay({
               "sign-in",
             )}
           </Button>
+          {chatgptUsageLink}
           {preflightTarget === "sign-in" ? (
             <ModelPreflightFeedback success={preflightSuccess} failure={preflightFailure} />
           ) : null}
@@ -1774,6 +1869,7 @@ export function ModelSettingsOverlay({
               ) : provider === me?.hostCredentialProvider ? (
                 <>
                   {serverCredentialsNote}
+                  {ownKeyProvider !== provider ? chatgptUsageLink : null}
                   <details
                     className="mt-5 text-sm text-muted-foreground"
                     open={ownKeyProvider === provider}

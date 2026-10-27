@@ -1719,6 +1719,16 @@ describe("provider availability classification", () => {
       false,
     ],
     ["quota exhaustion", { status: 402, message: "provider quota exhausted" }, true],
+    [
+      "ChatGPT plan limit",
+      { status: 429, message: "subscription_sharing_usage_limit_exceeded" },
+      false,
+    ],
+    [
+      "ChatGPT plan permission",
+      { status: 429, message: "subscription_sharing_usage_unavailable" },
+      false,
+    ],
     ["plain status", new Error("503 provider unavailable"), true],
     ["HTTP server status", new Error("HTTP 500"), true],
     ["context overflow", new Error("context_length_exceeded; retry after 60s"), false],

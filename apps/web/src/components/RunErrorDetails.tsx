@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { normalizeRunError } from "@rakazo/core";
+import { CHATGPT_USAGE_SETTINGS_URL, normalizeRunError } from "@rakazo/core";
 import { Button } from "@rakazo/ui-web";
 import { useCopyText } from "../lib/copy-text";
 import { translateRunError } from "../lib/run-error";
@@ -12,6 +12,16 @@ export function RunErrorDetails({ error }: { error: string }) {
   return (
     <div className="min-w-0 flex-1" data-testid="run-error-details">
       <p>{normalized.summary}</p>
+      {normalized.action === "chatgpt-usage" ? (
+        <a
+          href={CHATGPT_USAGE_SETTINGS_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 inline-block text-[13px] underline underline-offset-4"
+        >
+          <Trans>Manage usage</Trans>
+        </a>
+      ) : null}
       <details key={error} className="mt-1">
         <summary className="w-fit cursor-pointer text-[12px] underline underline-offset-2">
           <Trans>Details</Trans>

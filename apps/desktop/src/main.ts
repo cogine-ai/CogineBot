@@ -302,6 +302,7 @@ function createWindow(url: string, partition: string | null) {
       const callback = oauthCallbackFrom(details.url, {
         frameName,
         excludeOrigins: appOrigin !== null ? [appOrigin] : [],
+        includeUrl: true,
       });
       if (!callback) return;
       details.preventDefault();

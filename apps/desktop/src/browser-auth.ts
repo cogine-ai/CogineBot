@@ -1,6 +1,7 @@
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import type { RakazoDesktopOAuthCallback } from "@rakazo/contracts";
-import { LOOPBACK_HOSTS } from "./oauth-callback.js";
+import { LOOPBACK_HOSTS, oauthCallbackFrom } from "./oauth-callback.js";
 
 /** Native transport only: providers still own PKCE, token exchange and persistence. */
 export async function openBrowserAuth(
@@ -45,7 +46,12 @@ export async function openBrowserAuth(
         callback.hash ||
         !callback.port ||
         Number(callback.port) < 1024 ||
-        !state
+        !state ||
+        url.searchParams.getAll("state").length !== 1 ||
+        url.searchParams.getAll("redirect_uri").length !== 1 ||
+        (url.origin === "https://auth.openai.com" &&
+          url.searchParams.get("resource") === "https://api.openai.com/v1" &&
+          (callback.hostname !== "127.0.0.1" || callback.pathname !== "/auth/callback"))
       ) {
         throw new Error("Sign-in requires a loopback redirect and state.");
       }
@@ -70,7 +76,7 @@ export async function openBrowserAuth(
             return;
           }
           const target = new URL(request.url ?? "/", callback.origin);
-          const code = target.searchParams.get("code");
+          const result = oauthCallbackFrom(target.href, { includeUrl: true });
           if (
             consumed ||
             request.method !== "GET" ||
@@ -79,16 +85,14 @@ export async function openBrowserAuth(
             target.pathname !== callback.pathname ||
             target.searchParams.getAll("state").length !== 1 ||
             target.searchParams.get("state") !== state ||
-            target.searchParams.getAll("code").length !== 1 ||
-            !code ||
-            target.searchParams.has("error")
+            !result
           ) {
             response.writeHead(400).end("Sign-in callback rejected. Return to CogineBot to retry.");
             return;
           }
           consumed = true;
           response.end("You can close this tab and return to CogineBot.", close);
-          options.onCallback({ code, state });
+          options.onCallback(result);
         });
         server.requestTimeout = 10_000;
         server.headersTimeout = 10_000;

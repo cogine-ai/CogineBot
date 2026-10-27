@@ -9,6 +9,7 @@ const APP_RUN_ERRORS = new Set([MISSING_TOOL_FINAL_RESPONSE_ERROR, ...stuckWorkS
 
 export const RUN_ERROR_DETAILS_MAX_BYTES = 8 * 1024;
 export const RUN_ERROR_SUMMARY_MAX_LENGTH = 500;
+export const CHATGPT_USAGE_SETTINGS_URL = "https://chatgpt.com/settings/usage";
 const DETAILS_TRUNCATED = "\n[Diagnostics truncated at 8 KiB]";
 
 /** Redact before truncating so a budget boundary cannot expose a partial credential. */
@@ -92,8 +93,24 @@ export function normalizeRunError(
   details: string,
   translate: RunErrorTranslator = english,
   locale = "en-US",
-): { summary: string; details: string } {
+): { summary: string; details: string; action?: "chatgpt-usage" } {
   details = sanitizeRunErrorDetails(details);
+  const chatgptUsageCode = details.match(
+    /\bsubscription_sharing_usage_(limit_exceeded|unavailable)\b/,
+  )?.[1];
+  if (chatgptUsageCode) {
+    return {
+      summary: safeSummary(
+        translate(
+          chatgptUsageCode === "limit_exceeded"
+            ? "Your ChatGPT plan usage limit was reached. Review your usage settings."
+            : "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.",
+        ),
+      ),
+      details,
+      action: "chatgpt-usage",
+    };
+  }
   const prefix = details.trim().match(/^(\d{3})\s*:\s*/);
   const body = details.trim().slice(prefix?.[0].length ?? 0);
   let parsed: unknown;

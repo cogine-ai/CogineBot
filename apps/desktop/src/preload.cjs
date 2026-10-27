@@ -19,10 +19,11 @@ contextBridge.exposeInMainWorld("rakazoDesktop", {
     install: () => ipcRenderer.invoke("desktop.update.install"),
   },
   oauth: {
+    fullCallback: true,
     open: (url) => ipcRenderer.invoke("desktop.oauth.open", url),
     cancel: (url) => ipcRenderer.invoke("desktop.oauth.cancel", url),
     onCallback: (listener) => {
-      // The IpcRendererEvent stays in the preload: the renderer only sees the code.
+      // The IpcRendererEvent stays in the preload; callback results contain no tokens.
       const handler = (_event, callback) => listener(callback);
       ipcRenderer.on("desktop.oauth.callback", handler);
       return () => ipcRenderer.off("desktop.oauth.callback", handler);

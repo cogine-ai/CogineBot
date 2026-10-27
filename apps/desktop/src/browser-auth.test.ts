@@ -44,6 +44,7 @@ describe("system browser authentication", () => {
     expect(options.onCallback).toHaveBeenCalledExactlyOnceWith({
       code: "example-code",
       state: "test-state",
+      callbackUrl: `${callback}?code=example-code&state=test-state`,
     });
     await expect(fetch(`${callback}?code=replay&state=test-state`)).rejects.toThrow();
     expect(options.onClose).toHaveBeenCalledOnce();
@@ -57,7 +58,9 @@ describe("system browser authentication", () => {
       `${callback}/wrong?code=x&state=test-state`,
       `${callback}?code=x&state=test-state&state=wrong`,
       `${callback}?code=x&code=y&state=test-state`,
-      `${callback}?error=denied&state=test-state`,
+      `${callback}?error=denied&code=x&state=test-state`,
+      `${callback}?code=x&state=test-state&client_id=first&client_id=second`,
+      `${callback}?code=x&state=test-state&access_token=secret`,
     ])
       expect((await fetch(url)).status).toBe(400);
     expect((await fetch(`${callback}?code=x&state=test-state`, { method: "POST" })).status).toBe(
@@ -66,6 +69,33 @@ describe("system browser authentication", () => {
     expect(options.onCallback).not.toHaveBeenCalled();
     expect((await fetch(`${callback}?code=x&state=test-state`)).status).toBe(200);
     expect(options.onCallback).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the issued registration and granted scopes in the complete callback", async () => {
+    const { authorization, callback, options } = await setup();
+    await openBrowserAuth(authorization.href, options);
+    const result = `${callback}?code=x&state=test-state&client_id=oaiapp_example&scope=openid+chatgpt.tokens.use.direct`;
+    const response = await fetch(result);
+    expect(response.status).toBe(200);
+    expect(options.onCallback).toHaveBeenCalledExactlyOnceWith({
+      code: "x",
+      state: "test-state",
+      callbackUrl: result,
+    });
+    expect(await response.text()).not.toContain("oaiapp_example");
+  });
+
+  it("forwards an OAuth denial with valid state so the provider can end the attempt", async () => {
+    const { authorization, callback, options } = await setup();
+    await openBrowserAuth(authorization.href, options);
+    expect((await fetch(`${callback}?error=access_denied&state=wrong`)).status).toBe(400);
+    expect(options.onCallback).not.toHaveBeenCalled();
+    const result = `${callback}?error=access_denied&state=test-state`;
+    expect((await fetch(result)).status).toBe(200);
+    expect(options.onCallback).toHaveBeenCalledExactlyOnceWith({
+      state: "test-state",
+      callbackUrl: result,
+    });
   });
 
   it("accepts localhost callbacks through either loopback address", async () => {
@@ -196,6 +226,21 @@ describe("system browser authentication", () => {
     const { authorization, options } = await setup();
     authorization.searchParams.delete("state");
     await expect(openBrowserAuth(authorization.href, options)).rejects.toThrow();
+  });
+
+  it("requires the exact IPv4 callback path for ChatGPT plan authorization", async () => {
+    const { authorization, callback, options } = await setup();
+    const plan = new URL("https://auth.openai.com/api/accounts/authorize");
+    plan.search = authorization.search;
+    plan.searchParams.set("resource", "https://api.openai.com/v1");
+    for (const redirect of [
+      callback,
+      callback.replace("127.0.0.1", "localhost").replace("/callback", "/auth/callback"),
+    ]) {
+      plan.searchParams.set("redirect_uri", redirect);
+      await expect(openBrowserAuth(plan.href, options)).rejects.toThrow();
+    }
+    expect(options.openExternal).not.toHaveBeenCalled();
   });
 
   it("closes the listener on cancellation or browser failure", async () => {

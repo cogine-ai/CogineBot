@@ -1,6 +1,10 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
+import {
+  CHATGPT_PLAN_CATALOG_MODEL_ID,
+  CHATGPT_PLAN_PROVIDER_ID,
+} from "./chatgpt-plan-provider.js";
 import { buildModelConnectPlaintext, modelCredentialDto } from "./model-connect.js";
 import { modelAcceptsImageInput } from "./model-vision.js";
 import { listPiCatalog } from "./pi-models.js";
@@ -13,6 +17,92 @@ function requestModel(id: string, baseUrl: string): Pick<AgentRunRequest, "model
 }
 
 describe("request model catalogs", () => {
+  function chatGPTRequest(
+    id: string,
+    access: string,
+    modelIds: string[],
+  ): Pick<AgentRunRequest, "model"> {
+    const credential = {
+      type: "oauth" as const,
+      access,
+      refresh: "fake-refresh-token",
+      expires: Date.now() + 60 * 60_000,
+      clientId: `oaiapp_${access}`,
+      issuer: "https://auth.openai.com",
+      subject: "fixture-subject",
+      hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
+      idToken: "fake-id-token",
+      scopes: ["chatgpt.tokens.use.direct"],
+      chatgptPlanModels: modelIds.map((modelId) => ({
+        id: modelId,
+        name: modelId,
+        contextWindow: 64000,
+      })),
+    };
+    return { model: { provider: CHATGPT_PLAN_PROVIDER_ID, id, oauth: { credential } } };
+  }
+
+  it("isolates each ChatGPT registration's discovered catalog and never uses a static fallback", () => {
+    const first = modelsForRequest(
+      chatGPTRequest("account-a-model", "fake-a", ["account-a-model"]),
+      CHATGPT_PLAN_PROVIDER_ID,
+    );
+    const second = modelsForRequest(
+      chatGPTRequest("account-b-model", "fake-b", ["account-b-model"]),
+      CHATGPT_PLAN_PROVIDER_ID,
+    );
+    expect(first).not.toBe(second);
+    expect(first.getModels(CHATGPT_PLAN_PROVIDER_ID).map((entry) => entry.id)).toEqual([
+      "account-a-model",
+    ]);
+    expect(second.getModel(CHATGPT_PLAN_PROVIDER_ID, "account-a-model")).toBeUndefined();
+    expect(first.getModel(CHATGPT_PLAN_PROVIDER_ID, "account-b-model")).toBeUndefined();
+    expect(first.getModel(CHATGPT_PLAN_PROVIDER_ID, CHATGPT_PLAN_CATALOG_MODEL_ID)).toBeUndefined();
+    expect(
+      resolveRuntimeModel(chatGPTRequest("account-b-model", "fake-a", ["account-a-model"]).model)
+        .model,
+    ).toBeUndefined();
+    expect(
+      resolveRuntimeModel({ provider: CHATGPT_PLAN_PROVIDER_ID, id: CHATGPT_PLAN_CATALOG_MODEL_ID })
+        .model,
+    ).toBeUndefined();
+    // This is a real OpenRouter ID: requesting it here still cannot spend that provider's key.
+    expect(
+      resolveRuntimeModel(
+        chatGPTRequest("openai/gpt-5.6-luna", "fake-a", ["account-a-model"]).model,
+      ).model,
+    ).toBeUndefined();
+  });
+
+  it("passes the selected ChatGPT credential through shared model resolution into Pi", async () => {
+    const request = chatGPTRequest("account-model", "fake-selected-token", ["account-model"]);
+    const selected = resolveRuntimeModel(request.model);
+    expect(selected.apiKey).toBeUndefined();
+    expect(selected.model?.provider).toBe(CHATGPT_PLAN_PROVIDER_ID);
+    const result = await selected.models.complete(
+      selected.model!,
+      { messages: [{ role: "user", content: "Hi", timestamp: 1 }] },
+      {
+        fetch: async (input, init) => {
+          expect(String(input)).toBe("https://api.openai.com/v1/responses");
+          expect(new Headers(init?.headers).get("authorization")).toBe(
+            "Bearer fake-selected-token",
+          );
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            model: "account-model",
+            store: false,
+            stream: true,
+          });
+          return new Response(
+            `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_fixture", status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } } })}\n\n`,
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        },
+      },
+    );
+    expect(result.stopReason, result.errorMessage).toBe("stop");
+  });
+
   it.each([
     ["openrouter", "openai/gpt-5.6-luna"],
     ["openai-codex", "gpt-6-astra"],

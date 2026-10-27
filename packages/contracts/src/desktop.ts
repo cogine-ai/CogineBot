@@ -32,8 +32,10 @@ export interface RakazoDesktopUpdate {
 }
 
 export interface RakazoDesktopOAuthCallback {
-  code: string;
+  code?: string;
   state?: string;
+  /** Loopback result, including registration metadata or an OAuth error; never tokens. */
+  callbackUrl?: string;
 }
 
 export interface RakazoDesktop {
@@ -50,6 +52,8 @@ export interface RakazoDesktop {
   };
   update: RakazoDesktopUpdate;
   oauth: {
+    /** Supports complete loopback results required by dynamically registered clients. */
+    fullCallback?: true;
     /**
      * Open system-browser auth. A redirect_uri must be HTTP loopback with state;
      * URLs without a redirect use backend polling. Optional for older desktops.

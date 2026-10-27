@@ -19,6 +19,7 @@ const models = vi.hoisted(() => ({
   setDefault: vi.fn(),
   probeOpenAiCompatible: vi.fn(),
   beginOAuth: vi.fn(),
+  chatgptProfiles: vi.fn(),
   cancelOAuth: vi.fn(),
   completeOAuth: vi.fn(),
   finishOAuth: vi.fn(),
@@ -233,6 +234,181 @@ beforeEach(() => {
   models.backups.mockReset().mockResolvedValue([]);
   models.setBackups.mockReset().mockResolvedValue({ ok: true });
   models.disconnect.mockResolvedValue(undefined);
+  models.cancelOAuth.mockResolvedValue({ ok: true });
+  models.chatgptProfiles.mockResolvedValue([]);
+});
+
+it.each([true, false])(
+  "reconnects a saved ChatGPT account without carrying another account's model (placeholder: %s)",
+  async (placeholder) => {
+    const entry = {
+      provider: "chatgpt-plan",
+      providerName: "ChatGPT Plan",
+      id: placeholder ? "chatgpt-plan" : "old-account-model",
+      label: "ChatGPT Plan",
+      billing: "ChatGPT plan",
+      auth: "oauth" as const,
+      signIn: "auth-url" as const,
+      oauthLabel: "Continue with ChatGPT",
+      placeholder,
+    };
+    models.list.mockResolvedValue([entry]);
+    vi.mocked(rpc.me).mockResolvedValue(account("chatgpt-plan", entry.id));
+    models.chatgptProfiles.mockResolvedValue([
+      { id: "personal", label: "Personal", status: "signed-out" },
+      { id: "work", label: "Work", status: "registered" },
+    ]);
+    models.beginOAuth.mockResolvedValue({
+      loginId: "chatgpt-login",
+      provider: "chatgpt-plan",
+      mode: "auth-url",
+      callbackTransport: "desktop",
+      verificationUri: "https://auth.openai.com/api/accounts/authorize?state=test-state",
+      expiresInSeconds: 600,
+    });
+    vi.spyOn(window, "open").mockReturnValue({} as Window);
+    const view = await renderSettings();
+    try {
+      const providerRow = buttons(view.container, "ChatGPT Plan")[0];
+      if (placeholder) {
+        expect(providerRow?.textContent).toContain("Sign in");
+        expect(providerRow?.textContent).not.toContain("# model");
+      }
+      const usage = view.container.querySelector('a[href="https://chatgpt.com/settings/usage"]');
+      expect(usage?.textContent).toBe("Manage usage");
+      const picker = view.container.querySelector('select[aria-label="ChatGPT account"]');
+      expect(picker).toBeInstanceOf(HTMLSelectElement);
+      await act(async () => {
+        (picker as HTMLSelectElement).value = "work";
+        picker?.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await act(async () => buttons(view.container, "Continue with ChatGPT")[0]?.click());
+      expect(models.beginOAuth).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          provider: "chatgpt-plan",
+          registrationId: "work",
+          newRegistration: false,
+          modelId: undefined,
+        }),
+        expect.anything(),
+      );
+      await act(async () => buttons(view.container, "Cancel")[0]?.click());
+      await act(async () => buttons(view.container, "Add account")[0]?.click());
+      expect(models.beginOAuth).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          provider: "chatgpt-plan",
+          registrationId: undefined,
+          newRegistration: true,
+        }),
+        expect.anything(),
+      );
+    } finally {
+      await view.unmount();
+      vi.restoreAllMocks();
+    }
+  },
+);
+
+it("keeps other providers available while a failed account lookup blocks new ChatGPT authorization", async () => {
+  models.list.mockResolvedValue([
+    deepseekEntry,
+    {
+      provider: "chatgpt-plan",
+      providerName: "ChatGPT",
+      id: "chatgpt-plan",
+      label: "ChatGPT",
+      billing: "ChatGPT plan",
+      auth: "oauth",
+      signIn: "auth-url",
+      oauthLabel: "Continue with ChatGPT",
+      placeholder: true,
+    },
+  ]);
+  models.chatgptProfiles.mockRejectedValue(new Error("Accounts temporarily unavailable"));
+  const view = await renderSettings();
+  try {
+    expect(keyField(view.container)).toBeInstanceOf(HTMLInputElement);
+    await act(async () => buttons(view.container, "ChatGPT")[0]?.click());
+    expect(view.container.textContent).toContain("Could not load ChatGPT accounts");
+    expect(buttons(view.container, "Continue with ChatGPT")[0]?.disabled).toBe(true);
+    expect(models.beginOAuth).not.toHaveBeenCalled();
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("keeps ChatGPT usage settings available when an inherited connection disclosure is closed", async () => {
+  models.list.mockResolvedValue([
+    {
+      provider: "chatgpt-plan",
+      providerName: "ChatGPT",
+      id: "plan-model",
+      label: "Plan model",
+      billing: "ChatGPT plan",
+      auth: "oauth",
+      signIn: "auth-url",
+      oauthLabel: "Continue with ChatGPT",
+    },
+  ]);
+  vi.mocked(rpc.me).mockResolvedValue({
+    ...account("chatgpt-plan", "plan-model"),
+    hostCredentialProvider: "chatgpt-plan",
+  });
+  const view = await renderSettings();
+  try {
+    const usage = view.container.querySelector('a[href="https://chatgpt.com/settings/usage"]');
+    expect(usage?.textContent).toBe("Manage usage");
+    expect(usage?.closest("details")).toBeNull();
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("reports local disconnect when remote ChatGPT revocation could not be confirmed", async () => {
+  models.list.mockResolvedValue([
+    {
+      provider: "chatgpt-plan",
+      providerName: "ChatGPT",
+      id: "plan-model",
+      label: "Plan model",
+      billing: "ChatGPT plan",
+      auth: "oauth",
+      signIn: "auth-url",
+      oauthLabel: "Continue with ChatGPT",
+    },
+  ]);
+  vi.mocked(rpc.me).mockResolvedValue(account("chatgpt-plan", "plan-model"));
+  models.credentials.mockResolvedValue([
+    {
+      id: "credential-plan",
+      provider: "chatgpt-plan",
+      label: "ChatGPT",
+      hasKey: false,
+      isDefault: true,
+      modelId: "plan-model",
+      authKind: "oauth",
+    },
+  ]);
+  models.disconnect.mockResolvedValue({ ok: true, remoteRevocationConfirmed: false });
+  const view = await renderSettings();
+  for (const element of view.container.querySelectorAll<HTMLElement>("div"))
+    element.scrollTo = vi.fn();
+  try {
+    expect(
+      view.container.querySelector('a[href="https://chatgpt.com/settings/usage"]')?.textContent,
+    ).toBe("Manage usage");
+    await act(async () => buttons(view.container, "Disconnect")[0]?.click());
+    await act(async () => buttons(view.container, "Disconnect").at(-1)?.click());
+    expect(models.disconnect).toHaveBeenCalledWith(
+      { provider: "chatgpt-plan", credentialId: "credential-plan", expectedRevision: undefined },
+      expect.objectContaining({ context: { spaceId: "space-1" } }),
+    );
+    expect(view.container.textContent).toContain(
+      "Disconnected locally. Remote revocation was not confirmed",
+    );
+  } finally {
+    await view.unmount();
+  }
 });
 
 afterEach(() => {

@@ -1,8 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { rpc } from "./api";
-import { cancelModelOAuthAttempt, finishModelOAuthAttempt, waitForModelOAuth } from "./model-auth";
+import {
+  cancelModelOAuthAttempt,
+  finishModelOAuthAttempt,
+  modelOAuthUnavailableReason,
+  waitForModelOAuth,
+} from "./model-auth";
 
 vi.mock("./api", () => ({ rpc: vi.fn() }));
+
+it("requires a local browser or desktop only for connecting the ChatGPT plan provider", () => {
+  expect(modelOAuthUnavailableReason("chatgpt-plan")).toContain("local desktop");
+  expect(modelOAuthUnavailableReason("openai-codex")).toBeUndefined();
+  expect(modelOAuthUnavailableReason("anthropic")).toBeUndefined();
+});
 
 describe("mobile waitForModelOAuth", () => {
   const mockRpc = vi.mocked(rpc);

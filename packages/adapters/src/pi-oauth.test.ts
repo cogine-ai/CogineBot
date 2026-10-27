@@ -2,6 +2,7 @@ import type { Credential, OAuthCredential } from "@earendil-works/pi-ai";
 import type { ModelCredentialFailedState, ModelCredentialRetireReason } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PiOAuthBegin } from "./pi-oauth.js";
 import {
   CHATGPT_OAUTH_PROVIDER,
   COPILOT_OAUTH_PROVIDER,
@@ -10,7 +11,6 @@ import {
   matchesFailedOAuthSecret,
   OAUTH_ACCOUNT_CHANGED_ERROR,
   oauthCredentialAccountId,
-  type PiOAuthBegin,
   PiOAuthLogins,
   parseModelSecret,
   RetiredModelCredentialError,
@@ -242,6 +242,8 @@ describe("model secrets", () => {
 describe("terminalOAuthRefreshErrorMarker", () => {
   it.each([
     "invalid_grant",
+    "invalid_refresh_token",
+    "token_expired",
     "refresh_token_expired",
     "refresh_token_reused",
     "refresh_token_invalidated",
@@ -251,6 +253,36 @@ describe("terminalOAuthRefreshErrorMarker", () => {
     );
     const wrapped = new Error("OAuth refresh failed for openai-codex", { cause: providerError });
     expect(terminalOAuthRefreshErrorMarker(wrapped)).toBe(marker);
+  });
+
+  it.each([
+    "invalid_grant",
+    "invalid_refresh_token",
+    "token_expired",
+    "refresh_token_expired",
+    "refresh_token_reused",
+    "refresh_token_invalidated",
+  ])("classifies a ChatGPT refresh code %s only with a terminal status", (marker) => {
+    for (const status of [400, 401, 403]) {
+      expect(
+        terminalOAuthRefreshErrorMarker(
+          new Error(`ChatGPT OAuth request failed (${status}) ${marker}.`),
+        ),
+      ).toBe(marker);
+    }
+    for (const status of [200, 404, 429, 500, 503]) {
+      expect(
+        terminalOAuthRefreshErrorMarker(
+          new Error(`ChatGPT OAuth request failed (${status}) ${marker}.`),
+        ),
+      ).toBeUndefined();
+    }
+    expect(terminalOAuthRefreshErrorMarker(new Error(marker))).toBeUndefined();
+    expect(
+      terminalOAuthRefreshErrorMarker(
+        new Error(`ChatGPT OAuth request failed (400) not_${marker}.`),
+      ),
+    ).toBeUndefined();
   });
 
   it.each([400, 401, 403])("matches a marker alongside a %i status", (status) => {

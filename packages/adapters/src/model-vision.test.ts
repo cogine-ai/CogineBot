@@ -52,6 +52,15 @@ describe("model vision gating for computer tools", () => {
     expect(modelAcceptsImageInput("openrouter", "rakazo-test/unknown-future-model")).toBe(false);
   });
 
+  it("uses only the authenticated ChatGPT model's declared image capability", () => {
+    expect(modelAcceptsImageInput("chatgpt-plan", "account-model", true)).toBe(true);
+    expect(modelAcceptsImageInput("chatgpt-plan", "account-model", false)).toBe(false);
+    expect(modelAcceptsImageInput("chatgpt-plan", "unknown-account-model")).toBe(false);
+    expect(modelAcceptsImageInput("chatgpt-plan", "openai/gpt-4o")).toBe(false);
+    expect(modelAcceptsImageInput("chatgpt-plan", "connect", true)).toBe(false);
+    expect(modelAcceptsImageInput("chatgpt-plan", "", true)).toBe(false);
+  });
+
   it("keeps explicit image capability scoped to the selected model", () => {
     const enabled = updateModelImageCapabilities(
       [" vision-model ", "text-model"],

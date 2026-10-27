@@ -8,6 +8,7 @@ import {
   enabledOpenAiCompatibleModelIds,
   helperModelChoicesDescription,
   inboundRoutineModelPin,
+  listHelperModelConnections,
   loadStoredModelSecret,
   modelCredentialAuthKindsForSpace,
   pinnedModelCredentialError,
@@ -58,6 +59,22 @@ const defaults: SelectionInput = {
   settings: { defaultModelProvider: "settings-provider", defaultModelId: "settings-model" },
   deployment: { provider: "deployment-provider", model: "deployment-model" },
 };
+
+function chatGPTPlaintext(modelIds = ["account-model"]) {
+  return JSON.stringify({
+    type: "oauth",
+    access: "fake-plan-token",
+    refresh: "fake-refresh-token",
+    expires: Date.now() + 60_000,
+    clientId: "oaiapp_fixture",
+    issuer: "https://auth.openai.com",
+    subject: "fixture-subject",
+    hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
+    idToken: "fake-id-token",
+    scopes: ["chatgpt.tokens.use.direct"],
+    chatgptPlanModels: modelIds.map((id) => ({ id, name: id })),
+  });
+}
 
 describe("configured model selection", () => {
   it.each<{
@@ -324,6 +341,27 @@ describe("routine model pin", () => {
     ).toMatchObject({ modelCredentialId: routine.modelCredentialId });
   });
 
+  it("keeps a non-default ChatGPT model bound to the selected registration", () => {
+    const choice = {
+      modelProvider: "chatgpt-plan",
+      modelId: "account-model",
+      modelCredentialId: "credential-chatgpt-plan",
+      thinkingLevel: null,
+    };
+    expect(
+      pinnedModelCredentialError(choice, {
+        id: choice.modelCredentialId,
+        defaultModel: "another-account-model",
+      }),
+    ).toBeUndefined();
+    expect(
+      pinnedModelCredentialError(choice, {
+        id: "another-registration",
+        defaultModel: choice.modelId,
+      }),
+    ).toBe("Connect that model provider first");
+  });
+
   it("rejects a pinned model whose credential is missing or belongs to another free-form model", () => {
     expect(pinnedModelCredentialError(routine, null)).toBe("Connect that model provider first");
     expect(
@@ -353,6 +391,14 @@ describe("routine model pin", () => {
 });
 
 describe("defaultCatalogModelId", () => {
+  it("uses the first discovered ChatGPT model and never defaults to its connect placeholder", () => {
+    expect(defaultCatalogModelId("chatgpt-plan", chatGPTPlaintext(["first", "second"]))).toBe(
+      "first",
+    );
+    expect(defaultCatalogModelId("chatgpt-plan", chatGPTPlaintext([]))).toBeNull();
+    expect(defaultCatalogModelId("chatgpt-plan")).toBeNull();
+    expect(defaultCatalogModelId("chatgpt-plan", "fake-api-key")).toBeNull();
+  });
   it("skips Codex Spark as the default for ChatGPT subscription credentials", () => {
     const oauth = JSON.stringify({
       type: "oauth",
@@ -1004,6 +1050,29 @@ describe("stored model auth", () => {
 });
 
 describe("model auth availability", () => {
+  it("accepts only models in the selected ChatGPT registration and rejects legacy/API-key credentials", () => {
+    expect(
+      validateModelAuthAvailability("chatgpt-plan", "account-model", chatGPTPlaintext()),
+    ).toBeUndefined();
+    for (const id of ["other-account-model", "connect", "gpt-6-luna"]) {
+      expect(validateModelAuthAvailability("chatgpt-plan", id, chatGPTPlaintext())).toMatch(
+        /not available/,
+      );
+    }
+    expect(validateModelAuthAvailability("chatgpt-plan", "account-model", "fake-api-key")).toMatch(
+      /not available/,
+    );
+    expect(validateModelAuthAvailability("chatgpt-plan", "account-model")).toMatch(/not available/);
+    const legacy = JSON.stringify({
+      type: "oauth",
+      access: "fake-token",
+      refresh: "fake-refresh",
+      expires: Date.now() + 60000,
+    });
+    expect(validateModelAuthAvailability("chatgpt-plan", "account-model", legacy)).toMatch(
+      /not available/,
+    );
+  });
   it("rejects Codex Spark for oauth credentials and keeps other catalog models", () => {
     const oauth = JSON.stringify({
       type: "oauth",
@@ -1023,6 +1092,85 @@ describe("model auth availability", () => {
 
 describe("connected model validation", () => {
   const actor: Pick<Actor, "userId" | "spaceId"> = { userId: "user-1", spaceId: "space-1" };
+  it("validates non-default ChatGPT models on the exact owned credential without substituting another", async () => {
+    const findCredential = vi.fn(async ({ where }: { where: { id?: string; userId: string } }) =>
+      where.id === "credential-chatgpt-plan" && where.userId === actor.userId
+        ? {
+            ...credential("chatgpt-plan", null),
+            preferences: [{ modelId: "different-default", thinkingLevel: null, isDefault: true }],
+          }
+        : null,
+    );
+    const prisma = {
+      userModelCredential: { findFirst: findCredential },
+      secret: {
+        findFirst: async () => ({ id: "secret-chatgpt-plan", ciphertext: "encrypted-fixture" }),
+      },
+    } as unknown as PrismaClient;
+    const store = { load: async () => chatGPTPlaintext() };
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        store,
+        actor,
+        "chatgpt-plan",
+        "account-model",
+        "credential-chatgpt-plan",
+      ),
+    ).resolves.toBeUndefined();
+    for (const id of [null, "another-registration"]) {
+      await expect(
+        validateConnectedModelChoice(prisma, store, actor, "chatgpt-plan", "account-model", id),
+      ).resolves.toBe("Connect that model provider first");
+    }
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        store,
+        { ...actor, userId: "another-user" },
+        "chatgpt-plan",
+        "account-model",
+        "credential-chatgpt-plan",
+      ),
+    ).resolves.toBe("Connect that model provider first");
+    expect(findCredential).toHaveBeenCalledTimes(3);
+  });
+  it("validates dynamic ChatGPT choices against the selected user-owned encrypted credential", async () => {
+    const findSecret = vi.fn(async () => ({
+      id: "secret-chatgpt-plan",
+      ciphertext: "encrypted-fixture",
+    }));
+    const prisma = {
+      spaceModelPreference: { findFirst: async () => null },
+      userModelCredential: { findFirst: async () => credential("chatgpt-plan", null) },
+      secret: { findFirst: findSecret },
+    } as unknown as PrismaClient;
+    const load = vi.fn(async () => chatGPTPlaintext());
+    await expect(
+      validateConnectedModelChoice(prisma, { load }, actor, "chatgpt-plan", "account-model"),
+    ).resolves.toBeUndefined();
+    expect(findSecret).toHaveBeenCalledWith({
+      where: { id: "secret-chatgpt-plan", userId: actor.userId, spaceId: null },
+      select: { id: true, ciphertext: true },
+    });
+    expect(load).toHaveBeenCalledWith("encrypted-fixture", "secret-chatgpt-plan");
+    await expect(
+      validateConnectedModelChoice(prisma, { load }, actor, "chatgpt-plan", "other-account-model"),
+    ).resolves.toMatch(/not available/);
+    await expect(
+      validateConnectedModelChoice(prisma, { load }, actor, "chatgpt-plan", "connect"),
+    ).resolves.toMatch(/not available/);
+    await expect(
+      validateConnectedModelChoice(
+        prisma,
+        { load: async () => "fake-api-key" },
+        actor,
+        "chatgpt-plan",
+        "account-model",
+      ),
+    ).resolves.toMatch(/not available/);
+  });
+
   const secretStore = { load: async (ciphertext: string) => ciphertext };
   const rows = [
     { ...credential("openai-compatible", "same-model"), id: "connection-a", secretId: "secret-a" },
@@ -1243,6 +1391,34 @@ describe("connected model validation", () => {
       compatibleThinkingLevels(row, JSON.stringify({ ...secret, reasoning: true }), "disabled")
         .allowed,
     ).toEqual(["off"]);
+  });
+});
+
+describe("helper model connections", () => {
+  it("lists only the owned registration's discovered ChatGPT models with its explicit credential id", async () => {
+    const actor = { userId: "user-1", spaceId: "space-1" };
+    const findMany = vi.fn(async () => [
+      { ...credential("chatgpt-plan", "account-model"), preferences: [] },
+    ]);
+    const prisma = {
+      userModelCredential: { findMany },
+      secret: {
+        findMany: async () => [{ id: "secret-chatgpt-plan", ciphertext: "encrypted-fixture" }],
+      },
+    } as unknown as PrismaClient;
+    const load = vi.fn(async () => chatGPTPlaintext(["account-model", "another-account-model"]));
+    await expect(listHelperModelConnections(prisma, { load }, actor)).resolves.toEqual([
+      {
+        modelCredentialId: "credential-chatgpt-plan",
+        provider: "chatgpt-plan",
+        modelIds: ["account-model", "another-account-model"],
+        baseUrl: undefined,
+      },
+    ]);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: actor.userId } }),
+    );
+    expect(load).toHaveBeenCalledWith("encrypted-fixture", "secret-chatgpt-plan");
   });
 });
 

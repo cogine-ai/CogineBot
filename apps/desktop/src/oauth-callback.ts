@@ -5,6 +5,8 @@ export type OAuthCallbackFromOptions = {
   frameName?: string;
   /** App renderer origins — their `/callback` routes must not be treated as paste-flow codes. */
   excludeOrigins?: readonly string[];
+  /** Preserve issued client IDs, granted scopes, and OAuth errors for the provider. */
+  includeUrl?: boolean;
 };
 
 export const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -30,9 +32,34 @@ export function oauthCallbackFrom(
   }
   if (target.protocol !== "http:" && target.protocol !== "https:") return undefined;
   if (!LOOPBACK_HOSTS.has(target.hostname)) return undefined;
+  if (target.username || target.password || target.hash || url.length > 8192) return undefined;
   if (options.excludeOrigins?.includes(target.origin)) return undefined;
+  const allowed = new Set([
+    "code",
+    "state",
+    "client_id",
+    "scope",
+    "error",
+    "error_description",
+    "iss",
+  ]);
+  for (const key of target.searchParams.keys()) {
+    // A callback cannot carry bearer credentials or ambiguous registration metadata.
+    if (!allowed.has(key) || target.searchParams.getAll(key).length !== 1) return undefined;
+  }
   const code = target.searchParams.get("code")?.trim();
-  if (!code) return undefined;
+  const error = target.searchParams.get("error")?.trim();
+  if (
+    (!code && !error) ||
+    (target.searchParams.has("code") && target.searchParams.has("error")) ||
+    (error && !options.includeUrl)
+  )
+    return undefined;
   const state = target.searchParams.get("state")?.trim();
-  return state ? { code, state } : { code };
+  if (error && !state) return undefined;
+  return {
+    ...(code ? { code } : {}),
+    ...(state ? { state } : {}),
+    ...(options.includeUrl ? { callbackUrl: target.href } : {}),
+  };
 }

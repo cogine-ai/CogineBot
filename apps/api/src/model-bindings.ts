@@ -2,18 +2,21 @@ import { ORPCError } from "@orpc/server";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import {
+  CHATGPT_PLAN_PROVIDER_ID,
   enabledOpenAiCompatibleModelIds,
   isCatalogModelChoice,
   loadStoredModelSecret,
   parseModelSecret,
+  readChatGPTPlanCredential,
+  readChatGPTPlanModels,
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { findBoundModelCredential } from "@rakazo/db";
+import { findBoundModelCredential, Prisma } from "@rakazo/db";
 
-type BindingClient = Pick<PrismaClient, "userModelCredential" | "secret">;
+type BindingClient = Pick<PrismaClient, "userModelCredential" | "secret" | "$queryRaw">;
 type ReferenceClient = Pick<
   PrismaClient,
   | "bot"
@@ -82,6 +85,18 @@ export async function validateModelBinding(
   if (!binding.modelProvider || !binding.modelId || !binding.modelCredentialId) {
     throw new ORPCError("BAD_REQUEST", { message: "Choose a model connection." });
   }
+  if (binding.modelProvider === CHATGPT_PLAN_PROVIDER_ID) {
+    // Disconnect takes FOR UPDATE before checking scalar pin references. Hold
+    // the matching row through this transaction's pin write, so disconnect
+    // either sees the committed pin or removes the connection before validation.
+    const locked = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT id FROM user_model_credentials
+      WHERE id=${binding.modelCredentialId} AND "userId"=${actor.userId}
+        AND provider=${CHATGPT_PLAN_PROVIDER_ID} FOR SHARE
+    `);
+    if (locked.length !== 1)
+      throw new ORPCError("NOT_FOUND", { message: "Model connection not found." });
+  }
   const credential = await findBoundModelCredential(prisma, actor, {
     provider: binding.modelProvider,
     modelId: binding.modelId,
@@ -118,6 +133,16 @@ export async function validateModelBinding(
     ) {
       throw new ORPCError("BAD_REQUEST", {
         message: "That model is not enabled for this connection.",
+      });
+    }
+  } else if (binding.modelProvider === CHATGPT_PLAN_PROVIDER_ID) {
+    if (
+      secret.kind !== "oauth" ||
+      !readChatGPTPlanCredential(secret.credential) ||
+      !readChatGPTPlanModels(secret.credential).some((model) => model.id === binding.modelId)
+    ) {
+      throw new ORPCError("BAD_REQUEST", {
+        message: "That model is not available for this ChatGPT connection.",
       });
     }
   } else if (
