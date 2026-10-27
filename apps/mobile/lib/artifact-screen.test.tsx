@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   write: vi.fn(),
   share: vi.fn(),
   scrollTo: vi.fn(),
+  dateLocaleForUi: vi.fn(() => "en-US"),
   params: { botId: "bot-1" } as Record<string, string>,
   scope: {
     apiBase: "https://api.example.test",
@@ -170,7 +171,7 @@ vi.mock("./native-controls", () => ({ iosAtLeast: () => state.ios26 }));
 vi.mock("./floating-header", () => ({ useFloatingHeaderInset: () => 0 }));
 vi.mock("./i18n", () => {
   const t = (text: string) => text;
-  return { t, useI18n: () => ({ t }) };
+  return { t, dateLocaleForUi: state.dateLocaleForUi, useI18n: () => ({ t }) };
 });
 vi.mock("./artifact-open", () => ({
   writeArtifactCacheFile: state.write,
@@ -257,7 +258,14 @@ beforeEach(() => {
   state.write
     .mockReset()
     .mockReturnValue({ text: async () => "Visible notes", uri: "file:///synthetic-notes.md" });
-  for (const fn of [state.alert, state.push, state.back, state.share, state.scrollTo])
+  for (const fn of [
+    state.alert,
+    state.push,
+    state.back,
+    state.share,
+    state.scrollTo,
+    state.dateLocaleForUi,
+  ])
     fn.mockClear();
   container = document.createElement("div");
   header = document.createElement("div");
@@ -273,6 +281,29 @@ afterEach(async () => {
   container.remove();
   header.remove();
   vi.unstubAllGlobals();
+});
+
+it.each([
+  ["just before seven days", "2026-10-26T23:59:59.999Z", false],
+  ["exactly seven days", "2026-10-27T00:00:00Z", true],
+] as const)("renders an artifact date %s", async (_label, now, localized) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(new Date(now));
+    await render();
+    expect(container.textContent).toContain("Notes.md");
+    expect(state.dateLocaleForUi).toHaveBeenCalledTimes(localized ? 1 : 0);
+    expect(container.textContent).toContain(
+      localized
+        ? new Date(artifact.createdAt).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          })
+        : "{count}d ago",
+    );
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("opens the profile Bot filter, reveals its chip and carries readonly through to preview", async () => {
