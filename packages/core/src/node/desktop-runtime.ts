@@ -818,6 +818,7 @@ export function managedDesktopCommand(
     'if [ -n "$control_token" ]; then [[ "$control_token" =~ ^[A-Za-z0-9_-]{1,128}$ ]] && [[ "$control_version" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || exit 75; fi',
     "retain_idle=0; retained_idle_at=$idle_at",
     'if [ "$state" = idle ] && [ -z "$control_token" ] && [ -z "$revoking_token" ]; then retain_idle=1; fi',
+    'if [ -n "$incoming" ] && [ "$incoming" != "$current" ]; then retain_idle=0; fi',
     'if [ -z "$index" ]; then',
     `  allocation=$(python3 -c ${shellQuote(`import pathlib, re, sys
 used = set()

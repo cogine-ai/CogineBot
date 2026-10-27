@@ -127,11 +127,22 @@ describe("shared Linux desktop lifecycle", () => {
     expect(Number(retained[5])).toBeGreaterThan(0);
     expect(f.run(releaseDesktopCommand("a", "run:1", env, true)).status).toBe(0);
     expect(readFileSync(slot, "utf8").split("\n")[5]).toBe(retained[5]);
-    expect(f.run(managedDesktopCommand("a", "run:2", env, "next-view")).stdout).toContain(
+    expect(f.run(managedDesktopCommand("a", "run:1", env, "next-view")).stdout).toContain(
       "RAKAZO_DESKTOP=0:next-view",
     );
     expect(readFileSync(slot, "utf8").split("\n")[4]).toBe("idle");
     expect(readFileSync(slot, "utf8").split("\n")[5]).toBe(retained[5]);
+    expect(f.run(managedDesktopCommand("a", "run:2", env, "claimed-view")).stdout).toContain(
+      "RAKAZO_DESKTOP=0:next-view",
+    );
+    expect(readFileSync(slot, "utf8").split("\n").slice(0, 6)).toEqual([
+      "0",
+      "run:2",
+      "next-view",
+      "",
+      "active",
+      "",
+    ]);
   });
 
   it("keeps execution fencing outside versioned cleanup", () => {
