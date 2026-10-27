@@ -79,10 +79,17 @@ class ProtocolSocket:
         if self.mode == "stopped":
             self.event("Page.frameStoppedLoading", {"frameId": "main"})
             return
+        if self.mode == "old-loading":
+            self.event("Page.frameStoppedLoading", {"frameId": "main"})
+            self.scheduled.append((self.clock.now + 0.1, self.commit_navigation))
+            return
         if self.mode == "same-document":
             self.document = "spa"
             self.event("Page.navigatedWithinDocument", {"frameId": "main", "url": "http://page.test/spa"})
             return
+        self.commit_navigation()
+
+    def commit_navigation(self):
         self.document = "next"
         self.loader = "next"
         self.event("Page.frameNavigated", {"frame": {"id": "main", "loaderId": "next"}})
@@ -274,7 +281,7 @@ class NavigationProtocolTests(unittest.TestCase):
             client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
             result = PRODUCT.navigate(client, "selected", "http://page.test/next")
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
         self.assertTrue(result.get("timedOut"))
         self.assertFalse(result["uncertain"])
         self.assertIs(result.get("navigationOutcomeKnown"), True)
@@ -302,7 +309,7 @@ class NavigationProtocolTests(unittest.TestCase):
             client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
             result = PRODUCT.navigate(client, "selected", "http://page.test/next")
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
         self.assertFalse(result["uncertain"])
         self.assertTrue(result["timedOut"])
         self.assertIs(result.get("navigationOutcomeKnown"), True)
@@ -392,14 +399,24 @@ class NavigationProtocolTests(unittest.TestCase):
         self.assertEqual(result["tree"], "old")
         self.assertAlmostEqual(clock.now, 5.02)
 
-    def test_stopped_request_without_commit_observes_current_document_without_timeout(self):
+    def test_unattributed_stop_without_commit_waits_for_bounded_navigation(self):
         result, peer, clock = self.act("stopped")
         self.assertTrue(result["ok"])
-        self.assertFalse(result.get("timedOut", False))
+        self.assertTrue(result.get("timedOut"))
         self.assertFalse(result["uncertain"])
         self.assertEqual(result["url"], "http://page.test/old")
         self.assertEqual(peer.mutations, 1)
-        self.assertAlmostEqual(clock.now, 0.02)
+        self.assertAlmostEqual(clock.now, 5.02)
+
+    def test_old_document_stopping_cannot_dispatch_next_old_ref_before_new_commit(self):
+        result, peer, clock = self.act("old-loading", [{"kind": "click", "ref": "old-ref"}] * 2)
+        self.assertEqual(peer.mutations, 1, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["completed"], 1)
+        self.assertFalse(result["uncertain"])
+        self.assertFalse(result.get("timedOut", False))
+        self.assertEqual(result["url"], "http://page.test/next")
+        self.assertAlmostEqual(clock.now, 0.12)
 
     def test_stopped_loading_after_commit_cannot_replace_matching_dcl(self):
         result, peer, clock = self.act("loading-stopped")

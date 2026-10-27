@@ -125,13 +125,12 @@ class NavigationState:
         self.requested = 0
         self.within_document = 0
         self.committed = 0
-        self.stopped = 0
         self.requested_at = 0.0
         self.committed_at = 0.0
         self.dom_loaded = False
 
-    def mark(self) -> tuple[int, int, int, int]:
-        return (self.requested, self.within_document, self.committed, self.stopped)
+    def mark(self) -> tuple[int, int, int]:
+        return (self.requested, self.within_document, self.committed)
 
     def event(self, message: dict[str, Any]) -> None:
         if message.get("sessionId") != self.session_id:
@@ -150,8 +149,6 @@ class NavigationState:
                 self.requested_at = time.monotonic()
             elif method == "Page.navigatedWithinDocument":
                 self.within_document += 1
-            elif method == "Page.frameStoppedLoading":
-                self.stopped += 1
             elif (method == "Page.lifecycleEvent" and params.get("loaderId") == self.loader_id
                   and params.get("name") == "DOMContentLoaded"):
                 self.dom_loaded = True
@@ -657,9 +654,9 @@ def track_navigation(client: CdpClient, session_id: str, deadline: float) -> Nav
 
 
 def follow_navigation(client: CdpClient, navigation: NavigationState,
-                      mark: tuple[int, int, int, int], deadline: float) -> bool:
+                      mark: tuple[int, int, int], deadline: float) -> bool:
     """Follow the selected document without redispatching its action. Return timeout only."""
-    client.pump_until(lambda: navigation.mark()[:3] != mark[:3],
+    client.pump_until(lambda: navigation.mark() != mark,
                       min(deadline, time.monotonic() + NAVIGATION_GRACE_S))
     if navigation.within_document != mark[1]:
         return False
@@ -667,15 +664,12 @@ def follow_navigation(client: CdpClient, navigation: NavigationState,
         return time.monotonic() >= deadline
     if navigation.committed == mark[2]:
         committed = client.pump_until(
-            lambda: (navigation.committed != mark[2] or navigation.within_document != mark[1]
-                     or navigation.stopped != mark[3]),
+            lambda: navigation.committed != mark[2] or navigation.within_document != mark[1],
             min(deadline, navigation.requested_at + NAVIGATION_COMMIT_S),
         )
         if not committed:
             return True
     if navigation.within_document != mark[1]:
-        return False
-    if navigation.committed == mark[2]:
         return False
     return not client.pump_until(lambda: navigation.dom_loaded,
                                  min(deadline, navigation.committed_at + NAVIGATION_DOM_S))
@@ -714,9 +708,9 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
             # A command-initiated navigation need not emit frameRequestedNavigation.
             navigation.requested += 1
             navigation.requested_at = time.monotonic()
-        timed_out = follow_navigation(client, navigation, mark, deadline)
-        return observed_result(client, session_id, {"ok": True, "uncertain": False, "navigationOutcomeKnown": True,
-                              **({"timedOut": True} if timed_out else {})})
+        if follow_navigation(client, navigation, mark, deadline):
+            raise TimeoutError("Navigation did not settle before its deadline")
+        return observed_result(client, session_id, {"ok": True, "uncertain": False, "navigationOutcomeKnown": True})
     except Exception as exc:
         return observed_result(client, session_id, {"ok": False, "error": str(exc),
                               "uncertain": uncertain, "navigationOutcomeKnown": not uncertain, "fallback": "computer_act",
