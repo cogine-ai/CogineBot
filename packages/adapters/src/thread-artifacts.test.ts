@@ -786,7 +786,7 @@ describe("recent history attachment selection and preservation", () => {
     );
     expect(recentThreadFilesInstruction(files)).toBe(
       [
-        "Files attached earlier in this conversation are also on your computer:",
+        "Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:",
         '- "screenshot.png" (image/png, 3 bytes): "attachments/image-1.png"',
       ].join("\n"),
     );
@@ -962,6 +962,92 @@ describe("recent thread file metadata", () => {
     name: `${id}.txt`,
     mimeType: "text/plain",
     size: 3,
+  });
+
+  it("describes candidates conditionally when missing bytes make the copied files differ", async () => {
+    const findMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+      where.id.in.map((id) => ({
+        id,
+        name: `${id}.txt`,
+        mimeType: "text/plain",
+        size: 3,
+        storageKey: id,
+      })),
+    );
+    const get = vi.fn(async (id: string) => {
+      if (id === "missing") throw new Error("artifact bytes unavailable");
+      return new Uint8Array([1, 2, 3]);
+    });
+    const readFile = vi.fn().mockRejectedValue(new Error("computer file not found"));
+    const writeFile = vi.fn().mockResolvedValue(undefined);
+    const computer = vi.fn(
+      async (): Promise<ComputerRef> => ({
+        id: "computer",
+        botId: "bot",
+        kind: "fake",
+        providerRef: "fake",
+      }),
+    );
+    const deps = {
+      prisma: { artifact: { findMany } } as unknown as PrismaClient,
+      artifacts: { get } as unknown as ArtifactStore,
+      sandbox: { readFile, writeFile } as unknown as SandboxProvider,
+    };
+    const messages = [
+      { id: "older", blocks: [block("backfill")] },
+      { id: "newer", blocks: [block("third"), block("second"), block("first"), block("missing")] },
+    ];
+    const history = messages.map(({ id }) => ({ id, role: "user" }));
+    const candidates = await listRecentThreadFiles(deps, history, messages, {
+      context,
+      maxTurns: 3,
+    });
+    expect(candidates.map((file) => file.path)).toEqual([
+      "attachments/missing.txt",
+      "attachments/first.txt",
+      "attachments/second.txt",
+      "attachments/third.txt",
+    ]);
+    expect(get).not.toHaveBeenCalled();
+    expect(computer).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+
+    const markWorkspaceDirty = vi.fn();
+    const copied = await materializeRecentThreadFiles(deps, history, messages, {
+      context: { ...context, botId: "bot" },
+      computer,
+      computerMode: "team",
+      maxTurns: 3,
+      markWorkspaceDirty,
+    });
+    expect(copied.map((file) => file.path)).toEqual([
+      "attachments/first.txt",
+      "attachments/second.txt",
+      "attachments/third.txt",
+      "attachments/backfill.txt",
+    ]);
+    expect(get.mock.calls.map(([id]) => id)).toEqual([
+      "missing",
+      "first",
+      "second",
+      "third",
+      "backfill",
+    ]);
+    expect(writeFile.mock.calls.map(([, file]) => file.path)).toEqual([
+      "bots/bot/attachments/first.txt",
+      "bots/bot/attachments/second.txt",
+      "bots/bot/attachments/third.txt",
+      "bots/bot/attachments/backfill.txt",
+    ]);
+    expect(markWorkspaceDirty).not.toHaveBeenCalled();
+    const prompt = recentThreadFilesInstruction(candidates);
+    expect(prompt).toContain(
+      "Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:",
+    );
+    expect(prompt).not.toContain("are also on your computer");
+    expect(prompt).toContain('"attachments/missing.txt"');
+    expect(prompt).not.toContain('"attachments/backfill.txt"');
   });
 
   it("lists scoped available history files without needing a computer or artifact bytes", async () => {

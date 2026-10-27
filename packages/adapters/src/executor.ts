@@ -3886,6 +3886,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             scheduleComputerSleep(deps.jobs, storedComputer.id);
             // Stop can commit while a provider is starting, before the stream loop can poll.
             await requireCurrentComputerRun();
+            if ((computer.kind === "desktop") !== (computerKind === "desktop")) {
+              throw new Error("Computer provider changed while starting");
+            }
             // Earlier attachments wait for the computer's first use; every start copies them
             // again, so they need no checkpoint, and each copy logs and skips its own failure.
             if (artifacts) {
@@ -3900,7 +3903,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           },
           () => runAbortController?.abort(),
         );
-        const computerKind = (await deps.sandbox.provisionKind?.()) ?? storedComputer.kind;
+        const computerKind = (await deps.sandbox.provisionKind?.()) ?? deps.sandbox.describe().id;
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(async () => {
           if (!runComputer.ready) return;
           await checkpointRunComputerWorkspace(deps, storedComputer, runComputer.ready, context);

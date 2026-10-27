@@ -1,4 +1,4 @@
-import type { ComputerRef } from "@rakazo/adapter-kit";
+import type { AgentRunRequest, ComputerRef } from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
@@ -19,16 +19,20 @@ const COMPUTER: ComputerRef = {
   providerRef: "sandbox-1",
 };
 
-type ExecuteTool = (
-  name: string,
-  args: Record<string, unknown>,
-  executionId: string,
-) => Promise<unknown>;
-
 /** A routine run whose model makes the given tool calls, then answers. */
 async function runRoutine(
   toolCalls: Array<{ name: string; args: Record<string, unknown> }>,
-  options: { takeover?: boolean; abortBeforeTools?: boolean } = {},
+  options: {
+    takeover?: boolean;
+    abortBeforeTools?: boolean;
+    modelId?: string;
+    computer?: {
+      storedKind: ComputerRef["kind"];
+      providerKind: ComputerRef["kind"];
+      graphical: boolean;
+      provisionKind?: ComputerRef["kind"];
+    };
+  } = {},
 ) {
   const run = {
     id: "run-1",
@@ -45,7 +49,7 @@ async function runRoutine(
   };
   const shutdown = new AbortController();
   const toolResults: unknown[] = [];
-  const runtimeRun = vi.fn(async function* (request: { executeTool?: ExecuteTool }) {
+  const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
     if (options.abortBeforeTools) shutdown.abort();
     for (const [index, call] of toolCalls.entries()) {
       toolResults.push(await request.executeTool?.(call.name, call.args, `exec-${index}`));
@@ -87,7 +91,7 @@ async function runRoutine(
         computer: {
           id: "computer-1",
           scope: "dedicated",
-          kind: "e2b",
+          kind: options.computer?.storedKind ?? "e2b",
           homeKey: "home-1",
         },
       })),
@@ -122,7 +126,7 @@ async function runRoutine(
     deploymentSettings: {
       findUnique: vi.fn(async () => ({
         defaultModelProvider: "openrouter",
-        defaultModelId: "deepseek/deepseek-v4-flash-0731",
+        defaultModelId: options.modelId ?? "deepseek/deepseek-v4-flash-0731",
       })),
     },
     taughtSkill: { findMany: vi.fn(async () => []) },
@@ -135,8 +139,13 @@ async function runRoutine(
     actionAutoReviewPreference: { findUnique: vi.fn(async () => null) },
     artifact: { findMany: vi.fn(async () => []) },
   };
+  const provisionKind = options.computer?.provisionKind;
   const sandbox = {
-    describe: () => ({ id: "e2b", capabilities: { graphical: false } }),
+    describe: () => ({
+      id: options.computer?.providerKind ?? "e2b",
+      capabilities: { graphical: options.computer?.graphical ?? false },
+    }),
+    ...(provisionKind ? { provisionKind: vi.fn(async () => provisionKind) } : {}),
     listFiles: vi.fn(async () => [{ path: "notes.txt", kind: "file", size: 4 }]),
     writeFile: vi.fn(async () => undefined),
     releaseScreen: vi.fn(async () => undefined),
@@ -222,6 +231,70 @@ describe("run computer provisioning", () => {
     expect(sandbox.releaseScreen).not.toHaveBeenCalled();
   });
 
+  it.each(["e2b", "docker"] as const)(
+    "offers graphical tools for the current %s provider after a stored desktop computer",
+    async (providerKind) => {
+      const { finalizeRun, sandbox, sleepJobs, runtimeRun } = await runRoutine([], {
+        modelId: "openai/gpt-4o",
+        computer: { storedKind: "desktop", providerKind, graphical: true },
+      });
+
+      expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
+      const request = runtimeRun.mock.calls[0]![0];
+      expect(request.model.id).toBe("openai/gpt-4o");
+      expect(request.tools.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining(["computer_observe", "computer_act", "open_path", "launch_app"]),
+      );
+      expect(provisionComputer).not.toHaveBeenCalled();
+      expect(sandbox.releaseScreen).not.toHaveBeenCalled();
+      expect(sleepJobs).toEqual([]);
+    },
+  );
+
+  it("suppresses graphical tools for the current desktop provider after a stored remote computer", async () => {
+    const { finalizeRun, sandbox, sleepJobs, runtimeRun } = await runRoutine([], {
+      modelId: "openai/gpt-4o",
+      computer: { storedKind: "e2b", providerKind: "desktop", graphical: false },
+    });
+
+    expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
+    const request = runtimeRun.mock.calls[0]![0];
+    expect(request.model.id).toBe("openai/gpt-4o");
+    const names = request.tools.map((tool) => tool.name);
+    for (const name of ["computer_observe", "computer_act", "open_path", "launch_app"])
+      expect(names).not.toContain(name);
+    expect(names).toContain("list_files");
+    expect(provisionComputer).not.toHaveBeenCalled();
+    expect(sandbox.releaseScreen).not.toHaveBeenCalled();
+    expect(sleepJobs).toEqual([]);
+  });
+
+  it.each(["desktop", "docker"] as const)(
+    "prefers a routed %s provision kind over stored and described kinds without starting the computer",
+    async (routedKind) => {
+      const { finalizeRun, sandbox, sleepJobs, runtimeRun } = await runRoutine([], {
+        modelId: "openai/gpt-4o",
+        computer: {
+          storedKind: routedKind === "desktop" ? "e2b" : "desktop",
+          providerKind: "docker",
+          graphical: true,
+          provisionKind: routedKind,
+        },
+      });
+
+      expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
+      const request = runtimeRun.mock.calls[0]![0];
+      expect(request.model.id).toBe("openai/gpt-4o");
+      const names = request.tools.map((tool) => tool.name);
+      for (const name of ["computer_observe", "computer_act", "open_path", "launch_app"])
+        expect(names.includes(name)).toBe(routedKind !== "desktop");
+      expect(sandbox.provisionKind).toHaveBeenCalledOnce();
+      expect(provisionComputer).not.toHaveBeenCalled();
+      expect(sandbox.releaseScreen).not.toHaveBeenCalled();
+      expect(sleepJobs).toEqual([]);
+    },
+  );
+
   it("starts the computer the first time a tool needs it and reuses it", async () => {
     const { finalizeRun, sandbox, sleepJobs, toolResults } = await runRoutine([
       { name: "list_files", args: { path: "" } },
@@ -242,6 +315,28 @@ describe("run computer provisioning", () => {
     expect(sleepJobs).toHaveLength(1);
     expect(sandbox.releaseScreen).toHaveBeenCalledWith(COMPUTER, expect.anything());
   });
+
+  it.each([
+    { probedKind: "e2b", actualKind: "desktop" },
+    { probedKind: "desktop", actualKind: "e2b" },
+  ] as const)(
+    "retries setup when a $probedKind probe provisions a $actualKind computer",
+    async ({ probedKind, actualKind }) => {
+      provisionComputer.mockResolvedValue({ ...COMPUTER, kind: actualKind });
+
+      await expect(
+        runRoutine([{ name: "list_files", args: { path: "" } }], {
+          computer: {
+            storedKind: "e2b",
+            providerKind: "docker",
+            graphical: true,
+            provisionKind: probedKind,
+          },
+        }),
+      ).rejects.toThrow("Run setup failed; retrying");
+      expect(provisionComputer).toHaveBeenCalledOnce();
+    },
+  );
 
   it("starts the computer before handing its screen to the user", async () => {
     await runRoutine([], { takeover: true });

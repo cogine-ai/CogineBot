@@ -355,7 +355,7 @@ export function currentTurnFilesInstruction(files: readonly MaterializedThreadFi
 export function recentThreadFilesInstruction(files: readonly MaterializedThreadFile[]): string {
   if (!files.length) return "";
   return [
-    "Files attached earlier in this conversation are also on your computer:",
+    "Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:",
     ...files.map(fileLine),
   ].join("\n");
 }

@@ -259,7 +259,7 @@ async function runWithModel(
     secretStore: { load: async (ciphertext: string) => ciphertext },
     runtime: { describe: () => ({ capabilities: { scripted } }), run: runtimeRun },
     sandbox: {
-      describe: () => ({ capabilities: { graphical: false } }),
+      describe: () => ({ id: "desktop", capabilities: { graphical: false } }),
       writeFile,
       listFiles,
       readFile: vi.fn().mockRejectedValue(new Error("computer file not found")),
@@ -300,7 +300,7 @@ describe("recent turn images follow model vision", () => {
     expect(exportWorkspace).not.toHaveBeenCalled();
     expect(request.history.find((entry) => entry.id === "earlier")?.images).toBeUndefined();
     expect(request.prompt).toContain(
-      'Files attached earlier in this conversation are also on your computer:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
+      'Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
     );
   });
 
@@ -326,7 +326,7 @@ describe("recent turn images follow model vision", () => {
       expect.objectContaining({ botId: "bot-1", spaceId: "space-1", userId: "user-1" }),
     );
     expect(request.prompt).toContain(
-      'Files attached earlier in this conversation are also on your computer:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
+      'Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
     );
     expect(exportWorkspace).not.toHaveBeenCalled();
   });
