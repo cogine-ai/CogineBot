@@ -1664,6 +1664,18 @@ describe("updater owner gate", () => {
   });
 });
 
+const goneE2BComputerClaim = {
+  id: "computer-1",
+  providerRef: "sandbox-ref-1",
+  spaceId: "workspace-1",
+  userId: "user-1",
+  homeKey: "home-1",
+  kind: "e2b",
+  state: "running",
+  screenGeneration: 3,
+  maintenanceId: null,
+};
+
 describe("computer screen url", () => {
   const actor = {
     spaceId: "workspace-1",
@@ -1673,6 +1685,9 @@ describe("computer screen url", () => {
   } satisfies Actor;
   const computerRow = {
     id: "computer-1",
+    spaceId: "workspace-1",
+    userId: "user-1",
+    maintenanceId: null,
     screenGeneration: 3,
     kind: "e2b",
     scope: "team",
@@ -1765,7 +1780,7 @@ describe("computer screen url", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ json: { url: null } });
     expect(updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", providerRef: "sandbox-ref-1" },
+      where: goneE2BComputerClaim,
       data: { state: "stopped", providerRef: null },
     });
   });
@@ -1827,6 +1842,9 @@ describe("computer terminal and file transfer", () => {
           thread: { id: "thread-1" },
           computer: {
             id: "computer-1",
+            spaceId: "workspace-1",
+            userId: "user-1",
+            maintenanceId: null,
             screenGeneration: 3,
             kind: "docker",
             scope: "team",
@@ -1910,7 +1928,7 @@ describe("computer terminal and file transfer", () => {
   });
 
   it("clears a reclaimed sandbox before boot attempts provisioning again", async () => {
-    const { sandbox, prisma, call } = setup();
+    const { sandbox, prisma, call } = setup({ kind: "e2b" });
     sandbox.execute.mockImplementation(async function* () {
       yield await Promise.reject(
         Object.assign(new Error("Sandbox is probably not running anymore"), {
@@ -1923,7 +1941,7 @@ describe("computer terminal and file transfer", () => {
 
     await expect(call("boot", {})).resolves.toMatchObject({ status: 409 });
     expect(prisma.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", providerRef: "sandbox-ref-1" },
+      where: goneE2BComputerClaim,
       data: { state: "stopped", providerRef: null },
     });
     expect(findUniqueOrThrow).toHaveBeenCalledWith({ where: { id: "computer-1" } });
@@ -1960,7 +1978,7 @@ describe("computer terminal and file transfer", () => {
   });
 
   it("clears the row when the provider reclaimed the sandbox before the terminal opened", async () => {
-    const gone = setup(controlled);
+    const gone = setup({ ...controlled, kind: "e2b" });
     gone.sandbox.connectTerminal.mockRejectedValueOnce(
       Object.assign(new Error("Sandbox is probably not running anymore"), {
         name: "SandboxNotFoundError",
@@ -1971,7 +1989,7 @@ describe("computer terminal and file transfer", () => {
       body: { json: { url: null } },
     });
     expect(gone.prisma.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", providerRef: "sandbox-ref-1" },
+      where: goneE2BComputerClaim,
       data: { state: "stopped", providerRef: null },
     });
 

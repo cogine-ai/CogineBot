@@ -1823,6 +1823,38 @@ describe("provider availability classification", () => {
 describe("Pi runtime signature recovery guards", () => {
   const mismatch = "Invalid signature in thinking block";
 
+  it.each(["HTTP 400 insufficient_quota", "HTTP 402 billing_limit_exceeded"])(
+    "does not repair signatures through %s",
+    async (refusal) => {
+      providerState.stream.mockImplementation(() =>
+        stream(primary, message(primary, [], "error", `${refusal}: ${mismatch}`)),
+      );
+      await expect(run(request())).rejects.toThrow(/signature in thinking block/);
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(providerState.delay).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a configured backup for a quota failure without retrying the primary signature", async () => {
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+      target.provider === primary.provider
+        ? stream(
+            target,
+            message(target, [], "error", `HTTP 402 billing_limit_exceeded: ${mismatch}`),
+          )
+        : stream(target, message(target, [{ type: "text", text: "Backup answered" }], "stop")),
+    );
+    const events = await run(
+      request([{ provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-key" }]),
+    );
+    expect(events.at(-1)).toEqual({ type: "done", text: "Backup answered" });
+    expect(providerState.stream.mock.calls.map(([target]) => target.provider)).toEqual([
+      primary.provider,
+      backupA.provider,
+    ]);
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
   it.each([
     "HTTP 401 authentication_error",
     "HTTP 403 permission_error",

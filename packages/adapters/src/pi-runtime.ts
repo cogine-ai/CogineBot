@@ -2805,6 +2805,7 @@ function fallbackAwareModelStream(
               !signalAborted() &&
               state.isProviderFailure(event.error) &&
               !blocksModelRecovery(errorFacts(event.error)) &&
+              canRetrySameModel(event.error) &&
               !state.dropThinkingBlocks &&
               Date.now() - startedAt < timeoutMs &&
               isThinkingSignatureMismatch(event.error.errorMessage)

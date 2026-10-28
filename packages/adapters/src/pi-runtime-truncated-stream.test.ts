@@ -191,6 +191,8 @@ it.each([
   [403, "permission_error"],
   [400, "subscription_sharing_usage_limit_exceeded"],
   [400, "subscription_sharing_usage_unavailable"],
+  [400, "insufficient_quota"],
+  [402, "billing_limit_exceeded"],
 ] as const)("keeps parsed %s/%s refusal above signature recovery", async (status, code) => {
   delay.mockClear();
   let requests = 0;

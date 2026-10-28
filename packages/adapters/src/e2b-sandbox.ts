@@ -433,20 +433,33 @@ export class E2BSandboxProvider implements SandboxProvider {
     if (options?.onlyIfRunning && !this.sdk.attachRunning) {
       throw new Error("E2B SDK cannot attach a computer without resuming it");
     }
+    const id = computer.providerRef || computer.id;
+    const cached = this.boxes.get(id);
+    const pending = this.connections.get(id);
+    const attendanceIsCurrent = () =>
+      this.boxes.get(id) === cached && this.connections.get(id) === pending;
     const desktop = options?.onlyIfRunning
-      ? await this.sdk.attachRunning!(computer.providerRef || computer.id, {
+      ? await this.sdk.attachRunning!(id, {
           apiKey: this.apiKey,
           signal: AbortSignal.timeout(15_000),
+        }).catch((error: unknown) => {
+          if (!attendanceIsCurrent()) return undefined;
+          throw error;
         })
       : await this.box(computer);
-    if (!desktop) return;
+    if (!desktop || (options?.onlyIfRunning && !attendanceIsCurrent())) return;
     let gone = false;
     try {
       await desktop.setTimeout(sandboxIdleMs());
     } catch (error) {
       gone = isSandboxGoneError(error);
     }
-    if (!options?.onlyIfRunning && this.boxes.get(desktop.sandboxId) !== desktop) return;
+    if (
+      options?.onlyIfRunning
+        ? !attendanceIsCurrent()
+        : this.boxes.get(desktop.sandboxId) !== desktop
+    )
+      return;
     // Heartbeats refresh lastTouchedAt; if we swallow a gone error here, box() never
     // reaches its 60s probe and keeps handing back the dead cached handle.
     if (gone) {

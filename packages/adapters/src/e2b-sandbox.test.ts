@@ -15,6 +15,186 @@ const context = {
 };
 
 describe("E2B computer backend", () => {
+  it.each([false, true])("refreshes unchanged attendance with cached computer %s", async (warm) => {
+    const cached = {
+      sandboxId: "existing",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+      files: { read: vi.fn().mockResolvedValue(new Uint8Array([1])) },
+    } as unknown as Sandbox;
+    const attached = {
+      sandboxId: "existing",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Sandbox;
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn().mockResolvedValue(cached),
+      connect: vi.fn(),
+      pause: vi.fn(),
+      attachRunning: vi.fn().mockResolvedValue(attached),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+    if (warm) await provider.provision({ botId: "bot", homePath: "/unused" }, context);
+    vi.setSystemTime(Date.now() + 61_000);
+    try {
+      await provider.keepAlive(ref, { onlyIfRunning: true });
+      expect(attached.setTimeout).toHaveBeenCalledOnce();
+      if (warm) {
+        await expect(provider.readFile(ref, "saved.bin", context)).resolves.toEqual(
+          new Uint8Array([1]),
+        );
+      }
+      expect(cached.setTimeout).not.toHaveBeenCalled();
+      expect(sdk.connect).not.toHaveBeenCalled();
+      expect(sdk.create).toHaveBeenCalledTimes(warm ? 1 : 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    new Error("Synthetic transport unavailable"),
+    new SandboxNotFoundError("Synthetic sandbox unavailable"),
+  ])("preserves a current attendance attachment error %s", async (error) => {
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn(),
+      connect: vi.fn(),
+      pause: vi.fn(),
+      attachRunning: vi.fn().mockRejectedValue(error),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    await expect(
+      provider.keepAlive(
+        { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" },
+        { onlyIfRunning: true },
+      ),
+    ).rejects.toBe(error);
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "transport", "gone"])(
+    "ignores an old attendance attachment completing with %s after a successor starts",
+    async (outcome) => {
+      let attach!: (desktop: Sandbox) => void;
+      let reject!: (error: unknown) => void;
+      const attachment = new Promise<Sandbox>((resolve, fail) => {
+        attach = resolve;
+        reject = fail;
+      });
+      let connect!: (desktop: Sandbox) => void;
+      const connection = new Promise<Sandbox>((resolve) => {
+        connect = resolve;
+      });
+      const stale = {
+        sandboxId: "existing",
+        setTimeout: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Sandbox;
+      const current = {
+        sandboxId: "existing",
+        setTimeout: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Sandbox;
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn(),
+        connect: vi.fn().mockReturnValue(connection),
+        pause: vi.fn().mockResolvedValue(undefined),
+        attachRunning: vi.fn().mockReturnValue(attachment),
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const ref = { id: "existing", providerRef: "existing", kind: "e2b" as const, botId: "bot" };
+      const attendance = provider.keepAlive(ref, { onlyIfRunning: true });
+      expect(sdk.connect).not.toHaveBeenCalled();
+      await provider.stop(ref, context);
+      const successor = provider.provision(
+        { botId: "bot", homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+        context,
+      );
+      if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+      else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
+      else attach(stale);
+      await expect(attendance).resolves.toBeUndefined();
+      expect(stale.setTimeout).not.toHaveBeenCalled();
+      connect(current);
+      await expect(successor).resolves.toMatchObject({ fresh: false, providerRef: ref.id });
+      await provider.keepAlive(ref);
+      expect(current.setTimeout).toHaveBeenCalledOnce();
+      expect(sdk.connect).toHaveBeenCalledOnce();
+      expect(sdk.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["success", "transport", "gone"])(
+    "ignores an old attendance renewal completing with %s after replacement",
+    async (outcome) => {
+      let complete!: () => void;
+      let reject!: (error: unknown) => void;
+      const renewal = new Promise<void>((resolve, fail) => {
+        complete = resolve;
+        reject = fail;
+      });
+      let renewing!: () => void;
+      const started = new Promise<void>((resolve) => {
+        renewing = resolve;
+      });
+      const cached = {
+        sandboxId: "existing",
+        pause: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Sandbox;
+      const attached = {
+        sandboxId: "existing",
+        setTimeout: vi.fn(() => {
+          renewing();
+          return renewal;
+        }),
+      } as unknown as Sandbox;
+      const read = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
+      const current = {
+        sandboxId: "existing",
+        setTimeout: vi.fn().mockResolvedValue(undefined),
+        files: { read },
+      } as unknown as Sandbox;
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn().mockResolvedValue(cached),
+        connect: vi.fn().mockResolvedValue(current),
+        pause: vi.fn().mockResolvedValue(undefined),
+        attachRunning: vi.fn().mockResolvedValue(attached),
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const ref = await provider.provision({ botId: "bot", homePath: "/unused" }, context);
+      const attendance = provider.keepAlive(ref, { onlyIfRunning: true });
+      await started;
+      expect(attached.setTimeout).toHaveBeenCalledOnce();
+      await provider.stop(ref, context);
+      await provider.provision(
+        {
+          botId: "bot",
+          homePath: "/unused",
+          providerRef: ref.providerRef,
+          providerKind: "e2b",
+        },
+        context,
+      );
+      vi.setSystemTime(Date.now() + 61_000);
+      try {
+        if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+        else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
+        else complete();
+        await attendance;
+        await expect(provider.readFile(ref, "saved.bin", context)).resolves.toEqual(
+          new Uint8Array([1, 2, 3]),
+        );
+        expect(sdk.connect).toHaveBeenCalledOnce();
+        expect(sdk.create).toHaveBeenCalledOnce();
+        expect(current.setTimeout).toHaveBeenCalledOnce();
+        expect(sdk.attachRunning).toHaveBeenCalledExactlyOnceWith("existing", {
+          apiKey: "test-key",
+          signal: expect.any(AbortSignal),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("extends attendance through only a running-state GET and timeout update", async () => {
     await withRetainedE2BServer({}, async (requests, backend) => {
       await backend.keepAlive(
