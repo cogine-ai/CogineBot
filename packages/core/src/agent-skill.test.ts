@@ -385,4 +385,104 @@ describe("skill prompt helpers", () => {
     expect(line).toContain("skill_read");
     expect(line).toContain("Prefer matching skills");
   });
+
+  it.each([1, 49, 50, 51, 200, 201])(
+    "reports the complete %s-skill directory while keeping its original 50-entry preview",
+    (total) => {
+      const entries = Array.from({ length: total }, (_, index) => ({
+        name: `Skill ${String(index + 1).padStart(3, "0")}`,
+        description: `Description ${index + 1}`,
+        source: "user" as const,
+        readOnly: false,
+        content: `Private recipe body ${index + 1}`,
+      }));
+      const original = JSON.stringify(entries);
+      const shown = Math.min(total, 50);
+      const instruction = formatSkillsCatalogInstruction(entries)!;
+      expect(instruction).toContain(
+        `Skill catalog: ${total} total; ${shown} shown; ${total - shown} omitted.`,
+      );
+      expect(instruction.match(/^- Skill /gm)).toHaveLength(shown);
+      expect(instruction).toContain(`- Skill ${String(shown).padStart(3, "0")}:`);
+      expect(instruction).not.toContain("Private recipe body");
+      if (total > 50) {
+        expect(instruction).not.toContain("- Skill 051:");
+        expect(instruction).toContain("skillsQuery");
+        expect(instruction).toContain("skillsOffset");
+        expect(instruction).toContain("skillsLimit");
+      } else {
+        expect(instruction).not.toContain("skillsOffset");
+      }
+      expect(instruction).toContain("skillId");
+      expect(JSON.stringify(entries)).toBe(original);
+    },
+  );
+
+  it("keeps the empty directory silent and explicit omitted-skill expansion intact", () => {
+    expect(formatSkillsCatalogInstruction([])).toBeUndefined();
+    const entries = Array.from({ length: 201 }, (_, index) => ({
+      name: `Recipe ${index + 1}`,
+      description: `Metadata ${index + 1}`,
+      source: "user" as const,
+      readOnly: false,
+      content: `Exact body ${index + 1}\n\nKeep spacing.\n`,
+    }));
+    formatSkillsCatalogInstruction(entries);
+    for (const number of [51, 200, 201]) {
+      const forced = expandSkillReferencesInPrompt(`/Recipe ${number}\nContinue`, entries);
+      expect(forced).toContain(`Exact body ${number}\n\nKeep spacing.`);
+      expect(forced).toContain("Continue");
+      expect(expandSkillReferencesInPrompt(forced, entries)).toBe(forced);
+    }
+  });
+
+  it("does not direct a run to a disabled catalog tool", () => {
+    const entries = Array.from({ length: 201 }, (_, index) => ({
+      name: `Recipe ${index + 1}`,
+      description: "Discoverable recipe",
+      source: "user" as const,
+      readOnly: false,
+    }));
+    const instruction = formatSkillsCatalogInstruction(entries, { catalogAvailable: false })!;
+    expect(instruction).toContain("201 total; 50 shown; 151 omitted");
+    expect(instruction).not.toContain("task_catalog");
+    expect(instruction).not.toContain("skillsOffset");
+    expect(instruction).toContain("exact skillId");
+    expect(instruction.match(/^- Recipe /gm)).toHaveLength(50);
+  });
+
+  it("includes complete selectable IDs in the preview when catalog discovery is disabled", () => {
+    const entries = [
+      {
+        id: 'first:"quoted"]\\line\n😀',
+        name: "Shared",
+        description: "First recipe",
+        source: "user" as const,
+        readOnly: false,
+      },
+      {
+        id: "second-id",
+        name: " Shared ",
+        description: "Second recipe",
+        source: "plugin" as const,
+        readOnly: true,
+      },
+    ];
+    const original = JSON.stringify(entries);
+    const enabled = formatSkillsCatalogInstruction(entries)!;
+    const disabled = formatSkillsCatalogInstruction(entries, { catalogAvailable: false })!;
+    for (const entry of entries) {
+      expect(disabled).toContain(
+        `- ${entry.name} [skillId: ${JSON.stringify(entry.id)}]: ${entry.description}`,
+      );
+      expect(enabled).toContain(`- ${entry.name}: ${entry.description}`);
+      expect(enabled).not.toContain(entry.id);
+    }
+    const printed = [...disabled.matchAll(/\[skillId: ("(?:\\.|[^"\\])*")\]/g)].map((match) =>
+      JSON.parse(match[1]!),
+    );
+    expect(printed).toEqual(entries.map((entry) => entry.id));
+    expect(disabled).not.toContain("task_catalog");
+    expect(JSON.stringify(entries)).toBe(original);
+  });
 });

@@ -109,9 +109,26 @@ async function findOwnedSkill(
 export async function skillReadFromTool(
   prisma: PrismaClient,
   owner: SkillOwner,
-  input: { name?: string; skillId?: string },
+  input: { name?: unknown; skillId?: unknown },
 ): Promise<Record<string, unknown>> {
-  const skill = await findOwnedSkill(prisma, owner, input);
+  if (input.skillId !== undefined && typeof input.skillId !== "string") {
+    return { error: "skillId must be a string." };
+  }
+  if (input.name !== undefined && typeof input.name !== "string") {
+    return { error: "name must be a string." };
+  }
+  const skills = await listAgentSkillRecords(prisma, owner);
+  const name = input.name?.trim().toLowerCase();
+  const matches =
+    input.skillId !== undefined
+      ? skills.filter((skill) => skill.id === input.skillId)
+      : name
+        ? skills.filter((skill) => skill.name.trim().toLowerCase() === name)
+        : [];
+  if (input.skillId === undefined && matches.length > 1) {
+    return { error: "Multiple skills match this name. Use an exact skillId." };
+  }
+  const skill = matches[0];
   if (!skill) return { error: "Skill not found." };
   return {
     name: skill.name,

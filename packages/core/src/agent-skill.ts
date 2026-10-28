@@ -121,13 +121,33 @@ export function skillCatalogLine(entry: Pick<SkillCatalogEntry, "name" | "descri
   return `- ${entry.name}: ${entry.description}`;
 }
 
-export function formatSkillsCatalogInstruction(entries: SkillCatalogEntry[]): string | undefined {
+export function formatSkillsCatalogInstruction(
+  entries: Array<SkillCatalogEntry & { id?: string }>,
+  options: { catalogAvailable?: boolean } = {},
+): string | undefined {
   if (entries.length === 0) return undefined;
-  const lines = entries.slice(0, 50).map(skillCatalogLine).join("\n");
+  const preview = entries.slice(0, 50);
+  const omitted = entries.length - preview.length;
+  const lines = preview
+    .map((entry) =>
+      options.catalogAvailable === false && entry.id
+        ? `- ${entry.name} [skillId: ${JSON.stringify(entry.id)}]: ${entry.description}`
+        : skillCatalogLine(entry),
+    )
+    .join("\n");
   return [
     "Available Claude Agent Skills (SKILL.md recipes shared across assistants; generic how-tos, not account-specific routines). The Pi runtime already understands this format; we persist and inject them:",
+    `Skill catalog: ${entries.length} total; ${preview.length} shown; ${omitted} omitted.`,
     lines,
+    ...(omitted > 0 && options.catalogAvailable !== false
+      ? [
+          "Use task_catalog with skillsQuery or skillsOffset/skillsLimit to discover omitted skills.",
+        ]
+      : []),
     "When a skill matches the user's request, call skill_read for that name and follow it immediately. Prefer matching skills over improvising multi-step recipes.",
+    options.catalogAvailable === false
+      ? "If names are ambiguous, call skill_read with an exact skillId."
+      : "If names are ambiguous, get exact ids from task_catalog and call skill_read with skillId.",
     "Users can force a skill with /Name in the composer. Routines may mention a skill as @Name — that loads the skill at fire time.",
     "Create a skill with skill_create when a multi-step task is worth repeating (or when asked). After creating one, mention /Name so the user can open it.",
     "Only skill_update / skill_delete user-created skills (not builtin or plugin).",
