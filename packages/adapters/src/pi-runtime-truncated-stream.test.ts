@@ -226,3 +226,84 @@ it.each([
   expect(requests).toBe(1);
   expect(delay).not.toHaveBeenCalled();
 });
+
+it.each([
+  { label: "availability", status: 503, failure: "Synthetic unavailable", reservationMs: 90_000 },
+  {
+    label: "signature",
+    status: 400,
+    failure: "Invalid signature in thinking block",
+    reservationMs: 91_000,
+  },
+])(
+  "does not dispatch parsed $label recovery after reservation exhausts the original budget",
+  async ({ status, failure, reservationMs }) => {
+    let now = 10_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    delay.mockReset().mockImplementation(async (ms) => {
+      now += ms;
+    });
+    let requests = 0;
+    const server = createServer(async (request, response) => {
+      for await (const _chunk of request) {
+        /* Consume the actual SDK request. */
+      }
+      requests += 1;
+      now += 30_000;
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: failure, type: "fixture_error" } }));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Fixture endpoint unavailable");
+    let reservations = 0;
+    const beforeCall = vi.fn(async () => {
+      reservations += 1;
+      if (reservations === 2) {
+        await Promise.resolve();
+        now += reservationMs;
+      }
+      return `reservation-${reservations}`;
+    });
+    const afterCall = vi.fn(async (_id: string, _usage: AgentUsage | null) => undefined);
+    const events: AgentRuntimeEvent[] = [];
+    try {
+      const operation = async () => {
+        for await (const event of new PiAgentRuntime({
+          modelCallObserver: { beforeCall, afterCall },
+        }).run(
+          {
+            botId: "fixture",
+            threadId: "fixture",
+            runId: "fixture",
+            prompt: "Report fixture",
+            instructions: "Fixture",
+            history: [],
+            tools: [],
+            model: {
+              provider: "openai-compatible",
+              id: "fixture",
+              baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            },
+          },
+          { signal: AbortSignal.timeout(5_000) },
+        ))
+          events.push(event);
+      };
+      await expect(operation()).rejects.toThrow(failure);
+      expect(requests).toBe(1);
+      expect(beforeCall).toHaveBeenCalledTimes(2);
+      expect(afterCall.mock.calls[1]).toEqual(["reservation-2", null]);
+      expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+      expect(events.some((event) => event.type === "done")).toBe(false);
+    } finally {
+      clock.mockRestore();
+      delay.mockReset().mockResolvedValue(undefined);
+      const closed = once(server, "close");
+      server.close();
+      server.closeAllConnections();
+      await closed;
+    }
+  },
+);

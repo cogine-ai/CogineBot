@@ -228,6 +228,9 @@ export function observedPiStream(
     recordUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
     /** Provider failures only; excludes context, reservations and usage settlement. */
     onProviderError?: (message: AssistantMessage) => void;
+    /** Corrective attempts share a deadline across context preparation and reservation. */
+    requestDeadline?: number;
+    onRequestDeadlineExceeded?: (message: AssistantMessage) => void;
   },
 ) {
   const stream = createAssistantMessageEventStream();
@@ -259,6 +262,35 @@ export function observedPiStream(
     let partialMessage: AssistantMessage | undefined;
     let providerError: unknown;
     let providerThrew = false;
+    let requestDeadlineError: Error | undefined;
+    let deadlineController: AbortController | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineActive = false;
+    let notifyDeadline: (() => void) | undefined;
+    const deadlineExpired =
+      hooks?.requestDeadline === undefined
+        ? undefined
+        : new Promise<{ kind: "deadline" }>((resolve) => {
+            notifyDeadline = () => resolve({ kind: "deadline" });
+          });
+    let payloadReady = false;
+    let requestDispatched = false;
+    const clearDeadline = () => {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      deadlineTimer = undefined;
+      deadlineActive = false;
+    };
+    const expireDeadline = () => {
+      requestDeadlineError ??= new Error("Model request deadline expired before headers");
+      notifyDeadline?.();
+      deadlineController?.abort(requestDeadlineError);
+      return requestDeadlineError;
+    };
+    const checkDeadline = () => {
+      options?.signal?.throwIfAborted();
+      if (hooks?.requestDeadline !== undefined && Date.now() >= hooks.requestDeadline)
+        throw expireDeadline();
+    };
     try {
       // A tool-budget or cancellation stop can reach Pi's next-turn hook after
       // aborting. It is not a model invocation and must not create unknown usage.
@@ -276,25 +308,61 @@ export function observedPiStream(
           })
         : undefined;
       options?.signal?.throwIfAborted();
+      const remainingMs =
+        hooks?.requestDeadline === undefined ? undefined : hooks.requestDeadline - Date.now();
+      checkDeadline();
+      if (remainingMs !== undefined) {
+        deadlineController = new AbortController();
+        deadlineActive = true;
+        deadlineTimer = setTimeout(expireDeadline, remainingMs);
+        deadlineTimer.unref?.();
+      }
       started = true;
       // Some Pi adapters reject custom fetch outright. Only audited SSE families opt in.
       const collectRawUsage =
         /^(openai-|anthropic-)/.test(model.api) && !model.provider.startsWith("google");
       // Each guarded reservation covers one HTTP attempt, not hidden SDK retries.
-      const streamOptions = {
+      const streamOptions: SimpleStreamOptions = {
         ...options,
+        ...(remainingMs === undefined
+          ? {}
+          : {
+              timeoutMs: remainingMs,
+              signal: options?.signal
+                ? AbortSignal.any([options.signal, deadlineController!.signal])
+                : deadlineController!.signal,
+              onPayload: async (payload, requestModel) => {
+                const next = await options?.onPayload?.(payload, requestModel);
+                checkDeadline();
+                payloadReady = true;
+                return next;
+              },
+              onResponse: async (response, requestModel) => {
+                if (response.status >= 200 && response.status < 300) clearDeadline();
+                return options?.onResponse?.(response, requestModel);
+              },
+            }),
         ...(cacheRetention ? { cacheRetention } : {}),
         ...(observer ? { maxRetries: 0 } : {}),
       };
       let upstream: ReturnType<Models["streamSimple"]>;
       try {
+        const usageFetch = usageReportingFetch(streamOptions.fetch ?? globalThis.fetch, reported);
         upstream = models.streamSimple(
           model,
           preparedContext,
           collectRawUsage
             ? {
                 ...streamOptions,
-                fetch: usageReportingFetch(streamOptions?.fetch ?? globalThis.fetch, reported),
+                fetch: deadlineController
+                  ? async (input, init) => {
+                      checkDeadline();
+                      requestDispatched = true;
+                      const response = await usageFetch(input, init);
+                      if (response.ok) clearDeadline();
+                      return response;
+                    }
+                  : usageFetch,
               }
             : streamOptions,
         );
@@ -314,37 +382,64 @@ export function observedPiStream(
             }
           })()
         : upstream;
-      for await (const event of events) {
-        if (hooks?.onProviderError) {
-          partialMessage =
-            event.type === "done"
-              ? event.message
-              : event.type === "error"
-                ? event.error
-                : event.partial;
-        }
-        if (event.type === "done" || event.type === "error") {
-          const message = event.type === "done" ? event.message : event.error;
-          normalized = normalizePiUsage(message.usage, model, reported);
-          await emitUsage(
-            normalized,
-            usageOperationKind(attribution.operationKind, preparedContext, message),
-          );
-          try {
-            hooks?.onUsage?.(normalized);
-          } catch {
-            /* Cache telemetry cannot discard accounted spend. */
+      const iterator = events[Symbol.asyncIterator]();
+      try {
+        for (;;) {
+          const next = iterator.next().then((value) => ({ kind: "event" as const, value }));
+          const outcome = await (deadlineActive && deadlineExpired
+            ? Promise.race([next, deadlineExpired])
+            : next);
+          if (outcome.kind === "deadline") {
+            // Before payload preparation, or before an audited fetch, no model request left.
+            if (!payloadReady || (collectRawUsage && !requestDispatched)) started = false;
+            options?.signal?.throwIfAborted();
+            throw requestDeadlineError;
           }
-          if (observer && reservation !== undefined) {
-            settled = true;
-            await observer.afterCall(reservation, normalized);
+          if (outcome.value.done) break;
+          const event = outcome.value.value;
+          // These APIs expose no response hook; their start follows generateContentStream.
+          if (
+            event.type === "start" &&
+            (model.api === "google-generative-ai" || model.api === "google-vertex")
+          )
+            clearDeadline();
+          if (event.type === "done" || event.type === "error") {
+            clearDeadline();
           }
+          if (hooks?.onProviderError) {
+            partialMessage =
+              event.type === "done"
+                ? event.message
+                : event.type === "error"
+                  ? event.error
+                  : event.partial;
+          }
+          if (event.type === "done" || event.type === "error") {
+            const message = event.type === "done" ? event.message : event.error;
+            normalized = normalizePiUsage(message.usage, model, reported);
+            await emitUsage(
+              normalized,
+              usageOperationKind(attribution.operationKind, preparedContext, message),
+            );
+            try {
+              hooks?.onUsage?.(normalized);
+            } catch {
+              /* Cache telemetry cannot discard accounted spend. */
+            }
+            if (observer && reservation !== undefined) {
+              settled = true;
+              await observer.afterCall(reservation, normalized);
+            }
+          }
+          if (event.type === "error") hooks?.onProviderError?.(event.error);
+          stream.push(event);
         }
-        if (event.type === "error") hooks?.onProviderError?.(event.error);
-        stream.push(event);
+      } finally {
+        void iterator.return?.().catch(() => undefined);
       }
       stream.end(await upstream.result());
     } catch (error) {
+      clearDeadline();
       let terminalError = error;
       if (started && normalized === null) {
         try {
@@ -382,9 +477,18 @@ export function observedPiStream(
           terminalError instanceof Error ? terminalError.message : String(terminalError),
         timestamp: Date.now(),
       };
-      if (providerThrew && terminalError === providerError) hooks?.onProviderError?.(message);
+      if (
+        providerThrew &&
+        terminalError === providerError &&
+        terminalError !== requestDeadlineError
+      )
+        hooks?.onProviderError?.(message);
+      if (requestDeadlineError && terminalError === requestDeadlineError)
+        hooks?.onRequestDeadlineExceeded?.(message);
       stream.push({ type: "error", reason: "error", error: message });
       stream.end(message);
+    } finally {
+      clearDeadline();
     }
   })();
   return stream;

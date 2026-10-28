@@ -37,10 +37,16 @@ const DAYTONA_SCREEN_TTL_SECONDS = 3_600;
 
 export type DaytonaSandboxSdk = Pick<Daytona, "create" | "get">;
 
+type PendingDaytonaConnection = {
+  promise: Promise<Sandbox>;
+  signals: Set<AbortSignal | undefined>;
+};
+
 export class DaytonaSandboxProvider implements SandboxProvider {
   private readonly client: DaytonaSandboxSdk;
   private readonly boxes = new Map<string, Sandbox>();
-  private readonly connections = new Map<string, Promise<Sandbox>>();
+  private readonly connections = new Map<string, PendingDaytonaConnection>();
+  private readonly computerOperations = new Map<string, { pending: number }>();
   private readonly workspaceRoots = new Map<string, string>();
   private readonly prepared = new Set<string>();
   private readonly desktops = new LinuxDesktop({
@@ -128,31 +134,46 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     },
     _context: AdapterContext,
   ): Promise<ComputerRef> {
-    if (request.providerRef && request.providerKind === "daytona") {
-      try {
-        const sandbox = await this.connect(request.providerRef);
-        return this.ref(sandbox, request.botId, false);
-      } catch (error) {
-        if (!isUnrecoverableDaytonaError(error)) throw error;
-        if (this.boxes.has(request.providerRef) || this.connections.has(request.providerRef)) {
-          throw new Error("Daytona connection was invalidated during teardown");
-        }
-        this.forget(request.providerRef);
+    const id = request.providerKind === "daytona" ? request.providerRef : undefined;
+    const operation = id ? this.beginOperation(id) : undefined;
+    const assertCurrent = () => {
+      if (id && this.computerOperations.get(id) !== operation) {
+        throw new Error("Daytona connection was invalidated during teardown");
       }
+    };
+    try {
+      if (id) {
+        try {
+          const sandbox = await this.connect(id, _context.signal);
+          assertCurrent();
+          return this.ref(sandbox, request.botId, false);
+        } catch (error) {
+          assertCurrent();
+          if (!isUnrecoverableDaytonaError(error)) throw error;
+          if (this.boxes.has(id) || this.connections.has(id)) {
+            throw new Error("Daytona connection was invalidated during teardown");
+          }
+          this.forget(id);
+        }
+      }
+      assertCurrent();
+      if (id) _context.signal.throwIfAborted();
+      const sandbox = await this.client.create(
+        {
+          ...(this.snapshotName ? { snapshot: this.snapshotName } : {}),
+          labels: { botId: request.botId, rakazo: "computer" },
+          envVars: { VNC_RESOLUTION: "1280x800" },
+          autoStopInterval: 0,
+          autoDeleteInterval: -1,
+        },
+        { timeout: 120 },
+      );
+      this.boxes.set(sandbox.id, sandbox);
+      // Return an already-dispatched create's handle so its caller can compensate after Stop.
+      return this.ref(sandbox, request.botId, true);
+    } finally {
+      if (id && operation) this.endOperation(id, operation);
     }
-
-    const sandbox = await this.client.create(
-      {
-        ...(this.snapshotName ? { snapshot: this.snapshotName } : {}),
-        labels: { botId: request.botId, rakazo: "computer" },
-        envVars: { VNC_RESOLUTION: "1280x800" },
-        autoStopInterval: 0,
-        autoDeleteInterval: -1,
-      },
-      { timeout: 120 },
-    );
-    this.boxes.set(sandbox.id, sandbox);
-    return this.ref(sandbox, request.botId, true);
   }
 
   async prepare(computer: ComputerRef, _context: AdapterContext): Promise<void> {
@@ -375,36 +396,18 @@ export class DaytonaSandboxProvider implements SandboxProvider {
 
   async stop(computer: ComputerRef, _context: AdapterContext): Promise<void> {
     const id = computer.providerRef || computer.id;
-    const sandbox = await this.findForTeardown(id);
-    if (!sandbox) {
-      this.forget(id);
-      return;
-    }
-    const previewKeys = [...this.screenPreviews.keys()].filter((key) => key.startsWith(`${id}:`));
-    await Promise.all(
-      previewKeys.map((previewKey) =>
-        this.revokeScreenPreview(sandbox, this.screenPreviews.get(previewKey)),
-      ),
-    );
-    this.forget(id);
+    const { sandbox, previews } = await this.beginTeardown(id);
+    if (!sandbox) return;
+    await Promise.all(previews.map((preview) => this.revokeScreenPreview(sandbox, preview)));
     await sandbox.computerUse.stop().catch(() => undefined);
     await sandbox.stop(120);
   }
 
   async destroy(computer: ComputerRef, _context: AdapterContext): Promise<void> {
     const id = computer.providerRef || computer.id;
-    const sandbox = await this.findForTeardown(id);
-    if (!sandbox) {
-      this.forget(id);
-      return;
-    }
-    const previewKeys = [...this.screenPreviews.keys()].filter((key) => key.startsWith(`${id}:`));
-    await Promise.all(
-      previewKeys.map((previewKey) =>
-        this.revokeScreenPreview(sandbox, this.screenPreviews.get(previewKey)),
-      ),
-    );
-    this.forget(id);
+    const { sandbox, previews } = await this.beginTeardown(id);
+    if (!sandbox) return;
+    await Promise.all(previews.map((preview) => this.revokeScreenPreview(sandbox, preview)));
     try {
       await sandbox.delete(120, true);
     } catch (error) {
@@ -423,18 +426,26 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     };
   }
 
-  private async connect(id: string): Promise<Sandbox> {
+  private async connect(id: string, signal?: AbortSignal): Promise<Sandbox> {
     const existing = this.boxes.get(id);
     if (existing) return existing;
     const pending = this.connections.get(id);
-    if (pending) return pending;
-    let connection!: Promise<Sandbox>;
-    connection = (async () => {
+    if (pending) {
+      pending.signals.add(signal);
+      return pending.promise;
+    }
+    const signals = new Set([signal]);
+    let connection!: PendingDaytonaConnection;
+    const promise = (async () => {
       const sandbox = await this.client.get(id);
       if (this.connections.get(id) !== connection) {
         throw new Error("Daytona connection was invalidated during teardown");
       }
-      if (sandbox.state !== SandboxState.STARTED) await sandbox.start(120);
+      if (sandbox.state !== SandboxState.STARTED) {
+        // A shared connection may still have another caller that needs this start.
+        if (![...signals].some((caller) => !caller?.aborted)) signal?.throwIfAborted();
+        await sandbox.start(120);
+      }
       if (this.connections.get(id) !== connection) {
         throw new Error("Daytona connection was invalidated during teardown");
       }
@@ -450,21 +461,28 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       .finally(() => {
         if (this.connections.get(id) === connection) this.connections.delete(id);
       });
+    connection = { promise, signals };
     this.connections.set(id, connection);
-    return connection;
+    return promise;
   }
 
   private async box(computer: ComputerRef): Promise<Sandbox> {
     return this.connect(computer.providerRef || computer.id);
   }
 
-  private async findForTeardown(id: string): Promise<Sandbox | undefined> {
+  /** Invalidate old work before any lookup; retain only the handles needed by this teardown. */
+  private async beginTeardown(id: string) {
     const existing = this.boxes.get(id);
-    if (existing) return existing;
+    const previews = [...this.screenPreviews.entries()]
+      .filter(([key]) => key.startsWith(`${id}:`))
+      .map(([, preview]) => preview);
+    this.computerOperations.delete(id);
+    this.forget(id);
+    if (existing) return { sandbox: existing, previews };
     try {
-      return await this.client.get(id);
+      return { sandbox: await this.client.get(id), previews };
     } catch (error) {
-      if (isUnrecoverableDaytonaError(error)) return undefined;
+      if (isUnrecoverableDaytonaError(error)) return { sandbox: undefined, previews };
       throw error;
     }
   }
@@ -580,6 +598,20 @@ export class DaytonaSandboxProvider implements SandboxProvider {
   ): Promise<void> {
     if (!preview) return;
     await sandbox.expireSignedPreviewUrl(preview.viewPort, preview.token).catch(() => undefined);
+  }
+
+  private beginOperation(id: string): { pending: number } {
+    const operation = this.computerOperations.get(id) ?? { pending: 0 };
+    operation.pending += 1;
+    this.computerOperations.set(id, operation);
+    return operation;
+  }
+
+  private endOperation(id: string, operation: { pending: number }): void {
+    operation.pending -= 1;
+    if (operation.pending === 0 && this.computerOperations.get(id) === operation) {
+      this.computerOperations.delete(id);
+    }
   }
 
   private forget(id: string): void {

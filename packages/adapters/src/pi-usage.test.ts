@@ -548,3 +548,136 @@ describe("Pi usage accounting", () => {
     expect(reported.has("inputTokens")).toBe(true);
   });
 });
+
+describe("Pi corrective request dispatch budget", () => {
+  it.each([400, 1_000])(
+    "deducts %dms of synchronous context work without an observer",
+    async (elapsed) => {
+      let now = 10_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const realModels = builtinModels();
+      const streamSimple = vi.fn(realModels.streamSimple.bind(realModels));
+      const models = { ...realModels, streamSimple } as typeof realModels;
+      const fetcher = vi.fn(
+        async () => new Response(sse(), { headers: { "content-type": "text/event-stream" } }),
+      );
+      const push = vi.fn();
+      const onRequestDeadlineExceeded = vi.fn();
+      const onProviderError = vi.fn();
+      try {
+        const result = observedPiStream(
+          models,
+          model,
+          { messages: [] },
+          { apiKey: "fixture", fetch: fetcher, timeoutMs: 1_000 },
+          push,
+          undefined,
+          undefined,
+          {
+            requestDeadline: 11_000,
+            prepareContext: (context) => {
+              now += elapsed;
+              return context;
+            },
+            onRequestDeadlineExceeded,
+            onProviderError,
+          },
+        );
+        for await (const _event of result) {
+        }
+        if (elapsed === 1_000) {
+          expect(streamSimple).not.toHaveBeenCalled();
+          expect(fetcher).not.toHaveBeenCalled();
+          expect(push).not.toHaveBeenCalled();
+          expect(onRequestDeadlineExceeded).toHaveBeenCalledOnce();
+        } else {
+          expect(streamSimple.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 600 });
+          expect(streamSimple.mock.calls[0]?.[2]).not.toHaveProperty("requestDeadline");
+          expect(fetcher).toHaveBeenCalledOnce();
+          expect(onRequestDeadlineExceeded).not.toHaveBeenCalled();
+        }
+        expect(onProviderError).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it.each(["context", "reservation"])(
+    "does not classify a local %s rejection by its deadline-like text",
+    async (phase) => {
+      const localError = new Error("Model request deadline expired before dispatch");
+      const fetcher = vi.fn();
+      const onRequestDeadlineExceeded = vi.fn();
+      const onProviderError = vi.fn();
+      const afterCall = vi.fn();
+      const beforeCall = vi.fn(async () => {
+        if (phase === "reservation") throw localError;
+        return "reservation";
+      });
+      const result = observedPiStream(
+        builtinModels(),
+        model,
+        { messages: [] },
+        { fetch: fetcher },
+        vi.fn(),
+        { beforeCall, afterCall },
+        undefined,
+        {
+          requestDeadline: Date.now() - 1,
+          prepareContext: (context) => {
+            if (phase === "context") throw localError;
+            return context;
+          },
+          onRequestDeadlineExceeded,
+          onProviderError,
+        },
+      );
+      for await (const _event of result) {
+      }
+      expect((await result.result()).errorMessage).toBe(localError.message);
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(afterCall).not.toHaveBeenCalled();
+      expect(onRequestDeadlineExceeded).not.toHaveBeenCalled();
+      expect(onProviderError).not.toHaveBeenCalled();
+    },
+  );
+
+  it("settles an expired reservation before exposing its local deadline termination", async () => {
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const afterCall = vi.fn(() => settlement);
+    const fetcher = vi.fn();
+    const push = vi.fn();
+    const onRequestDeadlineExceeded = vi.fn();
+    const onProviderError = vi.fn();
+    const result = observedPiStream(
+      builtinModels(),
+      model,
+      { messages: [] },
+      { fetch: fetcher },
+      push,
+      { beforeCall: async () => "reservation", afterCall },
+      undefined,
+      { requestDeadline: Date.now() - 1, onRequestDeadlineExceeded, onProviderError },
+    );
+    let terminated = false;
+    const terminal = result.result().then((message) => {
+      terminated = true;
+      return message;
+    });
+    for (let index = 0; index < 5; index++) await Promise.resolve();
+    expect(afterCall).toHaveBeenCalledOnce();
+    expect(afterCall).toHaveBeenCalledWith("reservation", null);
+    expect(terminated).toBe(false);
+    expect(onRequestDeadlineExceeded).not.toHaveBeenCalled();
+    settle();
+    expect((await terminal).errorMessage).toContain("deadline expired");
+    expect(onRequestDeadlineExceeded).toHaveBeenCalledOnce();
+    expect(onProviderError).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+  });
+});

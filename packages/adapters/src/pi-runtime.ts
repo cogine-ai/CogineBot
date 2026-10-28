@@ -352,6 +352,7 @@ export class PiAgentRuntime implements AgentRuntime {
         };
         // The idle watchdog may clone a terminal message, preserving its content array.
         const providerFailures = new WeakSet<AssistantMessage["content"]>();
+        const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
         let activeStreamTarget = host.activeModel;
@@ -360,9 +361,10 @@ export class PiAgentRuntime implements AgentRuntime {
           getActive: () => activeStreamTarget,
           signal,
           isProviderFailure: (message) => providerFailures.has(message.content),
+          isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
           attempted: new Set<string>(),
           nextIndex: 0,
-          stream: (target, ctx, options) =>
+          stream: (target, ctx, options, requestDeadline) =>
             reliableModelStream(
               target.models,
               target.model,
@@ -388,6 +390,9 @@ export class PiAgentRuntime implements AgentRuntime {
                     ...usageHooks,
                     prepareContext: (ctx, m) => contextPolicy.prepareContext(ctx, m),
                     onProviderError: (message) => providerFailures.add(message.content),
+                    requestDeadline,
+                    onRequestDeadlineExceeded: (message) =>
+                      requestDeadlineFailures.add(message.content),
                   },
                 ),
               target.config.cacheCapabilities?.retentionMode,
@@ -1512,6 +1517,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   );
   let nested!: Agent;
   const providerFailures = new WeakSet<AssistantMessage["content"]>();
+  const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
   const retryState: FallbackStreamState = {
     request: { ...host.request, model: requestModel, fallbackModels: [] },
     getActive: () => nestedHost.activeModel,
@@ -1520,7 +1526,8 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     nextIndex: 0,
     onSwitch: async () => undefined,
     isProviderFailure: (message) => providerFailures.has(message.content),
-    stream: (target, ctx, options) =>
+    isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
+    stream: (target, ctx, options, requestDeadline) =>
       reliableModelStream(
         target.models,
         target.model,
@@ -1548,6 +1555,8 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
               imageTokens: estimatePiImageTokens,
               recordUsage: host.request.onUsage,
               onProviderError: (message) => providerFailures.add(message.content),
+              requestDeadline,
+              onRequestDeadlineExceeded: (message) => requestDeadlineFailures.add(message.content),
               onUsage: (usage) => {
                 contextPolicy.onUsage(usage);
                 const decision = contextPolicy.getDecision();
@@ -2453,12 +2462,14 @@ interface FallbackStreamState {
   nextIndex: number;
   onSwitch(target: RuntimeModelTarget): Promise<void>;
   isProviderFailure(message: AssistantMessage): boolean;
+  isRequestDeadlineExceeded(message: AssistantMessage): boolean;
   /** A rejected signature is stripped for subsequent completions in this run. */
   dropThinkingBlocks?: boolean;
   stream(
     target: RuntimeModelTarget,
     context: TranscriptContext,
     options: ModelsSimpleStreamOptions | undefined,
+    requestDeadline?: number,
   ): AssistantMessageEventStream;
 }
 
@@ -2788,6 +2799,7 @@ function fallbackAwareModelStream(
           state.request.fallbackModels?.length
             ? { ...attemptOptions, apiKey, reasoning }
             : attemptOptions,
+          retries > 0 || signatureRetryError ? startedAt + timeoutMs : undefined,
         );
       } catch (error) {
         finishWithThrownError(target, error);
@@ -2796,6 +2808,15 @@ function fallbackAwareModelStream(
       try {
         for await (const event of stream) {
           if (event.type === "error") {
+            if (state.isRequestDeadlineExceeded(event.error)) {
+              if (failIfAborted(target)) return;
+              const budgetError = firstRetryableError ?? signatureRetryError;
+              if (budgetError) {
+                output.push(budgetError);
+                output.end(budgetError.error);
+                return;
+              }
+            }
             let terminalEvent = event;
             const hasTerminalPartialOutput = assistantHasPartialOutput(event.error);
             if (
