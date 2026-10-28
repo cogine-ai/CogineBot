@@ -185,3 +185,42 @@ it("recovers real parsed empty completions after a completed tool without replay
     await closed;
   }
 });
+
+it.each([
+  [401, "authentication_error"],
+  [403, "permission_error"],
+  [400, "subscription_sharing_usage_limit_exceeded"],
+  [400, "subscription_sharing_usage_unavailable"],
+] as const)("keeps parsed %s/%s refusal above signature recovery", async (status, code) => {
+  delay.mockClear();
+  let requests = 0;
+  const runtime = new PiAgentRuntime({
+    modelFetch: async () => {
+      requests += 1;
+      return Response.json(
+        { error: { code, type: code, message: "Invalid signature in thinking block" } },
+        { status },
+      );
+    },
+  });
+  const consume = async () => {
+    for await (const _event of runtime.run(
+      {
+        botId: "fixture-bot",
+        threadId: "fixture-thread",
+        runId: "fixture-run",
+        prompt: "Report the fixture",
+        instructions: "Fixture",
+        history: [],
+        tools: [],
+        model: { provider: "openai-compatible", id: "fixture", baseUrl: "http://127.0.0.1:1/v1" },
+      },
+      { signal: AbortSignal.timeout(5_000) },
+    )) {
+      /* Consume the actual parser and recovery pipeline. */
+    }
+  };
+  await expect(consume()).rejects.toThrow("Invalid signature");
+  expect(requests).toBe(1);
+  expect(delay).not.toHaveBeenCalled();
+});

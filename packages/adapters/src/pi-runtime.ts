@@ -2497,10 +2497,23 @@ function errorFacts(value: unknown) {
   return { text: text.join(" ").toLowerCase(), statuses };
 }
 
+/** Access and account refusals take precedence over every automatic model recovery. */
+function blocksModelRecovery({ text, statuses }: ReturnType<typeof errorFacts>): boolean {
+  return (
+    statuses.has(401) ||
+    statuses.has(403) ||
+    /subscription_sharing_usage_(?:limit_exceeded|unavailable)/.test(text) ||
+    /\b(abort(?:ed)?|cancel(?:lation|led|ed)?|unauthori[sz]ed|forbidden|permission(?: is)? (?:denied|refused|declined)|access denied|consent(?: is)? (?:required|denied|refused|declined|not granted)|user (?:refused|declined)|invalid api key|invalid credential|(?:expired|revoked|missing) (?:api )?(?:key|credential|token)|(?:api )?key (?:expired|revoked|missing)|authentication (?:failed|failure|denied|expired|invalid)|authorization (?:failed|failure|denied|expired|invalid)|invalid_api_key|authentication_error|permission_error)\b/.test(
+      text,
+    )
+  );
+}
+
 /** Only provider availability failures may advance the user's explicit chain. */
 export function isRetryableProviderUnavailable(error: unknown): boolean {
-  const { text, statuses } = errorFacts(error);
-  if (/subscription_sharing_usage_(?:limit_exceeded|unavailable)/.test(text)) return false;
+  const facts = errorFacts(error);
+  const { text, statuses } = facts;
+  if (blocksModelRecovery(facts)) return false;
   if (
     [400, 401, 403].some((status) => statuses.has(status)) ||
     /\b(?:http(?:\s+status(?:\s+code)?)?|status(?:\s+code)?|error\s+code)\s*[:=]?\s*(?:400|401|403)\b/.test(
@@ -2510,7 +2523,7 @@ export function isRetryableProviderUnavailable(error: unknown): boolean {
     return false;
   }
   if (
-    /\b(abort(?:ed)?|cancel(?:lation|led|ed)?|unauthori[sz]ed|forbidden|permission(?: is)? (?:denied|refused|declined)|access denied|consent(?: is)? (?:required|denied|refused|declined|not granted)|user (?:refused|declined)|invalid api key|invalid credential|(?:expired|revoked|missing) (?:api )?(?:key|credential|token)|(?:api )?key (?:expired|revoked|missing)|authentication (?:failed|failure|denied|expired|invalid)|authorization (?:failed|failure|denied|expired|invalid)|bad request|invalid request|invalid input|invalid argument|context length|model not found|unsupported parameter)\b/.test(
+    /\b(bad request|invalid request|invalid input|invalid argument|context length|model not found|unsupported parameter)\b/.test(
       text,
     )
   ) {
@@ -2791,6 +2804,7 @@ function fallbackAwareModelStream(
               event.reason === "error" &&
               !signalAborted() &&
               state.isProviderFailure(event.error) &&
+              !blocksModelRecovery(errorFacts(event.error)) &&
               !state.dropThinkingBlocks &&
               Date.now() - startedAt < timeoutMs &&
               isThinkingSignatureMismatch(event.error.errorMessage)
@@ -2814,6 +2828,8 @@ function fallbackAwareModelStream(
               if (next) {
                 await state.onSwitch(next);
                 if (failIfAborted(target)) return;
+                // A backup retains its configured first-attempt header window.
+                signatureRetryError = undefined;
                 buffered = [];
                 restart = true;
                 break;

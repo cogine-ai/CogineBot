@@ -1823,6 +1823,25 @@ describe("provider availability classification", () => {
 describe("Pi runtime signature recovery guards", () => {
   const mismatch = "Invalid signature in thinking block";
 
+  it.each([
+    "HTTP 401 authentication_error",
+    "HTTP 403 permission_error",
+    "HTTP 400 invalid_api_key",
+    "HTTP 400 subscription_sharing_usage_limit_exceeded",
+    "HTTP 400 subscription_sharing_usage_unavailable",
+  ])("keeps %s above signature repair and configured backups", async (refusal) => {
+    providerState.stream.mockImplementation(() =>
+      stream(primary, message(primary, [], "error", `${refusal}: ${mismatch}`)),
+    );
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-key" },
+    ]);
+    await expect(run(input)).rejects.toThrow(/signature in thinking block/);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(input.executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([30_000, 120_000])(
     "keeps signature recovery inside the completion budget after %dms",
     async (elapsed) => {
@@ -1999,6 +2018,8 @@ describe("Pi runtime thinking blocks bound to a different conversation", () => {
   });
 
   it("uses a backup that fits only after discarded thinking blocks are omitted", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
     const thinking = "x".repeat(12_000);
     providerState.models.set(`${backupA.provider}/${backupA.id}`, {
       ...backupA,
@@ -2021,7 +2042,10 @@ describe("Pi runtime thinking blocks bound to a different conversation", () => {
           ),
         ),
       )
-      .mockImplementationOnce(() => stream(primary, message(primary, [], "error", mismatch)))
+      .mockImplementationOnce(() => {
+        now += 30_000;
+        return stream(primary, message(primary, [], "error", mismatch));
+      })
       .mockImplementation((target: Model<"openai-completions">) =>
         target.provider === primary.provider
           ? stream(target, message(target, [], "error", "429 rate_limit_error"))
@@ -2031,6 +2055,7 @@ describe("Pi runtime thinking blocks bound to a different conversation", () => {
     const events = await run(input);
 
     expect(events.at(-1)).toEqual({ type: "done", text: "backup answer" });
+    expect(providerState.stream.mock.lastCall?.[2]).toMatchObject({ timeoutMs: 120_000 });
     expect(
       providerState.stream.mock.calls.map(
         ([target]) => (target as Model<"openai-completions">).provider,

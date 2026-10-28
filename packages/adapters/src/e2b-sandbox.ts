@@ -182,25 +182,36 @@ export class E2BSandboxProvider implements SandboxProvider {
         () => false,
         (error: unknown) => isSandboxGoneError(error),
       );
+      if (this.boxes.get(id) !== existing) {
+        throw new Error("computer connection stopped during teardown");
+      }
       if (!gone) {
         this.lastTouchedAt.set(id, Date.now());
         return existing;
       }
-      if (this.boxes.get(id) === existing) this.forget(id);
+      this.forget(id);
     }
     const pending = this.connections.get(id);
     if (pending) return pending;
     let connection!: Promise<Sandbox>;
     connection = this.sdk
       .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
-      .then((connected) => {
-        if (this.connections.get(id) !== connection) {
-          throw new Error("computer connection stopped during teardown");
-        }
-        this.boxes.set(connected.sandboxId, connected);
-        this.lastTouchedAt.set(connected.sandboxId, Date.now());
-        return connected;
-      })
+      .then(
+        (connected) => {
+          if (this.connections.get(id) !== connection) {
+            throw new Error("computer connection stopped during teardown");
+          }
+          this.boxes.set(connected.sandboxId, connected);
+          this.lastTouchedAt.set(connected.sandboxId, Date.now());
+          return connected;
+        },
+        (error: unknown) => {
+          if (this.connections.get(id) !== connection) {
+            throw new Error("computer connection stopped during teardown");
+          }
+          throw error;
+        },
+      )
       .finally(() => {
         if (this.connections.get(id) === connection) this.connections.delete(id);
       });
@@ -235,6 +246,9 @@ export class E2BSandboxProvider implements SandboxProvider {
       } catch (error) {
         // A transport failure says nothing about the workspace still on the server.
         if (!isSandboxGoneError(error)) throw error;
+        if (this.boxes.has(request.providerRef) || this.connections.has(request.providerRef)) {
+          throw new Error("computer connection stopped during teardown");
+        }
         this.forget(request.providerRef);
       }
     }
@@ -426,15 +440,18 @@ export class E2BSandboxProvider implements SandboxProvider {
         })
       : await this.box(computer);
     if (!desktop) return;
+    let gone = false;
     try {
       await desktop.setTimeout(sandboxIdleMs());
     } catch (error) {
-      // Heartbeats refresh lastTouchedAt; if we swallow a gone error here, box() never
-      // reaches its 60s probe and keeps handing back the dead cached handle.
-      if (isSandboxGoneError(error)) {
-        this.forget(desktop.sandboxId);
-        return;
-      }
+      gone = isSandboxGoneError(error);
+    }
+    if (!options?.onlyIfRunning && this.boxes.get(desktop.sandboxId) !== desktop) return;
+    // Heartbeats refresh lastTouchedAt; if we swallow a gone error here, box() never
+    // reaches its 60s probe and keeps handing back the dead cached handle.
+    if (gone) {
+      this.forget(desktop.sandboxId);
+      return;
     }
     this.lastTouchedAt.set(desktop.sandboxId, Date.now());
   }

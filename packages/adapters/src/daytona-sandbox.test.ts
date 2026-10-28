@@ -16,6 +16,86 @@ describe("DaytonaSandboxProvider", () => {
     vi.unstubAllEnvs();
   });
 
+  it.each(["pending", "connected"])(
+    "does not recover an old Gone after its successor connection is %s",
+    async (state) => {
+      const f = daytonaFixture();
+      let reject!: (error: unknown) => void;
+      const old = new Promise<Sandbox>((_resolve, fail) => {
+        reject = fail;
+      });
+      let connect!: (sandbox: Sandbox) => void;
+      const next = new Promise<Sandbox>((resolve) => {
+        connect = resolve;
+      });
+      f.get.mockReturnValueOnce(old).mockReturnValue(next);
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const request = {
+        botId: "bot",
+        homePath: "/unused",
+        providerRef: "daytona-box",
+        providerKind: "daytona" as const,
+      };
+      const superseded = provider.provision(request, context).catch((error: unknown) => error);
+      reject({ statusCode: 404 });
+      // Let the SDK rejection handler and connection cleanup run before its successor.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const successor = provider.provision(request, context).catch((error: unknown) => error);
+      expect(f.get).toHaveBeenCalledTimes(2);
+      if (state === "connected") connect(f.sandbox);
+      await expect(superseded).resolves.toMatchObject({
+        message: "Daytona connection was invalidated during teardown",
+      });
+      if (state === "pending") connect(f.sandbox);
+      await expect(successor).resolves.toMatchObject({ providerRef: "daytona-box", fresh: false });
+      await provider.keepAlive({
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona",
+      });
+      expect(f.sandbox.refreshActivity).toHaveBeenCalledOnce();
+      expect(f.get).toHaveBeenCalledTimes(2);
+      expect(f.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a late lost connection after teardown without replacing the current computer", async () => {
+    const f = daytonaFixture();
+    let reject!: (error: unknown) => void;
+    f.get.mockReturnValueOnce(
+      new Promise<Sandbox>((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const request = {
+      botId: "bot",
+      homePath: "/unused",
+      providerRef: "daytona-box",
+      providerKind: "daytona" as const,
+    };
+    const ref = {
+      id: "daytona-box",
+      providerRef: "daytona-box",
+      botId: "bot",
+      kind: "daytona" as const,
+    };
+    const superseded = provider.provision(request, context).catch((error: unknown) => error);
+    await provider.stop(ref, context);
+    await provider.provision(request, context);
+    reject({ statusCode: 404 });
+    await expect(superseded).resolves.toMatchObject({
+      message: "Daytona connection was invalidated during teardown",
+    });
+    await provider.keepAlive(ref);
+    expect(f.get).toHaveBeenCalledTimes(3);
+    expect(f.sandbox.refreshActivity).toHaveBeenCalledOnce();
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
   it("preserves a newer cached handle when an older provision is invalidated by teardown", async () => {
     const f = daytonaFixture();
     let release!: (sandbox: Sandbox) => void;
@@ -45,6 +125,37 @@ describe("DaytonaSandboxProvider", () => {
     await provider.keepAlive(ref);
     expect(f.get).toHaveBeenCalledTimes(3);
     expect(f.sandbox.refreshActivity).toHaveBeenCalledOnce();
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it("does not start a stopped computer returned after its connection was torn down", async () => {
+    const f = daytonaFixture();
+    const stopped = daytonaFixture({ state: "stopped" });
+    let release!: (sandbox: Sandbox) => void;
+    f.get.mockReturnValueOnce(
+      new Promise<Sandbox>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const ref = {
+      id: "daytona-box",
+      providerRef: "daytona-box",
+      botId: "bot",
+      kind: "daytona" as const,
+    };
+    const superseded = provider
+      .provision(
+        { botId: "bot", homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+        context,
+      )
+      .catch((error: unknown) => error);
+    await provider.stop(ref, context);
+    release(stopped.sandbox);
+    await expect(superseded).resolves.toMatchObject({
+      message: "Daytona connection was invalidated during teardown",
+    });
+    expect(stopped.start).not.toHaveBeenCalled();
     expect(f.create).not.toHaveBeenCalled();
   });
 
