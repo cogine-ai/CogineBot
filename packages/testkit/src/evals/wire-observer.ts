@@ -39,6 +39,11 @@ export function diagnosticResultData(value: unknown): Record<string, unknown> | 
   return value;
 }
 
+/** These SDK APIs reject injected transports before making a request. */
+export function supportsDiagnosticFetchInjection(api: string | undefined): boolean {
+  return api !== "google-generative-ai" && api !== "google-vertex";
+}
+
 /** The fetch receives exact input/init; only whitelisted synthetic controls survive parsing. */
 export function diagnosticWireFetch(
   upstream: typeof fetch,
@@ -154,18 +159,5 @@ export function diagnosticWireFetch(
       if (observation) observations.push(observation);
     }
     return upstream(input, init);
-  };
-}
-
-/** CLI owns one synthetic workflow at a time; restore even when startup or cleanup throws. */
-export function installDiagnosticWireObserver(
-  modelId: string,
-  observations: DiagnosticWireObservation[],
-) {
-  const prior = globalThis.fetch;
-  const wrapped = diagnosticWireFetch(prior, modelId, observations);
-  globalThis.fetch = wrapped;
-  return () => {
-    if (globalThis.fetch === wrapped) globalThis.fetch = prior;
   };
 }

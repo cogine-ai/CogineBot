@@ -15,6 +15,184 @@ const context = {
 };
 
 describe("E2B computer backend", () => {
+  it.each<[string, boolean]>([
+    ["success", false],
+    ["transport", false],
+    ["gone", false],
+    ["success", true],
+    ["transport", true],
+    ["gone", true],
+  ])("ignores stopped cold renewal %s with successor attendance %s", async (outcome, next) => {
+    let complete!: () => void;
+    let reject!: (error: unknown) => void;
+    const renewal = new Promise<void>((resolve, fail) => {
+      complete = resolve;
+      reject = fail;
+    });
+    let renewing!: () => void;
+    const started = new Promise<void>((resolve) => {
+      renewing = resolve;
+    });
+    const old = {
+      sandboxId: "existing",
+      setTimeout: vi.fn(() => {
+        renewing();
+        return renewal;
+      }),
+    } as unknown as Sandbox;
+    let attach!: (desktop: Sandbox) => void;
+    const attachment = new Promise<Sandbox>((resolve) => {
+      attach = resolve;
+    });
+    const current = {
+      sandboxId: "existing",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Sandbox;
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn(),
+      connect: vi.fn(),
+      pause: vi.fn().mockResolvedValue(undefined),
+      attachRunning: vi.fn().mockResolvedValueOnce(old).mockReturnValue(attachment),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const registry = Reflect.get(provider, "computerOperations") as Map<
+      string,
+      { pending: number }
+    >;
+    const touched = Reflect.get(provider, "lastTouchedAt") as Map<string, number>;
+    const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+    const stopped = provider.keepAlive(ref, { onlyIfRunning: true });
+    await started;
+    await provider.stop(ref, context);
+    expect(registry.size).toBe(0);
+    const successor = next ? provider.keepAlive(ref, { onlyIfRunning: true }) : undefined;
+    const successorSlot = registry.get(ref.id);
+    if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+    else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
+    else complete();
+    await stopped;
+    expect(touched.has(ref.id)).toBe(false);
+    expect(registry.size).toBe(next ? 1 : 0);
+    if (successor) {
+      expect(registry.get(ref.id)).toBe(successorSlot);
+      expect(successorSlot?.pending).toBe(1);
+      attach(current);
+      await successor;
+      expect(current.setTimeout).toHaveBeenCalledOnce();
+    }
+    expect(registry.size).toBe(0);
+    expect(old.setTimeout).toHaveBeenCalledOnce();
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it("lets two concurrent attendance viewers finish independently and releases their registry", async () => {
+    let first!: (desktop: Sandbox) => void;
+    let second!: (desktop: Sandbox) => void;
+    const firstAttach = new Promise<Sandbox>((resolve) => {
+      first = resolve;
+    });
+    const secondAttach = new Promise<Sandbox>((resolve) => {
+      second = resolve;
+    });
+    const a = { sandboxId: "existing", setTimeout: vi.fn().mockResolvedValue(undefined) };
+    const b = { sandboxId: "existing", setTimeout: vi.fn().mockResolvedValue(undefined) };
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn(),
+      connect: vi.fn(),
+      pause: vi.fn(),
+      attachRunning: vi.fn().mockReturnValueOnce(firstAttach).mockReturnValueOnce(secondAttach),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const registry = Reflect.get(provider, "computerOperations") as Map<
+      string,
+      { pending: number }
+    >;
+    const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+    const one = provider.keepAlive(ref, { onlyIfRunning: true });
+    const two = provider.keepAlive(ref, { onlyIfRunning: true });
+    expect(registry.size).toBe(1);
+    expect(registry.get(ref.id)?.pending).toBe(2);
+    first(a as unknown as Sandbox);
+    await one;
+    expect(a.setTimeout).toHaveBeenCalledOnce();
+    expect(registry.size).toBe(1);
+    expect(registry.get(ref.id)?.pending).toBe(1);
+    second(b as unknown as Sandbox);
+    await two;
+    expect(b.setTimeout).toHaveBeenCalledOnce();
+    expect(registry.size).toBe(0);
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "transport", "gone"])(
+    "releases attendance registry after a current %s attachment result",
+    async (outcome) => {
+      const error =
+        outcome === "gone"
+          ? new SandboxNotFoundError("Synthetic sandbox unavailable")
+          : new Error("Synthetic transport unavailable");
+      const attach = vi.fn();
+      if (outcome === "missing") attach.mockResolvedValueOnce(undefined);
+      else attach.mockRejectedValueOnce(error);
+      const desktop = { sandboxId: "existing", setTimeout: vi.fn().mockResolvedValue(undefined) };
+      attach.mockResolvedValue(desktop);
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn(),
+        connect: vi.fn(),
+        pause: vi.fn(),
+        attachRunning: attach,
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const registry = Reflect.get(provider, "computerOperations") as Map<string, unknown>;
+      const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+      const attendance = provider.keepAlive(ref, { onlyIfRunning: true });
+      if (outcome === "missing") await expect(attendance).resolves.toBeUndefined();
+      else await expect(attendance).rejects.toBe(error);
+      expect(registry.size).toBe(0);
+      await provider.keepAlive(ref, { onlyIfRunning: true });
+      expect(desktop.setTimeout).toHaveBeenCalledOnce();
+      expect(registry.size).toBe(0);
+      expect(sdk.connect).not.toHaveBeenCalled();
+      expect(sdk.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["success", "transport", "gone"])(
+    "does not renew a cold attendance attachment completing with %s after stop",
+    async (outcome) => {
+      let attach!: (desktop: Sandbox) => void;
+      let reject!: (error: unknown) => void;
+      const attachment = new Promise<Sandbox>((resolve, fail) => {
+        attach = resolve;
+        reject = fail;
+      });
+      const desktop = {
+        sandboxId: "existing",
+        setTimeout: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Sandbox;
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn(),
+        connect: vi.fn(),
+        pause: vi.fn().mockResolvedValue(undefined),
+        attachRunning: vi.fn().mockReturnValue(attachment),
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+      const attendance = provider.keepAlive(ref, { onlyIfRunning: true });
+      await provider.stop(ref, context);
+      if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+      else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
+      else attach(desktop);
+      await expect(attendance).resolves.toBeUndefined();
+      expect(desktop.setTimeout).not.toHaveBeenCalled();
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+      expect(sdk.connect).not.toHaveBeenCalled();
+      expect(sdk.create).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])("refreshes unchanged attendance with cached computer %s", async (warm) => {
     const cached = {
       sandboxId: "existing",
@@ -1431,6 +1609,381 @@ describe("workspace export activity", () => {
 });
 
 describe("sandbox-gone detection", () => {
+  it.each<["stop" | "destroy", boolean]>([
+    ["stop", false],
+    ["destroy", false],
+    ["stop", true],
+    ["destroy", true],
+  ])(
+    "rejects Gone after %s in the connection-finally microtask window with successor %s",
+    async (teardown, next) => {
+      let reject!: (error: unknown) => void;
+      const initial = new Promise<Sandbox>((_resolve, fail) => {
+        reject = fail;
+      });
+      let connect!: (desktop: Sandbox) => void;
+      const connection = new Promise<Sandbox>((resolve) => {
+        connect = resolve;
+      });
+      const kill = vi.fn().mockResolvedValue(undefined);
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn().mockResolvedValue({ sandboxId: "unexpected" }),
+        connect: vi.fn().mockReturnValueOnce(initial),
+        pause: vi.fn().mockResolvedValue(undefined),
+      };
+      if (teardown === "destroy") {
+        vi.mocked(sdk.connect).mockResolvedValueOnce({
+          sandboxId: "existing",
+          kill,
+        } as unknown as Sandbox);
+      }
+      vi.mocked(sdk.connect).mockReturnValueOnce(connection);
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const request = {
+        botId: "bot",
+        homePath: "/unused",
+        providerRef: "existing",
+        providerKind: "e2b" as const,
+      };
+      const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+      const first = provider.provision(request, context).catch((error: unknown) => error);
+      const second = provider.provision(request, context).catch((error: unknown) => error);
+      let stopped: Promise<void> | undefined;
+      let successor: Promise<unknown> | undefined;
+      const registry = Reflect.get(provider, "computerOperations") as Map<string, unknown>;
+      let slot: unknown;
+      reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+      queueMicrotask(() => {
+        stopped = provider[teardown](ref, context);
+        if (next) {
+          successor = provider.provision(request, context);
+          slot = registry.get(ref.id);
+        }
+      });
+      await expect(first).resolves.toMatchObject({
+        message: "computer connection stopped during teardown",
+      });
+      await expect(second).resolves.toMatchObject({
+        message: "computer connection stopped during teardown",
+      });
+      await stopped;
+      expect(sdk.create).not.toHaveBeenCalled();
+      expect(registry.size).toBe(next ? 1 : 0);
+      if (next) {
+        expect(registry.get(ref.id)).toBe(slot);
+        connect({ sandboxId: "existing" } as Sandbox);
+        await expect(successor).resolves.toMatchObject({ providerRef: "existing", fresh: false });
+        await expect(provider.provision(request, context)).resolves.toMatchObject({
+          providerRef: "existing",
+          fresh: false,
+        });
+      }
+      expect(sdk.connect).toHaveBeenCalledTimes((teardown === "destroy" ? 2 : 1) + (next ? 1 : 0));
+      expect(registry.size).toBe(0);
+    },
+  );
+
+  it.each<["stop" | "destroy", "success" | "gone"]>([
+    ["stop", "success"],
+    ["stop", "gone"],
+    ["destroy", "success"],
+    ["destroy", "gone"],
+  ])(
+    "rejects a joined recovery when explicit %s begins before its %s result",
+    async (teardown, outcome) => {
+      let reject!: (error: unknown) => void;
+      const probe = new Promise<void>((_resolve, fail) => {
+        reject = fail;
+      });
+      const old = { sandboxId: "existing", setTimeout: vi.fn().mockReturnValue(probe) };
+      const current = {
+        sandboxId: "existing",
+        kill: vi.fn().mockResolvedValue(undefined),
+      };
+      let connect!: (desktop: Sandbox) => void;
+      let rejectConnection!: (error: unknown) => void;
+      const connection = new Promise<Sandbox>((resolve, fail) => {
+        connect = resolve;
+        rejectConnection = fail;
+      });
+      let connecting!: () => void;
+      const started = new Promise<void>((resolve) => {
+        connecting = resolve;
+      });
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn(),
+        connect: vi
+          .fn()
+          .mockResolvedValueOnce(old)
+          .mockImplementation(() => {
+            connecting();
+            return connection;
+          }),
+        pause: vi.fn().mockResolvedValue(undefined),
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const request = {
+        botId: "bot",
+        homePath: "/unused",
+        providerRef: "existing",
+        providerKind: "e2b" as const,
+      };
+      const ref = await provider.provision(request, context);
+      vi.mocked(sdk.connect).mockClear();
+      vi.setSystemTime(Date.now() + 61_000);
+      try {
+        const first = provider.provision(request, context).catch((error: unknown) => error);
+        const second = provider
+          .readFile(ref, "saved.bin", context)
+          .catch((error: unknown) => error);
+        reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+        await started;
+        await Promise.resolve();
+        await Promise.resolve();
+        const stopped = provider[teardown](ref, context);
+        if (outcome === "gone") {
+          rejectConnection(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+        } else connect(current as unknown as Sandbox);
+        await stopped;
+        await expect(first).resolves.toMatchObject({
+          message: "computer connection stopped during teardown",
+        });
+        await expect(second).resolves.toMatchObject({
+          message: "computer connection stopped during teardown",
+        });
+        expect(sdk.create).not.toHaveBeenCalled();
+        expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["stop", "destroy"] as const)(
+    "keeps a successor connection when old recovery and %s finish later",
+    async (teardown) => {
+      let finishOld!: (desktop: Sandbox) => void;
+      let finishLookup!: (desktop: Sandbox) => void;
+      let finishCurrent!: (desktop: Sandbox) => void;
+      const old = new Promise<Sandbox>((resolve) => {
+        finishOld = resolve;
+      });
+      const lookup = new Promise<Sandbox>((resolve) => {
+        finishLookup = resolve;
+      });
+      const connection = new Promise<Sandbox>((resolve) => {
+        finishCurrent = resolve;
+      });
+      let finishPause!: () => void;
+      const pause = new Promise<void>((resolve) => {
+        finishPause = resolve;
+      });
+      const read = vi.fn().mockResolvedValue(new Uint8Array([1]));
+      const current = { sandboxId: "existing", files: { read } } as unknown as Sandbox;
+      const kill = vi.fn().mockResolvedValue(undefined);
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn(),
+        connect: vi.fn().mockReturnValueOnce(old),
+        pause: vi.fn().mockReturnValue(pause),
+      };
+      if (teardown === "destroy") vi.mocked(sdk.connect).mockReturnValueOnce(lookup);
+      vi.mocked(sdk.connect).mockReturnValueOnce(connection);
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+      const obsolete = provider
+        .readFile(ref, "saved.bin", context)
+        .catch((error: unknown) => error);
+      const stopped = provider[teardown](ref, context);
+      const successor = provider.readFile(ref, "saved.bin", context);
+      const registry = Reflect.get(provider, "computerOperations") as Map<string, unknown>;
+      const slot = registry.get(ref.id);
+      finishOld({ sandboxId: "existing" } as Sandbox);
+      await expect(obsolete).resolves.toMatchObject({
+        message: "computer connection stopped during teardown",
+      });
+      expect(registry.get(ref.id)).toBe(slot);
+      if (teardown === "destroy")
+        finishLookup({ sandboxId: "existing", kill } as unknown as Sandbox);
+      else finishPause();
+      await stopped;
+      expect(registry.get(ref.id)).toBe(slot);
+      finishCurrent(current);
+      await expect(successor).resolves.toEqual(new Uint8Array([1]));
+      await expect(provider.readFile(ref, "saved.bin", context)).resolves.toEqual(
+        new Uint8Array([1]),
+      );
+      expect(sdk.connect).toHaveBeenCalledTimes(teardown === "destroy" ? 3 : 2);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(sdk.create).not.toHaveBeenCalled();
+      expect(kill).toHaveBeenCalledTimes(teardown === "destroy" ? 1 : 0);
+      expect(registry.size).toBe(0);
+    },
+  );
+
+  it.each(["success", "transport", "gone"])(
+    "does not renew a cold attendance attachment completing with %s after destroy",
+    async (outcome) => {
+      let attach!: (desktop: Sandbox) => void;
+      let reject!: (error: unknown) => void;
+      const attachment = new Promise<Sandbox>((resolve, fail) => {
+        attach = resolve;
+        reject = fail;
+      });
+      const desktop = {
+        sandboxId: "existing",
+        setTimeout: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Sandbox;
+      const kill = vi.fn().mockResolvedValue(undefined);
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn(),
+        connect: vi.fn().mockResolvedValue({ sandboxId: "existing", kill }),
+        pause: vi.fn(),
+        attachRunning: vi.fn().mockReturnValue(attachment),
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+      const attendance = provider.keepAlive(ref, { onlyIfRunning: true });
+      await provider.destroy(ref, context);
+      if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+      else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
+      else attach(desktop);
+      await expect(attendance).resolves.toBeUndefined();
+      expect(desktop.setTimeout).not.toHaveBeenCalled();
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+      expect(sdk.connect).toHaveBeenCalledOnce();
+      expect(kill).toHaveBeenCalledOnce();
+      expect(sdk.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["stop", "destroy"] as const)(
+    "rejects concurrent stale probes after explicit %s instead of joining a new generation",
+    async (teardown) => {
+      let reject!: (error: unknown) => void;
+      const probe = new Promise<void>((_resolve, fail) => {
+        reject = fail;
+      });
+      const old = {
+        sandboxId: "existing",
+        setTimeout: vi.fn().mockReturnValue(probe),
+        pause: vi.fn().mockResolvedValue(undefined),
+        kill: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Sandbox;
+      const sdk: E2BSandboxSdk = {
+        create: vi.fn(),
+        connect: vi.fn().mockResolvedValue(old),
+        pause: vi.fn().mockResolvedValue(undefined),
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const request = {
+        botId: "bot",
+        homePath: "/unused",
+        providerRef: "existing",
+        providerKind: "e2b" as const,
+      };
+      const ref = await provider.provision(request, context);
+      vi.mocked(sdk.connect).mockClear();
+      vi.setSystemTime(Date.now() + 61_000);
+      try {
+        const first = provider.provision(request, context).catch((error: unknown) => error);
+        const second = provider.provision(request, context).catch((error: unknown) => error);
+        expect(old.setTimeout).toHaveBeenCalledTimes(2);
+        await provider[teardown](ref, context);
+        reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+        await expect(first).resolves.toMatchObject({
+          message: "computer connection stopped during teardown",
+        });
+        await expect(second).resolves.toMatchObject({
+          message: "computer connection stopped during teardown",
+        });
+        expect(sdk.connect).not.toHaveBeenCalled();
+        expect(sdk.create).not.toHaveBeenCalled();
+        expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each<[string, string]>([
+    ["gone", "pending"],
+    ["success", "pending"],
+    ["transport", "pending"],
+    ["gone", "cached"],
+    ["success", "cached"],
+    ["transport", "cached"],
+  ])("joins concurrent recovery after stale probe %s with successor %s", async (outcome, state) => {
+    let firstGone!: (error: unknown) => void;
+    const firstProbe = new Promise<void>((_resolve, reject) => {
+      firstGone = reject;
+    });
+    let finish!: () => void;
+    let reject!: (error: unknown) => void;
+    const secondProbe = new Promise<void>((resolve, fail) => {
+      finish = resolve;
+      reject = fail;
+    });
+    const old = {
+      sandboxId: "existing",
+      setTimeout: vi.fn().mockReturnValueOnce(firstProbe).mockReturnValueOnce(secondProbe),
+    } as unknown as Sandbox;
+    const current = { sandboxId: "existing", setTimeout: vi.fn().mockResolvedValue(undefined) };
+    let connect!: (desktop: Sandbox) => void;
+    const connection = new Promise<Sandbox>((resolve) => {
+      connect = resolve;
+    });
+    let connecting!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connecting = resolve;
+    });
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn(),
+      connect: vi
+        .fn()
+        .mockResolvedValueOnce(old)
+        .mockImplementation(() => {
+          connecting();
+          return connection;
+        }),
+      pause: vi.fn(),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const request = {
+      botId: "bot",
+      homePath: "/unused",
+      providerRef: "existing",
+      providerKind: "e2b" as const,
+    };
+    await provider.provision(request, context);
+    vi.mocked(sdk.connect).mockClear();
+    vi.setSystemTime(Date.now() + 61_000);
+    try {
+      const first = provider.provision(request, context).catch((error: unknown) => error);
+      const second = provider.provision(request, context).catch((error: unknown) => error);
+      expect(old.setTimeout).toHaveBeenCalledTimes(2);
+      firstGone(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+      await started;
+      if (state === "cached") {
+        connect(current as unknown as Sandbox);
+        await expect(first).resolves.toMatchObject({ providerRef: "existing", fresh: false });
+      }
+      if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+      else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
+      else finish();
+      if (state === "pending") {
+        await Promise.resolve();
+        await Promise.resolve();
+        connect(current as unknown as Sandbox);
+      }
+      await expect(first).resolves.toMatchObject({ providerRef: "existing", fresh: false });
+      await expect(second).resolves.toMatchObject({ providerRef: "existing", fresh: false });
+      expect(sdk.connect).toHaveBeenCalledOnce();
+      expect(sdk.create).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["pending", "connected"])(
     "does not recover an old Gone after its successor connection is %s",
     async (state) => {

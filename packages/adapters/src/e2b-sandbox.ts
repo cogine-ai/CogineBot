@@ -148,6 +148,7 @@ export class E2BSandboxProvider implements SandboxProvider {
   private readonly boxes = new Map<string, Sandbox>();
   private readonly connections = new Map<string, Promise<Sandbox>>();
   private readonly lastTouchedAt = new Map<string, number>();
+  private readonly computerOperations = new Map<string, { pending: number }>();
 
   constructor(
     private readonly apiKey: string,
@@ -172,51 +173,80 @@ export class E2BSandboxProvider implements SandboxProvider {
 
   private async box(computer: ComputerRef): Promise<Sandbox> {
     const id = computer.providerRef || computer.id;
-    const existing = this.boxes.get(id);
-    if (existing) {
-      const lastTouched = this.lastTouchedAt.get(id) ?? 0;
-      if (Date.now() - lastTouched < 60_000) return existing;
-      // A cached handle to a sandbox E2B already killed keeps throwing on every call, and the
-      // process never reconnects. The keepalive is the cheapest place to notice and drop it.
-      const gone = await existing.setTimeout(sandboxIdleMs()).then(
-        () => false,
-        (error: unknown) => isSandboxGoneError(error),
-      );
-      if (this.boxes.get(id) !== existing) {
+    const operation = this.beginOperation(id);
+    try {
+      for (;;) {
+        const existing = this.boxes.get(id);
+        if (existing) {
+          const lastTouched = this.lastTouchedAt.get(id) ?? 0;
+          if (Date.now() - lastTouched < 60_000) return existing;
+          // A cached handle to a sandbox E2B already killed keeps throwing on every call, and the
+          // process never reconnects. The keepalive is the cheapest place to notice and drop it.
+          const gone = await existing.setTimeout(sandboxIdleMs()).then(
+            () => false,
+            (error: unknown) => isSandboxGoneError(error),
+          );
+          if (this.computerOperations.get(id) !== operation) {
+            throw new Error("computer connection stopped during teardown");
+          }
+          if (this.boxes.get(id) !== existing) continue;
+          if (!gone) {
+            this.lastTouchedAt.set(id, Date.now());
+            return existing;
+          }
+          this.forgetCached(id);
+        }
+        const pending = this.connections.get(id);
+        if (pending) {
+          const connected = await pending;
+          if (this.computerOperations.get(id) !== operation) {
+            throw new Error("computer connection stopped during teardown");
+          }
+          return connected;
+        }
+        let connection!: Promise<Sandbox>;
+        connection = this.sdk
+          .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
+          .then(
+            (connected) => {
+              if (
+                this.computerOperations.get(id) !== operation ||
+                this.connections.get(id) !== connection
+              ) {
+                throw new Error("computer connection stopped during teardown");
+              }
+              this.boxes.set(connected.sandboxId, connected);
+              this.lastTouchedAt.set(connected.sandboxId, Date.now());
+              return connected;
+            },
+            (error: unknown) => {
+              if (
+                this.computerOperations.get(id) !== operation ||
+                this.connections.get(id) !== connection
+              ) {
+                throw new Error("computer connection stopped during teardown");
+              }
+              throw error;
+            },
+          )
+          .finally(() => {
+            if (this.connections.get(id) === connection) this.connections.delete(id);
+          });
+        this.connections.set(id, connection);
+        const connected = await connection;
+        if (this.computerOperations.get(id) !== operation) {
+          throw new Error("computer connection stopped during teardown");
+        }
+        return connected;
+      }
+    } catch (error) {
+      if (this.computerOperations.get(id) !== operation) {
         throw new Error("computer connection stopped during teardown");
       }
-      if (!gone) {
-        this.lastTouchedAt.set(id, Date.now());
-        return existing;
-      }
-      this.forget(id);
+      throw error;
+    } finally {
+      this.endOperation(id, operation);
     }
-    const pending = this.connections.get(id);
-    if (pending) return pending;
-    let connection!: Promise<Sandbox>;
-    connection = this.sdk
-      .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
-      .then(
-        (connected) => {
-          if (this.connections.get(id) !== connection) {
-            throw new Error("computer connection stopped during teardown");
-          }
-          this.boxes.set(connected.sandboxId, connected);
-          this.lastTouchedAt.set(connected.sandboxId, Date.now());
-          return connected;
-        },
-        (error: unknown) => {
-          if (this.connections.get(id) !== connection) {
-            throw new Error("computer connection stopped during teardown");
-          }
-          throw error;
-        },
-      )
-      .finally(() => {
-        if (this.connections.get(id) === connection) this.connections.delete(id);
-      });
-    this.connections.set(id, connection);
-    return connection;
   }
 
   async provision(
@@ -249,7 +279,7 @@ export class E2BSandboxProvider implements SandboxProvider {
         if (this.boxes.has(request.providerRef) || this.connections.has(request.providerRef)) {
           throw new Error("computer connection stopped during teardown");
         }
-        this.forget(request.providerRef);
+        this.forgetCached(request.providerRef);
       }
     }
     const desktop = await this.sdk.create(e2bCreateOptions(request.botId, this.apiKey));
@@ -434,39 +464,46 @@ export class E2BSandboxProvider implements SandboxProvider {
       throw new Error("E2B SDK cannot attach a computer without resuming it");
     }
     const id = computer.providerRef || computer.id;
+    const attendance = options?.onlyIfRunning ? this.beginOperation(id) : undefined;
     const cached = this.boxes.get(id);
     const pending = this.connections.get(id);
     const attendanceIsCurrent = () =>
-      this.boxes.get(id) === cached && this.connections.get(id) === pending;
-    const desktop = options?.onlyIfRunning
-      ? await this.sdk.attachRunning!(id, {
-          apiKey: this.apiKey,
-          signal: AbortSignal.timeout(15_000),
-        }).catch((error: unknown) => {
-          if (!attendanceIsCurrent()) return undefined;
-          throw error;
-        })
-      : await this.box(computer);
-    if (!desktop || (options?.onlyIfRunning && !attendanceIsCurrent())) return;
-    let gone = false;
+      this.computerOperations.get(id) === attendance &&
+      this.boxes.get(id) === cached &&
+      this.connections.get(id) === pending;
     try {
-      await desktop.setTimeout(sandboxIdleMs());
-    } catch (error) {
-      gone = isSandboxGoneError(error);
+      const desktop = options?.onlyIfRunning
+        ? await this.sdk.attachRunning!(id, {
+            apiKey: this.apiKey,
+            signal: AbortSignal.timeout(15_000),
+          }).catch((error: unknown) => {
+            if (!attendanceIsCurrent()) return undefined;
+            throw error;
+          })
+        : await this.box(computer);
+      if (!desktop || (options?.onlyIfRunning && !attendanceIsCurrent())) return;
+      let gone = false;
+      try {
+        await desktop.setTimeout(sandboxIdleMs());
+      } catch (error) {
+        gone = isSandboxGoneError(error);
+      }
+      if (
+        options?.onlyIfRunning
+          ? !attendanceIsCurrent()
+          : this.boxes.get(desktop.sandboxId) !== desktop
+      )
+        return;
+      // Heartbeats refresh lastTouchedAt; if we swallow a gone error here, box() never
+      // reaches its 60s probe and keeps handing back the dead cached handle.
+      if (gone) {
+        this.forgetCached(desktop.sandboxId);
+        return;
+      }
+      this.lastTouchedAt.set(desktop.sandboxId, Date.now());
+    } finally {
+      if (attendance) this.endOperation(id, attendance);
     }
-    if (
-      options?.onlyIfRunning
-        ? !attendanceIsCurrent()
-        : this.boxes.get(desktop.sandboxId) !== desktop
-    )
-      return;
-    // Heartbeats refresh lastTouchedAt; if we swallow a gone error here, box() never
-    // reaches its 60s probe and keeps handing back the dead cached handle.
-    if (gone) {
-      this.forget(desktop.sandboxId);
-      return;
-    }
-    this.lastTouchedAt.set(desktop.sandboxId, Date.now());
   }
 
   async releaseScreen(
@@ -516,16 +553,41 @@ export class E2BSandboxProvider implements SandboxProvider {
 
   async destroy(computer: ComputerRef, _context: AdapterContext): Promise<void> {
     const id = computer.providerRef || computer.id;
-    const desktop = this.boxes.get(id) ?? (await this.box(computer).catch(() => undefined));
+    const cached = this.boxes.get(id);
     this.forget(id);
+    const desktop =
+      cached ??
+      (await this.sdk
+        .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
+        .catch(() => undefined));
     // The SDK returns false when the sandbox is already gone; teardown is complete.
     await desktop?.kill();
   }
 
-  private forget(id: string): void {
+  private beginOperation(id: string): { pending: number } {
+    const operation = this.computerOperations.get(id) ?? { pending: 0 };
+    operation.pending += 1;
+    this.computerOperations.set(id, operation);
+    return operation;
+  }
+
+  private endOperation(id: string, operation: { pending: number }): void {
+    operation.pending -= 1;
+    if (operation.pending === 0 && this.computerOperations.get(id) === operation) {
+      this.computerOperations.delete(id);
+    }
+  }
+
+  private forgetCached(id: string): void {
+    // Resource loss permits sibling recovery; explicit teardown invalidates their operation slot.
     this.boxes.delete(id);
-    this.connections.delete(id);
     this.lastTouchedAt.delete(id);
+  }
+
+  private forget(id: string): void {
+    this.computerOperations.delete(id);
+    this.connections.delete(id);
+    this.forgetCached(id);
   }
 
   /** Apply the deployment timeout (SDK default is 60s) and return failed results instead of throwing. */
