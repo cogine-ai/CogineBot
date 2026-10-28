@@ -5554,6 +5554,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               userId: run.userId,
               ...(thread.groupId ? { threadId: thread.id } : {}),
               tools,
+              skillsQuery: args.skillsQuery,
+              skillsOffset: args.skillsOffset,
+              skillsLimit: args.skillsLimit,
             });
           }
           if (name === "scratchpad_list") {
@@ -5707,8 +5710,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 userId: run.userId,
               },
               {
-                name: args.name ? String(args.name) : undefined,
-                skillId: args.skillId ? String(args.skillId) : undefined,
+                name: args.name,
+                skillId: args.skillId,
               },
             );
           }
@@ -6700,7 +6703,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   "\n",
                 )}\nWhen the user asks to run a taught skill by name, follow that skill's playbook exactly. The full playbook is included in the user task when they invoke it.`
             : undefined;
-        const agentSkillsLine = formatSkillsCatalogInstruction(agentSkills);
+        const agentSkillsLine = formatSkillsCatalogInstruction(agentSkills, {
+          catalogAvailable: Boolean(taskCatalogInstruction),
+        });
         const missingImagesInstruction = missingTurnImagesInstruction(
           turnBlocks,
           currentTurnImages,

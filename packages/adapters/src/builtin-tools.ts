@@ -738,7 +738,27 @@ export const builtinAgentTools: ConnectorTool[] = [
     name: "task_catalog",
     description:
       "Read-only inventory and source of truth for this bot's real open tasks, saved routines, taught skills, reusable skills, and currently exposed tools. Call it before claiming a task or skill exists. Use the returned ids and exact names; do not infer capabilities from memory or conversation text.",
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: {
+      type: "object",
+      properties: {
+        skillsQuery: {
+          type: "string",
+          description: "Optional case-insensitive skill name or description substring.",
+        },
+        skillsOffset: {
+          type: "integer",
+          minimum: 0,
+          description: "Skills page offset from skillsPage.nextOffset.",
+        },
+        skillsLimit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          default: 50,
+          description: "Maximum skills to return; defaults to 50.",
+        },
+      },
+    },
     readOnly: true,
   },
   {
@@ -930,13 +950,13 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "skill_read",
     description:
-      "Load a Claude Agent Skill (SKILL.md recipe) by exact name. Call this when a catalog skill matches the user's request, then follow it immediately.",
+      "Load a Claude Agent Skill (SKILL.md recipe) by exact skillId or a unique exact name. Use skillId when names are ambiguous. Follow the loaded recipe when it matches the user's request.",
     inputSchema: {
       type: "object",
       properties: {
+        skillId: { type: "string", description: "Exact skill id; preferred for ambiguous names." },
         name: { type: "string", description: "Exact skill name from the catalog." },
       },
-      required: ["name"],
     },
   },
   {

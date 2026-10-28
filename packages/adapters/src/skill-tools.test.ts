@@ -311,6 +311,83 @@ describe("skill tools", () => {
     expect(created).toMatchObject({ error: expect.stringContaining("at most") });
   });
 
+  it("requires an exact id when visible skill names differ only in case or whitespace", async () => {
+    prisma = makePrisma([
+      {
+        id: "one",
+        ...owner,
+        name: "Review",
+        description: "First recipe",
+        content: "first",
+        source: "user",
+      },
+      {
+        id: "two",
+        ...owner,
+        name: " review ",
+        description: "Second recipe",
+        content: "second",
+        source: "plugin",
+      },
+      {
+        id: "foreign",
+        spaceId: "other-space",
+        userId: owner.userId,
+        name: "Review",
+        description: "Private",
+        content: "private",
+        source: "user",
+      },
+    ]);
+
+    expect(await skillReadFromTool(prisma as never, owner, { name: " REVIEW " })).toEqual({
+      error: "Multiple skills match this name. Use an exact skillId.",
+    });
+    expect(await skillReadFromTool(prisma as never, owner, { skillId: "two" })).toEqual({
+      name: " review ",
+      description: "Second recipe",
+      content: "second",
+      source: "plugin",
+      readOnly: true,
+    });
+  });
+
+  it("rechecks exact-id ownership and never falls back to a supplied name", async () => {
+    prisma = makePrisma([
+      {
+        id: "one",
+        ...owner,
+        name: "Review",
+        description: "Owned",
+        content: "unchanged\r\nbody\n",
+        source: "user",
+      },
+      {
+        id: "foreign",
+        spaceId: owner.spaceId,
+        userId: "other-user",
+        name: " review ",
+        description: "Private",
+        content: "private",
+        source: "user",
+      },
+    ]);
+    expect(await skillReadFromTool(prisma as never, owner, { name: "review" })).toMatchObject({
+      content: "unchanged\r\nbody\n",
+    });
+    expect(
+      await skillReadFromTool(prisma as never, owner, { skillId: "foreign", name: "Review" }),
+    ).toEqual({ error: "Skill not found." });
+    prisma._store[0]!.userId = "other-user";
+    expect(
+      await skillReadFromTool(prisma as never, owner, { skillId: "one", name: "Review" }),
+    ).toEqual({ error: "Skill not found." });
+    expect(prisma.agentSkill.findMany).toHaveBeenLastCalledWith({
+      where: owner,
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+    });
+  });
+
   it("rejects overlong skill names on structured create and rename", async () => {
     const longName = "N".repeat(81);
     expect(
