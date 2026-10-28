@@ -2,6 +2,35 @@ import { describe, expect, it } from "vitest";
 import { oauthCallbackFrom } from "./oauth-callback.js";
 
 describe("loopback OAuth callbacks", () => {
+  it("preserves complete registration callbacks and state-bound authorization errors", () => {
+    const result =
+      "http://127.0.0.1:1455/auth/callback?code=x&state=s&client_id=oaiapp_example&scope=openid";
+    expect(oauthCallbackFrom(result, { includeUrl: true })).toEqual({
+      code: "x",
+      state: "s",
+      callbackUrl: result,
+    });
+    const denied = "http://127.0.0.1:1455/auth/callback?error=access_denied&state=s";
+    expect(oauthCallbackFrom(denied, { includeUrl: true })).toEqual({
+      state: "s",
+      callbackUrl: denied,
+    });
+    expect(oauthCallbackFrom(denied)).toBeUndefined();
+  });
+
+  it.each([
+    "code=x&state=s&client_id=first&client_id=second",
+    "code=x&state=s&scope=openid&scope=profile",
+    "code=x&state=s&access_token=secret",
+    "code=x&state=s&id_token=secret",
+    "code=x&state=s&refresh_token=secret",
+    "code=x&state=s&error=access_denied",
+    "error=access_denied",
+  ])("does not forward ambiguous or credential-bearing callbacks: %s", (query) => {
+    expect(
+      oauthCallbackFrom(`http://127.0.0.1:1455/auth/callback?${query}`, { includeUrl: true }),
+    ).toBeUndefined();
+  });
   it("reads the code and state Anthropic redirects with", () => {
     expect(
       oauthCallbackFrom("http://localhost:53692/callback?code=ac_123&state=verifier_456"),

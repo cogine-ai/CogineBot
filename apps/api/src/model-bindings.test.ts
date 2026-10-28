@@ -1,7 +1,7 @@
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { serializeModelSecret } from "@rakazo/adapters";
-import type { PrismaClient } from "@rakazo/db";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertConnectionRevision,
@@ -27,6 +27,7 @@ function fixture() {
     preferences: [{ modelId: "default", isDefault: true, thinkingLevel: null }],
   };
   const findFirst = vi.fn().mockResolvedValue(credential);
+  const queryRaw = vi.fn().mockResolvedValue([{ id: credential.id }]);
   const secret = vi.fn().mockResolvedValue({ id: "secret", ciphertext: "encrypted" });
   const load = vi.fn().mockResolvedValue(
     serializeModelSecret({
@@ -38,9 +39,11 @@ function fixture() {
   return {
     credential,
     findFirst,
+    queryRaw,
     secret,
     load,
     prisma: {
+      $queryRaw: queryRaw,
       userModelCredential: { findFirst },
       secret: { findFirst: secret },
     } as unknown as PrismaClient,
@@ -49,6 +52,69 @@ function fixture() {
 }
 
 describe("transactional explicit model binding", () => {
+  function planFixture() {
+    const f = fixture();
+    f.credential.provider = "chatgpt-plan";
+    f.load.mockResolvedValue(
+      serializeModelSecret({
+        kind: "oauth",
+        credential: {
+          type: "oauth",
+          access: "fake-access",
+          refresh: "fake-refresh",
+          expires: Date.now() + 60_000,
+          clientId: "oaiapp_fixture",
+          issuer: "https://auth.openai.com",
+          subject: "fixture-subject",
+          hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
+          idToken: "fake-id-token",
+          scopes: ["chatgpt.tokens.use.direct"],
+          chatgptPlanModels: [{ id: "second", name: "Second model" }],
+        },
+      }),
+    );
+    return { ...f, binding: { ...binding, modelProvider: "chatgpt-plan" } };
+  }
+
+  it("locks an owned ChatGPT connection before validating its revision and discovered model", async () => {
+    const f = planFixture();
+    await expect(
+      validateModelBinding(f.prisma, f.secrets, actor, f.binding),
+    ).resolves.toMatchObject({
+      modelId: "second",
+      credential: { id: "connection" },
+    });
+    const query = f.queryRaw.mock.calls[0]![0] as Prisma.Sql;
+    expect(query.sql).toContain("FROM user_model_credentials");
+    expect(query.sql).toContain("FOR SHARE");
+    expect(query.values).toEqual(["connection", "owner", "chatgpt-plan"]);
+    expect(f.queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      f.findFirst.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("refuses a ChatGPT connection deleted while its binding waited for the removal lock", async () => {
+    const f = planFixture();
+    f.queryRaw.mockResolvedValue([]);
+    await expect(validateModelBinding(f.prisma, f.secrets, actor, f.binding)).rejects.toMatchObject(
+      {
+        code: "NOT_FOUND",
+      },
+    );
+    expect(f.findFirst).not.toHaveBeenCalled();
+    expect(f.load).not.toHaveBeenCalled();
+  });
+
+  it("preserves a stale Serializable snapshot failure before reading ChatGPT secrets", async () => {
+    const f = planFixture();
+    const conflict = new Error("serialization conflict");
+    f.queryRaw.mockRejectedValue(conflict);
+    await expect(validateModelBinding(f.prisma, f.secrets, actor, f.binding)).rejects.toBe(
+      conflict,
+    );
+    expect(f.findFirst).not.toHaveBeenCalled();
+    expect(f.load).not.toHaveBeenCalled();
+  });
   it("accepts a clear without choosing or reading a connection", async () => {
     const f = fixture();
     await expect(

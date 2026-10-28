@@ -99,6 +99,14 @@ describe("window chrome", () => {
 });
 
 describe("captured OAuth callbacks", () => {
+  it("keeps dynamically issued registration IDs and authorization errors intact", () => {
+    const callbackUrl =
+      "http://127.0.0.1:1455/auth/callback?code=x&state=s&client_id=oaiapp_example";
+    expect(desktopOAuthCode({ code: "x", state: "s", callbackUrl })).toBe(callbackUrl);
+    const denied = "http://127.0.0.1:1455/auth/callback?error=access_denied&state=s";
+    expect(desktopOAuthCode({ state: "s", callbackUrl: denied })).toBe(denied);
+    expect(desktopOAuthCode({ state: "s" })).toBeUndefined();
+  });
   it("sends the code and state as the compact form the paste flow accepts", () => {
     expect(desktopOAuthCode({ code: "ac_123", state: "verifier_456" })).toBe("ac_123#verifier_456");
   });

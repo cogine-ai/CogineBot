@@ -3,6 +3,12 @@ import { rpc } from "./api";
 
 export { cancelModelOAuthAttempt, finishModelOAuthAttempt } from "@rakazo/core";
 
+export function modelOAuthUnavailableReason(provider: string): string | undefined {
+  return provider === "chatgpt-plan"
+    ? "Connect your ChatGPT plan from the local desktop app or a browser on the server computer."
+    : undefined;
+}
+
 type CompleteOAuthResult =
   | { status: "pending" }
   | { status: "ready" }

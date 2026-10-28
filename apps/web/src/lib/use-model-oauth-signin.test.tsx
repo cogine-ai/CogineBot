@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { ModelOAuthBegin, RakazoDesktop, RakazoDesktopOAuthCallback } from "@rakazo/contracts";
 import { LOCAL_SETTINGS_PAGE, LOCAL_SETTINGS_RPC } from "@rakazo/contracts";
 import type { ReactNode } from "react";
 import { act, useLayoutEffect } from "react";
@@ -31,7 +32,13 @@ afterEach(() => {
   window.history.replaceState({}, "", "/");
 });
 async function fixture(
-  options: { held?: boolean; bound?: boolean; selected?: string | null; local?: boolean } = {},
+  options: {
+    held?: boolean;
+    bound?: boolean;
+    selected?: string | null;
+    local?: boolean;
+    login?: ModelOAuthBegin;
+  } = {},
 ) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   if (options.selected !== null)
@@ -57,7 +64,7 @@ async function fixture(
   ) {
     calls.push({ path, space, input, signal });
     if (path.endsWith("cancelOAuth") && failCancel) throw new Error("Cancel failed");
-    if (path.endsWith("beginOAuth")) return hold ? await pending.promise : login;
+    if (path.endsWith("beginOAuth")) return hold ? await pending.promise : (options.login ?? login);
     if (path.endsWith("completeOAuth")) return { status: "ready" };
     if (path.endsWith("finishOAuth"))
       return { id: "credential-b", provider: "subscription", connectionRevision: 1 };
@@ -283,6 +290,103 @@ it("does not let a late cancelled begin unlock or clear a newer attempt", async 
     ]);
     expect(h.finished).not.toHaveBeenCalled();
     expect(h.errors).not.toHaveBeenCalled();
+  } finally {
+    await h.close();
+  }
+});
+
+const planLogin = {
+  provider: "chatgpt-plan",
+  loginId: "plan-login",
+  mode: "auth-url" as const,
+  verificationUri:
+    "https://auth.openai.com/api/accounts/authorize?state=attempt-state&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback",
+  expiresInSeconds: 600,
+};
+
+it("polls the backend loopback listener using its captured Space without a pasted code", async () => {
+  const h = await fixture({ login: { ...planLogin, callbackTransport: "loopback" } });
+  try {
+    await act(async () =>
+      h.hook.startSubscriptionSignIn({ provider: "chatgpt-plan", registrationId: "saved-1" }),
+    );
+    expect(h.calls[0]).toMatchObject({
+      space: "space-b",
+      input: {
+        provider: "chatgpt-plan",
+        callbackTransport: "loopback",
+        registrationId: "saved-1",
+      },
+    });
+    expect(h.calls.map((call) => [call.path, call.space])).toEqual(
+      ["beginOAuth", "completeOAuth", "finishOAuth"].map((path) => [
+        `/rpc/models/${path}`,
+        "space-b",
+      ]),
+    );
+    expect(window.open).toHaveBeenCalledWith(
+      planLogin.verificationUri,
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(h.finished).toHaveBeenCalledOnce();
+    expect(h.hook.oauthPending).toBe(false);
+  } finally {
+    await h.close();
+  }
+});
+
+it("submits the complete state-correlated desktop callback on its captured Space", async () => {
+  const h = await fixture({ login: { ...planLogin, callbackTransport: "desktop" } });
+  let emit: (value: RakazoDesktopOAuthCallback) => void = () => undefined;
+  const open = vi.fn(async () => undefined);
+  const cancel = vi.fn(async () => undefined);
+  window.rakazoDesktop = {
+    oauth: {
+      fullCallback: true,
+      open,
+      cancel,
+      onCallback: (listener: (value: RakazoDesktopOAuthCallback) => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+    },
+  } as unknown as RakazoDesktop;
+  try {
+    await act(async () =>
+      h.hook.startSubscriptionSignIn({ provider: "chatgpt-plan", newRegistration: true }),
+    );
+    expect(h.calls[0]).toMatchObject({
+      input: { callbackTransport: "desktop", newRegistration: true },
+    });
+    expect(open).toHaveBeenCalledWith(planLogin.verificationUri);
+    expect(window.open).not.toHaveBeenCalled();
+    const callbackUrl =
+      "http://127.0.0.1:1455/auth/callback?code=c&state=attempt-state&client_id=oaiapp_example";
+    await act(async () => emit({ code: "c", state: "wrong-state", callbackUrl }));
+    expect(h.calls.some((call) => call.path.endsWith("submitOAuthCode"))).toBe(false);
+    await act(async () => emit({ code: "c", state: "attempt-state", callbackUrl }));
+    expect(h.calls.find((call) => call.path.endsWith("submitOAuthCode"))).toMatchObject({
+      space: "space-b",
+      input: { loginId: "plan-login", code: callbackUrl },
+    });
+    expect(h.finished).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledWith(planLogin.verificationUri);
+  } finally {
+    await h.close();
+  }
+});
+
+it("reports an older desktop before beginning a dynamic registration", async () => {
+  const h = await fixture();
+  window.rakazoDesktop = {
+    oauth: { onCallback: () => () => undefined },
+  } as unknown as RakazoDesktop;
+  try {
+    await act(async () => h.hook.startSubscriptionSignIn({ provider: "chatgpt-plan" }));
+    expect(h.calls).toEqual([]);
+    expect(h.errors).toHaveBeenCalledWith("Update the desktop app to connect a ChatGPT plan.");
+    expect(h.hook.oauthPending).toBe(false);
   } finally {
     await h.close();
   }

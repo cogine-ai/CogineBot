@@ -21,6 +21,8 @@ export type ModelOAuthSignInBegin = {
   modelId?: string;
   thinkingLevel?: ThinkingLevel | null;
   label?: string;
+  registrationId?: string;
+  newRegistration?: boolean;
 };
 
 /**
@@ -186,12 +188,30 @@ export function useModelOAuthSignIn(options: {
     oauthRequestRef.current = request;
     let waitingForCode = false;
     try {
+      const browserAuth = desktopBridge()?.oauth;
+      if (
+        begin.provider === "chatgpt-plan" &&
+        desktopBridge() &&
+        (!browserAuth?.fullCallback || !browserAuth.open)
+      ) {
+        throw new Error("Update the desktop app to connect a ChatGPT plan.");
+      }
       const started = await request.client.models.beginOAuth(
         {
           provider: begin.provider,
           modelId: begin.modelId,
           thinkingLevel: begin.thinkingLevel,
           label: begin.label,
+          ...(begin.provider === "chatgpt-plan"
+            ? {
+                callbackTransport:
+                  browserAuth?.fullCallback && browserAuth.open
+                    ? ("desktop" as const)
+                    : ("loopback" as const),
+                registrationId: begin.registrationId,
+                newRegistration: begin.newRegistration,
+              }
+            : {}),
         },
         { signal: controller.signal },
       );
@@ -202,7 +222,7 @@ export function useModelOAuthSignIn(options: {
       }
       setPasteCode("");
       setOauth(started);
-      if (started.mode === "auth-url") {
+      if (started.mode === "auth-url" && started.callbackTransport !== "loopback") {
         // Subscribe before the popup exists: a provider that is already
         // authorized can redirect before React commits the state above.
         releaseOAuthCapture();
@@ -211,8 +231,10 @@ export function useModelOAuthSignIn(options: {
           oauthStateOf(started.verificationUri),
         );
       }
-      const browserAuth = desktopBridge()?.oauth;
-      if (browserAuth?.open) {
+      if (
+        browserAuth?.open &&
+        !(started.mode === "auth-url" && started.callbackTransport === "loopback")
+      ) {
         const cancelBrowser = () =>
           void browserAuth.cancel?.(started.verificationUri).catch(() => undefined);
         controller.signal.addEventListener("abort", cancelBrowser, { once: true });
@@ -231,7 +253,7 @@ export function useModelOAuthSignIn(options: {
           setPopupBlocked(true);
         }
       }
-      waitingForCode = started.mode === "auth-url";
+      waitingForCode = started.mode === "auth-url" && started.callbackTransport !== "loopback";
       if (!waitingForCode) await finishSubscriptionSignIn(started.loginId, request);
     } catch (err) {
       if (!request.isCurrent()) return;

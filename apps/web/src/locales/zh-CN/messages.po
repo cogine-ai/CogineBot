@@ -465,6 +465,7 @@ msgstr "请填写服务器名称。"
 msgid "Add a stdio command."
 msgstr "请填写 stdio 命令。"
 
+#: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Add account"
 msgstr "添加账号"
@@ -2767,8 +2768,8 @@ msgstr "正在查找…"
 #. placeholder {0}: new URL(oauth.verificationUri).hostname
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-msgid "Finish signing in at <0>{0}</0>. The final page may not load; paste its URL or code here."
-msgstr "在 <0>{0}</0> 完成登录。最后一页可能无法加载；把 URL 或代码粘贴到这里。"
+msgid "Finish signing in at <0>{0}</0>."
+msgstr "在 <0>{0}</0> 完成登录。"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Finish subscription sign-in, then test again."
@@ -6302,3 +6303,30 @@ msgstr "{provider}响应超时。请重试。"
 
 msgid "{summary} Resets {date}."
 msgstr "{summary} 将于{date}重置。"
+
+#: src/components/RunErrorDetails.tsx
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Manage usage"
+msgstr "管理用量"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "ChatGPT account"
+msgstr "ChatGPT 账号"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Could not load ChatGPT accounts"
+msgstr "无法加载 ChatGPT 账号"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings."
+msgstr "已在本地断开连接。尚未确认远程授权撤销；请在 ChatGPT 设置中断开此应用。"
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "Your ChatGPT plan usage limit was reached. Review your usage settings."
+msgstr "已达到 ChatGPT 套餐用量上限。请查看用量设置。"
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
+msgstr "ChatGPT 套餐用量暂不可用。请查看用量设置或重新连接 ChatGPT。"

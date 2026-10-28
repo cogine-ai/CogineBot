@@ -1,5 +1,9 @@
 import type { Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import {
+  CHATGPT_PLAN_CATALOG_MODEL_ID,
+  CHATGPT_PLAN_PROVIDER_ID,
+} from "./chatgpt-plan-provider.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
@@ -82,13 +86,18 @@ export function resolveModelRefForVisionCheck(
  * declared `input` modalities. Unknown models are treated as text-only.
  * The `scripted` placeholder is resolved the same way Pi does (env default /
  * GPT-5.6 Luna fallback) before the catalog check. An explicit connection capability
- * override is honored for OpenAI-compatible models.
+ * override is honored for OpenAI-compatible models and authenticated ChatGPT catalogs.
  */
 export function modelAcceptsImageInput(
   provider: string,
   modelId: string,
   acceptsImages = false,
 ): boolean {
+  if (provider.trim() === CHATGPT_PLAN_PROVIDER_ID) {
+    return Boolean(
+      acceptsImages && modelId.trim() && modelId.trim() !== CHATGPT_PLAN_CATALOG_MODEL_ID,
+    );
+  }
   const resolved = resolveModelRefForVisionCheck(provider, modelId);
   if (!resolved.provider || !resolved.id) return false;
   if (acceptsImages && resolved.provider === OPENAI_COMPATIBLE_PROVIDER_ID) return true;

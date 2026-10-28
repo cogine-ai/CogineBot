@@ -1,4 +1,13 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Manage usage": "Управление использованием",
+  "Your ChatGPT plan usage limit was reached. Review your usage settings.":
+    "Достигнут лимит использования вашего плана ChatGPT. Проверьте настройки использования.",
+  "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.":
+    "Использование плана ChatGPT недоступно. Проверьте настройки использования или подключите ChatGPT заново.",
+  "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings.":
+    "Локальное подключение отключено. Отзыв доступа на сервере не подтверждён; отключите приложение в настройках ChatGPT.",
+  "Connect your ChatGPT plan from the local desktop app or a browser on the server computer.":
+    "Подключите план ChatGPT из локального приложения или браузера на компьютере сервера.",
   "Adding…": "Добавление…",
   "Import OpenAPI": "Импорт OpenAPI",
   Ready: "Готово",

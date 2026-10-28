@@ -9,6 +9,8 @@ import {
   findModelCredential,
   type PrismaClient,
 } from "@rakazo/db";
+import { readChatGPTPlanCredential } from "./chatgpt-plan-auth.js";
+import { CHATGPT_PLAN_PROVIDER_ID, readChatGPTPlanModels } from "./chatgpt-plan-provider.js";
 import { modelCredentialDto } from "./model-connect.js";
 import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
 import {
@@ -22,12 +24,13 @@ import type { CodexLiveCatalog, CodexLiveReadOptions } from "./pi-codex-catalog.
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
-import { parseModelSecret } from "./pi-oauth.js";
+import { CHATGPT_OAUTH_PROVIDER, parseModelSecret } from "./pi-oauth.js";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "./pi-openai-compatible-provider.js";
 
 type ModelCredential = Awaited<ReturnType<typeof findDefaultModelCredential>>;
 
 export function isCatalogModelChoice(provider: string, modelId: string) {
+  if (provider === CHATGPT_PLAN_PROVIDER_ID) return false;
   return [...listPiCatalog(), scriptedCatalogEntry].some(
     (item) => item.provider === provider && item.id === modelId,
   );
@@ -37,6 +40,11 @@ export function defaultCatalogModelId(
   provider: string,
   credentialPlaintext?: string,
 ): string | null {
+  if (provider === CHATGPT_PLAN_PROVIDER_ID) {
+    return credentialPlaintext
+      ? (chatGPTModelsFromPlaintext(credentialPlaintext)[0]?.id ?? null)
+      : null;
+  }
   const authKind = credentialPlaintext
     ? modelCredentialAuthKindFromPlaintext(credentialPlaintext)
     : "disconnected";
@@ -51,6 +59,13 @@ export class UnavailableModelForAuthError extends Error {
     super(message);
     this.name = "UnavailableModelForAuthError";
   }
+}
+
+function chatGPTModelsFromPlaintext(plaintext: string) {
+  const secret = parseModelSecret(plaintext);
+  const credential =
+    secret.kind === "oauth" ? readChatGPTPlanCredential(secret.credential) : undefined;
+  return credential ? readChatGPTPlanModels(credential) : [];
 }
 
 export type SpaceCatalogAuth = {
@@ -206,6 +221,12 @@ export function validateModelAuthAvailability(
   modelId: string,
   credentialPlaintext?: string,
 ): string | undefined {
+  if (provider === CHATGPT_PLAN_PROVIDER_ID) {
+    return credentialPlaintext &&
+      chatGPTModelsFromPlaintext(credentialPlaintext).some((entry) => entry.id === modelId)
+      ? undefined
+      : UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE;
+  }
   if (!credentialPlaintext) return undefined;
   const authKind = modelCredentialAuthKindFromPlaintext(credentialPlaintext);
   const catalogEntry = listPiCatalog().find(
@@ -218,6 +239,7 @@ export function validateModelAuthAvailability(
 }
 
 function modelAuthIsRestricted(provider: string, modelId: string): boolean {
+  if (provider === CHATGPT_PLAN_PROVIDER_ID) return true;
   const entry = listPiCatalog().find((item) => item.provider === provider && item.id === modelId);
   if (!entry) return false;
   return (["oauth", "api_key", "openai_compatible", "disconnected"] as const).some(
@@ -305,6 +327,7 @@ export async function prepareStoredModelAuth(
   // validateModelAuthAvailability already parsed the secret without throwing.
   if (
     message &&
+    provider === CHATGPT_OAUTH_PROVIDER &&
     (await codexLiveListsModel(live, userId, parseModelSecret(plaintext), modelId, liveOpts))
   ) {
     return { ref: secret.ciphertext, auth: { status: "ready" } };
@@ -419,13 +442,17 @@ export async function listHelperModelConnections(
     const parsed = parsedById.get(row.secretId);
     if (!parsed) return [];
     const modelIds =
-      row.provider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? parsed.kind === "openai_compatible"
-          ? enabledOpenAiCompatibleModelIds(parsed, row.preferences[0]?.modelId)
+      row.provider === CHATGPT_PLAN_PROVIDER_ID
+        ? parsed.kind === "oauth" && readChatGPTPlanCredential(parsed.credential)
+          ? readChatGPTPlanModels(parsed.credential).map((entry) => entry.id)
           : []
-        : listAvailablePiCatalog({ [row.provider]: modelCredentialAuthKind(parsed) })
-            .filter((entry) => entry.provider === row.provider)
-            .map((entry) => entry.id);
+        : row.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+          ? parsed.kind === "openai_compatible"
+            ? enabledOpenAiCompatibleModelIds(parsed, row.preferences[0]?.modelId)
+            : []
+          : listAvailablePiCatalog({ [row.provider]: modelCredentialAuthKind(parsed) })
+              .filter((entry) => entry.provider === row.provider)
+              .map((entry) => entry.id);
     if (modelIds.length === 0) return [];
     return [
       {
@@ -514,6 +541,21 @@ export async function validateConnectedModelChoice(
   );
   if (!credential) return "Connect that model provider first";
   if (!usableModelId(modelId)) return "Unknown model for that provider";
+  if (provider === CHATGPT_PLAN_PROVIDER_ID) {
+    const auth = await readStoredModelAuth(
+      prisma,
+      secretStore,
+      actor.userId,
+      credential.secretId,
+      provider,
+      modelId,
+    );
+    return auth.status === "ready"
+      ? undefined
+      : auth.status === "rejected"
+        ? auth.message
+        : "Connect that model provider first";
+  }
   if (provider !== OPENAI_COMPATIBLE_PROVIDER_ID) {
     return isCatalogModelChoice(provider, modelId) ? undefined : "Unknown model for that provider";
   }
@@ -613,7 +655,11 @@ export function pinnedModelCredentialError(
   if (!choice.modelProvider || !usableModelId(choice.modelId)) return undefined;
   if (!credential || !choice.modelCredentialId || credential.id !== choice.modelCredentialId)
     return "Connect that model provider first";
-  if (choice.modelProvider === OPENAI_COMPATIBLE_PROVIDER_ID) return undefined;
+  if (
+    choice.modelProvider === OPENAI_COMPATIBLE_PROVIDER_ID ||
+    choice.modelProvider === CHATGPT_PLAN_PROVIDER_ID
+  )
+    return undefined;
   const modelId = usableModelId(choice.modelId);
   if (
     modelId &&

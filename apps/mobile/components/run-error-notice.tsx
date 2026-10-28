@@ -1,7 +1,7 @@
-import { normalizeRunError } from "@rakazo/core";
+import { CHATGPT_USAGE_SETTINGS_URL, normalizeRunError } from "@rakazo/core";
 import { useState } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
-import { Text, View } from "react-native";
+import { Linking, Text, View } from "react-native";
 import { useI18n } from "../lib/i18n";
 import { useMobileTokens } from "../lib/native";
 import { NativeActionButton } from "./native-action-button";
@@ -17,6 +17,13 @@ export function RunErrorNotice({ error, style }: { error: string; style?: StyleP
       <Text accessibilityRole="alert" style={{ color: tokens.destructive, fontSize: 14 }}>
         {normalized.summary}
       </Text>
+      {normalized.action === "chatgpt-usage" ? (
+        <NativeActionButton
+          label={t("Manage usage")}
+          fill={false}
+          onPress={() => void Linking.openURL(CHATGPT_USAGE_SETTINGS_URL)}
+        />
+      ) : null}
       <NativeActionButton
         label={t("Details")}
         fill={false}

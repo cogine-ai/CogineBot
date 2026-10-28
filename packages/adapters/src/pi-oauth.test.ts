@@ -2,6 +2,7 @@ import type { Credential, OAuthCredential } from "@earendil-works/pi-ai";
 import type { ModelCredentialFailedState, ModelCredentialRetireReason } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PiOAuthBegin } from "./pi-oauth.js";
 import {
   CHATGPT_OAUTH_PROVIDER,
   COPILOT_OAUTH_PROVIDER,
@@ -10,7 +11,6 @@ import {
   matchesFailedOAuthSecret,
   OAUTH_ACCOUNT_CHANGED_ERROR,
   oauthCredentialAccountId,
-  type PiOAuthBegin,
   PiOAuthLogins,
   parseModelSecret,
   RetiredModelCredentialError,
@@ -135,6 +135,52 @@ describe("model secrets", () => {
     expect(secretValuesToRedact(parsed)).toEqual(["access-token", "refresh-token"]);
   });
 
+  it.each([
+    { clientId: "another-provider-client" },
+    { hostId: "another-provider-host" },
+    { clientId: "another-provider-client", hostId: "another-provider-host" },
+  ])("preserves unrelated OAuth provider fields in bare and wrapped storage: %j", (fields) => {
+    const credential = oauthCred({ ...fields, issuer: "https://provider.example.test" });
+    expect(parseModelSecret(JSON.stringify(credential))).toEqual({ kind: "oauth", credential });
+    const wrapped = { kind: "oauth" as const, credential, maxTokens: 1024 };
+    expect(parseModelSecret(serializeModelSecret(wrapped))).toEqual(wrapped);
+  });
+
+  it.each([null, [], {}])(
+    "keeps a ChatGPT catalog marker on the strict credential-validation path: %j",
+    (chatgptPlanModels) => {
+      const credential = oauthCred({ clientId: "another-client", chatgptPlanModels });
+      for (const stored of [credential, { kind: "oauth", credential, maxTokens: 1024 }]) {
+        expect(() => parseModelSecret(JSON.stringify(stored))).toThrow(/corrupt/);
+      }
+    },
+  );
+
+  it("does not downgrade malformed ChatGPT plan credentials to generic OAuth", () => {
+    const credential = oauthCred({
+      clientId: "oaiapp_fixture",
+      issuer: "https://auth.openai.com",
+      subject: "fixture-subject",
+      hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
+      idToken: "fake-id-token",
+      scopes: ["chatgpt.tokens.use.direct"],
+      chatgptPlanModels: [],
+    });
+    expect(parseModelSecret(JSON.stringify(credential))).toEqual({ kind: "oauth", credential });
+    for (const patch of [
+      { clientId: "dynamic_agent_client" },
+      { hostId: "invalid-host" },
+      { issuer: "https://provider.example.test" },
+      { subject: "" },
+      { scopes: [] },
+    ]) {
+      const malformed = { ...credential, ...patch };
+      for (const stored of [malformed, { kind: "oauth", credential: malformed, maxTokens: 1024 }]) {
+        expect(() => parseModelSecret(JSON.stringify(stored))).toThrow(/corrupt/);
+      }
+    }
+  });
+
   it("round-trips openai-compatible credentials", () => {
     const parsed = parseModelSecret(
       serializeModelSecret({
@@ -242,6 +288,8 @@ describe("model secrets", () => {
 describe("terminalOAuthRefreshErrorMarker", () => {
   it.each([
     "invalid_grant",
+    "invalid_refresh_token",
+    "token_expired",
     "refresh_token_expired",
     "refresh_token_reused",
     "refresh_token_invalidated",
@@ -251,6 +299,36 @@ describe("terminalOAuthRefreshErrorMarker", () => {
     );
     const wrapped = new Error("OAuth refresh failed for openai-codex", { cause: providerError });
     expect(terminalOAuthRefreshErrorMarker(wrapped)).toBe(marker);
+  });
+
+  it.each([
+    "invalid_grant",
+    "invalid_refresh_token",
+    "token_expired",
+    "refresh_token_expired",
+    "refresh_token_reused",
+    "refresh_token_invalidated",
+  ])("classifies a ChatGPT refresh code %s only with a terminal status", (marker) => {
+    for (const status of [400, 401, 403]) {
+      expect(
+        terminalOAuthRefreshErrorMarker(
+          new Error(`ChatGPT OAuth request failed (${status}) ${marker}.`),
+        ),
+      ).toBe(marker);
+    }
+    for (const status of [200, 404, 429, 500, 503]) {
+      expect(
+        terminalOAuthRefreshErrorMarker(
+          new Error(`ChatGPT OAuth request failed (${status}) ${marker}.`),
+        ),
+      ).toBeUndefined();
+    }
+    expect(terminalOAuthRefreshErrorMarker(new Error(marker))).toBeUndefined();
+    expect(
+      terminalOAuthRefreshErrorMarker(
+        new Error(`ChatGPT OAuth request failed (400) not_${marker}.`),
+      ),
+    ).toBeUndefined();
   });
 
   it.each([400, 401, 403])("matches a marker alongside a %i status", (status) => {

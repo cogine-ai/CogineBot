@@ -36,6 +36,11 @@ import { isToolPauseResult } from "./approval-effect.js";
 import { automated } from "./automated-messages.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
+import {
+  CHATGPT_PLAN_PROVIDER_ID,
+  readChatGPTPlanModels,
+  registerChatGPTPlanRuntime,
+} from "./chatgpt-plan-provider.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
 import {
   boundToolResult,
@@ -57,7 +62,7 @@ import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js
 import { supplementPiModels } from "./pi-current-models.js";
 import { estimatePiImageTokens } from "./pi-image-context.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
-import { codexComputeResidency } from "./pi-oauth.js";
+import { codexComputeResidency, loadProviderOAuth } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   registerOpenAiCompatibleCatalog,
@@ -738,7 +743,12 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   const credentials = credentialStoreForRequest({ model: modelConfig }, provider);
   const models = modelsForRequest({ model: modelConfig }, provider, credentials);
   let model = models.getModel(provider, modelId);
-  if (!model && provider !== "openrouter" && provider !== OPENAI_COMPATIBLE_PROVIDER_ID) {
+  if (
+    !model &&
+    provider !== "openrouter" &&
+    provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
+    provider !== CHATGPT_PLAN_PROVIDER_ID
+  ) {
     model = models.getModel("openrouter", modelId);
   }
   if (
@@ -782,6 +792,7 @@ function credentialStoreForRequest(
     toOAuthCredential(oauth.credential),
     persist ? (next) => persist(next) : undefined,
     oauth.retire,
+    oauth.synchronize,
   );
 }
 
@@ -791,6 +802,16 @@ export function modelsForRequest(
   credentials?: PiRuntimeCredentialStore,
 ): Models {
   const store = credentials ?? credentialStoreForRequest(request, provider);
+  if (provider === CHATGPT_PLAN_PROVIDER_ID) {
+    const oauth = loadProviderOAuth(CHATGPT_PLAN_PROVIDER_ID);
+    const models = registerOpenAiCompatibleCatalog(
+      registerLocalProvider(supplementPiModels(builtinModels({ credentials: store }))),
+    );
+    return registerChatGPTPlanRuntime(models, {
+      models: store ? readChatGPTPlanModels(request.model.oauth?.credential) : [],
+      ...(oauth ? { auth: { oauth } } : {}),
+    });
+  }
   if (store) {
     return registerOpenAiCompatibleCatalog(
       registerLocalProvider(supplementPiModels(builtinModels({ credentials: store }))),
@@ -2462,6 +2483,7 @@ function errorFacts(value: unknown) {
 /** Only provider availability failures may advance the user's explicit chain. */
 export function isRetryableProviderUnavailable(error: unknown): boolean {
   const { text, statuses } = errorFacts(error);
+  if (/subscription_sharing_usage_(?:limit_exceeded|unavailable)/.test(text)) return false;
   if (
     [400, 401, 403].some((status) => statuses.has(status)) ||
     /\b(?:http(?:\s+status(?:\s+code)?)?|status(?:\s+code)?|error\s+code)\s*[:=]?\s*(?:400|401|403)\b/.test(

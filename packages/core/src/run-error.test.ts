@@ -4,6 +4,32 @@ import {
   normalizeRunError,
   sanitizeRunErrorDetails,
 } from "./run-error.js";
+
+describe("ChatGPT plan usage recovery", () => {
+  it.each([
+    [
+      "subscription_sharing_usage_limit_exceeded",
+      "Your ChatGPT plan usage limit was reached. Review your usage settings.",
+    ],
+    [
+      "subscription_sharing_usage_unavailable",
+      "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.",
+    ],
+  ])("exposes a fixed usage action for %s without provider-supplied links", (code, summary) => {
+    const normalized = normalizeRunError(
+      `chatgpt-plan API error (429): {"code":"${code}","message":"ChatGPT plan request failed"}`,
+    );
+    expect(normalized).toMatchObject({ summary, action: "chatgpt-usage" });
+    expect(normalized.summary).not.toContain("http");
+  });
+  it("does not offer ChatGPT actions for generic rate limits or lookalike codes", () => {
+    expect(normalizeRunError('429: {"code":"rate_limit_error"}')).not.toHaveProperty("action");
+    expect(
+      normalizeRunError("prefix_subscription_sharing_usage_limit_exceeded_suffix"),
+    ).not.toHaveProperty("action");
+  });
+});
+
 import { stuckWorkStatusMessages } from "./stuck-work.js";
 
 describe("run failure diagnostics", () => {

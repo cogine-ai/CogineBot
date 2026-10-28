@@ -15,6 +15,25 @@ describe("Pi model catalog", () => {
     expect(custom[0]).toMatchObject({ id: "custom", placeholder: true, reasoning: false });
   });
 
+  it("exposes ChatGPT plan authorization separately from API keys and legacy Codex", () => {
+    const plan = listPiCatalog().filter((entry) => entry.provider === "chatgpt-plan");
+    expect(plan).toHaveLength(1);
+    expect(plan[0]).toMatchObject({
+      id: "connect",
+      placeholder: true,
+      auth: "oauth",
+      subscription: true,
+      signIn: "auth-url",
+      oauthLabel: "Continue with ChatGPT",
+    });
+    expect(plan[0]?.catalogProbe).toBeUndefined();
+    expect(catalogProviderProbeBaseUrl("chatgpt-plan")).toBeNull();
+    expect(listPiCatalog().some((entry) => entry.provider === "openai")).toBe(true);
+    expect(listPiCatalog().find((entry) => entry.provider === "openai-codex")?.signIn).toBe(
+      "device-code",
+    );
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();

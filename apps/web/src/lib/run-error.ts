@@ -4,6 +4,19 @@ import type { RunErrorTranslator } from "@rakazo/core";
 /** Static descriptors keep shared run-error messages in Lingui extraction. */
 export const translateRunError: RunErrorTranslator = (message, values) => {
   switch (message) {
+    case "Your ChatGPT plan usage limit was reached. Review your usage settings.":
+      return i18n._({
+        id: "Your ChatGPT plan usage limit was reached. Review your usage settings.",
+        message: "Your ChatGPT plan usage limit was reached. Review your usage settings.",
+        values,
+      });
+    case "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.":
+      return i18n._({
+        id: "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.",
+        message:
+          "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.",
+        values,
+      });
     case "Your OpenRouter":
       return i18n._({ id: "Your OpenRouter", message: "Your OpenRouter", values });
     case "Your OpenAI":

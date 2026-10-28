@@ -25,6 +25,13 @@ import {
 } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import {
+  CHATGPT_PLAN_TERMINAL_REFRESH_ERROR_CODES,
+  chatGPTPlanRotationCheckpoint,
+  createChatGPTPlanOAuthAuth,
+  readChatGPTPlanCredential,
+} from "./chatgpt-plan-auth.js";
+import { CHATGPT_PLAN_PROVIDER_ID } from "./chatgpt-plan-provider.js";
 import { createManualAnthropicOAuthLogin } from "./pi-anthropic-oauth.js";
 
 export const CHATGPT_OAUTH_PROVIDER = "openai-codex";
@@ -41,6 +48,12 @@ export const SUBSCRIPTION_SIGN_IN_PROVIDERS: Record<
     billing: string;
   }
 > = {
+  [CHATGPT_PLAN_PROVIDER_ID]: {
+    mode: "auth-url",
+    loginLabel: "Continue with ChatGPT",
+    hint: "ChatGPT plan",
+    billing: "Uses your ChatGPT plan.",
+  },
   [CHATGPT_OAUTH_PROVIDER]: {
     mode: "device-code",
     loginLabel: "Sign in with ChatGPT Plus/Pro",
@@ -77,10 +90,7 @@ const CORRUPT_MODEL_SECRET_MESSAGE =
   "Stored model credential is corrupt. Connect the provider again.";
 
 const TERMINAL_REFRESH_ERROR_MARKERS = [
-  "invalid_grant",
-  "refresh_token_expired",
-  "refresh_token_reused",
-  "refresh_token_invalidated",
+  ...CHATGPT_PLAN_TERMINAL_REFRESH_ERROR_CODES,
   // pi's Kimi Coding refresh reports a dead credential (401, 403, or a body
   // `error: "invalid_grant"`) as this message without embedding the OAuth
   // marker text itself.
@@ -348,6 +358,11 @@ function isOAuthCredential(value: Credential): value is OAuthCredential {
 function readOAuthCredential(value: unknown): OAuthCredential | undefined {
   if (!value || typeof value !== "object") return undefined;
   const parsed = value as Record<string, unknown>;
+  // Product ChatGPT connections always persist their account catalog. Generic Pi
+  // providers may also retain clientId or hostId, so those fields cannot identify it.
+  if (Object.hasOwn(parsed, "chatgptPlanModels")) {
+    return readChatGPTPlanCredential(parsed);
+  }
   if (
     parsed.type === "oauth" &&
     typeof parsed.access === "string" &&
@@ -513,7 +528,21 @@ export function serializeModelSecret(secret: StoredModelSecret): string {
 export function secretValuesToRedact(secret: StoredModelSecret): string[] {
   if (secret.kind === "api_key") return secret.key ? [secret.key] : [];
   if (secret.kind === "openai_compatible") return secret.apiKey ? [secret.apiKey] : [];
-  return [secret.credential.access, secret.credential.refresh].filter(Boolean);
+  const idToken = (secret.credential as Record<string, unknown>).idToken;
+  const pending = (secret.credential as Record<string, unknown>).pendingRotation as
+    | { response?: Record<string, unknown> }
+    | undefined;
+  const pendingTokens = [
+    pending?.response?.access_token,
+    pending?.response?.refresh_token,
+    pending?.response?.id_token,
+  ].filter((value): value is string => typeof value === "string");
+  return [
+    secret.credential.access,
+    secret.credential.refresh,
+    typeof idToken === "string" ? idToken : "",
+    ...pendingTokens,
+  ].filter(Boolean);
 }
 
 /**
@@ -565,6 +594,7 @@ export function codexComputeResidency(accessToken: string | undefined): string |
 }
 
 export function loadProviderOAuth(providerId: string): OAuthAuth | undefined {
+  if (providerId === CHATGPT_PLAN_PROVIDER_ID) return createChatGPTPlanOAuthAuth();
   return providerCatalog().getProvider(providerId)?.auth.oauth;
 }
 
@@ -604,10 +634,33 @@ export async function resolveModelAuth(
   const now = opts?.now ?? Date.now();
   let credential = parsed.credential;
   const maxTokens = parsed.maxTokens;
-  if (credential.expires - now < MIN_OAUTH_VALIDITY_MS) {
+  const earliestRefreshAt =
+    provider === CHATGPT_PLAN_PROVIDER_ID
+      ? readChatGPTPlanCredential(credential)?.earliestRefreshAt
+      : undefined;
+  const hasPendingRotation =
+    provider === CHATGPT_PLAN_PROVIDER_ID &&
+    readChatGPTPlanCredential(credential)?.pendingRotation !== undefined;
+  if (
+    hasPendingRotation ||
+    (credential.expires - now < MIN_OAUTH_VALIDITY_MS &&
+      (earliestRefreshAt === undefined || now >= earliestRefreshAt))
+  ) {
     try {
       credential = await oauth.refresh(credential, opts?.signal ?? new AbortController().signal);
     } catch (error) {
+      const checkpoint =
+        provider === CHATGPT_PLAN_PROVIDER_ID ? chatGPTPlanRotationCheckpoint(error) : undefined;
+      if (checkpoint) {
+        await opts?.persist?.(
+          serializeModelSecret({
+            kind: "oauth",
+            credential: checkpoint,
+            ...(maxTokens !== undefined ? { maxTokens } : {}),
+          }),
+        );
+        throw error;
+      }
       const marker = terminalOAuthRefreshErrorMarker(error);
       if (marker && opts?.retire) {
         let deleted = false;
@@ -665,6 +718,11 @@ export async function resolveModelAuth(
         credential,
         ...(maxTokens !== undefined ? { maxTokens } : {}),
       }),
+    );
+  }
+  if (provider === CHATGPT_PLAN_PROVIDER_ID && credential.expires <= now) {
+    throw new Error(
+      "ChatGPT plan access expired. Reconnect ChatGPT or try again after token renewal is available.",
     );
   }
   const auth = await oauth.toAuth(credential);
@@ -828,6 +886,8 @@ export class PiOAuthLogins {
     thinkingLevel?: string | null;
     label?: string;
     signal?: AbortSignal;
+    /** Trusted composition-root override; never supplied by the RPC caller. */
+    login?: (interaction: AuthInteraction) => Promise<Credential>;
   }): Promise<PiOAuthBegin> {
     if (!SUBSCRIPTION_SIGN_IN_PROVIDERS[input.provider]) {
       throw new Error(
@@ -862,7 +922,11 @@ export class PiOAuthLogins {
 
       const signInStarted = deferred<PiOAuthStarted>();
 
-      const done = this.loginFn(input.provider, "oauth", {
+      const login = input.login
+        ? (_provider: string, _type: "oauth", interaction: AuthInteraction) =>
+            input.login!(interaction)
+        : this.loginFn;
+      const done = login(input.provider, "oauth", {
         signal: abort.signal,
         async prompt(prompt) {
           if (prompt.type === "select") {

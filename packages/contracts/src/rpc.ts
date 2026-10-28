@@ -313,9 +313,21 @@ export const appContract = {
           label: z.string().optional(),
           modelId: z.string().optional(),
           thinkingLevel: ThinkingLevelSchema.nullable().optional(),
+          callbackTransport: z.enum(["desktop", "loopback"]).optional(),
+          registrationId: z.string().min(1).max(200).optional(),
+          newRegistration: z.boolean().optional(),
         }),
       )
       .output(ModelOAuthBeginSchema),
+    chatgptProfiles: oc.output(
+      z.array(
+        z.object({
+          id: z.string(),
+          label: z.string(),
+          status: z.enum(["registered", "connected", "signed-out", "incomplete"]),
+        }),
+      ),
+    ),
     submitOAuthCode: oc
       .input(z.object({ loginId: z.string(), code: z.string().trim().min(1).max(8_192) }))
       .output(z.object({ ok: z.literal(true) })),
@@ -351,7 +363,7 @@ export const appContract = {
           expectedRevision: z.number().int().positive().optional(),
         }),
       )
-      .output(z.object({ ok: z.literal(true) })),
+      .output(z.object({ ok: z.literal(true), remoteRevocationConfirmed: z.boolean().optional() })),
   },
   bots: {
     list: oc.output(z.array(BotSchema)),

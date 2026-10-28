@@ -26,6 +26,7 @@ import {
   sameOpenAiCompatibleBaseUrl,
 } from "@rakazo/contracts";
 import {
+  CHATGPT_USAGE_SETTINGS_URL,
   COMPATIBLE_THINKING_LEVELS,
   canUseCompatibleModelAsDefault,
   clampCatalogThinkingLevel,
@@ -72,6 +73,7 @@ import { presentMessageActionSheet } from "../../lib/message-action-sheet";
 import {
   cancelModelOAuthAttempt,
   finishModelOAuthAttempt,
+  modelOAuthUnavailableReason,
   waitForModelOAuth,
 } from "../../lib/model-auth";
 import { mobileBackupScopeIsCurrent } from "../../lib/model-backups";
@@ -641,7 +643,11 @@ function ModelsForm({
     baseUrl: effectiveBaseUrl,
     modelId,
   });
-  const builtinLimitSave = !isOpenAiCompatible && Boolean(credential) && apiKey.trim().length === 0;
+  const builtinLimitSave =
+    !isOpenAiCompatible &&
+    provider !== "chatgpt-plan" &&
+    Boolean(credential) &&
+    apiKey.trim().length === 0;
 
   function updateBaseUrl(nextBaseUrl: string) {
     selectionRevisionRef.current += 1;
@@ -854,7 +860,7 @@ function ModelsForm({
       const requestContext = await captureApiRequestContext();
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      await rpc(
+      const result = await rpc<{ ok: true; remoteRevocationConfirmed?: boolean }>(
         "models/disconnect",
         {
           provider: selected.provider,
@@ -870,11 +876,20 @@ function ModelsForm({
       await load({ provider });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      publishFeedback("connection", {
-        notice: t("Disconnected {provider}.", {
-          provider: selected.providerName ?? selected.provider,
-        }),
-      });
+      publishFeedback(
+        "connection",
+        result.remoteRevocationConfirmed === false
+          ? {
+              error: t(
+                "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings.",
+              ),
+            }
+          : {
+              notice: t("Disconnected {provider}.", {
+                provider: selected.providerName ?? selected.provider,
+              }),
+            },
+      );
     } catch (err) {
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration)) return;
       publishFeedback("connection", {
@@ -1056,6 +1071,11 @@ function ModelsForm({
 
   async function startSubscriptionSignIn() {
     if (!selected) return;
+    const unavailable = modelOAuthUnavailableReason(selected.provider);
+    if (unavailable) {
+      publishFeedback("connection", { error: t(unavailable) });
+      return;
+    }
     clearFeedback();
     setOauthPending(true);
     const controller = new AbortController();
@@ -1443,7 +1463,7 @@ function ModelsForm({
     ) : null;
 
   const catalogModelCard =
-    !isOpenAiCompatible && selected ? (
+    !isOpenAiCompatible && selected && !(provider === "chatgpt-plan" && selected.placeholder) ? (
       <>
         {showModelSearch ? (
           <TextInput
@@ -1532,15 +1552,31 @@ function ModelsForm({
             </Pressable>
           ) : null}
         </View>
-        {disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))}
-        {showAdvanced ? limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6) : null}
+        {provider !== "chatgpt-plan"
+          ? disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))
+          : null}
+        {showAdvanced && provider !== "chatgpt-plan"
+          ? limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)
+          : null}
       </>
+    ) : null;
+
+  const chatgptUsageControl =
+    selected?.provider === "chatgpt-plan" ? (
+      <NativeActionButton
+        label={t("Manage usage")}
+        fill={false}
+        onPress={() => void Linking.openURL(CHATGPT_USAGE_SETTINGS_URL)}
+      />
     ) : null;
 
   const catalogConnectionControls =
     !isOpenAiCompatible && selected ? (
       <>
-        {subscriptionSignIn ? (
+        {chatgptUsageControl}
+        {subscriptionSignIn && modelOAuthUnavailableReason(selected.provider) ? (
+          <Text style={styles.secondary}>{t(modelOAuthUnavailableReason(selected.provider)!)}</Text>
+        ) : subscriptionSignIn ? (
           oauth ? (
             <View style={styles.oauthCard}>
               {oauth.mode === "auth-url" ? (
@@ -2038,6 +2074,7 @@ function ModelsForm({
           ) : provider === me?.hostCredentialProvider ? (
             <>
               {serverCredentialsNote}
+              {ownKeyProvider !== provider ? chatgptUsageControl : null}
               {disclosureRow(t("Use your own key"), ownKeyProvider === provider, () =>
                 setOwnKeyProvider((current) => (current === provider ? null : provider)),
               )}

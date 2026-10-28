@@ -465,6 +465,7 @@ msgstr "Gib einen Servernamen ein."
 msgid "Add a stdio command."
 msgstr "Gib einen stdio-Befehl ein."
 
+#: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Add account"
 msgstr "Konto hinzufügen"
@@ -2767,8 +2768,8 @@ msgstr "Suche läuft…"
 #. placeholder {0}: new URL(oauth.verificationUri).hostname
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-msgid "Finish signing in at <0>{0}</0>. The final page may not load; paste its URL or code here."
-msgstr "Schließe die Anmeldung unter <0>{0}</0> ab. Die letzte Seite wird möglicherweise nicht geladen; füge ihre URL oder den Code hier ein."
+msgid "Finish signing in at <0>{0}</0>."
+msgstr "Anmeldung unter <0>{0}</0> abschließen."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Finish subscription sign-in, then test again."
@@ -6302,3 +6303,30 @@ msgstr "{provider} hat zu lange zum Antworten gebraucht. Versuche es erneut."
 
 msgid "{summary} Resets {date}."
 msgstr "{summary} Zurücksetzung am {date}."
+
+#: src/components/RunErrorDetails.tsx
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Manage usage"
+msgstr "Nutzung verwalten"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "ChatGPT account"
+msgstr "ChatGPT-Konto"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Could not load ChatGPT accounts"
+msgstr "ChatGPT-Konten konnten nicht geladen werden"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings."
+msgstr "Lokal getrennt. Der entfernte Widerruf wurde nicht bestätigt; trenne die App in den ChatGPT-Einstellungen."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "Your ChatGPT plan usage limit was reached. Review your usage settings."
+msgstr "Das Nutzungslimit deines ChatGPT-Abos wurde erreicht. Prüfe deine Nutzungseinstellungen."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
+msgstr "Die Nutzung des ChatGPT-Abos ist nicht verfügbar. Prüfe deine Nutzungseinstellungen oder verbinde ChatGPT erneut."

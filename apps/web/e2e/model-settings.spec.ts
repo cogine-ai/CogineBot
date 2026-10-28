@@ -1,10 +1,212 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, openUserSettings, rpc, signup } from "./helpers";
+import type { Me, ThreadSnapshot } from "@rakazo/contracts";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openUserSettings,
+  rpc,
+  signup,
+} from "./helpers";
 
 const LOCAL_MODEL_ID = "rakazo-e2e-local";
 const LOCAL_MODEL_REPLY = "OpenAI-compatible endpoint verified end to end.";
+
+test("ChatGPT plan model settings choose a saved account or add a separate registration", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `chatgpt-model-${stamp}@rakazo.test`, "password12", "ChatGPT model user");
+  await completeOnboarding(page);
+  await page.route("**/rpc/models/list", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as {
+      json: Array<Record<string, unknown> & { provider: string }>;
+    };
+    body.json = body.json.filter((entry) => entry.provider !== "chatgpt-plan");
+    body.json.push({
+      provider: "chatgpt-plan",
+      providerName: "ChatGPT",
+      id: "chatgpt-plan",
+      label: "ChatGPT",
+      auth: "oauth",
+      oauthLabel: "Continue with ChatGPT",
+      billing: "ChatGPT plan",
+      signIn: "auth-url",
+      placeholder: true,
+    });
+    await route.fulfill({ response, body: JSON.stringify(body) });
+  });
+  let accountsUnavailable = false;
+  await page.route("**/rpc/models/chatgptProfiles", async (route) => {
+    if (accountsUnavailable) {
+      await route.fulfill({
+        status: 503,
+        json: {
+          json: {
+            code: "SERVICE_UNAVAILABLE",
+            status: 503,
+            message: "Could not load ChatGPT accounts",
+          },
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: [
+          { id: "profile-personal", label: "Personal", status: "signed-out" },
+          { id: "profile-work", label: "Work", status: "registered" },
+        ],
+      }),
+    });
+  });
+  const attempts: Array<{
+    registrationId?: string;
+    newRegistration?: boolean;
+    callbackTransport?: string;
+    modelId?: string;
+  }> = [];
+  await page.route("**/rpc/models/beginOAuth", async (route) => {
+    attempts.push(route.request().postDataJSON().json);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: {
+          provider: "chatgpt-plan",
+          loginId: `login-${attempts.length}`,
+          mode: "auth-url",
+          callbackTransport: "loopback",
+          verificationUri: "https://auth.openai.com/api/accounts/authorize?state=fixture-state",
+          expiresInSeconds: 600,
+        },
+      }),
+    });
+  });
+  await page.route("**/rpc/models/completeOAuth", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ json: { status: "pending" } }),
+    });
+  });
+  const cancellations: string[] = [];
+  await page.route("**/rpc/models/cancelOAuth", async (route) => {
+    cancellations.push(route.request().postDataJSON().json.loginId);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ json: { ok: true } }),
+    });
+  });
+  await page.evaluate(() => {
+    window.open = () => null;
+  });
+  await openUserSettings(page, "models");
+  await page.getByPlaceholder("Search providers").fill("chatgpt-plan");
+  await page
+    .getByRole("button", { name: /ChatGPT/ })
+    .first()
+    .click();
+  await page
+    .getByRole("combobox", { name: "ChatGPT account", exact: true })
+    .selectOption("profile-work");
+  const usage = page.getByRole("link", { name: "Manage usage", exact: true });
+  await expect(usage).toHaveAttribute("href", "https://chatgpt.com/settings/usage");
+  const providerRow = page.getByRole("button", { name: /ChatGPT/ }).first();
+  await expect(providerRow).toContainText("Sign in");
+  await expect(providerRow).not.toContainText("1 model");
+  await captureScreenshot(page, testInfo, "chatgpt-plan-account-picker");
+  await page.getByRole("button", { name: "Continue with ChatGPT", exact: true }).click();
+  await expect.poll(() => attempts.length).toBe(1);
+  expect(attempts[0]).toMatchObject({
+    registrationId: "profile-work",
+    newRegistration: false,
+    callbackTransport: "loopback",
+  });
+  expect(attempts[0]?.modelId).toBeUndefined();
+  await expect(page.getByRole("link", { name: "auth.openai.com" })).toBeVisible();
+  await expect(page.getByLabel("Authorization code or callback URL")).toBeHidden();
+  await captureScreenshot(page, testInfo, "chatgpt-plan-loopback-sign-in");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect.poll(() => cancellations).toEqual(["login-1"]);
+  await page.getByRole("button", { name: "Add account", exact: true }).click();
+  await expect.poll(() => attempts.length).toBe(2);
+  expect(attempts[1]).toMatchObject({ newRegistration: true, callbackTransport: "loopback" });
+  expect(attempts[1]?.registrationId).toBeUndefined();
+  expect(attempts[1]?.modelId).toBeUndefined();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect.poll(() => cancellations).toEqual(["login-1", "login-2"]);
+
+  accountsUnavailable = true;
+  await page.getByRole("button", { name: "Close model settings", exact: true }).click();
+  await openUserSettings(page, "models");
+  await page.getByPlaceholder("Search providers").fill("chatgpt-plan");
+  await page
+    .getByRole("button", { name: /ChatGPT/ })
+    .first()
+    .click();
+  await expect(page.getByRole("alert")).toHaveText("Could not load ChatGPT accounts");
+  await expect(
+    page.getByRole("button", { name: "Continue with ChatGPT", exact: true }),
+  ).toBeDisabled();
+  await expect(usage).toBeVisible();
+  await captureScreenshot(page, testInfo, "chatgpt-plan-profile-error");
+  await page.getByRole("button", { name: "Close model settings", exact: true }).click();
+
+  const actor = await rpc<Me>(page, "me", {});
+  const botId = activeBotId(page);
+  const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(process.env.AGENT_RUNTIME).toBe("scripted");
+  expect(process.env.DATABASE_URL).toBeTruthy();
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(
+    new URL(process.env.DATABASE_URL!).hostname,
+  );
+  const { createDb } = await import("../../../packages/db/src/client");
+  const db = createDb(process.env.DATABASE_URL!, {
+    poolMax: 2,
+    applicationName: "chatgpt-plan-usage-browser-fixture",
+  });
+  try {
+    const task = await db.prisma.task.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId,
+        threadId: thread.threadId,
+        prompt: "Synthetic ChatGPT usage failure",
+        status: "failed",
+      },
+    });
+    await db.prisma.run.create({
+      data: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId,
+        threadId: thread.threadId,
+        taskId: task.id,
+        status: "failed",
+        trigger: "user",
+        startedAt: new Date(),
+        completedAt: new Date(),
+        error: '{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}',
+      },
+    });
+  } finally {
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
+  await page.reload();
+  const failure = page.getByTestId("composer-error");
+  await expect(failure).toContainText("Your ChatGPT plan usage limit was reached.");
+  await expect(failure.getByRole("link", { name: "Manage usage", exact: true })).toHaveAttribute(
+    "href",
+    "https://chatgpt.com/settings/usage",
+  );
+  await captureScreenshot(page, testInfo, "chatgpt-plan-usage-limit-action");
+});
 
 test("custom connections persist reasoning support and bot thinking", async ({
   page,

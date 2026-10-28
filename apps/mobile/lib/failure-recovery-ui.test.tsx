@@ -11,8 +11,9 @@ import { RoutineRunHistory } from "../components/routine-run-history";
 import { RunErrorNotice } from "../components/run-error-notice";
 import type { MobileScope } from "./mobile-scope";
 
-const state = vi.hoisted(() => ({ rpc: vi.fn(), push: vi.fn(), current: true }));
+const state = vi.hoisted(() => ({ rpc: vi.fn(), push: vi.fn(), openURL: vi.fn(), current: true }));
 vi.mock("react-native", () => ({
+  Linking: { openURL: state.openURL },
   View: ({ children }: { children?: ReactNode }) => createElement("div", null, children),
   Text: ({ children, accessibilityRole }: { children?: ReactNode; accessibilityRole?: string }) =>
     createElement("span", { role: accessibilityRole }, children),
@@ -66,6 +67,7 @@ beforeEach(() => {
   state.current = true;
   state.rpc.mockReset();
   state.push.mockReset();
+  state.openURL.mockReset().mockResolvedValue(undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -148,6 +150,16 @@ it("reveals only cleaned selectable diagnostics and closes them when the error c
   expect(container.textContent).not.toContain("sample-secret-value");
   await render(<RunErrorNotice error="429: too many requests" />);
   expect(container.querySelector("section")).toBeNull();
+});
+
+it("offers the fixed ChatGPT usage action only for a ChatGPT plan usage failure", async () => {
+  await render(
+    <RunErrorNotice error='{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}' />,
+  );
+  await press("Manage usage");
+  expect(state.openURL).toHaveBeenCalledExactlyOnceWith("https://chatgpt.com/settings/usage");
+  await render(<RunErrorNotice error="429: too many requests" />);
+  expect(container.textContent).not.toContain("Manage usage");
 });
 
 it("pages history without duplicating rows or inventing links for silent runs", async () => {

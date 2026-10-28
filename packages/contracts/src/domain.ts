@@ -1328,7 +1328,10 @@ export const ModelOAuthBeginSchema = z.discriminatedUnion("mode", [
     mode: z.literal("device-code"),
     userCode: z.string().min(1),
   }),
-  ModelOAuthBeginBaseSchema.extend({ mode: z.literal("auth-url") }),
+  ModelOAuthBeginBaseSchema.extend({
+    mode: z.literal("auth-url"),
+    callbackTransport: z.enum(["desktop", "loopback"]).optional(),
+  }),
 ]);
 export type ModelOAuthBegin = z.infer<typeof ModelOAuthBeginSchema>;
 

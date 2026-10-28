@@ -14,6 +14,8 @@ export function desktopBridge(): RakazoDesktop | undefined {
 
 /** The compact `code#state` form the manual paste flow already accepts. */
 export function desktopOAuthCode(callback: RakazoDesktopOAuthCallback) {
+  if (callback.callbackUrl) return callback.callbackUrl;
+  if (!callback.code) return undefined;
   return callback.state === undefined ? callback.code : `${callback.code}#${callback.state}`;
 }
 
@@ -47,7 +49,8 @@ export function onDesktopOAuthCallback(
   if (!oauth) return () => undefined;
   return oauth.onCallback((callback) => {
     if (expectedState !== undefined && callback.state !== expectedState) return;
-    listener(desktopOAuthCode(callback));
+    const code = desktopOAuthCode(callback);
+    if (code) listener(code);
   });
 }
 

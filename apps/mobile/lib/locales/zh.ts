@@ -1,4 +1,13 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Manage usage": "管理用量",
+  "Your ChatGPT plan usage limit was reached. Review your usage settings.":
+    "已达到 ChatGPT 套餐用量上限。请查看用量设置。",
+  "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.":
+    "ChatGPT 套餐用量暂不可用。请查看用量设置或重新连接 ChatGPT。",
+  "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings.":
+    "已在本地断开连接。尚未确认远程授权撤销；请在 ChatGPT 设置中断开此应用。",
+  "Connect your ChatGPT plan from the local desktop app or a browser on the server computer.":
+    "请从本地桌面应用或服务器电脑上的浏览器连接 ChatGPT 套餐。",
   "Adding…": "正在添加…",
   "Import OpenAPI": "导入 OpenAPI",
   Ready: "可导入",

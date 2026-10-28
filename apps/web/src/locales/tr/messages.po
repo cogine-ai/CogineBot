@@ -465,6 +465,7 @@ msgstr "Bir sunucu adı gir."
 msgid "Add a stdio command."
 msgstr "Bir stdio komutu gir."
 
+#: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Add account"
 msgstr "Hesap ekle"
@@ -2767,8 +2768,8 @@ msgstr "Aranıyor…"
 #. placeholder {0}: new URL(oauth.verificationUri).hostname
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
-msgid "Finish signing in at <0>{0}</0>. The final page may not load; paste its URL or code here."
-msgstr "<0>{0}</0> adresinde oturum açmayı tamamla. Son sayfa yüklenmeyebilir; URL'sini veya kodu buraya yapıştır."
+msgid "Finish signing in at <0>{0}</0>."
+msgstr "<0>{0}</0> adresinde oturum açmayı tamamlayın."
 
 #: src/lib/model-connection-preflight.ts
 msgid "Finish subscription sign-in, then test again."
@@ -6302,3 +6303,30 @@ msgstr "{provider} çok geç yanıt verdi. Tekrar deneyin."
 
 msgid "{summary} Resets {date}."
 msgstr "{summary} Sıfırlanma tarihi: {date}."
+
+#: src/components/RunErrorDetails.tsx
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Manage usage"
+msgstr "Kullanımı yönet"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "ChatGPT account"
+msgstr "ChatGPT hesabı"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Could not load ChatGPT accounts"
+msgstr "ChatGPT hesapları yüklenemedi"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings."
+msgstr "Yerel bağlantı kesildi. Uzaktan yetki iptali doğrulanamadı; ChatGPT ayarlarından uygulamanın bağlantısını kesin."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "Your ChatGPT plan usage limit was reached. Review your usage settings."
+msgstr "ChatGPT planınızın kullanım sınırına ulaşıldı. Kullanım ayarlarınızı gözden geçirin."
+
+#. js-lingui-explicit-id
+#: src/lib/run-error.ts
+msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
+msgstr "ChatGPT planı kullanımı mevcut değil. Kullanım ayarlarınızı gözden geçirin veya ChatGPT bağlantısını yeniden kurun."

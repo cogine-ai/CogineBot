@@ -44,6 +44,7 @@ import {
   buildMcpCredentialBlob,
   buildModelConnectPlaintext,
   CHATGPT_OAUTH_PROVIDER,
+  CHATGPT_PLAN_PROVIDER_ID,
   CodexCatalogCache,
   ComputerBusyError,
   cancelComputerRunWork,
@@ -246,6 +247,14 @@ import {
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
 import { BotInstructionsConflictError, botProfileChanged, commitBotUpdate } from "./bot-update.js";
+import {
+  applyChatGPTPlanCatalog,
+  createChatGPTPlanLogin,
+  disconnectChatGPTPlan,
+  isLocalChatGPTPlanOrigin,
+  listChatGPTPlanProfiles,
+  lockChatGPTPlanConnection,
+} from "./chatgpt-plan.js";
 import {
   executionBlocksUserTakeover,
   resolveBusyBotName,
@@ -611,6 +620,8 @@ export interface RouterDeps {
   home: AgentHomeStore;
   secrets: SecretStore;
   oauthLogins: PiOAuthLogins;
+  /** Offline test seam for the optional ChatGPT plan protocol. */
+  chatgptPlanFetch?: typeof fetch;
   /** Live Codex catalog seam; defaults to the shared per-process cache. */
   codexCatalog?: CodexLiveCatalog;
   /** Site icons for links; defaults to the per-process cache that fetches them. */
@@ -1274,7 +1285,12 @@ export function createRouter(deps: RouterDeps) {
               refreshExpiredCredential(context.actor, secretId, CHATGPT_OAUTH_PROVIDER),
           },
         );
-        const catalog = live.size > 0 ? applyCodexLiveCatalog(available, auth, live) : available;
+        const codexAvailable =
+          live.size > 0 ? applyCodexLiveCatalog(available, auth, live) : available;
+        const catalog =
+          auth.byProvider[CHATGPT_PLAN_PROVIDER_ID] === "oauth"
+            ? await applyChatGPTPlanCatalog(deps, context.actor, codexAvailable)
+            : codexAvailable;
         // The scripted fixture only exists to drive the scripted runtime; a real
         // runtime cannot execute it, so it stays out of the user-facing catalog.
         return deps.env.agentRuntime === "scripted" ? [...catalog, scriptedCatalogEntry] : catalog;
@@ -1380,6 +1396,11 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       connect: authed.models.connect.handler(async ({ context, input }) => {
+        if (input.provider === CHATGPT_PLAN_PROVIDER_ID) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Connect ChatGPT through Continue with ChatGPT.",
+          });
+        }
         const compatible = input.provider === OPENAI_COMPATIBLE_PROVIDER_ID;
         const existing = input.credentialId
           ? await deps.prisma.userModelCredential.findFirst({
@@ -1523,7 +1544,13 @@ export function createRouter(deps: RouterDeps) {
         }
       }),
       beginOAuth: authed.models.beginOAuth.handler(async ({ context, input }) => {
-        return deps.oauthLogins.begin({
+        const isChatGPTPlan = input.provider === CHATGPT_PLAN_PROVIDER_ID;
+        if (isChatGPTPlan && (!isLocalChatGPTPlanOrigin(deps.env.webOrigin) || deps.billing)) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Connect a ChatGPT plan from a local desktop or local web installation.",
+          });
+        }
+        const result = await deps.oauthLogins.begin({
           userId: context.actor.userId,
           spaceId: context.actor.spaceId,
           provider: input.provider,
@@ -1531,8 +1558,15 @@ export function createRouter(deps: RouterDeps) {
           thinkingLevel: input.thinkingLevel,
           label: input.label,
           signal: context.signal,
+          ...(isChatGPTPlan ? { login: createChatGPTPlanLogin(deps, context.actor, input) } : {}),
         });
+        return isChatGPTPlan && result.mode === "auth-url"
+          ? { ...result, callbackTransport: input.callbackTransport ?? "loopback" }
+          : result;
       }),
+      chatgptProfiles: authed.models.chatgptProfiles.handler(async ({ context }) =>
+        listChatGPTPlanProfiles(deps, context.actor),
+      ),
       submitOAuthCode: authed.models.submitOAuthCode.handler(async ({ context, input }) => {
         return deps.oauthLogins.submit(input.loginId, context.actor, input.code);
       }),
@@ -1660,50 +1694,86 @@ export function createRouter(deps: RouterDeps) {
           userId: context.actor.userId,
           provider: input.provider,
         });
-        await withSerializableRetry(() =>
-          deps.prisma.$transaction(
-            async (tx) => {
-              const existing = await tx.userModelCredential.findMany({
-                where: {
-                  userId: context.actor.userId,
-                  provider: input.provider,
-                  ...(input.credentialId ? { id: input.credentialId } : {}),
-                },
-              });
-              if (input.credentialId && existing.length === 0) throw new ORPCError("NOT_FOUND");
-              if (existing.length === 0) return;
-              if (input.credentialId)
-                assertConnectionRevision(existing[0]!, input.expectedRevision);
-              for (const credential of existing) {
-                const references = await listModelConnectionReferences(
-                  tx,
-                  context.actor.userId,
-                  credential.id,
-                );
-                await refuseAccountModelReferences(
-                  tx,
-                  context.actor.userId,
-                  references.filter((reference) => reference.kind !== "space-default"),
-                );
-              }
-              const ids = existing.map((row) => row.id);
-              await tx.spaceModelPreference.deleteMany({
-                where: { userId: context.actor.userId, credentialId: { in: ids } },
-              });
-              await tx.userModelCredential.deleteMany({
-                where: { userId: context.actor.userId, id: { in: ids } },
-              });
-              for (const row of existing)
-                await deleteUnreferencedCredentialSecret(tx, {
-                  credentialKind: "model",
-                  credentialId: row.id,
-                  secretId: row.secretId,
-                });
+        let prepared:
+          | Awaited<ReturnType<typeof deps.prisma.userModelCredential.findMany>>
+          | undefined;
+        const validateRemoval = async (tx: Prisma.TransactionClient) => {
+          if (input.provider === CHATGPT_PLAN_PROVIDER_ID) {
+            await tx.$queryRaw(Prisma.sql`
+              SELECT id FROM user_model_credentials
+              WHERE "userId" = ${context.actor.userId} AND provider = ${input.provider}
+                ${input.credentialId ? Prisma.sql`AND id = ${input.credentialId}` : Prisma.empty}
+              ORDER BY id FOR UPDATE
+            `);
+          }
+          const existing = await tx.userModelCredential.findMany({
+            where: {
+              userId: context.actor.userId,
+              provider: input.provider,
+              ...(input.credentialId ? { id: input.credentialId } : {}),
             },
-            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-          ),
-        );
-        return { ok: true as const };
+          });
+          if (input.credentialId && existing.length === 0) throw new ORPCError("NOT_FOUND");
+          if (existing.length === 0) {
+            prepared = [];
+            return;
+          }
+          if (input.credentialId) assertConnectionRevision(existing[0]!, input.expectedRevision);
+          for (const credential of existing) {
+            const references = await listModelConnectionReferences(
+              tx,
+              context.actor.userId,
+              credential.id,
+            );
+            await refuseAccountModelReferences(
+              tx,
+              context.actor.userId,
+              references.filter((reference) => reference.kind !== "space-default"),
+            );
+          }
+
+          prepared = existing;
+        };
+        const removeCredentials = async (tx: Prisma.TransactionClient) => {
+          if (!prepared) await validateRemoval(tx);
+          const existing = prepared!;
+          const ids = existing.map((row) => row.id);
+          await tx.spaceModelPreference.deleteMany({
+            where: { userId: context.actor.userId, credentialId: { in: ids } },
+          });
+          await tx.userModelCredential.deleteMany({
+            where: { userId: context.actor.userId, id: { in: ids } },
+          });
+          for (const row of existing)
+            await deleteUnreferencedCredentialSecret(tx, {
+              credentialKind: "model",
+              credentialId: row.id,
+              secretId: row.secretId,
+            });
+        };
+        const remoteRevocation =
+          input.provider === CHATGPT_PLAN_PROVIDER_ID
+            ? await disconnectChatGPTPlan(deps, context.actor, removeCredentials, {
+                credentialId: input.credentialId,
+                validateRemoval,
+              })
+            : undefined;
+        if (!remoteRevocation) {
+          await withSerializableRetry(() =>
+            deps.prisma.$transaction(
+              async (tx) => {
+                prepared = undefined;
+                await validateRemoval(tx);
+                await removeCredentials(tx);
+              },
+              { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+            ),
+          );
+        }
+        return {
+          ok: true as const,
+          ...(remoteRevocation ? { remoteRevocationConfirmed: remoteRevocation.confirmed } : {}),
+        };
       }),
     },
     bots: {
@@ -7457,6 +7527,8 @@ async function persistModelCredential(
       deps.prisma.$transaction(
         async (tx) => {
           throwIfAborted(input.signal);
+          if (input.provider === CHATGPT_PLAN_PROVIDER_ID)
+            await lockChatGPTPlanConnection(tx, actor.userId);
           const existing = input.credentialId
             ? await tx.userModelCredential.findFirst({
                 where: { id: input.credentialId, userId: actor.userId, provider: input.provider },
