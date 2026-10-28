@@ -28,19 +28,22 @@ function screenKey(status: ComputerStatus) {
 
 /** One polling lifecycle per mounted computer target. Explicit refreshes supersede older reads. */
 export function createComputerRefresh(options: {
-  readStatus: () => Promise<ComputerStatus>;
-  readScreen: (attempts: number) => Promise<string | null>;
+  readStatus: (signal: AbortSignal) => Promise<ComputerStatus>;
+  readScreen: (attempts: number, signal: AbortSignal) => Promise<string | null>;
   onStatus: (status: ComputerStatus) => void;
   onScreen: (url: string | null) => void;
   onReady: () => void;
   onInitialError: (error: unknown) => void;
 }) {
   let active = false;
+  let paused = false;
+  let ready = false;
   let revision = 0;
   let lifetime = 0;
   let activeActions = 0;
   let pendingRevision: number | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let request: AbortController | undefined;
   // A completed read is cached even when it returned null (no screen for this status), so the
   // status alone decides when to ask again; the viewer clears the cache when a URL stops working.
   let screenLoaded = false;
@@ -59,27 +62,36 @@ export function createComputerRefresh(options: {
   function invalidate() {
     revision += 1;
     clearTimeout(timer);
+    request?.abort();
+    request = undefined;
   }
 
   function schedule() {
     clearTimeout(timer);
-    if (!active || activeActions > 0 || pendingRevision === revision) return;
+    if (!active || paused || activeActions > 0 || pendingRevision === revision) return;
     timer = setTimeout(() => void refresh({ poll: true }).catch(() => undefined), 2000);
   }
 
   async function refresh({ screenAttempts = 1, poll = false } = {}) {
-    if (!active) return;
+    if (!active || paused) return;
     invalidate();
+    request = new AbortController();
+    const signal = request.signal;
     const requestRevision = revision;
     pendingRevision = requestRevision;
-    const current = () => active && requestRevision === revision;
+    const current = () => active && !paused && requestRevision === revision;
     try {
-      const status = await options.readStatus();
+      const status = await options.readStatus(signal);
       if (!current()) return;
       options.onStatus(status);
-      if (screenStale(status, !poll)) {
+      if (status.state !== "running") {
+        screenLoaded = true;
+        screenStatus = screenKey(status);
+        screenReadAt = Date.now();
+        options.onScreen(null);
+      } else if (screenStale(status, !poll)) {
         try {
-          const url = await options.readScreen(screenAttempts);
+          const url = await options.readScreen(screenAttempts, signal);
           if (!current()) return;
           screenLoaded = true;
           screenStatus = screenKey(status);
@@ -90,6 +102,7 @@ export function createComputerRefresh(options: {
         }
       }
       if (!current()) return;
+      ready = true;
       options.onReady();
       return status;
     } catch (error) {
@@ -100,6 +113,18 @@ export function createComputerRefresh(options: {
     }
   }
 
+  function readImmediately() {
+    const initial = refresh();
+    const initialRevision = revision;
+    void initial.catch((error) => {
+      if (!ready && active && !paused && revision === initialRevision) {
+        ready = true;
+        options.onInitialError(error);
+        options.onReady();
+      }
+    });
+  }
+
   return {
     refresh: (input?: { screenAttempts?: number }) => refresh(input),
     /** The viewer could not use the current URL: read a fresh one on the next poll. */
@@ -107,6 +132,19 @@ export function createComputerRefresh(options: {
       screenLoaded = false;
     },
     isActive: () => active,
+    /** Pause passive reads without invalidating an explicit action's lifetime. */
+    pause() {
+      if (paused) return;
+      paused = true;
+      invalidate();
+    },
+    /** Recheck the current target before resuming its regular polling. */
+    resume() {
+      if (!active || !paused) return;
+      paused = false;
+      if (activeActions === 0) readImmediately();
+      else schedule();
+    },
     beginAction() {
       const started = active;
       const actionLifetime = lifetime;
@@ -129,19 +167,15 @@ export function createComputerRefresh(options: {
         },
       };
     },
-    start() {
+    start({ paused: initiallyPaused = false } = {}) {
       active = true;
-      const initial = refresh();
-      const initialRevision = revision;
-      void initial.catch((error) => {
-        if (active && revision === initialRevision) {
-          options.onInitialError(error);
-          options.onReady();
-        }
-      });
+      paused = initiallyPaused;
+      ready = false;
+      if (!paused) readImmediately();
     },
     dispose() {
       active = false;
+      paused = false;
       lifetime += 1;
       activeActions = 0;
       screenLoaded = false;

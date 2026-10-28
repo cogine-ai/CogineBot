@@ -15,6 +15,77 @@ const context = {
 };
 
 describe("E2B computer backend", () => {
+  it("extends attendance through only a running-state GET and timeout update", async () => {
+    await withRetainedE2BServer({}, async (requests, backend) => {
+      await backend.keepAlive(
+        { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+        { onlyIfRunning: true },
+      );
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /sandboxes/existing",
+        "POST /sandboxes/existing/timeout",
+      ]);
+    });
+  });
+
+  it.each(["paused", "gone"])("does not resume %s computers for attendance", async (state) => {
+    await withRetainedE2BServer({ state }, async (requests, backend) => {
+      await backend.keepAlive(
+        { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+        { onlyIfRunning: true },
+      );
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /sandboxes/existing",
+      ]);
+    });
+  });
+
+  it("does not use connect when no safe attendance lookup is available", async () => {
+    const sdk = { connect: vi.fn(), create: vi.fn(), pause: vi.fn() };
+    const backend = new E2BSandboxProvider("test-key", sdk as unknown as E2BSandboxSdk);
+    await expect(
+      backend.keepAlive(
+        { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+        { onlyIfRunning: true },
+      ),
+    ).rejects.toThrow(/without resuming/);
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it.each([true, undefined])(
+    "does not use an unverified auto-resume policy (%s) for attendance",
+    async (autoResume) => {
+      await withRetainedE2BServer({ autoResume }, async (requests, backend) => {
+        await expect(
+          backend.keepAlive(
+            { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+            { onlyIfRunning: true },
+          ),
+        ).rejects.toThrow(/auto-resume to be disabled/);
+        expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+          "GET /sandboxes/existing",
+        ]);
+      });
+    },
+  );
+
+  it("rechecks attendance state instead of using a cached active handle", async () => {
+    const setTimeout = vi.fn();
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn().mockResolvedValue({ sandboxId: "existing", setTimeout }),
+      connect: vi.fn(),
+      pause: vi.fn(),
+      attachRunning: vi.fn().mockResolvedValue(undefined),
+    };
+    const backend = new E2BSandboxProvider("test-key", sdk);
+    const computer = await backend.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    await backend.keepAlive(computer, { onlyIfRunning: true });
+    expect(sdk.attachRunning).toHaveBeenCalledOnce();
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(setTimeout).not.toHaveBeenCalled();
+  });
+
   it("releases a cold worker's screen through only the SDK state GET and envd command", async () => {
     await withRetainedE2BServer({}, async (requests, backend) => {
       await backend.releaseScreen(
@@ -929,6 +1000,11 @@ async function withRetainedE2BServer(
             envelope({}, 2),
           ]),
         );
+        return;
+      }
+      if (request.method === "POST" && request.url === "/sandboxes/existing/timeout") {
+        response.writeHead(204);
+        response.end();
         return;
       }
       response.writeHead(500, { "content-type": "application/json" });

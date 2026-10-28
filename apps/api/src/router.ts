@@ -3525,10 +3525,31 @@ export function createRouter(deps: RouterDeps) {
       heartbeat: authed.computer.heartbeat.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (bot.computer?.state === "running" && bot.computer.providerRef) {
-          await deps.prisma.computer.updateMany({
-            where: { id: bot.computer.id, state: "running" },
+          const touched = await deps.prisma.computer.updateMany({
+            where: {
+              id: bot.computer.id,
+              spaceId: bot.computer.spaceId,
+              userId: bot.computer.userId,
+              homeKey: bot.computer.homeKey,
+              providerRef: bot.computer.providerRef,
+              kind: bot.computer.kind,
+              state: "running",
+              maintenanceId: null,
+              screenGeneration: bot.computer.screenGeneration,
+              bots: {
+                some: {
+                  id: bot.id,
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                  archivedAt: null,
+                  computerSwitching: false,
+                  screenGeneration: bot.screenGeneration,
+                },
+              },
+            },
             data: { updatedAt: new Date() },
           });
+          if (touched.count !== 1) return { ok: true as const };
           await touchRunningComputer(
             { sandbox: deps.sandbox, jobs: deps.jobs },
             {

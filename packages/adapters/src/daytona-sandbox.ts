@@ -318,8 +318,15 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     return { id: observation.frameId, createdAt: observation.capturedAt };
   }
 
-  async keepAlive(computer: ComputerRef): Promise<void> {
-    await (await this.box(computer)).refreshActivity();
+  async keepAlive(computer: ComputerRef, options?: { onlyIfRunning?: boolean }): Promise<void> {
+    const sandbox = options?.onlyIfRunning
+      ? await this.client.get(computer.providerRef || computer.id).catch((error) => {
+          if (isUnrecoverableDaytonaError(error)) return undefined;
+          throw error;
+        })
+      : await this.box(computer);
+    if (!sandbox || (options?.onlyIfRunning && sandbox.state !== SandboxState.STARTED)) return;
+    await sandbox.refreshActivity();
   }
 
   async releaseScreen(

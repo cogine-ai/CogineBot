@@ -417,7 +417,14 @@ export class BoxSandboxProvider implements SandboxProvider {
     return { id: observation.frameId, createdAt: observation.capturedAt };
   }
 
-  async keepAlive(computer: ComputerRef): Promise<void> {
+  async keepAlive(computer: ComputerRef, options?: { onlyIfRunning?: boolean }): Promise<void> {
+    if (options?.onlyIfRunning) {
+      const current = await this.client.get({ boxId: this.id(computer) }).catch((error) => {
+        if (isUnrecoverableBoxError(error)) return undefined;
+        throw error;
+      });
+      if (!current || !["ready", "idle", "running"].includes(current.box.state)) return;
+    }
     await this.client.update({
       boxId: this.id(computer),
       updateBoxRequest: { ttlSeconds: BOX_TTL_SECONDS },

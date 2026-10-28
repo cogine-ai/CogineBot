@@ -19,6 +19,41 @@ afterEach(() => {
 });
 
 describe("BoxSandboxProvider", () => {
+  it.each(["archived", "archiving", "unknown"])(
+    "does not extend attendance on a %s box",
+    async (state) => {
+      const f = boxFixture({ state });
+      const provider = new BoxSandboxProvider({ apiKey: "test-key" }, f.client);
+      await provider.keepAlive(
+        { id: "bx_testbox2", providerRef: "bx_testbox2", kind: "box", botId: "home" },
+        { onlyIfRunning: true },
+      );
+      expect(f.get).toHaveBeenCalledOnce();
+      expect(f.update).not.toHaveBeenCalled();
+      expect(f.resume).not.toHaveBeenCalled();
+      expect(f.command).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["ready", "idle", "running"])(
+    "extends attendance on an existing %s box",
+    async (state) => {
+      const f = boxFixture({ state });
+      const provider = new BoxSandboxProvider({ apiKey: "test-key" }, f.client);
+      await provider.keepAlive(
+        { id: "bx_testbox2", providerRef: "bx_testbox2", kind: "box", botId: "home" },
+        { onlyIfRunning: true },
+      );
+      expect(f.get).toHaveBeenCalledOnce();
+      expect(f.update).toHaveBeenCalledWith({
+        boxId: "bx_testbox2",
+        updateBoxRequest: { ttlSeconds: 7200 },
+      });
+      expect(f.resume).not.toHaveBeenCalled();
+      expect(f.command).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not run retained-screen cleanup on an archived box", async () => {
     const fixture = boxFixture({ state: "archived" });
     const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);

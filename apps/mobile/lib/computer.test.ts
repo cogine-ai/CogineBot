@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComputerStatus } from "./computer.js";
 import {
   controlLabel,
@@ -14,6 +14,8 @@ import {
   screenRenewReadAt,
   screenStreamKey,
 } from "./computer.js";
+
+afterEach(() => vi.useRealTimers());
 
 function computer(overrides: Partial<ComputerStatus> = {}): ComputerStatus {
   return {
@@ -191,6 +193,47 @@ describe("computer copy", () => {
 });
 
 describe("readScreenUrl", () => {
+  it("does not request a screen after the viewer was already paused", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const request = vi.fn();
+    await expect(
+      readScreenUrl(request, { attempts: 5, signal: controller.signal }),
+    ).resolves.toBeNull();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("cancels a retry delay when the viewer pauses and makes no further screen requests", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const request = vi.fn().mockResolvedValue({ url: null });
+    const pending = readScreenUrl(request, { attempts: 5, signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    controller.abort();
+    await expect(pending).resolves.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards a screen that arrives after cancellation even if transport ignored it", async () => {
+    const controller = new AbortController();
+    let resolve!: (screen: { url: string }) => void;
+    const request = vi.fn(
+      () =>
+        new Promise<{ url: string }>((done) => {
+          resolve = done;
+        }),
+    );
+    const pending = readScreenUrl(request, { attempts: 5, signal: controller.signal });
+    controller.abort();
+    resolve({ url: "https://obsolete.example.test" });
+    await expect(pending).resolves.toBeNull();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("returns the first URL without retrying", async () => {
     const request = vi.fn().mockResolvedValue({ url: "https://screen.example/embed" });
     await expect(readScreenUrl(request)).resolves.toBe("https://screen.example/embed");

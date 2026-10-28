@@ -183,7 +183,7 @@ export async function touchRunningComputer(
   computer: { id: string; homeKey: string; providerRef: string; kind: string },
 ): Promise<void> {
   scheduleComputerSleep(deps.jobs, computer.id);
-  await deps.sandbox.keepAlive?.(toComputerRef(computer));
+  await deps.sandbox.keepAlive?.(toComputerRef(computer), { onlyIfRunning: true });
 }
 
 export async function sleepComputerIfIdle(

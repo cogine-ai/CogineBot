@@ -194,6 +194,7 @@ function deferred<T>() {
 let root: Root;
 let container: HTMLDivElement;
 let currentComputer: ComputerStatus;
+let pageVisibility: DocumentVisibilityState;
 let firstBoot: ReturnType<typeof deferred<ComputerStatus>>;
 let bootCalls: string[];
 let boots: Array<ReturnType<typeof deferred<ComputerStatus>>>;
@@ -205,6 +206,8 @@ function RoutedShell() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pageVisibility = "visible";
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => pageVisibility);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -300,6 +303,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 async function render(entry = "/app/chief") {
@@ -426,6 +431,678 @@ it("watches a running computer with a screen without booting or taking control",
   expect(bootCalls).toEqual([]);
   expect(boundary.call.mock.calls.filter(([path]) => path === "computer.recover")).toHaveLength(0);
   expect(boundary.call.mock.calls.filter(([path]) => path === "computer.takeover")).toHaveLength(0);
+});
+
+function callsTo(path: string) {
+  return boundary.call.mock.calls.filter(([name]) => name === path);
+}
+async function setPageVisibility(value: DocumentVisibilityState) {
+  await act(async () => {
+    pageVisibility = value;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+async function showRunningComputer() {
+  currentComputer = status("chief", "running");
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  await render();
+  await click(button("Agent computer"));
+}
+
+it("does not attend or connect a computer while its page is hidden", async () => {
+  pageVisibility = "hidden";
+  await showRunningComputer();
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  expect(bootCalls).toEqual([]);
+});
+
+it("reads current status before attending again and leaves a stopped computer stopped", async () => {
+  await showRunningComputer();
+  await setPageVisibility("hidden");
+  const read = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.status" ? read.promise : fallback(path, input, options),
+  );
+  const attended = callsTo("computer.heartbeat").length;
+  const screens = callsTo("computer.screenUrl").length;
+  await setPageVisibility("visible");
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+  expect(callsTo("computer.screenUrl")).toHaveLength(screens);
+  await act(async () => read.resolve(status()));
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+  expect(callsTo("computer.screenUrl")).toHaveLength(screens);
+  expect(container.querySelector('[data-testid="computer-preview"]')?.textContent).toContain(
+    "Computer is stopped",
+  );
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+  expect(callsTo("computer.release")).toHaveLength(0);
+});
+
+it("attends visible watching without requiring window focus and stops when the panel closes", async () => {
+  vi.useFakeTimers();
+  await showRunningComputer();
+  const attended = callsTo("computer.heartbeat").length;
+  expect(attended).toBe(1);
+  await act(async () => window.dispatchEvent(new Event("blur")));
+  await act(async () => vi.advanceTimersByTimeAsync(60_000));
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended + 1);
+  await click(button("Close panel"));
+  await act(async () => vi.advanceTimersByTimeAsync(180_000));
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended + 1);
+  expect(callsTo("computer.release")).toHaveLength(0);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("waits for a pending attendance and never catches up hidden ticks", async () => {
+  vi.useFakeTimers();
+  const ping = deferred<unknown>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.heartbeat" ? ping.promise : fallback(path, input, options),
+  );
+  await showRunningComputer();
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  await act(async () => vi.advanceTimersByTimeAsync(180_000));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  await setPageVisibility("hidden");
+  await act(async () => ping.resolve({ ok: true }));
+  await act(async () => vi.advanceTimersByTimeAsync(180_000));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  await setPageVisibility("visible");
+  expect(callsTo("computer.heartbeat")).toHaveLength(2);
+});
+
+it("retries a failed status read on the next visible tick before sending attendance", async () => {
+  vi.useFakeTimers();
+  const fallback = boundary.call.getMockImplementation()!;
+  let offline = true;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.status" && offline) return Promise.reject(new Error("offline"));
+    return fallback(path, input, options);
+  });
+  await showRunningComputer();
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  offline = false;
+  await act(async () => vi.advanceTimersByTimeAsync(60_000));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(bootCalls).toEqual([]);
+});
+
+it("discards a status read that finishes after hiding the computer", async () => {
+  await showRunningComputer();
+  await setPageVisibility("hidden");
+  const read = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.status" ? read.promise : fallback(path, input, options),
+  );
+  const attended = callsTo("computer.heartbeat").length;
+  const screens = callsTo("computer.screenUrl").length;
+  await setPageVisibility("visible");
+  await setPageVisibility("hidden");
+  await act(async () => read.resolve(status("chief", "running")));
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+  expect(callsTo("computer.screenUrl")).toHaveLength(screens);
+  expect(bootCalls).toEqual([]);
+});
+
+it("aborts pending screen reads and discards their results while hidden", async () => {
+  const pending: Array<ReturnType<typeof deferred<{ url: string | null }>>> = [];
+  const signals: AbortSignal[] = [];
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.screenUrl") {
+      const read = deferred<{ url: string | null }>();
+      pending.push(read);
+      signals.push(options!.signal!);
+      return read.promise;
+    }
+    return fallback(path, input, options);
+  });
+  await showRunningComputer();
+  expect(pending.length).toBeGreaterThan(0);
+  await setPageVisibility("hidden");
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  await act(async () => {
+    for (const read of pending) read.resolve({ url: "http://localhost/stale-hidden-screen" });
+  });
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  expect(bootCalls).toEqual([]);
+});
+
+it("does not overwrite a stopped event with a pending running status read", async () => {
+  currentComputer = status("chief", "running");
+  const initial = { ...snapshot(currentComputer), cursor: 10 };
+  const stopped = deferred<ProductEvent>();
+  const read = deferred<ComputerStatus>();
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.get") return Promise.resolve(initial);
+    if (path === "computer.status") return read.promise;
+    if (path === "threads.subscribe")
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield await stopped.promise;
+          await new Promise<void>((resolve) =>
+            options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+          );
+        },
+      };
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  await act(async () =>
+    stopped.resolve({
+      id: "heartbeat-stop-11",
+      spaceId: "space-1",
+      threadId: initial.threadId,
+      botId: "chief",
+      type: "computer.status",
+      seq: 11,
+      payload: { status: "stopped" },
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  await act(async () => read.resolve(status("chief", "running")));
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(container.querySelector('[data-testid="computer-preview"]')?.textContent).toContain(
+    "Computer is stopped",
+  );
+  expect(bootCalls).toEqual([]);
+});
+
+it.each(["space", "account", "session"] as const)(
+  "discards an attendance status after its %s changes",
+  async (scope) => {
+    await showRunningComputer();
+    await setPageVisibility("hidden");
+    const read = deferred<ComputerStatus>();
+    const fallback = boundary.call.getMockImplementation()!;
+    let reads = 0;
+    boundary.call.mockImplementation((path, input, options) =>
+      path === "computer.status"
+        ? ++reads === 1
+          ? read.promise
+          : Promise.resolve(status())
+        : fallback(path, input, options),
+    );
+    const attended = callsTo("computer.heartbeat").length;
+    await setPageVisibility("visible");
+    const oldSignal = callsTo("computer.status").at(-1)![2]!.signal as AbortSignal;
+    if (scope === "space") {
+      boundary.space = "space-2";
+      boundary.generation += 1;
+    } else {
+      if (scope === "account") boundary.session.data.user.id = "user-2";
+      else boundary.session.data.session.id = "session-2";
+      await act(async () => navigate("/app/chief"));
+    }
+    await act(async () => read.resolve(status("chief", "running")));
+    expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+    if (scope !== "space") expect(oldSignal.aborted).toBe(true);
+    expect(bootCalls).toEqual([]);
+  },
+);
+
+it("discards the former bot's pending attendance after navigation", async () => {
+  await showRunningComputer();
+  await setPageVisibility("hidden");
+  const read = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.status" && input?.botId === "chief"
+      ? read.promise
+      : fallback(path, input, options),
+  );
+  const attended = callsTo("computer.heartbeat").filter(
+    ([, input]) => input?.botId === "chief",
+  ).length;
+  await setPageVisibility("visible");
+  await act(async () => navigate("/app/worker"));
+  await act(async () => read.resolve(status("chief", "running")));
+  expect(
+    callsTo("computer.heartbeat").filter(([, input]) => input?.botId === "chief"),
+  ).toHaveLength(attended);
+  expect(bootCalls).toEqual([]);
+});
+
+it("keeps one attendance lifecycle while moving between preview and full window", async () => {
+  await showRunningComputer();
+  const attended = callsTo("computer.heartbeat").length;
+  await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+  expect(button("Close computer")).toBeTruthy();
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+  await click(button("Close computer"));
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+  expect(callsTo("computer.release")).toHaveLength(0);
+});
+
+it("waits for fresh foreground status before remounting a cached screen", async () => {
+  await showRunningComputer();
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  await setPageVisibility("hidden");
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  const read = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.status" ? read.promise : fallback(path, input, options),
+  );
+  await setPageVisibility("visible");
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  await act(async () => read.resolve(status("chief", "running")));
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
+});
+
+it("does not mount an explicit Open result that finishes after the page hides", async () => {
+  await render();
+  await openPanelAndStartComputer();
+  await setPageVisibility("hidden");
+  currentComputer = status("chief", "running");
+  await act(async () => firstBoot.resolve(currentComputer));
+  expect(document.querySelector('iframe[title="Bot screen"]')).toBeNull();
+  expect(document.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+  expect(callsTo("computer.release")).toHaveLength(0);
+  await setPageVisibility("visible");
+  expect(document.querySelector('iframe[title="Bot screen"]')).not.toBeNull();
+  expect(bootCalls).toEqual(["chief"]);
+});
+
+it("does not attend or schedule work after the computer surface unmounts", async () => {
+  vi.useFakeTimers();
+  await showRunningComputer();
+  await setPageVisibility("hidden");
+  const read = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.status" ? read.promise : fallback(path, input, options),
+  );
+  const attended = callsTo("computer.heartbeat").length;
+  await setPageVisibility("visible");
+  const signal = callsTo("computer.status").at(-1)![2]!.signal as AbortSignal;
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+  await act(async () => read.resolve(status("chief", "running")));
+  await act(async () => vi.advanceTimersByTimeAsync(180_000));
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+});
+
+it("does not connect a late thread snapshot before fresh foreground status completes", async () => {
+  currentComputer = status("chief", "running");
+  const initial = { ...snapshot(currentComputer), cursor: 10 };
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  const thread = deferred<ThreadSnapshot>();
+  const read = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let returning = false;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.get") return thread.promise;
+    if (path === "computer.status" && returning) return read.promise;
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  await setPageVisibility("hidden");
+  returning = true;
+  const attended = callsTo("computer.heartbeat").length;
+  const screens = callsTo("computer.screenUrl").length;
+  await setPageVisibility("visible");
+  await act(async () => thread.resolve(initial));
+  expect(callsTo("computer.screenUrl")).toHaveLength(screens);
+  expect(document.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  await act(async () => read.resolve(status()));
+  expect(callsTo("computer.screenUrl")).toHaveLength(screens);
+  expect(callsTo("computer.heartbeat")).toHaveLength(attended);
+  expect(bootCalls).toEqual([]);
+});
+
+it("shows a successful explicit Open immediately after a stopped foreground status", async () => {
+  await render();
+  await openPanelAndStartComputer();
+  currentComputer = status("chief", "running");
+  await act(async () => firstBoot.resolve(currentComputer));
+  expect(document.querySelector('iframe[title="Bot screen"]')?.getAttribute("src")).toBe(
+    "http://localhost/screen",
+  );
+  expect(bootCalls).toEqual(["chief"]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("cannot turn a superseded panel read into boot during a rapid visibility return", async () => {
+  currentComputer = status("chief", "running");
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const firstStatus = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let reads = 0;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.status" && ++reads === 1) return firstStatus.promise;
+    if (path === "computer.screenUrl") return Promise.resolve({ url: null });
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  await act(async () => {
+    pageVisibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    pageVisibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    firstStatus.resolve(status("chief", "running"));
+  });
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+});
+
+function installComputerStatusStream() {
+  const first = deferred<ProductEvent>();
+  const second = deferred<ProductEvent>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.subscribe")
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield await first.promise;
+          if (options?.signal?.aborted) return;
+          yield await second.promise;
+          if (options?.signal?.aborted) return;
+          await new Promise<void>((resolve) =>
+            options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+          );
+        },
+      };
+    return fallback(path, input, options);
+  });
+  const event = (seq: number, botId = "chief"): ProductEvent => ({
+    id: `computer-running-${seq}`,
+    spaceId: "space-1",
+    threadId: "thread-chief",
+    botId,
+    type: "computer.status",
+    seq,
+    payload: { status: "running" },
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+  return { first, second, event };
+}
+
+it.each(["stopped", "suspended", "booting"] as const)(
+  "refreshes a visible %s computer immediately after an accepted running event",
+  async (initialState) => {
+    vi.useFakeTimers();
+    currentComputer = status("chief", initialState);
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+    const stream = installComputerStatusStream();
+    await render();
+    await click(button("Agent computer"));
+    expect(callsTo("computer.status")).toHaveLength(1);
+    expect(callsTo("computer.heartbeat")).toHaveLength(0);
+    expect(callsTo("computer.screenUrl")).toHaveLength(0);
+    const fresh = deferred<ComputerStatus>();
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation((path, input, options) =>
+      path === "computer.status" ? fresh.promise : fallback(path, input, options),
+    );
+    await act(async () => stream.first.resolve(stream.event(11)));
+    expect(callsTo("computer.status")).toHaveLength(2);
+    expect(callsTo("computer.heartbeat")).toHaveLength(0);
+    expect(callsTo("computer.screenUrl")).toHaveLength(0);
+    expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+    await act(async () => fresh.resolve(status("chief", "running")));
+    expect(callsTo("computer.heartbeat")).toHaveLength(1);
+    expect(callsTo("computer.screenUrl")).toHaveLength(1);
+    expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+    expect(bootCalls).toEqual([]);
+    expect(callsTo("computer.takeover")).toHaveLength(0);
+    await act(async () => stream.second.resolve(stream.event(12)));
+    expect(callsTo("computer.status")).toHaveLength(2);
+    expect(callsTo("computer.heartbeat")).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(callsTo("computer.heartbeat")).toHaveLength(2);
+  },
+);
+
+it("queues one immediate recheck after a pending nonrunning status is superseded by running", async () => {
+  currentComputer = status();
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const stream = installComputerStatusStream();
+  const stale = deferred<ComputerStatus>();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let reads = 0;
+  let firstSignal: AbortSignal | undefined;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.status") {
+      reads += 1;
+      if (reads === 1) firstSignal = options?.signal;
+      return reads === 1 ? stale.promise : fresh.promise;
+    }
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  await act(async () => stream.first.resolve(stream.event(11)));
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(firstSignal?.aborted).toBe(true);
+  expect(reads).toBe(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  await act(async () => stale.resolve(status()));
+  expect(reads).toBe(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(bootCalls).toEqual([]);
+  await act(async () => fresh.resolve(status("chief", "running")));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it.each(["hidden", "closed", "other bot", "other Space", "historical event"] as const)(
+  "does not recheck a running event for a %s surface",
+  async (excluded) => {
+    currentComputer = status();
+    const initial = { ...snapshot(currentComputer), cursor: 10 };
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+    const stream = installComputerStatusStream();
+    await render();
+    await click(button("Agent computer"));
+    if (excluded === "hidden") await setPageVisibility("hidden");
+    if (excluded === "closed") await click(button("Close panel"));
+    if (excluded === "other bot") await act(async () => navigate("/app/worker"));
+    if (excluded === "other Space") {
+      boundary.space = "space-2";
+      boundary.generation += 1;
+    }
+    const reads = callsTo("computer.status").length;
+    await act(async () =>
+      stream.first.resolve(stream.event(excluded === "historical event" ? 9 : 11)),
+    );
+    expect(callsTo("computer.status")).toHaveLength(reads);
+    expect(callsTo("computer.heartbeat")).toHaveLength(0);
+    expect(callsTo("computer.screenUrl")).toHaveLength(0);
+    expect(bootCalls).toEqual([]);
+    expect(callsTo("computer.takeover")).toHaveLength(0);
+  },
+);
+
+it("requires the event-triggered current read to report running before it connects", async () => {
+  currentComputer = status();
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const stream = installComputerStatusStream();
+  await render();
+  await click(button("Agent computer"));
+  await act(async () => stream.first.resolve(stream.event(11)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  currentComputer = status("chief", "running");
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(3);
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(1);
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("revokes a previously verified frame and late screen read during a stopped-to-running recheck", async () => {
+  const stream = installComputerStatusStream();
+  await showRunningComputer();
+  expect(container.querySelector('iframe[title="Bot screen preview"]')?.getAttribute("src")).toBe(
+    "http://localhost/screen",
+  );
+  const oldScreen = deferred<{ url: string | null }>();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let pendingStatus = false;
+  let useFreshScreen = false;
+  const oldSignals: AbortSignal[] = [];
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.status" && pendingStatus) return fresh.promise;
+    if (path === "computer.screenUrl") {
+      if (useFreshScreen) return Promise.resolve({ url: "http://localhost/new-running-screen" });
+      oldSignals.push(options!.signal!);
+      return oldScreen.promise;
+    }
+    return fallback(path, input, options);
+  });
+  await act(async () =>
+    stream.first.resolve({
+      ...stream.event(11),
+      payload: { status: "stopped" },
+    }),
+  );
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  pendingStatus = true;
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  expect(oldSignals.every((signal) => signal.aborted)).toBe(true);
+  await act(async () => oldScreen.resolve({ url: "http://localhost/stale-running-screen" }));
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  useFreshScreen = true;
+  await act(async () => fresh.resolve(status("chief", "running")));
+  expect(container.querySelector('iframe[title="Bot screen preview"]')?.getAttribute("src")).toBe(
+    "http://localhost/new-running-screen",
+  );
+  expect(callsTo("computer.heartbeat")).toHaveLength(2);
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("rechecks a running snapshot that commits before its historical running event", async () => {
+  currentComputer = status();
+  const initial = snapshot(currentComputer);
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  const stream = installComputerStatusStream();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let authoritative = initial;
+  let waitForCurrent = false;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.get") return Promise.resolve(authoritative);
+    if (path === "computer.status" && waitForCurrent) return fresh.promise;
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  expect(callsTo("computer.status")).toHaveLength(1);
+  currentComputer = status("chief", "running");
+  authoritative = { ...snapshot(currentComputer), cursor: 20 };
+  waitForCurrent = true;
+  await act(async () =>
+    stream.first.resolve({
+      ...stream.event(11),
+      type: "run.completed",
+      runId: "source-run",
+      payload: {},
+    }),
+  );
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  await act(async () => fresh.resolve(currentComputer));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("queues a fresh check when a running snapshot supersedes a pending nonrunning read", async () => {
+  currentComputer = status();
+  const initial = snapshot(currentComputer);
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  const stream = installComputerStatusStream();
+  const stale = deferred<ComputerStatus>();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let authoritative = initial;
+  let reads = 0;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.get") return Promise.resolve(authoritative);
+    if (path === "computer.status") return ++reads === 1 ? stale.promise : fresh.promise;
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  currentComputer = status("chief", "running");
+  authoritative = { ...snapshot(currentComputer), cursor: 20 };
+  await act(async () =>
+    stream.first.resolve({
+      ...stream.event(11),
+      type: "run.completed",
+      runId: "source-run",
+      payload: {},
+    }),
+  );
+  expect(reads).toBe(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  await act(async () => stale.resolve(status()));
+  expect(reads).toBe(2);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(bootCalls).toEqual([]);
+  await act(async () => fresh.resolve(currentComputer));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
+});
+
+it("allows a later accepted running event to retry a failed status recheck", async () => {
+  currentComputer = status();
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const stream = installComputerStatusStream();
+  await render();
+  await click(button("Agent computer"));
+  const fallback = boundary.call.getMockImplementation()!;
+  let offline = true;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.status" && offline
+      ? Promise.reject(new Error("offline"))
+      : fallback(path, input, options),
+  );
+  await act(async () => stream.first.resolve(stream.event(11)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  offline = false;
+  currentComputer = status("chief", "running");
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(3);
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
 });
 
 it("keeps a committed stopped computer passive when an older running snapshot returns", async () => {

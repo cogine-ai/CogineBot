@@ -130,6 +130,21 @@ describe("host-aware sandbox", () => {
     expect(provision).not.toHaveBeenCalled();
   });
 
+  it("routes passive attendance to the existing provider without selecting or starting one", async () => {
+    const isolated = new FakeSandboxProvider();
+    const host = new DesktopSandboxProvider();
+    const keepAlive = vi.fn().mockResolvedValue(undefined);
+    const selected = vi.fn(async () => true);
+    Object.assign(isolated, { keepAlive });
+    const sandbox = new HostAwareSandbox(isolated, host, selected);
+    const provision = vi.spyOn(isolated, "provision");
+    const computer: ComputerRef = { id: "old", botId: "home", kind: "fake", providerRef: "old" };
+    await sandbox.keepAlive(computer, { onlyIfRunning: true });
+    expect(keepAlive).toHaveBeenCalledWith(computer, { onlyIfRunning: true });
+    expect(provision).not.toHaveBeenCalled();
+    expect(selected).not.toHaveBeenCalled();
+  });
+
   it("provisions on the host provider when enabled", async () => {
     const isolated = new FakeSandboxProvider();
     const host = new DesktopSandboxProvider();
