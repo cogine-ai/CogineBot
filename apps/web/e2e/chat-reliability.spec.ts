@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import type {
   AppBootstrap,
   Bot,
+  ComputerStatus,
   Connection,
   Group,
   Me,
@@ -59,6 +60,24 @@ function bot(id: string, name: string, spaceId = "space-primary"): Bot {
     disabledBuiltinTools: [],
     webhookConfigured: false,
     spawnKey: null,
+  };
+}
+function suspendedComputer(): ComputerStatus {
+  return {
+    botId: "chief",
+    mode: "team",
+    kind: "fake",
+    state: "suspended",
+    controlHolder: "none",
+    controlBotId: null,
+    takeoverRequested: false,
+    screenAvailable: false,
+    screenWidth: 1024,
+    screenHeight: 768,
+    homeRevision: null,
+    busyBotName: null,
+    canUpdate: false,
+    terminalAvailable: false,
   };
 }
 function deferred() {
@@ -121,6 +140,8 @@ async function mockChat(page: Page) {
     uploads: [] as Array<Record<string, unknown>>,
     orders: [] as string[][],
     threadReads: [] as Array<{ botId: string; spaceId: string }>,
+    computer: null as ComputerStatus | null,
+    computerReads: [] as Array<{ botId: string; spaceId: string }>,
     listRequests: 0,
     botListRequests: 0,
     archivedBotListRequests: 0,
@@ -351,6 +372,14 @@ async function mockChat(page: Page) {
     if (path === "usage/summary") return json(route, { inputTokens: 0, outputTokens: 0, runs: 0 });
     if (path === "voice/status") return json(route, { ready: false });
     if (path === "memory/providerConfig") return json(route, null);
+    if (
+      path === "computer/status" &&
+      state.computer?.botId === input.botId &&
+      state.bots.some((bot) => bot.id === input.botId && bot.spaceId === spaceId)
+    ) {
+      state.computerReads.push({ botId: input.botId!, spaceId });
+      return json(route, state.computer);
+    }
     if (path === "computer/screenUrl") return json(route, { url: null });
     const empty = [
       "groups/listArchived",
@@ -1421,6 +1450,7 @@ for (const manual of [false, true]) {
       Object.defineProperty(document, "hasFocus", { value: () => false });
     });
     state.sandboxProvider = "docker";
+    state.computer = suspendedComputer();
     let recovered = false;
     const snapshot = (data: ThreadSnapshot): ThreadSnapshot => ({
       ...data,
@@ -1443,22 +1473,7 @@ for (const manual of [false, true]) {
           }
         : null,
       activeRuns: [],
-      computer: {
-        botId: "chief",
-        mode: "team",
-        kind: "fake",
-        state: "suspended",
-        controlHolder: "none",
-        controlBotId: null,
-        takeoverRequested: false,
-        screenAvailable: false,
-        screenWidth: 1024,
-        screenHeight: 768,
-        homeRevision: null,
-        busyBotName: null,
-        canUpdate: false,
-        terminalAvailable: false,
-      },
+      computer: state.computer,
     });
     state.bootstrap = (route, data) => json(route, { ...data, thread: snapshot(data.thread!) });
     state.thread = (route, data) => json(route, snapshot(data));
@@ -1537,6 +1552,7 @@ for (const manual of [false, true]) {
     expect(await notifications()).toEqual(["Chief"]);
     expect(state.sends).toHaveLength(0);
     expect(state.uploads).toHaveLength(0);
+    expect(state.computerReads).toEqual([{ botId: "chief", spaceId: "space-primary" }]);
     expect(errors).toEqual([]);
   });
 }
@@ -2272,6 +2288,7 @@ for (const group of [false, true]) {
     const { state, errors } = await mockChat(page);
     const stream = await controlledStream(page);
     state.sandboxProvider = "docker";
+    state.computer = suspendedComputer();
     const threadId = group ? "thread-crew" : "thread-chief";
     if (group)
       state.groups = [
@@ -2330,22 +2347,7 @@ for (const group of [false, true]) {
           }
         : null,
       activeRuns: [],
-      computer: {
-        botId: "chief",
-        mode: "team",
-        kind: "fake",
-        state: "suspended",
-        controlHolder: "none",
-        controlBotId: null,
-        takeoverRequested: false,
-        screenAvailable: false,
-        screenWidth: 1024,
-        screenHeight: 768,
-        homeRevision: null,
-        busyBotName: null,
-        canUpdate: false,
-        terminalAvailable: false,
-      },
+      computer: state.computer,
     });
     state.bootstrap = (route, data) => json(route, { ...data, thread: snapshot(data.thread!) });
     state.thread = (route, data) => json(route, snapshot(data));
@@ -2407,6 +2409,9 @@ for (const group of [false, true]) {
     if (!group) await expect(preview).toContainText("Computer is asleep");
     expect(state.sends).toHaveLength(0);
     expect(state.uploads).toHaveLength(0);
+    expect(state.computerReads).toEqual(
+      group ? [] : [{ botId: "chief", spaceId: "space-primary" }],
+    );
     expect(errors).toEqual([]);
   });
 }

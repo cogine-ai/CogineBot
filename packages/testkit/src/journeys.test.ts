@@ -2676,11 +2676,32 @@ describeJourneys("required product journeys", () => {
     });
     await rpc(app, cookie, "computer/boot", { botId: bot.id });
     await rpc(app, cookie, "computer/takeover", { botId: bot.id });
-    void rpc(app, cookie, "threads/send", {
+    const workingRun = await rpc<{ runId: string }>(app, cookie, "threads/send", {
       botId: bot.id,
       text: "keep working until I stop you",
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const { computerId } = await prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      select: { computerId: true },
+    });
+    if (!computerId) throw new Error("Teacher has no computer");
+    const workingState = async () => {
+      const [run, lease] = await Promise.all([
+        prisma.run.findUnique({ where: { id: workingRun.runId }, select: { status: true } }),
+        prisma.computerExecutionLease.findUnique({
+          where: { computerId_botId: { computerId, botId: bot.id } },
+          select: { runId: true, expiresAt: true },
+        }),
+      ]);
+      return {
+        run,
+        ownsLease: lease?.runId === workingRun.runId && lease.expiresAt.getTime() > Date.now(),
+      };
+    };
+    await waitForDatabase(async () => {
+      const state = await workingState();
+      return state.run?.status === "running" && state.ownsLease;
+    });
     const skill = await rpc<{
       id: string;
       status: string;
@@ -2691,6 +2712,10 @@ describeJourneys("required product journeys", () => {
       goal: "Export weekly CRM list",
     });
     expect(skill.status).toBe("recording");
+    await waitForDatabase(async () => {
+      const state = await workingState();
+      return state.run?.status === "cancelled" && !state.ownsLease;
+    });
     await rpc(app, cookie, "computer/input", {
       botId: bot.id,
       kind: "pointer",
@@ -2723,6 +2748,9 @@ describeJourneys("required product journeys", () => {
     );
     expect(computerAfterStop.controlHolder).toBe("bot");
     expect(computerAfterStop.controlBotId).toBeNull();
+    const workingAfterStop = await workingState();
+    expect(workingAfterStop.run?.status).toBe("cancelled");
+    expect(workingAfterStop.ownsLease).toBe(false);
     await rpc(app, cookie, "skills/updateDraft", {
       skillId: skill.id,
       name: "Export weekly CRM list",
@@ -2741,13 +2769,16 @@ describeJourneys("required product journeys", () => {
       skillId: skill.id,
     });
     expect(testRun.runId).toBeTruthy();
-    await waitFor(
-      app,
-      cookie,
-      bot.id,
-      (snap) => !snap.run || ["completed", "failed", "cancelled"].includes(snap.run.status),
-    );
+    await expect
+      .poll(
+        async () => (await prisma.run.findUniqueOrThrow({ where: { id: testRun.runId } })).status,
+        { timeout: 20_000, interval: 100 },
+      )
+      .toBe("completed");
     await sendAndWait(app, cookie, bot.id, "run Export weekly CRM list");
+    const workingAfterTest = await workingState();
+    expect(workingAfterTest.run?.status).toBe("cancelled");
+    expect(workingAfterTest.ownsLease).toBe(false);
     const messages = (await rpc<Snap>(app, cookie, "threads/get", { botId: bot.id })).messages;
     const botText = JSON.stringify(messages);
     expect(botText.toLowerCase()).toContain("taught skill");
