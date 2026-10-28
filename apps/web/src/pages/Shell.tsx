@@ -578,9 +578,34 @@ export function ShellPage() {
     setSnapshot(withLiveStreamingProgress(snapshotRef.current, streamResponses));
   }, [streamResponses]);
 
-  function commitComputer(next: ComputerStatus | null) {
+  function commitComputer(
+    next: ComputerStatus | null,
+    observation: "snapshot" | "running-event" | "attendance-read" = "snapshot",
+  ) {
+    const before = computerRef.current;
     computerRef.current = next;
     setComputer(next);
+    const confirmed = screenReadiness.current?.confirmed;
+    // An in-flight first read can confirm a snapshot; events invalidate a possibly older read.
+    if (
+      observation !== "attendance-read" &&
+      (next !== before || observation === "running-event") &&
+      next?.state === "running" &&
+      (before?.state !== "running" || confirmed !== true) &&
+      (observation === "running-event" || typeof confirmed === "boolean")
+    )
+      recheckComputerStatus.current?.(next.botId);
+  }
+
+  function commitComputerEvent(next: ComputerStatus | null, event: ProductEvent) {
+    commitComputer(
+      next,
+      event.type === "computer.status" &&
+        event.payload.status === "running" &&
+        next?.botId === event.botId
+        ? "running-event"
+        : "snapshot",
+    );
   }
 
   function updateSnapshot(update: (prev: ThreadSnapshot | null) => ThreadSnapshot | null) {
@@ -1142,6 +1167,7 @@ export function ShellPage() {
   const groupSettingsActor = useRef({ userId, spaceId: bootstrapMe?.spaceId });
   groupSettingsActor.current = { userId, spaceId: bootstrapMe?.spaceId };
   const screenRequest = useRef(0);
+  const recheckComputerStatus = useRef<((botId: string) => void) | null>(null);
   const computerVisibilityEpoch = useRef(0);
   const screenReadAbort = useRef<AbortController | null>(null);
   const screenReadiness = useRef<{
@@ -1451,7 +1477,7 @@ export function ShellPage() {
     commitReaderComputer: (
       next: ComputerStatus | null,
       event: ProductEvent,
-    ) => void = commitComputer,
+    ) => void = commitComputerEvent,
   ) {
     const scope = draftScopeKey;
     const actor = groupSettingsActor.current;
@@ -2077,7 +2103,7 @@ export function ShellPage() {
         ) {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
           void refreshThread(active.id).catch(() => undefined);
-        } else if (isComputerStatusEvent(event)) {
+        } else if (isComputerStatusEvent(event) && screenReadiness.current?.confirmed === true) {
           void refreshComputerScreen(active.id).catch(() => undefined);
         }
       },
@@ -2120,7 +2146,7 @@ export function ShellPage() {
     const abort = new AbortController();
     const reader = createThreadReader(abort, (next, event) => {
       if (isComputerStatusEvent(event) && event.botId !== computerBotIdRef.current) return;
-      commitComputer(next);
+      commitComputerEvent(next, event);
     });
     void runThreadSubscription({
       signal: abort.signal,
@@ -4023,6 +4049,7 @@ export function ShellPage() {
     let disposed = false;
     let visibilityEpoch = 0;
     let refreshScreen = true;
+    let recheckQueued = false;
     function prepareScreenRead() {
       screenReadiness.current?.settle(false);
       let resolve!: (running: boolean) => void;
@@ -4046,6 +4073,7 @@ export function ShellPage() {
       document.visibilityState === "visible" &&
       computerVisible.current &&
       computerBotIdRef.current === heartbeatBotId &&
+      spaceId === actor.spaceId &&
       owner === committedSettingsOwner.current &&
       actor.userId === groupSettingsActor.current.userId &&
       actor.spaceId === groupSettingsActor.current.spaceId &&
@@ -4067,15 +4095,17 @@ export function ShellPage() {
           status = await client.computer.status({ botId: heartbeatBotId }, { signal });
         } catch (error) {
           observation?.settle(false);
+          if (current()) recheckQueued = false;
           throw error;
         }
         if (!current() || status.botId !== heartbeatBotId) {
           observation?.settle(false);
           return;
         }
+        recheckQueued = false;
         // Status has no event cursor. Never overwrite an event received while the read waited.
         if (computerRef.current === before) {
-          commitComputer(status);
+          commitComputer(status, "attendance-read");
           cacheComputerFor(heartbeatBotId, { computer: status });
         }
         const latest = computerRef.current;
@@ -4085,6 +4115,8 @@ export function ShellPage() {
           latest.state !== "running"
         ) {
           observation?.settle(false);
+          if (status.state !== "running" && latest?.state === "running" && latest !== before)
+            recheckComputerStatus.current?.(heartbeatBotId);
           return;
         }
         observation?.settle(true);
@@ -4101,7 +4133,7 @@ export function ShellPage() {
         await client.computer.heartbeat({ botId: heartbeatBotId }, { signal });
       },
     });
-    const attendVisibleComputer = () => {
+    const restartObservation = () => {
       visibilityEpoch += 1;
       computerVisibilityEpoch.current += 1;
       setVisibleComputerScreen(null);
@@ -4112,12 +4144,25 @@ export function ShellPage() {
       prepareScreenRead();
       heartbeat.setEnabled(presented());
     };
+    const recheckRunningComputer = (botId: string) => {
+      if (botId !== heartbeatBotId || !presented() || recheckQueued) return;
+      recheckQueued = true;
+      // An event invalidates the older observation; only a fresh status read can reconnect.
+      restartObservation();
+    };
+    recheckComputerStatus.current = recheckRunningComputer;
+    const attendVisibleComputer = () => {
+      recheckQueued = false;
+      restartObservation();
+    };
     prepareScreenRead();
     heartbeat.setEnabled(presented());
     document.addEventListener("visibilitychange", attendVisibleComputer);
     window.addEventListener("online", attendVisibleComputer);
     return () => {
       disposed = true;
+      if (recheckComputerStatus.current === recheckRunningComputer)
+        recheckComputerStatus.current = null;
       visibilityEpoch += 1;
       computerVisibilityEpoch.current += 1;
       setVisibleComputerScreen(null);

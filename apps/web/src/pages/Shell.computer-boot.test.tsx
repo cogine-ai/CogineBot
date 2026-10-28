@@ -801,6 +801,310 @@ it("cannot turn a superseded panel read into boot during a rapid visibility retu
   expect(callsTo("computer.heartbeat")).toHaveLength(1);
 });
 
+function installComputerStatusStream() {
+  const first = deferred<ProductEvent>();
+  const second = deferred<ProductEvent>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.subscribe")
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield await first.promise;
+          if (options?.signal?.aborted) return;
+          yield await second.promise;
+          if (options?.signal?.aborted) return;
+          await new Promise<void>((resolve) =>
+            options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+          );
+        },
+      };
+    return fallback(path, input, options);
+  });
+  const event = (seq: number, botId = "chief"): ProductEvent => ({
+    id: `computer-running-${seq}`,
+    spaceId: "space-1",
+    threadId: "thread-chief",
+    botId,
+    type: "computer.status",
+    seq,
+    payload: { status: "running" },
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+  return { first, second, event };
+}
+
+it.each(["stopped", "suspended", "booting"] as const)(
+  "refreshes a visible %s computer immediately after an accepted running event",
+  async (initialState) => {
+    vi.useFakeTimers();
+    currentComputer = status("chief", initialState);
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+    const stream = installComputerStatusStream();
+    await render();
+    await click(button("Agent computer"));
+    expect(callsTo("computer.status")).toHaveLength(1);
+    expect(callsTo("computer.heartbeat")).toHaveLength(0);
+    expect(callsTo("computer.screenUrl")).toHaveLength(0);
+    const fresh = deferred<ComputerStatus>();
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation((path, input, options) =>
+      path === "computer.status" ? fresh.promise : fallback(path, input, options),
+    );
+    await act(async () => stream.first.resolve(stream.event(11)));
+    expect(callsTo("computer.status")).toHaveLength(2);
+    expect(callsTo("computer.heartbeat")).toHaveLength(0);
+    expect(callsTo("computer.screenUrl")).toHaveLength(0);
+    expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+    await act(async () => fresh.resolve(status("chief", "running")));
+    expect(callsTo("computer.heartbeat")).toHaveLength(1);
+    expect(callsTo("computer.screenUrl")).toHaveLength(1);
+    expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+    expect(bootCalls).toEqual([]);
+    expect(callsTo("computer.takeover")).toHaveLength(0);
+    await act(async () => stream.second.resolve(stream.event(12)));
+    expect(callsTo("computer.status")).toHaveLength(2);
+    expect(callsTo("computer.heartbeat")).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(callsTo("computer.heartbeat")).toHaveLength(2);
+  },
+);
+
+it("queues one immediate recheck after a pending nonrunning status is superseded by running", async () => {
+  currentComputer = status();
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const stream = installComputerStatusStream();
+  const stale = deferred<ComputerStatus>();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let reads = 0;
+  let firstSignal: AbortSignal | undefined;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.status") {
+      reads += 1;
+      if (reads === 1) firstSignal = options?.signal;
+      return reads === 1 ? stale.promise : fresh.promise;
+    }
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  await act(async () => stream.first.resolve(stream.event(11)));
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(firstSignal?.aborted).toBe(true);
+  expect(reads).toBe(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  await act(async () => stale.resolve(status()));
+  expect(reads).toBe(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(bootCalls).toEqual([]);
+  await act(async () => fresh.resolve(status("chief", "running")));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it.each(["hidden", "closed", "other bot", "other Space", "historical event"] as const)(
+  "does not recheck a running event for a %s surface",
+  async (excluded) => {
+    currentComputer = status();
+    const initial = { ...snapshot(currentComputer), cursor: 10 };
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+    const stream = installComputerStatusStream();
+    await render();
+    await click(button("Agent computer"));
+    if (excluded === "hidden") await setPageVisibility("hidden");
+    if (excluded === "closed") await click(button("Close panel"));
+    if (excluded === "other bot") await act(async () => navigate("/app/worker"));
+    if (excluded === "other Space") {
+      boundary.space = "space-2";
+      boundary.generation += 1;
+    }
+    const reads = callsTo("computer.status").length;
+    await act(async () =>
+      stream.first.resolve(stream.event(excluded === "historical event" ? 9 : 11)),
+    );
+    expect(callsTo("computer.status")).toHaveLength(reads);
+    expect(callsTo("computer.heartbeat")).toHaveLength(0);
+    expect(callsTo("computer.screenUrl")).toHaveLength(0);
+    expect(bootCalls).toEqual([]);
+    expect(callsTo("computer.takeover")).toHaveLength(0);
+  },
+);
+
+it("requires the event-triggered current read to report running before it connects", async () => {
+  currentComputer = status();
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const stream = installComputerStatusStream();
+  await render();
+  await click(button("Agent computer"));
+  await act(async () => stream.first.resolve(stream.event(11)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  currentComputer = status("chief", "running");
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(3);
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(1);
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("revokes a previously verified frame and late screen read during a stopped-to-running recheck", async () => {
+  const stream = installComputerStatusStream();
+  await showRunningComputer();
+  expect(container.querySelector('iframe[title="Bot screen preview"]')?.getAttribute("src")).toBe(
+    "http://localhost/screen",
+  );
+  const oldScreen = deferred<{ url: string | null }>();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let pendingStatus = false;
+  let useFreshScreen = false;
+  const oldSignals: AbortSignal[] = [];
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.status" && pendingStatus) return fresh.promise;
+    if (path === "computer.screenUrl") {
+      if (useFreshScreen) return Promise.resolve({ url: "http://localhost/new-running-screen" });
+      oldSignals.push(options!.signal!);
+      return oldScreen.promise;
+    }
+    return fallback(path, input, options);
+  });
+  await act(async () =>
+    stream.first.resolve({
+      ...stream.event(11),
+      payload: { status: "stopped" },
+    }),
+  );
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  pendingStatus = true;
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  expect(oldSignals.every((signal) => signal.aborted)).toBe(true);
+  await act(async () => oldScreen.resolve({ url: "http://localhost/stale-running-screen" }));
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  useFreshScreen = true;
+  await act(async () => fresh.resolve(status("chief", "running")));
+  expect(container.querySelector('iframe[title="Bot screen preview"]')?.getAttribute("src")).toBe(
+    "http://localhost/new-running-screen",
+  );
+  expect(callsTo("computer.heartbeat")).toHaveLength(2);
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("rechecks a running snapshot that commits before its historical running event", async () => {
+  currentComputer = status();
+  const initial = snapshot(currentComputer);
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  const stream = installComputerStatusStream();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let authoritative = initial;
+  let waitForCurrent = false;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.get") return Promise.resolve(authoritative);
+    if (path === "computer.status" && waitForCurrent) return fresh.promise;
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  expect(callsTo("computer.status")).toHaveLength(1);
+  currentComputer = status("chief", "running");
+  authoritative = { ...snapshot(currentComputer), cursor: 20 };
+  waitForCurrent = true;
+  await act(async () =>
+    stream.first.resolve({
+      ...stream.event(11),
+      type: "run.completed",
+      runId: "source-run",
+      payload: {},
+    }),
+  );
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).toBeNull();
+  await act(async () => fresh.resolve(currentComputer));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(bootCalls).toEqual([]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
+it("queues a fresh check when a running snapshot supersedes a pending nonrunning read", async () => {
+  currentComputer = status();
+  const initial = snapshot(currentComputer);
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: initial });
+  const stream = installComputerStatusStream();
+  const stale = deferred<ComputerStatus>();
+  const fresh = deferred<ComputerStatus>();
+  const fallback = boundary.call.getMockImplementation()!;
+  let authoritative = initial;
+  let reads = 0;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "threads.get") return Promise.resolve(authoritative);
+    if (path === "computer.status") return ++reads === 1 ? stale.promise : fresh.promise;
+    return fallback(path, input, options);
+  });
+  await render();
+  await click(button("Agent computer"));
+  currentComputer = status("chief", "running");
+  authoritative = { ...snapshot(currentComputer), cursor: 20 };
+  await act(async () =>
+    stream.first.resolve({
+      ...stream.event(11),
+      type: "run.completed",
+      runId: "source-run",
+      payload: {},
+    }),
+  );
+  expect(reads).toBe(1);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  await act(async () => stale.resolve(status()));
+  expect(reads).toBe(2);
+  expect(callsTo("computer.screenUrl")).toHaveLength(0);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  expect(bootCalls).toEqual([]);
+  await act(async () => fresh.resolve(currentComputer));
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
+});
+
+it("allows a later accepted running event to retry a failed status recheck", async () => {
+  currentComputer = status();
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const stream = installComputerStatusStream();
+  await render();
+  await click(button("Agent computer"));
+  const fallback = boundary.call.getMockImplementation()!;
+  let offline = true;
+  boundary.call.mockImplementation((path, input, options) =>
+    path === "computer.status" && offline
+      ? Promise.reject(new Error("offline"))
+      : fallback(path, input, options),
+  );
+  await act(async () => stream.first.resolve(stream.event(11)));
+  expect(callsTo("computer.status")).toHaveLength(2);
+  expect(callsTo("computer.heartbeat")).toHaveLength(0);
+  offline = false;
+  currentComputer = status("chief", "running");
+  await act(async () => stream.second.resolve(stream.event(12)));
+  expect(callsTo("computer.status")).toHaveLength(3);
+  expect(callsTo("computer.heartbeat")).toHaveLength(1);
+  expect(container.querySelector('iframe[title="Bot screen preview"]')).not.toBeNull();
+  expect(bootCalls).toEqual([]);
+});
+
 it("keeps a committed stopped computer passive when an older running snapshot returns", async () => {
   const committed = { ...snapshot(status()), cursor: 20 };
   const older = { ...snapshot(status("chief", "running")), cursor: 10 };

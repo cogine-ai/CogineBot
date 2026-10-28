@@ -162,6 +162,40 @@ test("computer attendance follows page visibility and refreshes status before re
   });
 });
 
+test("a visible stopped panel connects immediately when a Run starts its computer", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `run-computer-${Date.now()}@rakazo.test`, "password12", "Run Computer");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  await waitForIdle(page, botId);
+  const initialStatus = page.waitForResponse((response) =>
+    response.url().endsWith("/rpc/computer/status"),
+  );
+  await openComputerPanel(page);
+  expect((await (await initialStatus).json()).json).toMatchObject({ state: "stopped" });
+  const preview = page.getByTestId("computer-preview");
+  await expect(preview).toContainText("Computer is stopped");
+  let boots = 0;
+  let takeovers = 0;
+  let heartbeats = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/computer/boot")) boots += 1;
+    if (request.url().endsWith("/rpc/computer/takeover")) takeovers += 1;
+    if (request.url().endsWith("/rpc/computer/heartbeat")) heartbeats += 1;
+  });
+  await sendAndWait(
+    page,
+    botId,
+    "write a file in your home called notes/result.txt that says connected-while-watching",
+  );
+  await expect(preview.getByTitle("Bot screen preview", { exact: true })).toBeVisible();
+  await expect.poll(() => heartbeats).toBeGreaterThan(0);
+  expect(boots).toBe(0);
+  expect(takeovers).toBe(0);
+  await captureScreenshot(page, testInfo, "b42-run-started-computer-watching");
+});
+
 test("Team Computer gives bots a home folder plus shared space while Private stays isolated", async ({
   page,
 }, testInfo) => {
