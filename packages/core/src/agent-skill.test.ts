@@ -450,4 +450,39 @@ describe("skill prompt helpers", () => {
     expect(instruction).toContain("exact skillId");
     expect(instruction.match(/^- Recipe /gm)).toHaveLength(50);
   });
+
+  it("includes complete selectable IDs in the preview when catalog discovery is disabled", () => {
+    const entries = [
+      {
+        id: 'first:"quoted"]\\line\n😀',
+        name: "Shared",
+        description: "First recipe",
+        source: "user" as const,
+        readOnly: false,
+      },
+      {
+        id: "second-id",
+        name: " Shared ",
+        description: "Second recipe",
+        source: "plugin" as const,
+        readOnly: true,
+      },
+    ];
+    const original = JSON.stringify(entries);
+    const enabled = formatSkillsCatalogInstruction(entries)!;
+    const disabled = formatSkillsCatalogInstruction(entries, { catalogAvailable: false })!;
+    for (const entry of entries) {
+      expect(disabled).toContain(
+        `- ${entry.name} [skillId: ${JSON.stringify(entry.id)}]: ${entry.description}`,
+      );
+      expect(enabled).toContain(`- ${entry.name}: ${entry.description}`);
+      expect(enabled).not.toContain(entry.id);
+    }
+    const printed = [...disabled.matchAll(/\[skillId: ("(?:\\.|[^"\\])*")\]/g)].map((match) =>
+      JSON.parse(match[1]!),
+    );
+    expect(printed).toEqual(entries.map((entry) => entry.id));
+    expect(disabled).not.toContain("task_catalog");
+    expect(JSON.stringify(entries)).toBe(original);
+  });
 });

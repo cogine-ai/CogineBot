@@ -122,13 +122,19 @@ export function skillCatalogLine(entry: Pick<SkillCatalogEntry, "name" | "descri
 }
 
 export function formatSkillsCatalogInstruction(
-  entries: SkillCatalogEntry[],
+  entries: Array<SkillCatalogEntry & { id?: string }>,
   options: { catalogAvailable?: boolean } = {},
 ): string | undefined {
   if (entries.length === 0) return undefined;
   const preview = entries.slice(0, 50);
   const omitted = entries.length - preview.length;
-  const lines = preview.map(skillCatalogLine).join("\n");
+  const lines = preview
+    .map((entry) =>
+      options.catalogAvailable === false && entry.id
+        ? `- ${entry.name} [skillId: ${JSON.stringify(entry.id)}]: ${entry.description}`
+        : skillCatalogLine(entry),
+    )
+    .join("\n");
   return [
     "Available Claude Agent Skills (SKILL.md recipes shared across assistants; generic how-tos, not account-specific routines). The Pi runtime already understands this format; we persist and inject them:",
     `Skill catalog: ${entries.length} total; ${preview.length} shown; ${omitted} omitted.`,

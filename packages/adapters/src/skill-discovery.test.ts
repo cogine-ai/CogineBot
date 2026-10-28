@@ -404,6 +404,41 @@ describe("model-visible skill discovery", () => {
     );
   });
 
+  it("reads ambiguous shown recipes using exact ids copied from the disabled-catalog prompt", async () => {
+    const rows = skillRows();
+    rows[1]!.name = "A shared review";
+    rows[2]!.name = " A shared review ";
+    rows[1]!.description = "disabled-duplicate-first";
+    rows[2]!.description = "disabled-duplicate-second";
+    rows[2]!.id = 'recipe-"second"\\line\n😀';
+    await runDiscovery(
+      rows,
+      async (request) => {
+        expect(request.tools.map((tool) => tool.name)).not.toContain("task_catalog");
+        expect(request.instructions).not.toContain("task_catalog");
+        expect(request.instructions).toContain("50 shown");
+        expect(request.instructions).not.toContain(rows[200]!.id);
+        expect(
+          await request.executeTool!("skill_read", { name: "A shared review" }, "ambiguous"),
+        ).toEqual({ error: "Multiple skills match this name. Use an exact skillId." });
+
+        const shown = request.instructions
+          .split("\n")
+          .filter((line) => line.includes("disabled-duplicate-"));
+        expect(shown).toHaveLength(2);
+        for (const line of shown) {
+          const printedId = /\[skillId: ("(?:[^"\\]|\\.)*")\]/.exec(line)?.[1];
+          expect(printedId, request.instructions).toBeDefined();
+          const skillId = JSON.parse(printedId!) as string;
+          const read = await request.executeTool!("skill_read", { skillId }, "exact-read");
+          const expected = rows.find((row) => line.endsWith(`: ${row.description}`))!;
+          expect(read).toMatchObject({ content: expected.content });
+        }
+      },
+      { disabledCatalog: true },
+    );
+  });
+
   it.each(["", null, 0, false, {}])(
     "does not substitute a name for an invalid explicit skill id %j",
     async (skillId) => {
