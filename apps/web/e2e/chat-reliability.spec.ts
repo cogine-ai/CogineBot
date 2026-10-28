@@ -2502,7 +2502,34 @@ for (const refreshFails of [false, true]) {
     page,
   }, testInfo) => {
     const { state, errors } = await mockChat(page);
-    await ready(page);
+    // Freeze before the app installs its 3s poll, so host load cannot move it
+    // into the separate focus-refresh phase.
+    await page.clock.install({ time: new Date(stamp) });
+    await page.clock.pauseAt(new Date(Date.parse(stamp) + 1000));
+    await page.goto("/app/chief");
+    await expect(page).toHaveTitle("CogineBot");
+    let startupMilliseconds = 0;
+    await expect
+      .poll(
+        async () => {
+          if (startupMilliseconds < 2000) {
+            await page.clock.runFor(10);
+            startupMilliseconds += 10;
+          }
+          const shell = page.getByTestId("shell-root");
+          return (await shell.count()) ? shell.getAttribute("data-ready") : null;
+        },
+        { intervals: [100], timeout: 20_000 },
+      )
+      .toBe("true");
+    expect(startupMilliseconds).toBeLessThan(2000);
+    await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
+    const focusRefresh = async () => {
+      const before = state.listRequests;
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await page.clock.runFor(60);
+      await expect.poll(() => state.listRequests).toBe(before + 1);
+    };
     const listStarted = deferred();
     const listDelivered = deferred();
     const releaseList = deferred();
@@ -2533,7 +2560,7 @@ for (const refreshFails of [false, true]) {
       await json(route, created);
     };
     try {
-      await refresh(page, state, true);
+      await focusRefresh();
       await listStarted.promise;
       await openNewBot(page);
       const form = page.getByTestId("create-bot-form");
@@ -2550,31 +2577,49 @@ for (const refreshFails of [false, true]) {
       await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "closed");
       releaseList.resolve();
       await listDelivered.promise;
-      await painted(page);
+      await page.clock.runFor(34);
       await expect(page.locator('[data-roster-bot-id="created-bot"]')).toBeVisible({
         timeout: 3000,
       });
       await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
 
       // Creation publishes its receipt directly; a later focus refresh is a separate read.
-      const readOutcome = refreshFails
-        ? page
-            .waitForEvent("requestfailed", {
-              predicate: (request) => new URL(request.url()).pathname === "/rpc/spaces/list",
-            })
-            .then((request) => expect(request.failure()?.errorText).toBeTruthy())
-        : page
-            .waitForResponse((response) => new URL(response.url()).pathname === "/rpc/spaces/list")
-            .then(async (response) => {
-              expect(response.ok()).toBe(true);
-              const snapshot = (await response.json()) as { json: SpaceNavigation };
-              expect(snapshot.json.current.bots.some((row) => row.id === "created-bot")).toBe(true);
-            });
-      await refresh(page, state, true);
+      const nextReadOutcome = () =>
+        refreshFails
+          ? page
+              .waitForEvent("requestfailed", {
+                predicate: (request) => new URL(request.url()).pathname === "/rpc/spaces/list",
+              })
+              .then((request) => expect(request.failure()?.errorText).toBeTruthy())
+          : page
+              .waitForResponse(
+                (response) => new URL(response.url()).pathname === "/rpc/spaces/list",
+              )
+              .then(async (response) => {
+                expect(response.ok()).toBe(true);
+                const snapshot = (await response.json()) as { json: SpaceNavigation };
+                expect(snapshot.json.current.bots.some((row) => row.id === "created-bot")).toBe(
+                  true,
+                );
+              });
+      const readOutcome = nextReadOutcome();
+      await focusRefresh();
       await refreshFinished.promise;
       await readOutcome;
-      await painted(page);
+      await page.clock.runFor(34);
       expect(refreshAttempts).toBe(1);
+      await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "closed");
+      await expect(page.locator('[data-roster-bot-id="created-bot"]')).toBeVisible({
+        timeout: 3000,
+      });
+      await expect(page).toHaveURL(/\/app\/created-bot$/, { timeout: 3000 });
+      // Polling is a distinct read and must preserve the receipt too, whether
+      // the server answers or the request fails.
+      const pollOutcome = nextReadOutcome();
+      await page.clock.runFor(3000);
+      await pollOutcome;
+      await page.clock.runFor(34);
+      expect(refreshAttempts).toBe(2);
       await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "closed");
       await expect(page.locator('[data-roster-bot-id="created-bot"]')).toBeVisible({
         timeout: 3000,
