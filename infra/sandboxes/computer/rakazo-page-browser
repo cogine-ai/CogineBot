@@ -17,7 +17,6 @@ import struct
 import sys
 import time
 import threading
-import urllib.request
 from urllib.parse import urlsplit
 from typing import Any
 
@@ -38,29 +37,69 @@ def cdp_port() -> int:
     return 9221 + display_num()
 
 
-def http_get_json(url: str, timeout: float = 5.0) -> Any:
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        data = resp.read(1024 * 1024 + 1)
-        if len(data) > 1024 * 1024:
+def remaining_time(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Page browser deadline exhausted")
+    return remaining
+
+
+def http_get_json(url: str, timeout: float = 5.0, deadline: float | None = None) -> Any:
+    deadline = min(deadline if deadline is not None else float("inf"), time.monotonic() + timeout)
+    parsed = urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port:
+        raise RuntimeError("Unexpected CDP discovery endpoint")
+    with socket.create_connection((parsed.hostname, parsed.port), timeout=remaining_time(deadline)) as sock:
+        sock.settimeout(remaining_time(deadline))
+        sock.sendall(f"GET {parsed.path} HTTP/1.1\r\nHost: 127.0.0.1:{parsed.port}\r\nConnection: close\r\n\r\n".encode("ascii"))
+        data = bytearray()
+        while b"\r\n\r\n" not in data:
+            sock.settimeout(remaining_time(deadline))
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("CDP discovery headers closed")
+            data.extend(chunk)
+            if len(data) > 16_384:
+                raise RuntimeError("CDP discovery headers too large")
+        headers, _, body = bytes(data).partition(b"\r\n\r\n")
+        lines = headers.decode("iso-8859-1").split("\r\n")
+        if lines[0].split(" ")[1] != "200":
+            raise RuntimeError("CDP discovery request failed")
+        fields = dict(line.lower().split(":", 1) for line in lines[1:] if ":" in line)
+        if fields.get("transfer-encoding", "").strip() not in ("", "identity"):
+            raise RuntimeError("Unsupported CDP discovery transfer encoding")
+        length = int(fields["content-length"]) if "content-length" in fields else None
+        if length is not None and (length < 0 or length > 1024 * 1024):
             raise RuntimeError("CDP discovery response too large")
-        return json.loads(data.decode("utf-8"))
+        data = bytearray(body)
+        while length is None or len(data) < length:
+            sock.settimeout(remaining_time(deadline))
+            chunk = sock.recv(min(65536, length - len(data)) if length is not None else 65536)
+            if not chunk:
+                if length is not None and len(data) < length:
+                    raise RuntimeError("CDP discovery body closed")
+                break
+            data.extend(chunk)
+            if len(data) > 1024 * 1024:
+                raise RuntimeError("CDP discovery response too large")
+        return json.loads(bytes(data[:length] if length is not None else data).decode("utf-8"))
 
 
-def wait_for_cdp(port: int, timeout_s: float = 3.0) -> None:
-    deadline = time.time() + timeout_s
+def wait_for_cdp(port: int, timeout_s: float = 3.0, deadline: float | None = None) -> None:
+    deadline = min(deadline if deadline is not None else float("inf"), time.monotonic() + timeout_s)
     last_error = "unreachable"
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         try:
-            http_get_json(f"http://127.0.0.1:{port}/json/version", timeout=1.0)
+            http_get_json(f"http://127.0.0.1:{port}/json/version", timeout=1.0, deadline=deadline)
             return
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
-            time.sleep(0.25)
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
     raise RuntimeError(f"CDP not ready on port {port}: {last_error}")
 
 
-def discover_ws_url(port: int) -> str:
-    version = http_get_json(f"http://127.0.0.1:{port}/json/version")
+def discover_ws_url(port: int, deadline: float | None = None) -> str:
+    version = http_get_json(f"http://127.0.0.1:{port}/json/version", deadline=deadline)
     ws = version.get("webSocketDebuggerUrl")
     if not isinstance(ws, str) or not ws:
         raise RuntimeError("CDP version endpoint missing webSocketDebuggerUrl")
@@ -71,10 +110,117 @@ def discover_ws_url(port: int) -> str:
 
 
 WORLD_NAME = "rakazo-page-browser"
+HELPER_TIMEOUT_S = 22.0
+SNAPSHOT_RESERVE_S = 3.0
+NAVIGATION_GRACE_S = 0.35
+NAVIGATION_COMMIT_S = 5.0
+NAVIGATION_DOM_S = 10.0
+
+
+class NavigationState:
+    def __init__(self, session_id: str, frame: dict[str, Any]) -> None:
+        self.session_id = session_id
+        self.frame_id = frame["id"]
+        self.loader_id = frame.get("loaderId")
+        self.document_url = str(frame.get("url") or "") + str(frame.get("urlFragment") or "")
+        self.pending_url: str | None = None
+        self.pending_cross_document = False
+        self.expected_loader: str | None = None
+        self.committed_loaders: set[str] = set()
+        self.last_cross_expectation: tuple[str, str | None, int] | None = None
+        self.requested = 0
+        self.within_document = 0
+        self.committed = 0
+        self.requested_at = 0.0
+        self.committed_at = 0.0
+        self.dom_loaded = False
+
+    def mark(self) -> tuple[int, int, int]:
+        return (self.requested, self.within_document, self.committed)
+
+    def begin_action(self) -> tuple[int, int, int]:
+        # Loader evidence belongs only to the action being marked, not the helper's past work.
+        self.committed_loaders.clear()
+        return self.mark()
+
+    @property
+    def pending(self) -> bool:
+        return self.pending_url is not None
+
+    def request(self, url: Any, cross_document: bool) -> None:
+        if not self.pending:
+            self.requested_at = time.monotonic()
+        self.requested += 1
+        self.pending_url = url if isinstance(url, str) else ""
+        self.pending_cross_document = self.pending_cross_document or cross_document
+
+    def expect_navigation(self, loader_id: str, url: str, mark: tuple[int, int, int]) -> None:
+        if loader_id in self.committed_loaders:
+            return
+        successor = self.last_cross_expectation
+        if successor is not None and successor[2] > mark[0]:
+            target, expected_loader, _ = successor
+            distinct = target != url or (expected_loader is not None and expected_loader != loader_id)
+            settled = self.committed != mark[2] and (
+                expected_loader == self.loader_id if expected_loader is not None else target == self.document_url
+            )
+            if distinct and (self.pending or settled):
+                # A newer observed expectation survives even after it has committed.
+                return
+        self.request(url, True)
+        self.expected_loader = loader_id
+
+    def event(self, message: dict[str, Any]) -> None:
+        if message.get("sessionId") != self.session_id:
+            return
+        method, params = message.get("method"), message.get("params") or {}
+        if method == "Page.frameNavigated":
+            frame = params.get("frame") or {}
+            if frame.get("id") == self.frame_id:
+                previous_loader = self.loader_id
+                self.loader_id = frame.get("loaderId")
+                self.document_url = str(frame.get("url") or "") + str(frame.get("urlFragment") or "")
+                self.committed += 1
+                if isinstance(self.loader_id, str):
+                    self.committed_loaders.add(self.loader_id)
+                self.committed_at = time.monotonic()
+                self.dom_loaded = params.get("type") == "BackForwardCacheRestore"
+                if (self.expected_loader is None or self.expected_loader == self.loader_id) and (
+                    not self.pending_cross_document or self.loader_id != previous_loader or self.dom_loaded
+                ):
+                    self.pending_url = None
+                    self.pending_cross_document = False
+                    self.expected_loader = None
+        elif params.get("frameId") == self.frame_id:
+            if method == "Page.frameRequestedNavigation" and params.get("disposition") == "currentTab":
+                target = params.get("url")
+                fragment = (isinstance(target, str) and "#" in target and self.document_url
+                            and target.split("#", 1)[0] == self.document_url.split("#", 1)[0]
+                            and params.get("reason") in ("anchorClick", "scriptInitiated"))
+                self.request(target, not fragment)
+                if not fragment:
+                    self.expected_loader = None
+                    self.last_cross_expectation = (self.pending_url or "", None, self.requested)
+            elif method == "Page.frameStartedNavigating":
+                loader_id = params.get("loaderId")
+                same_document = params.get("navigationType") in ("sameDocument", "historySameDocument")
+                self.request(params.get("url"), not same_document)
+                if not same_document and isinstance(loader_id, str) and loader_id:
+                    self.expected_loader = loader_id
+                    self.last_cross_expectation = (self.pending_url or "", loader_id, self.requested)
+            elif method == "Page.navigatedWithinDocument":
+                self.within_document += 1
+                self.document_url = str(params.get("url") or "")
+                if not self.pending_cross_document and self.pending_url == params.get("url"):
+                    self.pending_url = None
+                    self.expected_loader = None
+            elif (method == "Page.lifecycleEvent" and params.get("loaderId") == self.loader_id
+                  and params.get("name") == "DOMContentLoaded"):
+                self.dom_loaded = True
 
 
 class CdpClient:
-    def __init__(self, ws_url: str) -> None:
+    def __init__(self, ws_url: str, deadline: float | None = None) -> None:
         self._ws_url = ws_url
         self._sock: socket.socket | None = None
         self._buf = bytearray()
@@ -83,8 +229,11 @@ class CdpClient:
         self._pending: dict[int, dict[str, Any] | None] = {}
         # Worlds live in Chromium until navigation; rediscover them per CLI process.
         self._contexts: dict[int, dict[str, Any]] = {}
+        self.deadline = deadline if deadline is not None else time.monotonic() + HELPER_TIMEOUT_S
+        self.navigation: NavigationState | None = None
 
-    def connect(self) -> None:
+    def connect(self, deadline: float | None = None) -> None:
+        deadline = min(self.deadline, deadline if deadline is not None else self.deadline)
         assert self._ws_url.startswith("ws://"), self._ws_url
         rest = self._ws_url[len("ws://") :]
         host_port, _, path = rest.partition("/")
@@ -94,7 +243,8 @@ class CdpClient:
         else:
             host, port = host_port, 80
         path = "/" + path
-        sock = socket.create_connection((host, port), timeout=10)
+        sock = socket.create_connection((host, port), timeout=remaining_time(deadline))
+        self._sock = sock
         key = base64.b64encode(os.urandom(16)).decode("ascii")
         req = (
             f"GET {path} HTTP/1.1\r\n"
@@ -105,25 +255,27 @@ class CdpClient:
             "Sec-WebSocket-Version: 13\r\n"
             "\r\n"
         )
-        sock.sendall(req.encode("ascii"))
-        data = b""
-        while b"\r\n\r\n" not in data:
-            chunk = sock.recv(4096)
-            if not chunk:
-                raise RuntimeError("CDP websocket handshake closed")
-            data += chunk
-            if len(data) > 16_384:
-                raise RuntimeError("CDP handshake too large")
-        header, _, leftover = data.partition(b"\r\n\r\n")
-        if b"101" not in header.split(b"\r\n", 1)[0]:
-            raise RuntimeError(f"CDP websocket upgrade failed: {header[:200]!r}")
-        expected = base64.b64encode(
-            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
-        )
-        if expected not in header:
-            raise RuntimeError("CDP websocket accept mismatch")
-        self._sock = sock
-        self._buf.extend(leftover)
+        try:
+            sock.settimeout(remaining_time(deadline))
+            sock.sendall(req.encode("ascii"))
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = self._recv(deadline, 4096)
+                data += chunk
+                if len(data) > 16_384:
+                    raise RuntimeError("CDP handshake too large")
+            header, _, leftover = data.partition(b"\r\n\r\n")
+            if b"101" not in header.split(b"\r\n", 1)[0]:
+                raise RuntimeError(f"CDP websocket upgrade failed: {header[:200]!r}")
+            expected = base64.b64encode(
+                hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+            )
+            if expected not in header:
+                raise RuntimeError("CDP websocket accept mismatch")
+            self._buf.extend(leftover)
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         if self._sock is not None:
@@ -133,7 +285,7 @@ class CdpClient:
                 pass
             self._sock = None
 
-    def _send_frame(self, payload: bytes) -> None:
+    def _send_frame(self, payload: bytes, deadline: float) -> None:
         assert self._sock is not None
         mask = os.urandom(4)
         masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
@@ -148,31 +300,33 @@ class CdpClient:
             header.append(0x80 | 127)
             header.extend(struct.pack("!Q", n))
         header.extend(mask)
+        self._sock.settimeout(remaining_time(deadline))
         self._sock.sendall(header + masked)
 
-    def _send_control(self, opcode: int, payload: bytes) -> None:
+    def _send_control(self, opcode: int, payload: bytes, deadline: float | None = None) -> None:
         assert self._sock is not None
+        deadline = min(self.deadline, deadline if deadline is not None else self.deadline)
         mask = os.urandom(4)
         masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
         header = bytearray([0x80 | opcode, 0x80 | len(payload)])
         header.extend(mask)
+        self._sock.settimeout(remaining_time(deadline))
         self._sock.sendall(header + masked)
 
-    def _read_more(self) -> None:
+    def _recv(self, deadline: float, size: int = 65536) -> bytes:
         assert self._sock is not None
-        chunk = self._sock.recv(65536)
+        self._sock.settimeout(remaining_time(deadline))
+        chunk = self._sock.recv(size)
         if not chunk:
             raise RuntimeError("CDP websocket closed")
-        self._buf.extend(chunk)
+        return chunk
 
-    def _read_frame(self) -> bytes:
+    def _read_frame(self, deadline: float | None = None) -> bytes:
         assert self._sock is not None
+        deadline = min(self.deadline, deadline if deadline is not None else self.deadline)
         while True:
             while len(self._buf) < 2:
-                chunk = self._sock.recv(65536)
-                if not chunk:
-                    raise RuntimeError("CDP websocket closed")
-                self._buf.extend(chunk)
+                self._buf.extend(self._recv(deadline))
             b1, b2 = self._buf[0], self._buf[1]
             opcode = b1 & 0x0F
             masked = bool(b2 & 0x80)
@@ -180,12 +334,12 @@ class CdpClient:
             offset = 2
             if length == 126:
                 while len(self._buf) < 4:
-                    self._read_more()
+                    self._buf.extend(self._recv(deadline))
                 length = struct.unpack("!H", self._buf[2:4])[0]
                 offset = 4
             elif length == 127:
                 while len(self._buf) < 10:
-                    self._read_more()
+                    self._buf.extend(self._recv(deadline))
                 length = struct.unpack("!Q", self._buf[2:10])[0]
                 offset = 10
             if length > 2 * 1024 * 1024:
@@ -195,14 +349,11 @@ class CdpClient:
             mask = b""
             if masked:
                 while len(self._buf) < offset + 4:
-                    self._read_more()
+                    self._buf.extend(self._recv(deadline))
                 mask = bytes(self._buf[offset : offset + 4])
                 offset += 4
             while len(self._buf) < offset + length:
-                chunk = self._sock.recv(65536)
-                if not chunk:
-                    raise RuntimeError("CDP websocket closed while reading frame")
-                self._buf.extend(chunk)
+                self._buf.extend(self._recv(deadline))
             payload = bytes(self._buf[offset : offset + length])
             del self._buf[: offset + length]
             if masked:
@@ -210,12 +361,14 @@ class CdpClient:
             if opcode == 0x8:
                 raise RuntimeError("CDP websocket closed by peer")
             if opcode == 0x9:
-                self._send_control(0xA, payload)
+                self._send_control(0xA, payload, deadline)
                 continue
             if opcode in (0x1, 0x2, 0x0):
                 return payload
 
     def _handle_event(self, message: dict[str, Any]) -> None:
+        if self.navigation is not None:
+            self.navigation.event(message)
         method = message.get("method")
         params = message.get("params") or {}
         session_id = message.get("sessionId")
@@ -262,6 +415,7 @@ class CdpClient:
         *,
         session_id: str | None = None,
         timeout_s: float = 30.0,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         assert self._sock is not None
         msg_id = self._next_id
@@ -269,47 +423,63 @@ class CdpClient:
         payload: dict[str, Any] = {"id": msg_id, "method": method, "params": params or {}}
         if session_id:
             payload["sessionId"] = session_id
+        deadline = min(self.deadline, deadline if deadline is not None else self.deadline,
+                       time.monotonic() + timeout_s)
         self._pending[msg_id] = None
-        self._send_frame(json.dumps(payload).encode("utf-8"))
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            pending = self._pending.get(msg_id)
-            if pending is not None:
-                self._pending.pop(msg_id, None)
-                if "error" in pending:
-                    raise RuntimeError(f"{method} failed: {pending['error']}")
-                result = pending.get("result")
-                return result if isinstance(result, dict) else {}
-            self._sock.settimeout(max(0.1, deadline - time.time()))
+        try:
+            self._send_frame(json.dumps(payload).encode("utf-8"), deadline)
+            while time.monotonic() < deadline:
+                pending = self._pending.get(msg_id)
+                if pending is not None:
+                    if "error" in pending:
+                        raise RuntimeError(f"{method} failed: {pending['error']}")
+                    result = pending.get("result")
+                    return result if isinstance(result, dict) else {}
+                try:
+                    frame = self._read_frame(deadline)
+                except socket.timeout:
+                    continue
+                message = json.loads(frame.decode("utf-8"))
+                if not isinstance(message, dict):
+                    continue
+                if message.get("id") in self._pending:
+                    self._pending[int(message["id"])] = message
+                elif message.get("method"):
+                    self._handle_event(message)
+            raise TimeoutError(f"CDP call timed out: {method}")
+        finally:
+            self._pending.pop(msg_id, None)
+
+    def pump_until(self, predicate: Any, deadline: float) -> bool:
+        assert self._sock is not None
+        deadline = min(deadline, self.deadline)
+        while not predicate() and time.monotonic() < deadline:
             try:
-                frame = self._read_frame()
+                message = json.loads(self._read_frame(deadline).decode("utf-8"))
             except socket.timeout:
                 continue
-            message = json.loads(frame.decode("utf-8"))
-            if not isinstance(message, dict):
-                continue
-            if message.get("id") in self._pending:
-                self._pending[int(message["id"])] = message
-                continue
-            if message.get("method"):
-                self._handle_event(message)
-        raise TimeoutError(f"CDP call timed out: {method}")
+            if isinstance(message, dict):
+                if message.get("id") in self._pending:
+                    self._pending[int(message["id"])] = message
+                elif message.get("method"):
+                    self._handle_event(message)
+        return bool(predicate())
 
 
-def attach_page(client: CdpClient) -> str:
-    targets = client.call("Target.getTargets").get("targetInfos") or []
+def attach_page(client: CdpClient, deadline: float | None = None) -> str:
+    targets = client.call("Target.getTargets", deadline=deadline).get("targetInfos") or []
     pages = [t for t in targets if isinstance(t, dict) and t.get("type") == "page"]
     candidates = []
     for page in pages[:32]:
         attached = client.call("Target.attachToTarget", {
             "targetId": page["targetId"], "flatten": True,
-        })
+        }, deadline=deadline)
         session_id = attached["sessionId"]
         try:
-            client.call("Page.enable", session_id=session_id)
-            ensure_world(client, session_id)
-            if eval_json(client, session_id, 'document.visibilityState === "visible"'):
-                focused = eval_json(client, session_id, "document.hasFocus()")
+            client.call("Page.enable", session_id=session_id, deadline=deadline)
+            ensure_world(client, session_id, deadline)
+            if eval_json(client, session_id, 'document.visibilityState === "visible"', deadline):
+                focused = eval_json(client, session_id, "document.hasFocus()", deadline)
                 candidates.append((session_id, focused))
         except Exception:
             continue
@@ -320,23 +490,23 @@ def attach_page(client: CdpClient) -> str:
         selected = candidates[0][0]
     else:
         raise RuntimeError("No unambiguous visible browser tab. Use desktop tools to select a tab.")
-    ensure_world(client, selected)
+    ensure_world(client, selected, deadline)
     return selected
 
 
-def ensure_world(client: CdpClient, session_id: str) -> None:
+def ensure_world(client: CdpClient, session_id: str, deadline: float | None = None) -> None:
     # Rediscover only an isolated context bound to this frame and CDP session.
     # Never run helpers in a page-owned default context with the same name.
-    frame = client.call("Page.getFrameTree", session_id=session_id)["frameTree"]["frame"]
+    frame = client.call("Page.getFrameTree", session_id=session_id, deadline=deadline)["frameTree"]["frame"]
     frame_id = frame["id"]
-    client.call("Runtime.enable", session_id=session_id)
+    client.call("Runtime.enable", session_id=session_id, deadline=deadline)
     existing = client.find_world_context(WORLD_NAME, frame_id, session_id)
     if existing is not None:
         client.context_id = existing
         return
     world = client.call("Page.createIsolatedWorld", {
         "frameId": frame_id, "worldName": WORLD_NAME,
-    }, session_id=session_id)
+    }, session_id=session_id, deadline=deadline)
     client.context_id = world["executionContextId"]
 
 
@@ -512,7 +682,7 @@ EVAL_HELPERS = r"""
 """
 
 
-def eval_json(client: CdpClient, session_id: str, expression: str) -> Any:
+def eval_json(client: CdpClient, session_id: str, expression: str, deadline: float | None = None) -> Any:
     result = client.call(
         "Runtime.evaluate",
         {
@@ -522,6 +692,7 @@ def eval_json(client: CdpClient, session_id: str, expression: str) -> Any:
             "awaitPromise": True,
         },
         session_id=session_id,
+        deadline=deadline,
     )
     if result.get("exceptionDetails"):
         details = result["exceptionDetails"]
@@ -534,39 +705,89 @@ def eval_json(client: CdpClient, session_id: str, expression: str) -> Any:
     return (result.get("result") or {}).get("value")
 
 
-def ensure_helpers(client: CdpClient, session_id: str) -> None:
-    ensure_world(client, session_id)
-    eval_json(client, session_id, EVAL_HELPERS)
+def ensure_helpers(client: CdpClient, session_id: str, deadline: float | None = None) -> None:
+    ensure_world(client, session_id, deadline)
+    eval_json(client, session_id, EVAL_HELPERS, deadline)
+
+
+def track_navigation(client: CdpClient, session_id: str, deadline: float) -> NavigationState:
+    frame = client.call("Page.getFrameTree", session_id=session_id, deadline=deadline)["frameTree"]["frame"]
+    navigation = NavigationState(session_id, frame)
+    client.navigation = navigation
+    client.call("Page.setLifecycleEventsEnabled", {"enabled": True}, session_id=session_id, deadline=deadline)
+    return navigation
+
+
+def follow_navigation(client: CdpClient, navigation: NavigationState,
+                      mark: tuple[int, int, int], deadline: float) -> bool:
+    """Follow the selected document without redispatching its action. Return timeout only."""
+    client.pump_until(lambda: navigation.pending_cross_document or navigation.committed != mark[2],
+                      min(deadline, time.monotonic() + NAVIGATION_GRACE_S))
+    dom_deadline = None
+    while True:
+        if navigation.pending:
+            commit_deadline = min(deadline, navigation.requested_at + NAVIGATION_COMMIT_S)
+            if dom_deadline is not None:
+                commit_deadline = min(commit_deadline, dom_deadline)
+            if not client.pump_until(lambda: not navigation.pending, commit_deadline):
+                return True
+        if navigation.committed != mark[2]:
+            if dom_deadline is None:
+                dom_deadline = min(deadline, navigation.committed_at + NAVIGATION_DOM_S)
+            if navigation.dom_loaded:
+                return False
+            if not client.pump_until(lambda: navigation.pending or navigation.dom_loaded, dom_deadline):
+                return True
+            if navigation.pending:
+                continue
+            return False
+        return time.monotonic() >= deadline
+
+
+def observed_result(client: CdpClient, session_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        observed = snapshot(client, session_id,
+                            min(client.deadline, time.monotonic() + SNAPSHOT_RESERVE_S))
+        return {**observed, **result}
+    except Exception as exc:
+        detail = str(exc)
+        previous = result.get("error")
+        return {**result, "ok": False, "fallback": "computer_act",
+                "timedOut": bool(result.get("timedOut") or isinstance(exc, TimeoutError)),
+                "error": f"{previous}; observation unavailable: {detail}" if previous else f"Observation unavailable: {detail}"}
 
 
 def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
         raise RuntimeError("Only HTTP(S) URLs without embedded credentials are supported")
-    result = client.call("Page.navigate", {"url": url}, session_id=session_id, timeout_s=15.0)
-    if result.get("errorText") or result.get("isDownload"):
-        raise RuntimeError(result.get("errorText") or "Navigation started a download")
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        try:
-            frame = client.call("Page.getFrameTree", session_id=session_id)["frameTree"]["frame"]
-            if result.get("loaderId") and frame.get("loaderId") != result["loaderId"]:
-                time.sleep(0.1)
-                continue
-            ensure_world(client, session_id)
-            ready = eval_json(client, session_id, "document.readyState")
-            if ready in ("interactive", "complete"):
-                return {"ok": True, "url": eval_json(client, session_id, "location.href"),
-                        "title": eval_json(client, session_id, "(document.title || '').slice(0, 200)")}
-        except Exception:
-            pass
-        time.sleep(0.1)
-    raise RuntimeError("Navigation did not settle; inspect the screen before continuing")
+    deadline = client.deadline - SNAPSHOT_RESERVE_S
+    uncertain = False
+    try:
+        navigation = track_navigation(client, session_id, deadline)
+        mark = navigation.begin_action()
+        remaining_time(deadline)
+        uncertain = True
+        result = client.call("Page.navigate", {"url": url}, session_id=session_id, timeout_s=15.0,
+                             deadline=deadline)
+        uncertain = False
+        if result.get("errorText") or result.get("isDownload"):
+            raise RuntimeError(result.get("errorText") or "Navigation started a download")
+        if result.get("loaderId"):
+            # A command-initiated navigation need not emit frameRequestedNavigation.
+            navigation.expect_navigation(str(result["loaderId"]), url, mark)
+        if follow_navigation(client, navigation, mark, deadline):
+            raise TimeoutError("Navigation did not settle before its deadline")
+        return observed_result(client, session_id, {"ok": True, "uncertain": False, "navigationOutcomeKnown": True})
+    except Exception as exc:
+        return observed_result(client, session_id, {"ok": False, "error": str(exc),
+                              "uncertain": uncertain, "navigationOutcomeKnown": not uncertain, "fallback": "computer_act",
+                              **({"timedOut": True} if isinstance(exc, TimeoutError) else {})})
 
 
-def snapshot(client: CdpClient, session_id: str) -> dict[str, Any]:
-    ensure_helpers(client, session_id)
-    data = eval_json(client, session_id, "window.__rakazoPageBrowser.snapshot()")
+def snapshot(client: CdpClient, session_id: str, deadline: float | None = None) -> dict[str, Any]:
+    ensure_helpers(client, session_id, deadline)
+    data = eval_json(client, session_id, "window.__rakazoPageBrowser.snapshot()", deadline)
     if not isinstance(data, dict):
         raise RuntimeError("snapshot returned non-object")
     return {"ok": True, **data}
@@ -586,31 +807,41 @@ def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> di
             step["kind"] != "fill" or not isinstance(step["origin"], str)
         ):
             raise RuntimeError("An origin applies only to fill")
-    ensure_helpers(client, session_id)
     completed = 0
     uncertain = False
+    deadline = client.deadline - SNAPSHOT_RESERVE_S
     try:
+        ensure_helpers(client, session_id, deadline)
+        navigation = track_navigation(client, session_id, deadline)
         for step in actions:
+            ensure_helpers(client, session_id, deadline)
             kind, ref = step["kind"], step["ref"]
             # Preflight catches stale refs before a mutation is dispatched.
-            if not eval_json(client, session_id, f"Boolean(window.__rakazoPageBrowser.resolve({json.dumps(ref)}))"):
+            if not eval_json(client, session_id, f"Boolean(window.__rakazoPageBrowser.resolve({json.dumps(ref)}))", deadline):
                 raise RuntimeError("Stale element ref. Take a fresh snapshot.")
             arguments = json.dumps(ref)
             if kind != "click":
                 arguments += ", " + json.dumps(step["text"])
             if step.get("origin"):
                 arguments += ", " + json.dumps(step["origin"])
+            mark = navigation.begin_action()
+            remaining_time(deadline)
             uncertain = True
-            data = eval_json(client, session_id, f"window.__rakazoPageBrowser.{kind}({arguments})")
+            data = eval_json(client, session_id, f"window.__rakazoPageBrowser.{kind}({arguments})", deadline)
             if not isinstance(data, dict):
                 raise RuntimeError("Action response unavailable")
             completed += 1
             uncertain = False
-        snap = snapshot(client, session_id)
-        return {**snap, "completed": completed}
+            if follow_navigation(client, navigation, mark, deadline):
+                result = {"ok": completed == len(actions), "completed": completed, "uncertain": False,
+                          "timedOut": True}
+                if completed != len(actions):
+                    result.update({"fallback": "computer_act", "error": "Navigation wait timed out before the remaining actions."})
+                return observed_result(client, session_id, result)
+        return observed_result(client, session_id, {"ok": True, "completed": completed, "uncertain": False})
     except Exception as exc:
-        return {"ok": False, "completed": completed, "uncertain": uncertain,
-                "error": str(exc), "fallback": "computer_act"}
+        return observed_result(client, session_id, {"ok": False, "completed": completed, "uncertain": uncertain,
+                "error": str(exc), "fallback": "computer_act", **({"timedOut": True} if isinstance(exc, TimeoutError) else {})})
 
 
 def exit_when_stdin_closes() -> None:
@@ -634,6 +865,7 @@ def read_stdin_line() -> str:
 
 
 def run(argv: list[str]) -> int:
+    deadline = time.monotonic() + HELPER_TIMEOUT_S
     stdin_args = (
         read_stdin_line() if os.environ.get("RAKAZO_BROWSER_ARGS_STDIN") == "1" else None
     )
@@ -657,12 +889,13 @@ def run(argv: list[str]) -> int:
         args = json.loads(raw_args)
     port = cdp_port()
     try:
-        wait_for_cdp(port)
-        ws_url = discover_ws_url(port)
-        client = CdpClient(ws_url)
-        client.connect()
+        work_deadline = deadline - SNAPSHOT_RESERVE_S
+        wait_for_cdp(port, deadline=work_deadline)
+        ws_url = discover_ws_url(port, deadline=work_deadline)
+        client = CdpClient(ws_url, deadline)
+        client.connect(work_deadline)
         try:
-            session_id = attach_page(client)
+            session_id = attach_page(client, work_deadline)
             if command == "navigate":
                 result = navigate(client, session_id, str(args.get("url") or ""))
             elif command == "snapshot":

@@ -940,10 +940,6 @@ describeJourneys("required product journeys", () => {
             .controlHolder,
         ).toBe("none");
         expect(
-          (await rpc<{ url: string | null }>(app, cookie, "computer/screenUrl", { botId: bot.id }))
-            .url,
-        ).toContain("view_only=true");
-        expect(
           (
             await raw(app, cookie, "computer/input", {
               botId: bot.id,
@@ -958,6 +954,10 @@ describeJourneys("required product journeys", () => {
           bot.id,
           (snap) => !snap.run || ["completed", "failed", "cancelled"].includes(snap.run.status),
         );
+        expect(
+          (await rpc<{ url: string | null }>(app, cookie, "computer/screenUrl", { botId: bot.id }))
+            .url,
+        ).toContain("view_only=true");
         expect(JSON.stringify(done.messages).toLowerCase()).toMatch(/skipped/);
         expect(JSON.stringify(done.messages).toLowerCase()).not.toMatch(/signed in/);
         expect(done.run?.status ?? "completed").not.toBe("waiting_takeover");
