@@ -33,6 +33,17 @@ unknown secret kinds. Only OAuth HTTP is mocked. The same wrapped registration
 write passed with an intentional rollback in the isolated live acceptance
 database after its migration; no probe records remained.
 
+A later registration-publication review added three concurrency cases. All
+three failed against the old implementation and passed after the profile-lock
+fix. Separate Prisma clients exercise both sign-out/login orders and two
+verified completions that began from the same incomplete registration. The
+tests use real signed ID-token/JWKS verification, encrypted records and the
+production persistence wrapper; only OAuth/model HTTP is synthetic. Sign-out
+retains the latest verified identity and label, and a competing completion
+cannot replace an already verified subject. The registration suite now contains
+five tests and remains in the official integration harness.
+The resulting four-suite batch passed all 13 tests through that harness.
+
 - PostgreSQL reported a waiting advisory lock for the second client. Its callback
   could enter only after the first credential transaction committed.
 - A recognized pending-rotation error committed the synthetic checkpoint row
@@ -80,5 +91,7 @@ fixtures. The PostgreSQL 17 validation container was removed, and its absence
 was verified after the run. The official harness completed its own teardown.
 This verifies shared database locks, transaction behavior, and binding/removal
 interleavings, including first publication into an empty connection slot;
-real-account authorization, model access, quota behavior, and
-native desktop acceptance remain untested.
+these PostgreSQL suites do not establish real-account authorization, model
+access, quota behavior or installed native acceptance. See the dated manual
+acceptance snapshot in [validation](chatgpt-plan-validation.md) and the PR's
+separate live acceptance record for that evidence.

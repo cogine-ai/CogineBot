@@ -191,6 +191,60 @@ async function saveProfile(
   return { ...profile, id };
 }
 
+/** Profile mutations never hold the account lock across authorization or model HTTP. */
+async function withProfileLock<T>(
+  deps: Deps,
+  actor: Scope,
+  operation: (scoped: DataDeps) => Promise<T>,
+): Promise<T> {
+  return deps.prisma.$transaction(
+    async (tx) => {
+      await lockChatGPTPlanConnection(tx, actor.userId);
+      return operation({ ...deps, prisma: tx });
+    },
+    { maxWait: 15_000, timeout: 30_000 },
+  );
+}
+
+async function updateProfile(
+  deps: Deps,
+  actor: Scope,
+  id: string | undefined,
+  mutation: (current: Profile | undefined) => Profile,
+): Promise<SavedProfile> {
+  return withProfileLock(deps, actor, async (scoped) => {
+    const row = id
+      ? await scoped.prisma.secret.findFirst({
+          where: { id, userId: actor.userId, spaceId: null, kind: REGISTRATION_KIND },
+        })
+      : undefined;
+    if (id && !row) throw new Error("ChatGPT registration was not found.");
+    const current = row
+      ? profileValue(await scoped.secrets.load(row.ciphertext, row.id))
+      : undefined;
+    return saveProfile(scoped, actor, mutation(current), id);
+  });
+}
+
+function assertProfileBinding(
+  current: Profile | undefined,
+  registration: ChatGPTPlanRegistration,
+  verified: boolean,
+): void {
+  if (
+    current &&
+    (current.registration.clientId !== registration.clientId ||
+      (current.registration.issuer !== undefined &&
+        current.registration.issuer !== registration.issuer) ||
+      (verified &&
+        current.registration.subject !== undefined &&
+        (current.registration.subject !== registration.subject ||
+          (current.registration.issuer ?? "https://auth.openai.com") !== registration.issuer)))
+  ) {
+    throw new Error("ChatGPT account changed. Connect the intended account again.");
+  }
+}
+
 export async function listChatGPTPlanProfiles(deps: Deps, actor: Scope) {
   const active = await activeCredential(deps, actor).catch(() => undefined);
   return (await profiles(deps, actor)).map((profile) => ({
@@ -317,16 +371,19 @@ export function createChatGPTPlanLogin(
           // optional ID-token hint so credential material stays in the backend.
           agentName: "CogineBot",
           onRegistration: async (registration) => {
-            selected = await saveProfile(
-              deps,
-              actor,
-              {
+            selected = await updateProfile(deps, actor, selected?.id, (current) => {
+              const issued = {
+                clientId: registration.clientId,
+                ...(registration.issuer ? { issuer: registration.issuer } : {}),
+              };
+              assertProfileBinding(current, issued, false);
+              return {
                 version: 1,
-                registration,
-                label: input.label ?? selected?.label ?? "ChatGPT",
-              },
-              selected?.id,
-            );
+                registration: { ...current?.registration, ...issued },
+                label: input.label ?? current?.label ?? "ChatGPT",
+                ...(current?.signedOut ? { signedOut: true } : {}),
+              };
+            });
           },
         }),
       });
@@ -351,21 +408,22 @@ export function createChatGPTPlanLogin(
       });
       if (!models.length) throw new Error("No models are available for this ChatGPT account.");
       signal.throwIfAborted();
-      selected = await saveProfile(
-        deps,
-        actor,
-        {
+      selected = await updateProfile(deps, actor, selected.id, (current) => {
+        const registration = {
+          clientId: credential.clientId,
+          issuer: credential.issuer,
+          subject: credential.subject,
+          ...(credential.email !== undefined ? { email: credential.email } : {}),
+        };
+        // Another process may have verified an initially incomplete registration
+        // while this attempt waited for authorization or model discovery.
+        assertProfileBinding(current, registration, true);
+        return {
           version: 1,
-          registration: {
-            clientId: credential.clientId,
-            issuer: credential.issuer,
-            subject: credential.subject,
-            email: credential.email,
-          },
-          label: input.label ?? selected.label,
-        },
-        selected.id,
-      );
+          registration: { ...current?.registration, ...registration },
+          label: input.label ?? current?.label ?? "ChatGPT",
+        };
+      });
       return { ...credential, registrationId: selected.id, chatgptPlanModels: models };
     } finally {
       listener?.close();
@@ -589,16 +647,18 @@ export async function disconnectChatGPTPlan(
       await removeCredentials(tx);
     });
   }
-  for (const profile of await profiles(deps, actor).catch(() => {
-    confirmed = false;
-    return [];
-  })) {
-    await saveProfile(
-      deps,
-      actor,
-      { version: 1, registration: profile.registration, label: profile.label, signedOut: true },
-      profile.id,
-    );
-  }
+  await withProfileLock(deps, actor, async (scoped) => {
+    for (const profile of await profiles(scoped, actor).catch(() => {
+      confirmed = false;
+      return [];
+    })) {
+      await saveProfile(
+        scoped,
+        actor,
+        { version: 1, registration: profile.registration, label: profile.label, signedOut: true },
+        profile.id,
+      );
+    }
+  });
   return { confirmed };
 }

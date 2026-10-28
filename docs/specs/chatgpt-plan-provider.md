@@ -165,9 +165,9 @@ starting registration; it does not silently attempt a container-local callback.
 Use the existing SecretStore and user-scoped Secret records, with record-bound
 encryption. A separate encrypted registration record survives disconnect. One
 forward migration adds its explicit kind to the account-scoped secret allowlist;
-tables, columns and other scope boundaries remain unchanged. A registration ID is opaque and checked
-against the authenticated user before use. Separate registrations remain
-separate even when their email/sub display values match.
+tables, columns and other scope boundaries remain unchanged. A registration ID
+is opaque and checked against the authenticated user before use. Separate
+registrations remain separate even when their email/sub display values match.
 
 Registration data: version, issued client ID, optional verified issuer/subject
 and local display label. ID tokens stay in the active encrypted credential;
@@ -178,6 +178,14 @@ contain access/refresh/ID tokens, expiry, granted scopes, host ID, registration
 reference, verified identity and account-specific model descriptors. Token
 material never appears in profile/catalog/credential RPC responses, browser
 storage or telemetry. Retained ID tokens join the redaction set.
+
+Serialize every registration writer with the same user/provider transaction
+lock. Read the current scoped encrypted profile after acquiring the lock, then
+apply the intended mutation. Sign-out retains the latest verified identity;
+an earlier incomplete snapshot cannot erase it. Authorization publication
+rechecks the latest client, issuer and subject binding before saving, so two
+returning sign-ins cannot silently replace one verified account with another.
+OAuth HTTP and model discovery remain outside this short profile transaction.
 
 The stored credential's own `chatgptPlanModels` property identifies this
 provider for strict credential validation. Generic OAuth extensions such as

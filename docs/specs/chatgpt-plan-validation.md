@@ -34,6 +34,7 @@ into accepted behavior.
 | --- | --- | --- |
 | Full default offline run at `dc444133` before the first-connection follow-up | 845 suites passed / 78 skipped; 13,860 tests passed / 841 skipped | Opt-in suites remain skipped; final-head CI is recorded on the PR |
 | PostgreSQL validation after review follow-up | 10 tests across four suites passed on PostgreSQL 17 and in the [PostgreSQL 16 CI run at `832ea785`](https://github.com/cogine-ai/CogineBot/actions/runs/40584176943/job/122471359006) | Credential locks, binding/removal row locks, first-finalization ordering and registration persistence; all four suites are registered in repository CI |
+| Registration publication/sign-out follow-up | 166 API tests and the four-suite, 13-test PostgreSQL batch passed; API TypeScript passed | Three database races failed before the fix; current verified identity survives either sign-out ordering and conflicting parallel completions are rejected |
 | First-connection disconnect follow-up | API TypeScript and 165 focused tests passed | Shared user/provider lock serializes overlapping transactions; pending sign-in cancellation remains process-local |
 | OAuth compatibility follow-up | 120 OAuth tests and 87 credential, integration, selection and executor regressions passed; adapter TypeScript passed | The existing ChatGPT catalog marker identifies strict plan records; unrelated client/host extensions remain compatible |
 | Localization follow-up | Ten relevant catalogs compiled; 51 focused web tests and web TypeScript passed | Updated messages and placeholders covered; no native or per-locale visual acceptance is inferred |
@@ -93,6 +94,7 @@ The disposable lock-validation container was also stopped and removed.
 | Shared refresh, stale snapshots, cancellation, checkpoint publication | `pi-credentials.test.ts`, `executor-chatgpt-plan-refresh.test.ts`, lock suites |
 | Metadata/limits retention, token redaction, refresh timing | `chatgpt-plan-integration.test.ts` |
 | Encrypted registrations, user isolation, corrupt-record repair, account-switch races, unavailable/empty catalogs | `apps/api/src/chatgpt-plan.test.ts` |
+| Registration publication versus sign-out, latest identity binding and parallel incomplete registrations | `apps/api/src/chatgpt-plan-registration.postgres.test.ts`, `apps/api/src/chatgpt-plan.test.ts` |
 | Optional provider routes, hosted restrictions, transport injection, disconnect deletion, legacy provider compatibility | `apps/api/src/chatgpt-plan-router.test.ts`, `router.test.ts` |
 | First finalization versus empty disconnect, including the unguarded absence gap | `apps/api/src/chatgpt-plan-finalization.postgres.test.ts`, `router.test.ts` |
 | Native callback safety, local-web polling, account picker and mobile degradation | Desktop/web/mobile focused suites and browser E2E |
@@ -100,9 +102,10 @@ The disposable lock-validation container was also stopped and removed.
 ## Unperformed acceptance and scope limits
 
 As of 2026-10-28 01:31 UTC, author-reported real-account acceptance is partial:
-authorization, account model discovery, text/function-tool inference and
-credential reuse after a cold process restart passed. Service-timed refresh and
-remote revocation/local credential removal remain pending. These manual results
+token exchange, verified ID-token identity, account model discovery,
+text/function-tool inference and credential reuse after a cold process restart
+passed. Service-timed refresh and remote revocation/local credential removal
+remain pending. These manual results
 are separate from the synthetic CI results above.
 
 - A separate author-reported manual OpenAI consent/callback attempt before the
@@ -111,8 +114,8 @@ are separate from the synthetic CI results above.
   exchange because the old secret scope constraint rejected its new kind. A
   local synthetic write reproduced SQLSTATE `23514`. This historical failure is
   distinct from the scripted-runtime E2E and does not establish end-to-end
-  acceptance. The in-progress real-account acceptance will be recorded separately
-  after its remaining checks complete.
+  acceptance. Subsequent partial results appear in the timestamped summary
+  above. Final service-timed results belong to the PR's live acceptance record.
 - Native desktop E2E was not run on the local machine, as required by repository
   guidance. Actual installed macOS/Windows/Linux and mobile device acceptance
   remains unperformed.

@@ -36,6 +36,7 @@ the following concrete gaps; each was fixed with regression coverage:
 | A binding could appear after disconnect reference checks | Binding `FOR SHARE` and disconnect `FOR UPDATE` serialize the pin write and removal; real PostgreSQL tests cover both orders and a stale Serializable snapshot |
 | A reconnect could change the target while disconnect waited | Exact credential/secret/revision fences and an absent-to-present check refuse stale removal before any remote revocation |
 | First credential publication could race past an empty disconnect check | Finalization and disconnect share a user/provider transaction lock; a PostgreSQL control reproduces the original absence gap and both guarded orderings pass |
+| Sign-out or another incomplete login could overwrite a newly verified registration identity | All profile writers share the account lock, reread current scoped data and recheck identity binding; three real PostgreSQL races fail on the old implementation and pass after the fix |
 | Generic OAuth client/host fields selected ChatGPT-only validation | The existing ChatGPT catalog marker selects strict validation; bare/wrapped generic records and malformed ChatGPT records have regression coverage |
 | Web catalogs lacked new messages and retained the previous sign-in ID | Relevant extracted entries and translations cover all ten locales, with catalog compilation and per-locale regressions |
 | A database-wide lock probe could count an unrelated waiter | The probe matches backend, database, exact advisory key and two-integer lock form; an unrelated-key negative check and real PostgreSQL validation pass |
@@ -49,8 +50,8 @@ identity/audience/issuer checks, cancellation, token-bearing callback rejection,
 pending credential execution guards and HTTPS origin pinning. No additional
 actionable issue remained in those reviewed boundaries.
 
-Real-account authorization/inference and installed native acceptance were not
-run. They remain explicit acceptance gaps, rather than inferred successes from
-offline tests or synthetic browser screenshots. The verification record is
+The original review used offline tests and synthetic browser screenshots.
+Later real-account results are recorded separately from those automated checks;
+installed native acceptance remains unperformed. The verification record is
 [validation](chatgpt-plan-validation.md), including the separate
 [real PostgreSQL lock report](chatgpt-plan-postgres-validation.md).

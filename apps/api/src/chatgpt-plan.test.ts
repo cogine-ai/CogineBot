@@ -26,6 +26,7 @@ const auth = vi.hoisted(() => ({
     redirectUri: string;
   }>,
   callbacks: [] as string[],
+  subjects: [] as string[],
 }));
 vi.mock("@rakazo/adapters", async (original) => {
   const actual = await original<typeof import("@rakazo/adapters")>();
@@ -67,7 +68,7 @@ vi.mock("@rakazo/adapters", async (original) => {
           clientId,
           hostId: context.hostId,
           issuer: "https://auth.openai.com",
-          subject: `subject-${clientId}`,
+          subject: auth.subjects.shift() ?? `subject-${clientId}`,
           email: "shared@example.test",
           idToken: `id-token-${clientId}`,
           scopes: ["openid", "resource.invoke", "chatgpt.tokens.use.direct"],
@@ -114,6 +115,7 @@ afterEach(async () => {
   auth.contexts.length = 0;
   auth.callbacks.length = 0;
   auth.revokeCalls = 0;
+  auth.subjects.length = 0;
 });
 
 async function fixture() {
@@ -318,6 +320,68 @@ describe("installation and loopback transport", () => {
 });
 
 describe("encrypted account registrations", () => {
+  it("does not replace an identity verified after another login selected an incomplete registration", async () => {
+    const f = await fixture();
+    auth.failAfterRegistration = true;
+    await expect(f.login({ newRegistration: true, label: "Retained" })).rejects.toThrow(
+      "Code exchange failed",
+    );
+    auth.failAfterRegistration = false;
+    const registrationId = (await listChatGPTPlanProfiles(f.deps, actor))[0]!.id;
+    function gate() {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    }
+    const ready = [gate(), gate()];
+    const proceed = [gate(), gate()];
+    function begin(index: number) {
+      return createChatGPTPlanLogin(f.deps, actor, {
+        callbackTransport: "desktop",
+        registrationId,
+      })({
+        signal: AbortSignal.timeout(10_000),
+        notify() {},
+        async prompt() {
+          ready[index]!.release();
+          await proceed[index]!.promise;
+          return "http://127.0.0.1:1455/auth/callback?code=fixture&state=fixture-state";
+        },
+      });
+    }
+    auth.subjects.push("verified-first", "different-second");
+    const first = begin(0);
+    const second = begin(1);
+    const secondResult = second.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await Promise.all(ready.map((item) => item.promise));
+      proceed[0]!.release();
+      await first;
+      proceed[1]!.release();
+      expect(await secondResult).toMatchObject({
+        error: new Error("ChatGPT account changed. Connect the intended account again."),
+      });
+      const row = f.rows.get(registrationId)!;
+      expect(JSON.parse(await f.secrets.load(row.ciphertext, row.id))).toMatchObject({
+        label: "Retained",
+        registration: {
+          clientId: "oaiapp_1",
+          issuer: "https://auth.openai.com",
+          subject: "verified-first",
+          email: "shared@example.test",
+        },
+      });
+    } finally {
+      for (const item of proceed) item.release();
+      await Promise.allSettled([first, second]);
+    }
+  });
+
   it("skips an unreadable registration while preserving its ciphertext and allowing other accounts", async () => {
     const f = await fixture();
     await f.login({ newRegistration: true });
