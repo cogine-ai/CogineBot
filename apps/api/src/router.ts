@@ -7768,13 +7768,32 @@ async function listRoutinesDto(
  */
 async function clearGoneSandbox(
   deps: RouterDeps,
-  computer: { id: string; providerRef: string | null },
+  computer: {
+    id: string;
+    spaceId: string;
+    userId: string;
+    homeKey: string;
+    kind: string;
+    state: string;
+    screenGeneration: number;
+    providerRef: string | null;
+  },
   error: unknown,
 ): Promise<null> {
-  if (!isSandboxGoneError(error)) throw error;
+  if (computer.kind !== "e2b" || !isSandboxGoneError(error)) throw error;
   getLogger().error(`computer ${computer.id} sandbox ${computer.providerRef} is gone`, error);
   await deps.prisma.computer.updateMany({
-    where: { id: computer.id, providerRef: computer.providerRef },
+    where: {
+      id: computer.id,
+      spaceId: computer.spaceId,
+      userId: computer.userId,
+      homeKey: computer.homeKey,
+      kind: computer.kind,
+      state: computer.state,
+      screenGeneration: computer.screenGeneration,
+      providerRef: computer.providerRef,
+      maintenanceId: null,
+    },
     data: { state: "stopped", providerRef: null },
   });
   return null;

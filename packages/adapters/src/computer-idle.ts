@@ -11,6 +11,7 @@ import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { expireComputerControl, hasActiveComputerControl } from "./computer-control.js";
 import { toComputerRef } from "./computer-lifecycle.js";
 import { checkpointComputerWorkspace } from "./computer-workspace.js";
+import { isSandboxGoneError } from "./e2b-sandbox.js";
 
 export const DEFAULT_SANDBOX_IDLE_MS = 10 * 60 * 1000;
 const BACKGROUND_WORK_MARKER_PREFIX = "/tmp/rakazo-background-";
@@ -236,6 +237,8 @@ export async function sleepComputerIfIdle(
       state: "running",
       maintenanceId: null,
       providerRef: computer.providerRef,
+      kind: computer.kind,
+      screenGeneration: computer.screenGeneration,
       updatedAt: computer.updatedAt,
       executionRunId: null,
       executionLeases: { none: { expiresAt: { gt: checkpointedAt } } },
@@ -250,6 +253,10 @@ export async function sleepComputerIfIdle(
     id: computerId,
     state: "suspending",
     providerRef: computer.providerRef,
+    kind: computer.kind,
+    // The database revokes screen capabilities when running becomes suspending.
+    screenGeneration: computer.screenGeneration + 1,
+    maintenanceId: null,
     updatedAt: checkpointedAt,
   };
 
@@ -274,6 +281,21 @@ export async function sleepComputerIfIdle(
       return;
     }
   } catch (error) {
+    if (isGoneComputerError(ref, error)) {
+      await deps.prisma.computer.updateMany({
+        where: suspensionClaim,
+        data: {
+          state: "stopped",
+          providerRef: null,
+          controlHolder: "none",
+          controlLeaseId: null,
+          controlLeaseExpiresAt: null,
+          controlBotId: null,
+          controlRunId: null,
+        },
+      });
+      return;
+    }
     await deps.prisma.computer.updateMany({
       where: suspensionClaim,
       data: { state: "running" },
@@ -356,6 +378,7 @@ function loadComputer(prisma: PrismaClient, computerId: string) {
       homeKey: true,
       providerRef: true,
       kind: true,
+      screenGeneration: true,
       state: true,
       spaceId: true,
       userId: true,
@@ -387,8 +410,8 @@ async function hasActiveBackgroundWork(
   if (sandbox.inspectBackgroundWork) {
     try {
       return (await sandbox.inspectBackgroundWork(computer, computerId, context)) !== "idle";
-    } catch {
-      return true;
+    } catch (error) {
+      return !isGoneComputerError(computer, error);
     }
   }
   let exitCode: number | undefined;
@@ -405,9 +428,14 @@ async function hasActiveBackgroundWork(
       if (event.type === "stdout") stdout += event.data;
       if (event.type === "exit") exitCode = event.code;
     }
-  } catch {
-    return true;
+  } catch (error) {
+    return !isGoneComputerError(computer, error);
   }
   // Only the probe's explicit idle result permits suspension; unsupported or failed probes retry.
   return exitCode !== 1 || stdout.trim() !== BACKGROUND_WORK_IDLE_SENTINEL;
+}
+
+/** Only the matching provider's resource-loss evidence can discard a computer reference. */
+function isGoneComputerError(computer: ComputerRef, error: unknown): boolean {
+  return computer.kind === "e2b" && isSandboxGoneError(error);
 }

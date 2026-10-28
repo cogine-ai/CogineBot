@@ -113,7 +113,13 @@ export function isSandboxGoneError(error: unknown): boolean {
   const message = errorMessage(error);
   if (SHELL_MISSING_TARGET.test(message)) return false;
   if (SANDBOX_GONE_MESSAGE.test(message)) return true;
-  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+  const seen = new Set<Error>();
+  for (
+    let current: unknown = error;
+    current instanceof Error && !seen.has(current);
+    current = current.cause
+  ) {
+    seen.add(current);
     if (current.name === "SandboxNotFoundError") return true;
   }
   return false;
@@ -142,6 +148,7 @@ export class E2BSandboxProvider implements SandboxProvider {
   private readonly boxes = new Map<string, Sandbox>();
   private readonly connections = new Map<string, Promise<Sandbox>>();
   private readonly lastTouchedAt = new Map<string, number>();
+  private readonly computerOperations = new Map<string, { pending: number }>();
 
   constructor(
     private readonly apiKey: string,
@@ -166,40 +173,80 @@ export class E2BSandboxProvider implements SandboxProvider {
 
   private async box(computer: ComputerRef): Promise<Sandbox> {
     const id = computer.providerRef || computer.id;
-    const existing = this.boxes.get(id);
-    if (existing) {
-      const lastTouched = this.lastTouchedAt.get(id) ?? 0;
-      if (Date.now() - lastTouched < 60_000) return existing;
-      // A cached handle to a sandbox E2B already killed keeps throwing on every call, and the
-      // process never reconnects. The keepalive is the cheapest place to notice and drop it.
-      const gone = await existing.setTimeout(sandboxIdleMs()).then(
-        () => false,
-        (error: unknown) => isSandboxGoneError(error),
-      );
-      if (!gone) {
-        this.lastTouchedAt.set(id, Date.now());
-        return existing;
-      }
-      if (this.boxes.get(id) === existing) this.forget(id);
-    }
-    const pending = this.connections.get(id);
-    if (pending) return pending;
-    let connection!: Promise<Sandbox>;
-    connection = this.sdk
-      .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
-      .then((connected) => {
-        if (this.connections.get(id) !== connection) {
+    const operation = this.beginOperation(id);
+    try {
+      for (;;) {
+        const existing = this.boxes.get(id);
+        if (existing) {
+          const lastTouched = this.lastTouchedAt.get(id) ?? 0;
+          if (Date.now() - lastTouched < 60_000) return existing;
+          // A cached handle to a sandbox E2B already killed keeps throwing on every call, and the
+          // process never reconnects. The keepalive is the cheapest place to notice and drop it.
+          const gone = await existing.setTimeout(sandboxIdleMs()).then(
+            () => false,
+            (error: unknown) => isSandboxGoneError(error),
+          );
+          if (this.computerOperations.get(id) !== operation) {
+            throw new Error("computer connection stopped during teardown");
+          }
+          if (this.boxes.get(id) !== existing) continue;
+          if (!gone) {
+            this.lastTouchedAt.set(id, Date.now());
+            return existing;
+          }
+          this.forgetCached(id);
+        }
+        const pending = this.connections.get(id);
+        if (pending) {
+          const connected = await pending;
+          if (this.computerOperations.get(id) !== operation) {
+            throw new Error("computer connection stopped during teardown");
+          }
+          return connected;
+        }
+        let connection!: Promise<Sandbox>;
+        connection = this.sdk
+          .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
+          .then(
+            (connected) => {
+              if (
+                this.computerOperations.get(id) !== operation ||
+                this.connections.get(id) !== connection
+              ) {
+                throw new Error("computer connection stopped during teardown");
+              }
+              this.boxes.set(connected.sandboxId, connected);
+              this.lastTouchedAt.set(connected.sandboxId, Date.now());
+              return connected;
+            },
+            (error: unknown) => {
+              if (
+                this.computerOperations.get(id) !== operation ||
+                this.connections.get(id) !== connection
+              ) {
+                throw new Error("computer connection stopped during teardown");
+              }
+              throw error;
+            },
+          )
+          .finally(() => {
+            if (this.connections.get(id) === connection) this.connections.delete(id);
+          });
+        this.connections.set(id, connection);
+        const connected = await connection;
+        if (this.computerOperations.get(id) !== operation) {
           throw new Error("computer connection stopped during teardown");
         }
-        this.boxes.set(connected.sandboxId, connected);
-        this.lastTouchedAt.set(connected.sandboxId, Date.now());
         return connected;
-      })
-      .finally(() => {
-        if (this.connections.get(id) === connection) this.connections.delete(id);
-      });
-    this.connections.set(id, connection);
-    return connection;
+      }
+    } catch (error) {
+      if (this.computerOperations.get(id) !== operation) {
+        throw new Error("computer connection stopped during teardown");
+      }
+      throw error;
+    } finally {
+      this.endOperation(id, operation);
+    }
   }
 
   async provision(
@@ -227,9 +274,12 @@ export class E2BSandboxProvider implements SandboxProvider {
           fresh: false,
         };
       } catch (error) {
-        this.boxes.delete(request.providerRef);
         // A transport failure says nothing about the workspace still on the server.
         if (!isSandboxGoneError(error)) throw error;
+        if (this.boxes.has(request.providerRef) || this.connections.has(request.providerRef)) {
+          throw new Error("computer connection stopped during teardown");
+        }
+        this.forgetCached(request.providerRef);
       }
     }
     const desktop = await this.sdk.create(e2bCreateOptions(request.botId, this.apiKey));
@@ -372,7 +422,7 @@ export class E2BSandboxProvider implements SandboxProvider {
   ): AsyncIterable<PortableFile> {
     const desktop = await this.box(computer);
     await this.desktops.stopBrowsers(computer, context);
-    yield* walkE2BWorkspace(desktop, "", context);
+    yield* keepingAwake(desktop, walkE2BWorkspace(desktop, "", context), context.signal);
   }
 
   async importWorkspace(
@@ -413,24 +463,47 @@ export class E2BSandboxProvider implements SandboxProvider {
     if (options?.onlyIfRunning && !this.sdk.attachRunning) {
       throw new Error("E2B SDK cannot attach a computer without resuming it");
     }
-    const desktop = options?.onlyIfRunning
-      ? await this.sdk.attachRunning!(computer.providerRef || computer.id, {
-          apiKey: this.apiKey,
-          signal: AbortSignal.timeout(15_000),
-        })
-      : await this.box(computer);
-    if (!desktop) return;
+    const id = computer.providerRef || computer.id;
+    const attendance = options?.onlyIfRunning ? this.beginOperation(id) : undefined;
+    const cached = this.boxes.get(id);
+    const pending = this.connections.get(id);
+    const attendanceIsCurrent = () =>
+      this.computerOperations.get(id) === attendance &&
+      this.boxes.get(id) === cached &&
+      this.connections.get(id) === pending;
     try {
-      await desktop.setTimeout(sandboxIdleMs());
-    } catch (error) {
+      const desktop = options?.onlyIfRunning
+        ? await this.sdk.attachRunning!(id, {
+            apiKey: this.apiKey,
+            signal: AbortSignal.timeout(15_000),
+          }).catch((error: unknown) => {
+            if (!attendanceIsCurrent()) return undefined;
+            throw error;
+          })
+        : await this.box(computer);
+      if (!desktop || (options?.onlyIfRunning && !attendanceIsCurrent())) return;
+      let gone = false;
+      try {
+        await desktop.setTimeout(sandboxIdleMs());
+      } catch (error) {
+        gone = isSandboxGoneError(error);
+      }
+      if (
+        options?.onlyIfRunning
+          ? !attendanceIsCurrent()
+          : this.boxes.get(desktop.sandboxId) !== desktop
+      )
+        return;
       // Heartbeats refresh lastTouchedAt; if we swallow a gone error here, box() never
       // reaches its 60s probe and keeps handing back the dead cached handle.
-      if (isSandboxGoneError(error)) {
-        this.forget(desktop.sandboxId);
+      if (gone) {
+        this.forgetCached(desktop.sandboxId);
         return;
       }
+      this.lastTouchedAt.set(desktop.sandboxId, Date.now());
+    } finally {
+      if (attendance) this.endOperation(id, attendance);
     }
-    this.lastTouchedAt.set(desktop.sandboxId, Date.now());
   }
 
   async releaseScreen(
@@ -480,16 +553,41 @@ export class E2BSandboxProvider implements SandboxProvider {
 
   async destroy(computer: ComputerRef, _context: AdapterContext): Promise<void> {
     const id = computer.providerRef || computer.id;
-    const desktop = this.boxes.get(id) ?? (await this.box(computer).catch(() => undefined));
+    const cached = this.boxes.get(id);
     this.forget(id);
+    const desktop =
+      cached ??
+      (await this.sdk
+        .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
+        .catch(() => undefined));
     // The SDK returns false when the sandbox is already gone; teardown is complete.
     await desktop?.kill();
   }
 
-  private forget(id: string): void {
+  private beginOperation(id: string): { pending: number } {
+    const operation = this.computerOperations.get(id) ?? { pending: 0 };
+    operation.pending += 1;
+    this.computerOperations.set(id, operation);
+    return operation;
+  }
+
+  private endOperation(id: string, operation: { pending: number }): void {
+    operation.pending -= 1;
+    if (operation.pending === 0 && this.computerOperations.get(id) === operation) {
+      this.computerOperations.delete(id);
+    }
+  }
+
+  private forgetCached(id: string): void {
+    // Resource loss permits sibling recovery; explicit teardown invalidates their operation slot.
     this.boxes.delete(id);
-    this.connections.delete(id);
     this.lastTouchedAt.delete(id);
+  }
+
+  private forget(id: string): void {
+    this.computerOperations.delete(id);
+    this.connections.delete(id);
+    this.forgetCached(id);
   }
 
   /** Apply the deployment timeout (SDK default is 60s) and return failed results instead of throwing. */
@@ -540,6 +638,43 @@ async function writeE2BFiles(
     await desktop.commands.run(`chmod 700 -- ${executable.join(" ")}`, {
       signal: context.signal,
     });
+  }
+}
+
+/** Extend an active export's captured sandbox timeout until its reader finishes. */
+export async function* keepingAwake<T>(
+  desktop: Pick<Sandbox, "setTimeout">,
+  items: AsyncIterable<T>,
+  signal?: AbortSignal,
+): AsyncIterable<T> {
+  const idleMs = sandboxIdleMs();
+  let extending = false;
+  const extend = async () => {
+    if (extending || signal?.aborted) return;
+    extending = true;
+    try {
+      await desktop.setTimeout(idleMs);
+    } catch {
+      // Extending is best effort; preserve the export's own success or failure.
+    } finally {
+      extending = false;
+    }
+  };
+  signal?.throwIfAborted();
+  await extend();
+  signal?.throwIfAborted();
+  const timer = setInterval(() => void extend(), Math.min(60_000, idleMs / 2));
+  const stop = () => clearInterval(timer);
+  signal?.addEventListener("abort", stop, { once: true });
+  try {
+    for await (const item of items) {
+      signal?.throwIfAborted();
+      yield item;
+      signal?.throwIfAborted();
+    }
+  } finally {
+    stop();
+    signal?.removeEventListener("abort", stop);
   }
 }
 

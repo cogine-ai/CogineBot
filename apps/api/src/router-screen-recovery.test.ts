@@ -28,6 +28,9 @@ function fixture(interactive = true) {
     thread: { id: "thread" },
     computer: {
       id: "computer",
+      spaceId: "space",
+      userId: "computer-owner",
+      maintenanceId: null as string | null,
       screenGeneration: 3,
       kind: "e2b",
       scope: "team",
@@ -107,11 +110,57 @@ function fixture(interactive = true) {
     call,
     prisma,
     setScreenControl,
+    connectScreen,
     providerToken: () => providerToken,
   };
 }
 
 describe("screen grant authority after provider recovery", () => {
+  it.each(["e2b", "box", "daytona"])(
+    "only clears an E2B-specific Gone for the matching %s target",
+    async (kind) => {
+      const f = fixture(false);
+      f.live.computer.kind = kind;
+      const failure = new Error("Sandbox is probably not running anymore");
+      f.connectScreen.mockRejectedValueOnce(failure);
+      vi.mocked(f.prisma.computer.updateMany).mockResolvedValue({ count: 1 });
+      const response = await f.call();
+      if (kind !== "e2b") {
+        expect(response.status).toBe(500);
+        expect(f.prisma.computer.updateMany).not.toHaveBeenCalled();
+        return;
+      }
+      expect(response.status).toBe(200);
+      expect(f.prisma.computer.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "computer",
+          spaceId: "space",
+          userId: "computer-owner",
+          homeKey: "home",
+          kind: "e2b",
+          state: "running",
+          providerRef: "provider",
+          screenGeneration: 3,
+          maintenanceId: null,
+        },
+        data: { state: "stopped", providerRef: null },
+      });
+    },
+  );
+
+  it.each([
+    "No such file",
+    "command not found",
+    "file not found",
+    "network timeout",
+    "HTTP 429 quota exceeded",
+  ])("does not clear a target for %s", async (message) => {
+    const f = fixture(false);
+    f.connectScreen.mockRejectedValueOnce(new Error(message));
+    expect((await f.call()).status).toBe(500);
+    expect(f.prisma.computer.updateMany).not.toHaveBeenCalled();
+  });
+
   it("revokes a delayed grant after the actual release handler completes", async () => {
     const f = fixture();
     const pending = f.call();

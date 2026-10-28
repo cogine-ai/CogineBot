@@ -1,3 +1,4 @@
+import { COMPUTER_RATE_LIMITED_ERROR_MESSAGE } from "@rakazo/contracts";
 import { redactSensitiveText } from "@rakazo/logging/redaction";
 import { sanitizeUtf16ForJson } from "./events.js";
 import { stuckWorkStatusMessages } from "./stuck-work.js";
@@ -5,7 +6,11 @@ import { stuckWorkStatusMessages } from "./stuck-work.js";
 export const MISSING_TOOL_FINAL_RESPONSE_ERROR =
   "The tools finished, but the model did not write a final answer. Rephrase the request and try again.";
 
-const APP_RUN_ERRORS = new Set([MISSING_TOOL_FINAL_RESPONSE_ERROR, ...stuckWorkStatusMessages()]);
+const APP_RUN_ERRORS = new Set([
+  MISSING_TOOL_FINAL_RESPONSE_ERROR,
+  COMPUTER_RATE_LIMITED_ERROR_MESSAGE,
+  ...stuckWorkStatusMessages(),
+]);
 
 export const RUN_ERROR_DETAILS_MAX_BYTES = 8 * 1024;
 export const RUN_ERROR_SUMMARY_MAX_LENGTH = 500;

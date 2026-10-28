@@ -73,7 +73,6 @@ describe("OpenAI-compatible standard thinking transport", () => {
       payload = JSON.parse(String(init?.body)) as Payload;
       return fixtureResponse();
     });
-    vi.stubGlobal("fetch", mockFetch);
     const models = registerOpenAiCompatibleRuntime(builtinModels(), {
       modelId,
       baseUrl,

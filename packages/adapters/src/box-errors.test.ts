@@ -1,4 +1,5 @@
 import { ResponseError } from "@asciidev/box-sdk";
+import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { boxResponseError, wrapBoxCall } from "./box-errors.js";
 import { BoxSandboxProvider, isUnrecoverableBoxError } from "./box-sandbox.js";
@@ -6,6 +7,54 @@ import { BoxSandboxProvider, isUnrecoverableBoxError } from "./box-sandbox.js";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Box API errors", () => {
+  it("uses the same neutral quota error for an actual SDK-backed create rejection", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({ code: "rate_limited", message: "Start quota reached" }, { status: 429 }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const provider = new BoxSandboxProvider({ apiKey: "fake-box-key" });
+    await expect(
+      provider.provision(
+        { botId: "bot", homePath: "/unused" },
+        {
+          operationId: "test",
+          traceId: "test",
+          spaceId: "space",
+          userId: "user",
+          signal: new AbortController().signal,
+        },
+      ),
+    ).rejects.toBeInstanceOf(SandboxRateLimitError);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("maps a quota rejection to a neutral error while keeping a bounded sanitized cause", async () => {
+    const call = vi.fn(async () => {
+      throw new ResponseError(
+        Response.json(
+          {
+            code: "rate_limited",
+            message:
+              "Rejected fake-key; Bearer private-credential; https://box.example/?token=secret",
+          },
+          { status: 429 },
+        ),
+      );
+    });
+    const error = await wrapBoxCall(call, "fake-key")().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(SandboxRateLimitError);
+    expect(error).toMatchObject({
+      code: "SANDBOX_RATE_LIMITED",
+      message: "Too many computer requests. Try again later.",
+      cause: { response: { status: 429 } },
+    });
+    expect(isUnrecoverableBoxError(error)).toBe(false);
+    expect((error as Error).cause).toBeInstanceOf(ResponseError);
+    for (const secret of ["fake-key", "private-credential", "token=secret"])
+      expect(String((error as Error).cause)).not.toContain(secret);
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
   it("reports the upstream failure through the real SDK-backed file operation", async () => {
     vi.stubGlobal(
       "fetch",

@@ -344,9 +344,7 @@ describe("Pi runtime completion recovery", () => {
     "invalid api key; terminated",
     "context_length_exceeded; 503 overloaded",
     "user declined consent; 429 rate limit",
-    "Request timed out.",
-    "HTTP 408",
-    "HTTP 504",
+    "Codex stream idle timeout",
     "HTTP 402 quota exhausted",
     "HTTP 429 insufficient_quota",
     "quota temporarily exceeded",
@@ -489,6 +487,90 @@ describe("Pi runtime completion recovery", () => {
       expect(providerState.delay).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("Pi runtime early connection timeout recovery", () => {
+  it.each(["Request timed out.", "HTTP 408", "HTTP 504", "Connection error."])(
+    "retries an early provider failure within the remaining budget: %s",
+    async (failure) => {
+      let now = 10_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      providerState.delay.mockImplementation(async (delay) => {
+        now += delay;
+      });
+      providerState.stream
+        .mockImplementationOnce(() => {
+          now += 30_000;
+          return stream(primary, message(primary, [], "error", failure));
+        })
+        .mockImplementation(() =>
+          stream(primary, message(primary, [{ type: "text", text: "Recovered." }], "stop")),
+        );
+      const input = request();
+      expect((await run(input)).at(-1)).toEqual({ type: "done", text: "Recovered." });
+      expect(providerState.stream).toHaveBeenCalledTimes(2);
+      expect(providerState.stream.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 120_000 });
+      expect(providerState.stream.mock.calls[1]?.[2]).toMatchObject({ timeoutMs: 88_000 });
+      expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000]);
+      expect(input.executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([118_000, 120_000, 180_000])(
+    "does not start a retry with no budget after backoff at %dms",
+    async (elapsed) => {
+      let now = 10_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      providerState.stream.mockImplementation(() => {
+        now += elapsed;
+        return stream(primary, message(primary, [], "error", "Request timed out."));
+      });
+      await expect(run(request())).rejects.toThrow("Request timed out.");
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(providerState.delay).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks the budget when backoff resumes after a long suspension", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.delay.mockImplementation(async () => {
+      now += 130_000;
+    });
+    providerState.stream.mockImplementation(() =>
+      stream(primary, message(primary, [], "error", "Connection error.")),
+    );
+    await expect(run(request())).rejects.toThrow("Connection error.");
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).toHaveBeenCalledOnce();
+  });
+
+  it("keeps later attempts and their delays inside the first completion budget", async () => {
+    let now = 10_000;
+    let calls = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.delay.mockImplementation(async (delay) => {
+      now += delay;
+    });
+    providerState.stream.mockImplementation(() => {
+      now += [40_000, 50_000, 25_000][calls++] ?? 0;
+      return stream(
+        primary,
+        message(
+          primary,
+          [],
+          "error",
+          calls === 1 ? "HTTP 503 first failure" : "Request timed out.",
+        ),
+      );
+    });
+    await expect(run(request())).rejects.toThrow("HTTP 503 first failure");
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+    expect(providerState.stream.mock.calls.map(([, , options]) => options.timeoutMs)).toEqual([
+      120_000, 78_000, 20_000,
+    ]);
+    expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000, 8_000]);
+  });
 });
 
 describe("Pi runtime ordered model fallback", () => {
@@ -1735,5 +1817,286 @@ describe("provider availability classification", () => {
     ["transient server failure", { status: 503, message: "service unavailable" }, true],
   ])("classifies %s", (_label, error, expected) => {
     expect(isRetryableProviderUnavailable(error)).toBe(expected);
+  });
+});
+
+describe("Pi runtime signature recovery guards", () => {
+  const mismatch = "Invalid signature in thinking block";
+
+  it.each(["HTTP 400 insufficient_quota", "HTTP 402 billing_limit_exceeded"])(
+    "does not repair signatures through %s",
+    async (refusal) => {
+      providerState.stream.mockImplementation(() =>
+        stream(primary, message(primary, [], "error", `${refusal}: ${mismatch}`)),
+      );
+      await expect(run(request())).rejects.toThrow(/signature in thinking block/);
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(providerState.delay).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a configured backup for a quota failure without retrying the primary signature", async () => {
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+      target.provider === primary.provider
+        ? stream(
+            target,
+            message(target, [], "error", `HTTP 402 billing_limit_exceeded: ${mismatch}`),
+          )
+        : stream(target, message(target, [{ type: "text", text: "Backup answered" }], "stop")),
+    );
+    const events = await run(
+      request([{ provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-key" }]),
+    );
+    expect(events.at(-1)).toEqual({ type: "done", text: "Backup answered" });
+    expect(providerState.stream.mock.calls.map(([target]) => target.provider)).toEqual([
+      primary.provider,
+      backupA.provider,
+    ]);
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "HTTP 401 authentication_error",
+    "HTTP 403 permission_error",
+    "HTTP 400 invalid_api_key",
+    "HTTP 400 subscription_sharing_usage_limit_exceeded",
+    "HTTP 400 subscription_sharing_usage_unavailable",
+  ])("keeps %s above signature repair and configured backups", async (refusal) => {
+    providerState.stream.mockImplementation(() =>
+      stream(primary, message(primary, [], "error", `${refusal}: ${mismatch}`)),
+    );
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-key" },
+    ]);
+    await expect(run(input)).rejects.toThrow(/signature in thinking block/);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(input.executeTool).not.toHaveBeenCalled();
+  });
+
+  it.each([30_000, 120_000])(
+    "keeps signature recovery inside the completion budget after %dms",
+    async (elapsed) => {
+      let now = 10_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      providerState.stream
+        .mockImplementationOnce(() => {
+          now += elapsed;
+          return stream(primary, message(primary, [], "error", mismatch));
+        })
+        .mockImplementation(() =>
+          stream(primary, message(primary, [{ type: "text", text: "Recovered" }], "stop")),
+        );
+      if (elapsed === 120_000) {
+        await expect(run(request())).rejects.toThrow(mismatch);
+        expect(providerState.stream).toHaveBeenCalledOnce();
+      } else {
+        await run(request());
+        expect(providerState.stream.mock.calls[1]?.[2]).toMatchObject({ timeoutMs: 90_000 });
+      }
+      expect(providerState.delay).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["text", "thinking", "toolCall"])(
+    "never restarts after partial %s output",
+    async (kind) => {
+      const failure = message(primary, [], "error", mismatch);
+      providerState.stream.mockImplementation(() => {
+        const result = new AssistantMessageEventStream();
+        const partial = message(primary, [], "stop");
+        result.push({ type: "start", partial });
+        if (kind === "toolCall") result.push({ type: "toolcall_start", contentIndex: 0, partial });
+        else if (kind === "thinking")
+          result.push({ type: "thinking_delta", contentIndex: 0, delta: "partial", partial });
+        else result.push({ type: "text_delta", contentIndex: 0, delta: "partial", partial });
+        result.push({ type: "error", reason: "error", error: failure });
+        result.end(failure);
+        return result;
+      });
+      const input = request();
+      await expect(run(input)).rejects.toThrow(mismatch);
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(providerState.delay).not.toHaveBeenCalled();
+      expect(input.executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not strip context for a local accounting error with signature-like words", async () => {
+    const input = request();
+    input.onUsage = async () => {
+      throw new Error(mismatch);
+    };
+    providerState.stream.mockImplementation(() =>
+      stream(primary, message(primary, [], "error", mismatch)),
+    );
+    await expect(run(input)).rejects.toThrow(mismatch);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it("passes an explicit transport through the main and helper completion", async () => {
+    const transport = vi.fn<typeof fetch>(async () => new Response("fixture"));
+    const input = request();
+    input.tools.push({
+      name: "run_subagent",
+      description: "Run a helper",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" }, task: { type: "string" } },
+        required: ["name", "task"],
+      },
+      readOnly: true,
+    });
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              {
+                type: "toolCall",
+                id: "helper-once",
+                name: "run_subagent",
+                arguments: { name: "helper", task: "Check fixture" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Helper done" }], "stop")),
+      )
+      .mockImplementation(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Done" }], "stop")),
+      );
+    await run(input, [], new PiAgentRuntime({ modelFetch: transport }));
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+    for (const [, , options] of providerState.stream.mock.calls) {
+      expect(options.fetch).toEqual(expect.any(Function));
+      await options.fetch("https://models.invalid/v1/responses");
+    }
+    expect(transport).toHaveBeenCalledTimes(3);
+    expect(input.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+describe("Pi runtime thinking blocks bound to a different conversation", () => {
+  const mismatch =
+    '400 {"type":"error","error":{"type":"invalid_request_error","message":"Upstream request failed: [invalid_request_error] messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation."}}';
+  const thinkingParts = (context: Context) =>
+    context.messages.flatMap((entry) =>
+      entry.role === "assistant" ? entry.content.filter((part) => part.type === "thinking") : [],
+    );
+
+  it("retries once without earlier thinking blocks and keeps dropping them for the run", async () => {
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              { type: "thinking", thinking: "Plan the write.", thinkingSignature: "sig" },
+              { type: "toolCall", id: "call-1", name: "write_effect", arguments: { value: "a" } },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementationOnce(() => stream(primary, message(primary, [], "error", mismatch)))
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [{ type: "toolCall", id: "call-2", name: "write_effect", arguments: { value: "b" } }],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementation(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Done." }], "stop")),
+      );
+    const input = request();
+    const events = await run(input);
+    expect(events.at(-1)).toEqual({ type: "done", text: "Done." });
+    expect(input.executeTool).toHaveBeenCalledTimes(2);
+    expect(
+      (input.executeTool as ReturnType<typeof vi.fn>).mock.calls.map(([, args]) => args),
+    ).toEqual([{ value: "a" }, { value: "b" }]);
+    const contexts = providerState.stream.mock.calls.map(([, context]) => context as Context);
+    expect(contexts).toHaveLength(4);
+    expect(thinkingParts(contexts[1]!)).toHaveLength(1);
+    expect(thinkingParts(contexts[2]!)).toEqual([]);
+    expect(thinkingParts(contexts[3]!)).toEqual([]);
+    expect(
+      contexts[2]!.messages.some(
+        (entry) =>
+          entry.role === "assistant" && entry.content.some((part) => part.type === "toolCall"),
+      ),
+    ).toBe(true);
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the error when the retry without thinking blocks fails the same way", async () => {
+    providerState.stream.mockImplementation(() =>
+      stream(primary, message(primary, [], "error", mismatch)),
+    );
+    await expect(run(request())).rejects.toThrow("bound to a different conversation");
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses a backup that fits only after discarded thinking blocks are omitted", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const thinking = "x".repeat(12_000);
+    providerState.models.set(`${backupA.provider}/${backupA.id}`, {
+      ...backupA,
+      contextWindow: 3_000,
+    });
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "small-backup-key", maxTokens: 512 },
+    ]);
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              { type: "thinking", thinking, thinkingSignature: "sig" },
+              { type: "toolCall", id: "call-1", name: "write_effect", arguments: { value: "a" } },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementationOnce(() => {
+        now += 30_000;
+        return stream(primary, message(primary, [], "error", mismatch));
+      })
+      .mockImplementation((target: Model<"openai-completions">) =>
+        target.provider === primary.provider
+          ? stream(target, message(target, [], "error", "429 rate_limit_error"))
+          : stream(target, message(target, [{ type: "text", text: "backup answer" }], "stop")),
+      );
+
+    const events = await run(input);
+
+    expect(events.at(-1)).toEqual({ type: "done", text: "backup answer" });
+    expect(providerState.stream.mock.lastCall?.[2]).toMatchObject({ timeoutMs: 120_000 });
+    expect(
+      providerState.stream.mock.calls.map(
+        ([target]) => (target as Model<"openai-completions">).provider,
+      ),
+    ).toEqual([primary.provider, primary.provider, primary.provider, backupA.provider]);
+    const contexts = providerState.stream.mock.calls.map(([, context]) => context as Context);
+    expect(thinkingParts(contexts[1]!)).toHaveLength(1);
+    expect(thinkingParts(contexts[2]!)).toEqual([]);
+    expect(thinkingParts(contexts[3]!)).toEqual([]);
+    expect(providerState.delay).not.toHaveBeenCalled();
   });
 });

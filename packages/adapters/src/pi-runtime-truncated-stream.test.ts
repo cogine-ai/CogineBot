@@ -14,7 +14,7 @@ vi.mock("@rakazo/core", async (importOriginal) => ({
 import { PiAgentRuntime } from "./pi-runtime.js";
 
 it.each([408, 504])(
-  "does not add completion retries after a real parsed HTTP %s without timeout text",
+  "bounds completion retries for a real parsed early HTTP %s without timeout text",
   async (status) => {
     delay.mockClear();
     let requests = 0;
@@ -62,10 +62,12 @@ it.each([408, 504])(
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message).toContain(String(status));
       expect((failure as Error).message).not.toMatch(/timeout|timed out/i);
-      expect(requests).toBe(1);
-      expect(delay).not.toHaveBeenCalled();
-      expect(beforeCall).toHaveBeenCalledOnce();
-      expect(afterCall).toHaveBeenCalledOnce();
+      expect(requests).toBe(4);
+      expect(delay.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([
+        2_000, 8_000, 20_000,
+      ]);
+      expect(beforeCall).toHaveBeenCalledTimes(4);
+      expect(afterCall).toHaveBeenCalledTimes(4);
       expect(events.some((event) => event.type === "done")).toBe(false);
     } finally {
       const closed = once(server, "close");
@@ -182,4 +184,45 @@ it("recovers real parsed empty completions after a completed tool without replay
     server.closeAllConnections();
     await closed;
   }
+});
+
+it.each([
+  [401, "authentication_error"],
+  [403, "permission_error"],
+  [400, "subscription_sharing_usage_limit_exceeded"],
+  [400, "subscription_sharing_usage_unavailable"],
+  [400, "insufficient_quota"],
+  [402, "billing_limit_exceeded"],
+] as const)("keeps parsed %s/%s refusal above signature recovery", async (status, code) => {
+  delay.mockClear();
+  let requests = 0;
+  const runtime = new PiAgentRuntime({
+    modelFetch: async () => {
+      requests += 1;
+      return Response.json(
+        { error: { code, type: code, message: "Invalid signature in thinking block" } },
+        { status },
+      );
+    },
+  });
+  const consume = async () => {
+    for await (const _event of runtime.run(
+      {
+        botId: "fixture-bot",
+        threadId: "fixture-thread",
+        runId: "fixture-run",
+        prompt: "Report the fixture",
+        instructions: "Fixture",
+        history: [],
+        tools: [],
+        model: { provider: "openai-compatible", id: "fixture", baseUrl: "http://127.0.0.1:1/v1" },
+      },
+      { signal: AbortSignal.timeout(5_000) },
+    )) {
+      /* Consume the actual parser and recovery pipeline. */
+    }
+  };
+  await expect(consume()).rejects.toThrow("Invalid signature");
+  expect(requests).toBe(1);
+  expect(delay).not.toHaveBeenCalled();
 });

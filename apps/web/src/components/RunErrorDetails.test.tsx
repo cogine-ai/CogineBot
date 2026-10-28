@@ -19,6 +19,23 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+it("shows computer retry advice without model connection actions", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(<RunErrorDetails error="Too many computer requests. Try again later." />),
+    );
+    expect(container.textContent).toContain("Too many computer requests. Try again later.");
+    expect(container.textContent).not.toContain("model provider");
+    expect(container.querySelector("a")).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
 it.each([
   ["subscription_sharing_usage_limit_exceeded", true],
   ["insufficient_quota", false],

@@ -133,8 +133,11 @@ export class DaytonaSandboxProvider implements SandboxProvider {
         const sandbox = await this.connect(request.providerRef);
         return this.ref(sandbox, request.botId, false);
       } catch (error) {
-        this.forget(request.providerRef);
         if (!isUnrecoverableDaytonaError(error)) throw error;
+        if (this.boxes.has(request.providerRef) || this.connections.has(request.providerRef)) {
+          throw new Error("Daytona connection was invalidated during teardown");
+        }
+        this.forget(request.providerRef);
       }
     }
 
@@ -428,15 +431,25 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     let connection!: Promise<Sandbox>;
     connection = (async () => {
       const sandbox = await this.client.get(id);
+      if (this.connections.get(id) !== connection) {
+        throw new Error("Daytona connection was invalidated during teardown");
+      }
       if (sandbox.state !== SandboxState.STARTED) await sandbox.start(120);
       if (this.connections.get(id) !== connection) {
         throw new Error("Daytona connection was invalidated during teardown");
       }
       this.boxes.set(id, sandbox);
       return sandbox;
-    })().finally(() => {
-      if (this.connections.get(id) === connection) this.connections.delete(id);
-    });
+    })()
+      .catch((error: unknown) => {
+        if (this.connections.get(id) !== connection) {
+          throw new Error("Daytona connection was invalidated during teardown");
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (this.connections.get(id) === connection) this.connections.delete(id);
+      });
     this.connections.set(id, connection);
     return connection;
   }
