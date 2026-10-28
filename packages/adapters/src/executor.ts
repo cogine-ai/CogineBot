@@ -36,6 +36,7 @@ import {
   routineJobKey,
   routineWakeupJob,
   runContinueJob,
+  SandboxRateLimitError,
 } from "@rakazo/adapter-kit";
 import type { ComputerCommand, MessageBlock, RunStatus } from "@rakazo/contracts";
 import {
@@ -7648,6 +7649,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
       } catch (setupError) {
         const computerBusy = setupError instanceof ComputerBusyError;
         const retryForever = computerBusy || isTooManyDatabaseConnections(setupError);
+        const setupFailureMessage =
+          setupError instanceof SandboxRateLimitError
+            ? setupError.message
+            : "Run setup failed; retrying";
         if (!computerBusy) {
           // undici collapses every network failure to "fetch failed"; the cause names the
           // host and errno, which is the only part worth paging over.
@@ -7672,14 +7677,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           fence,
           resumeCheckpoint,
           heldForTakeover,
-          retryForever ? null : "Run setup failed; retrying",
+          retryForever ? null : setupFailureMessage,
         );
         if (released) {
           await deps.prisma.attempt.update({
             where: { id: attempt.id },
             data: {
               status: "setup_failed",
-              error: retryForever ? null : "Run setup failed; retrying",
+              error: retryForever ? null : setupFailureMessage,
               finishedAt: new Date(),
             },
           });
@@ -7690,7 +7695,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             return;
           }
-          throw new Error("Run setup failed; retrying");
+          throw setupError instanceof SandboxRateLimitError
+            ? setupError
+            : new Error(setupFailureMessage);
         }
       } finally {
         detachShutdown?.();

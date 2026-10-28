@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { SandboxNotFoundError } from "@e2b/desktop";
 import type { AgentHomeStore, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
+import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -84,6 +86,110 @@ describe("sandbox idle", () => {
     expect(harness.home.commit).not.toHaveBeenCalled();
     expect(harness.sandbox.stop).not.toHaveBeenCalled();
     expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it("clears a confirmed missing E2B sandbox after its probe without losing the saved home", async () => {
+    const gone = new SandboxNotFoundError("Synthetic sandbox unavailable");
+    const harness = idleHarness({ exportError: gone });
+    harness.sandbox.execute.mockImplementationOnce(async function* () {
+      yield await Promise.reject(gone);
+    });
+    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+    expect(harness.computer).toMatchObject({
+      state: "stopped",
+      providerRef: null,
+      homeRevision: "rev-before",
+      controlHolder: "none",
+      controlLeaseId: null,
+      controlLeaseExpiresAt: null,
+      controlBotId: null,
+      controlRunId: null,
+    });
+    expect(harness.sandbox.stop).not.toHaveBeenCalled();
+    expect(harness.sandbox.keepAlive).not.toHaveBeenCalled();
+    expect(harness.jobs.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("accepts a provider-native missing-sandbox probe without treating it as active work", async () => {
+    const gone = new SandboxNotFoundError("Synthetic sandbox unavailable");
+    const harness = idleHarness({ exportError: gone });
+    const inspect = vi.fn().mockRejectedValue(gone);
+    Object.assign(harness.sandbox, { inspectBackgroundWork: inspect });
+    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+    expect(inspect).toHaveBeenCalledOnce();
+    expect(harness.sandbox.execute).not.toHaveBeenCalled();
+    expect(harness.computer.state).toBe("stopped");
+    expect(harness.computer.homeRevision).toBe("rev-before");
+  });
+
+  it.each([
+    new Error("bash: helper: command not found"),
+    new Error("Path /home/user/rakazo-home/notes.md not found"),
+    Object.assign(new Error("file endpoint failed"), { status: 404 }),
+    new Error("fetch failed"),
+    new Error("Unauthorized"),
+    new SandboxRateLimitError(),
+  ])("preserves an uncertain computer after a probe failure: %s", async (error) => {
+    const harness = idleHarness();
+    harness.sandbox.execute.mockImplementationOnce(async function* () {
+      yield await Promise.reject(error);
+    });
+    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+    expect(harness.computer).toMatchObject({
+      state: "running",
+      providerRef: "computer",
+      homeRevision: "rev-before",
+    });
+    expect(harness.sandbox.exportWorkspace).not.toHaveBeenCalled();
+    expect(harness.sandbox.stop).not.toHaveBeenCalled();
+    expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it.each(["box", "daytona", "fake"])(
+    "does not apply E2B loss evidence to a %s computer",
+    async (kind) => {
+      const gone = new SandboxNotFoundError("Synthetic sandbox unavailable");
+      const harness = idleHarness({ exportError: gone });
+      harness.computer.kind = kind;
+      await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).rejects.toBe(gone);
+      expect(harness.computer).toMatchObject({
+        state: "running",
+        providerRef: "computer",
+        homeRevision: "rev-before",
+      });
+      expect(harness.sandbox.stop).not.toHaveBeenCalled();
+      expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["providerRef", "new-provider"],
+    ["kind", "daytona"],
+    ["screenGeneration", 2],
+    ["maintenanceId", "new-maintenance"],
+    ["state", "running"],
+  ])("does not clear a missing reference after its %s claim changes", async (field, value) => {
+    const harness = idleHarness();
+    harness.sandbox.exportWorkspace.mockImplementationOnce(async function* () {
+      Object.assign(harness.computer, {
+        [field]: value,
+        controlHolder: "user",
+        controlLeaseId: "new-control",
+      });
+      yield await Promise.reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+    });
+    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+    expect(harness.computer).toMatchObject({
+      [field]: value,
+      controlHolder: "user",
+      controlLeaseId: "new-control",
+      homeRevision: "rev-before",
+    });
+    expect(harness.computer.providerRef).toBe(
+      field === "providerRef" ? "new-provider" : "computer",
+    );
+    expect(harness.sandbox.stop).not.toHaveBeenCalled();
+    expect(harness.events.append).not.toHaveBeenCalled();
   });
 
   it("does not suspend a computer while bot-launched background work is active", async () => {
@@ -195,6 +301,9 @@ describe("sandbox idle", () => {
         id: harness.computer.id,
         state: "suspending",
         providerRef: harness.computer.providerRef,
+        kind: "e2b",
+        screenGeneration: 1,
+        maintenanceId: null,
         updatedAt: expect.any(Date),
       },
       data: {
@@ -221,6 +330,25 @@ describe("sandbox idle", () => {
 
     expect(harness.sandbox.stop).not.toHaveBeenCalled();
     expect(harness.prisma.computer.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new Error("bash: helper: command not found"),
+    new Error("Path /home/user/rakazo-home/notes.md not found"),
+    Object.assign(new Error("File endpoint failed"), { status: 404 }),
+    new Error("Unauthorized"),
+    new SandboxRateLimitError(),
+  ])("retains the existing reference after a non-Gone export error: %s", async (error) => {
+    const harness = idleHarness({ exportError: error });
+    await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).rejects.toBe(error);
+    expect(harness.computer).toMatchObject({
+      state: "running",
+      providerRef: "computer",
+      homeRevision: "rev-before",
+    });
+    expect(harness.sandbox.stop).not.toHaveBeenCalled();
+    expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
+    expect(harness.events.append).not.toHaveBeenCalled();
   });
 
   it("retains the saved revision when the database transition after stopping fails", async () => {
@@ -519,6 +647,8 @@ function idleHarness(
     homeRevision: "rev-before",
     providerRef: "computer",
     kind: "e2b",
+    screenGeneration: 0,
+    maintenanceId: null,
     state: "running",
     spaceId: "workspace",
     userId: "user",
@@ -526,6 +656,7 @@ function idleHarness(
     controlLeaseId: null,
     controlLeaseExpiresAt: null,
     controlBotId: null,
+    controlRunId: null,
     executionBotId: null,
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
   };
@@ -535,15 +666,27 @@ function idleHarness(
       updateMany: vi.fn(async (args) => {
         if (args.where.updatedAt && args.where.updatedAt.getTime() !== computer.updatedAt.getTime())
           return { count: 0 };
-        if (args.data.updatedAt) computer.updatedAt = args.data.updatedAt;
-        if (args.data.state) computer.state = args.data.state;
-        if (args.data.homeRevision) computer.homeRevision = args.data.homeRevision;
+        for (const field of [
+          "id",
+          "state",
+          "providerRef",
+          "kind",
+          "screenGeneration",
+          "maintenanceId",
+        ]) {
+          if (
+            field in args.where &&
+            args.where[field] !== (computer as Record<string, unknown>)[field]
+          )
+            return { count: 0 };
+        }
+        applyData(args.data);
         return { count: 1 };
       }),
       update: vi.fn(async (args) => {
         if (args.where.updatedAt && args.where.updatedAt.getTime() !== computer.updatedAt.getTime())
           throw new Error("stale computer lifecycle");
-        Object.assign(computer, args.data);
+        applyData(args.data);
         return computer;
       }),
     },
@@ -553,6 +696,15 @@ function idleHarness(
       findMany: vi.fn().mockResolvedValue([{ id: "bot", thread: { id: "thread" } }]),
     },
   };
+  function applyData(data: Record<string, unknown>) {
+    const { state, providerRef, screenGeneration } = computer;
+    Object.assign(computer, data);
+    if (
+      (computer.state !== state && !(state === "booting" && computer.state === "running")) ||
+      computer.providerRef !== providerRef
+    )
+      computer.screenGeneration = screenGeneration + 1;
+  }
   const sandbox = {
     execute: vi.fn(async function* () {
       const code = backgroundWorkProbeCodes.shift() ?? options.backgroundWorkProbeCode ?? 1;

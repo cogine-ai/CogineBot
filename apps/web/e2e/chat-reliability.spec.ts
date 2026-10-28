@@ -2712,3 +2712,30 @@ test("a committed creation without its receipt leaves the other Space isolated a
     releaseCreate.resolve();
   }
 });
+
+test("a computer provider limit keeps computer retry advice without starting another run", async ({
+  page,
+}, testInfo) => {
+  const { state, errors, unknown } = await mockChat(page);
+  await controlledStream(page);
+  const failed = {
+    id: "run-computer-limit",
+    botId: "chief",
+    status: "failed" as const,
+    trigger: "user" as const,
+    error: "Too many computer requests. Try again later.",
+  };
+  state.bootstrap = (route, data) =>
+    json(route, { ...data, thread: { ...data.thread!, run: failed } });
+  state.thread = (route, data) => json(route, { ...data, run: failed });
+  await ready(page);
+  const failure = page.getByTestId("composer-error");
+  await expect(failure).toContainText(failed.error);
+  await expect(failure).not.toContainText("model provider");
+  await expect(failure.getByRole("link", { name: "Manage usage", exact: true })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "b43-computer-rate-limit");
+  expect(state.sends).toEqual([]);
+  expect(state.uploads).toEqual([]);
+  expect(unknown).toEqual([]);
+  expect(errors).toEqual([]);
+});

@@ -32,6 +32,13 @@ describe("ChatGPT plan usage recovery", () => {
 
 import { stuckWorkStatusMessages } from "./stuck-work.js";
 
+describe("computer provider refusal", () => {
+  it("keeps the fixed computer retry advice distinct from model-provider failures", () => {
+    const details = "Too many computer requests. Try again later.";
+    expect(normalizeRunError(details)).toEqual({ summary: details, details });
+  });
+});
+
 describe("run failure diagnostics", () => {
   it.each(["AWS_ACCESS_KEY_ID=", "Access Key ID is: "])(
     "cleans a named %s credential identifier before clipping",

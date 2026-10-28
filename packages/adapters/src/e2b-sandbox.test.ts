@@ -3,7 +3,7 @@ import { Sandbox, SandboxNotFoundError, TimeoutError } from "@e2b/desktop";
 import { describe, expect, it, vi } from "vitest";
 import { shouldSkipPortableWorkspaceFile } from "./computer-workspace.js";
 import type { E2BSandboxSdk } from "./e2b-sandbox.js";
-import { E2BSandboxProvider, isSandboxGoneError } from "./e2b-sandbox.js";
+import { E2BSandboxProvider, isSandboxGoneError, keepingAwake } from "./e2b-sandbox.js";
 import { desktopCommandResponder } from "./linux-desktop.test-support.js";
 
 const context = {
@@ -1028,7 +1028,262 @@ async function withRetainedE2BServer(
   }
 }
 
+describe("workspace export activity", () => {
+  it("renews the captured active export handle without reconnecting and preserves file bytes", async () => {
+    vi.useFakeTimers();
+    let list!: (entries: unknown[]) => void;
+    const pending = new Promise<unknown[]>((resolve) => {
+      list = resolve;
+    });
+    const bytes = new Uint8Array([0, 255, 1, 128]);
+    const desktop = {
+      sandboxId: "active-export",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+      commands: { run: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }) },
+      files: { list: vi.fn(() => pending), read: vi.fn().mockResolvedValue(bytes) },
+    };
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn().mockResolvedValue(desktop),
+      connect: vi.fn(),
+      pause: vi.fn(),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const computer = await provider.provision({ botId: "bot", homePath: "/unused" }, context);
+    const iterator = provider.exportWorkspace(computer, context)[Symbol.asyncIterator]();
+    try {
+      const reading = iterator.next();
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(desktop.setTimeout).toHaveBeenCalledTimes(4);
+      expect(sdk.connect).not.toHaveBeenCalled();
+      expect(sdk.create).toHaveBeenCalledOnce();
+      list([{ name: "binary.dat", type: "file", mode: 0o700 }]);
+      await expect(reading).resolves.toMatchObject({
+        done: false,
+        value: { path: "binary.dat", content: bytes, executable: true },
+      });
+      await iterator.return?.();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      list([]);
+      await iterator.return?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears renewal on export failure and preserves the reader error", async () => {
+    vi.useFakeTimers();
+    try {
+      const failure = new Error("Synthetic export failed");
+      const desktop = { setTimeout: vi.fn().mockRejectedValue(new Error("Renewal unavailable")) };
+      const items = (async function* () {
+        yield await Promise.reject(failure);
+      })();
+      await expect(
+        (async () => {
+          for await (const _ of keepingAwake(desktop, items)) {
+            /* drain */
+          }
+        })(),
+      ).rejects.toBe(failure);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let best-effort renewal failure replace a successful export", async () => {
+    vi.useFakeTimers();
+    try {
+      const desktop = { setTimeout: vi.fn().mockRejectedValue(new Error("Renewal unavailable")) };
+      const items = (async function* () {
+        yield "saved";
+      })();
+      const result = [];
+      for await (const value of keepingAwake(desktop, items)) result.push(value);
+      expect(result).toEqual(["saved"]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start a cancelled export or create a timer after cancellation during its first renewal", async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const extension = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const controller = new AbortController();
+    const desktop = { setTimeout: vi.fn(() => extension) };
+    const read = vi.fn();
+    try {
+      const itemStream = () =>
+        (async function* () {
+          read();
+          yield "saved";
+        })();
+      const iterator = keepingAwake(desktop, itemStream(), controller.signal)[
+        Symbol.asyncIterator
+      ]();
+      const pending = iterator.next();
+      controller.abort(new Error("Export cancelled"));
+      finish();
+      await expect(pending).rejects.toThrow("Export cancelled");
+      const alreadyCancelled = keepingAwake(desktop, itemStream(), controller.signal)[
+        Symbol.asyncIterator
+      ]();
+      await expect(alreadyCancelled.next()).rejects.toThrow("Export cancelled");
+      expect(read).not.toHaveBeenCalled();
+      expect(desktop.setTimeout).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finish();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps concurrent exports independent and uses half of a short idle lease", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("SANDBOX_IDLE_MS", "30000");
+    const a = { setTimeout: vi.fn().mockResolvedValue(undefined) };
+    const b = { setTimeout: vi.fn().mockResolvedValue(undefined) };
+    const controller = new AbortController();
+    const items = () =>
+      (async function* () {
+        yield "saved";
+      })();
+    const first = keepingAwake(a, items(), controller.signal)[Symbol.asyncIterator]();
+    const second = keepingAwake(b, items())[Symbol.asyncIterator]();
+    try {
+      await first.next();
+      await second.next();
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(a.setTimeout).toHaveBeenCalledTimes(1);
+      expect(b.setTimeout).toHaveBeenCalledTimes(2);
+      expect(b.setTimeout).toHaveBeenLastCalledWith(30_000);
+    } finally {
+      await first.return?.();
+      await second.return?.();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("stops renewing immediately on cancellation even while the reader is paused", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const desktop = { setTimeout: vi.fn(async () => undefined) };
+    const items = (async function* () {
+      yield "first";
+      yield "last";
+    })();
+    const iterator = keepingAwake(desktop, items, controller.signal)[Symbol.asyncIterator]();
+    try {
+      await iterator.next();
+      controller.abort(new Error("Export cancelled"));
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(desktop.setTimeout).toHaveBeenCalledTimes(1);
+      await expect(iterator.next()).rejects.toThrow("Export cancelled");
+    } finally {
+      await iterator.return?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not pile up lease extensions when a renewal is slower than its interval", async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const desktop = {
+      setTimeout: vi.fn().mockResolvedValueOnce(undefined).mockReturnValue(pending),
+    };
+    const iterator = keepingAwake(
+      desktop,
+      (async function* () {
+        yield "first";
+      })(),
+    )[Symbol.asyncIterator]();
+    try {
+      await iterator.next();
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(desktop.setTimeout).toHaveBeenCalledTimes(2);
+      finish();
+      await iterator.return?.();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finish();
+      await iterator.return?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it("finishes the first timeout extension before reading and clears its timer on return", async () => {
+    vi.useFakeTimers();
+    try {
+      let extended!: () => void;
+      const extension = new Promise<void>((resolve) => {
+        extended = resolve;
+      });
+      const desktop = { setTimeout: vi.fn(() => extension) };
+      const read = vi.fn();
+      const items = (async function* () {
+        read();
+        yield "saved";
+      })();
+      const iterator = keepingAwake(desktop, items)[Symbol.asyncIterator]();
+      const first = iterator.next();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read).not.toHaveBeenCalled();
+      extended();
+      await expect(first).resolves.toEqual({ value: "saved", done: false });
+      await iterator.return?.();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(desktop.setTimeout).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("sandbox-gone detection", () => {
+  it("preserves a newer cached handle when an older provision is invalidated by teardown", async () => {
+    let release!: (desktop: Sandbox) => void;
+    const old = new Promise<Sandbox>((resolve) => {
+      release = resolve;
+    });
+    const current = {
+      sandboxId: "existing",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Sandbox;
+    const sdk: E2BSandboxSdk = {
+      connect: vi.fn().mockReturnValueOnce(old).mockResolvedValue(current),
+      create: vi.fn(),
+      pause: vi.fn().mockResolvedValue(undefined),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const request = {
+      botId: "bot",
+      homePath: "/unused",
+      providerKind: "e2b" as const,
+      providerRef: "existing",
+    };
+    const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+    const superseded = provider.provision(request, context).catch((error: unknown) => error);
+    await provider.stop(ref, context);
+    await provider.provision(request, context);
+    release({ sandboxId: "existing" } as Sandbox);
+    await expect(superseded).resolves.toBeInstanceOf(Error);
+    await provider.keepAlive(ref);
+    expect(sdk.connect).toHaveBeenCalledTimes(2);
+    expect(current.setTimeout).toHaveBeenCalledOnce();
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
   // Wordings verified against @e2b/desktop 2.4.0 (e2b 2.49.1 dist).
   const gone = [
     new TimeoutError(
@@ -1066,6 +1321,19 @@ describe("sandbox-gone detection", () => {
 
   it("does not interpret a transport failure as sandbox loss", () => {
     expect(isSandboxGoneError(new Error("fetch failed"))).toBe(false);
+  });
+
+  it("terminates on a cyclic error cause instead of treating a transport failure as Gone", () => {
+    const error = new Error("fetch failed");
+    error.cause = error;
+    let visits = 0;
+    Object.defineProperty(error, "name", {
+      get: () => {
+        if (++visits > 5) throw new Error("Cause traversal did not terminate");
+        return "Error";
+      },
+    });
+    expect(isSandboxGoneError(error)).toBe(false);
   });
 
   it.each(gone)("drops a cached handle and reconnects after %s", async (error) => {

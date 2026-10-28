@@ -113,7 +113,13 @@ export function isSandboxGoneError(error: unknown): boolean {
   const message = errorMessage(error);
   if (SHELL_MISSING_TARGET.test(message)) return false;
   if (SANDBOX_GONE_MESSAGE.test(message)) return true;
-  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+  const seen = new Set<Error>();
+  for (
+    let current: unknown = error;
+    current instanceof Error && !seen.has(current);
+    current = current.cause
+  ) {
+    seen.add(current);
     if (current.name === "SandboxNotFoundError") return true;
   }
   return false;
@@ -227,9 +233,9 @@ export class E2BSandboxProvider implements SandboxProvider {
           fresh: false,
         };
       } catch (error) {
-        this.boxes.delete(request.providerRef);
         // A transport failure says nothing about the workspace still on the server.
         if (!isSandboxGoneError(error)) throw error;
+        this.forget(request.providerRef);
       }
     }
     const desktop = await this.sdk.create(e2bCreateOptions(request.botId, this.apiKey));
@@ -372,7 +378,7 @@ export class E2BSandboxProvider implements SandboxProvider {
   ): AsyncIterable<PortableFile> {
     const desktop = await this.box(computer);
     await this.desktops.stopBrowsers(computer, context);
-    yield* walkE2BWorkspace(desktop, "", context);
+    yield* keepingAwake(desktop, walkE2BWorkspace(desktop, "", context), context.signal);
   }
 
   async importWorkspace(
@@ -540,6 +546,43 @@ async function writeE2BFiles(
     await desktop.commands.run(`chmod 700 -- ${executable.join(" ")}`, {
       signal: context.signal,
     });
+  }
+}
+
+/** Extend an active export's captured sandbox timeout until its reader finishes. */
+export async function* keepingAwake<T>(
+  desktop: Pick<Sandbox, "setTimeout">,
+  items: AsyncIterable<T>,
+  signal?: AbortSignal,
+): AsyncIterable<T> {
+  const idleMs = sandboxIdleMs();
+  let extending = false;
+  const extend = async () => {
+    if (extending || signal?.aborted) return;
+    extending = true;
+    try {
+      await desktop.setTimeout(idleMs);
+    } catch {
+      // Extending is best effort; preserve the export's own success or failure.
+    } finally {
+      extending = false;
+    }
+  };
+  signal?.throwIfAborted();
+  await extend();
+  signal?.throwIfAborted();
+  const timer = setInterval(() => void extend(), Math.min(60_000, idleMs / 2));
+  const stop = () => clearInterval(timer);
+  signal?.addEventListener("abort", stop, { once: true });
+  try {
+    for await (const item of items) {
+      signal?.throwIfAborted();
+      yield item;
+      signal?.throwIfAborted();
+    }
+  } finally {
+    stop();
+    signal?.removeEventListener("abort", stop);
   }
 }
 

@@ -13,6 +13,7 @@ import type {
   SecretStore,
   TransactionalEmailProvider,
 } from "@rakazo/adapter-kit";
+import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import type {
   ComposioProvider,
   ConnectorRegistry,
@@ -617,7 +618,7 @@ export async function createApp(
     },
   });
   const rpc = new RPCHandler(router, {
-    clientInterceptors: [onError((error, { path }) => logUnexpectedRpcError(error, path))],
+    clientInterceptors: [onError((error, { path }) => handleRpcError(error, path))],
   });
   const app = new Hono();
   app.use("*", requestLogging(logger));
@@ -1206,4 +1207,12 @@ export function logUnexpectedRpcError(error: unknown, path: readonly string[]): 
   if (error instanceof ORPCError) return;
   const where = `rpc ${path.join("/")} failed`;
   getLogger().error(where, error);
+}
+
+/** Preserve diagnostics while exposing a provider quota rejection as a safe retryable status. */
+export function handleRpcError(error: unknown, path: readonly string[]): void {
+  logUnexpectedRpcError(error, path);
+  if (error instanceof SandboxRateLimitError) {
+    throw new ORPCError("TOO_MANY_REQUESTS", { message: error.message, cause: error });
+  }
 }

@@ -85,6 +85,7 @@ import { createRuntimeContextPolicy, VERBATIM_TOOL_RESULTS } from "./runtime-con
 import { SCHEDULE_TOOL_NAMES } from "./schedule-tools.js";
 import type { FinishedShellCommand } from "./shell-command-stream.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
+import { isThinkingSignatureMismatch, withoutThinkingBlocks } from "./thinking-signatures.js";
 import { textContentArg } from "./tool-text.js";
 
 const running = new Map<string, { controller: AbortController; work: Promise<void> }>();
@@ -154,6 +155,8 @@ export function maxToolCallsPerTurn(env: NodeJS.ProcessEnv = process.env): numbe
 }
 
 export interface PiAgentRuntimeOptions {
+  /** Explicit transport for deterministic model fixtures and wire diagnostics. */
+  modelFetch?: typeof globalThis.fetch;
   /** Directory where Pi JSONL sessions are written. Omit to disable recording. */
   sessionRoot?: string;
   modelCallObserver?: ModelCallObserver;
@@ -169,10 +172,12 @@ export interface PiAgentRuntimeOptions {
 
 export class PiAgentRuntime implements AgentRuntime {
   private readonly sessionRecorder?: PiSessionRecorder;
+  private readonly modelFetch?: typeof globalThis.fetch;
   private readonly modelCallObserver?: ModelCallObserver;
   private readonly onContextDecision?: PiAgentRuntimeOptions["onContextDecision"];
 
   constructor(options: PiAgentRuntimeOptions = {}) {
+    this.modelFetch = options.modelFetch;
     this.modelCallObserver = options.modelCallObserver;
     this.onContextDecision = options.onContextDecision;
     this.sessionRecorder = options.sessionRoot
@@ -260,6 +265,7 @@ export class PiAgentRuntime implements AgentRuntime {
           credentials: selectedModel.credentials,
         };
         const host: ToolHost = {
+          modelFetch: this.modelFetch,
           queue,
           context,
           onContextDecision: this.onContextDecision,
@@ -424,7 +430,11 @@ export class PiAgentRuntime implements AgentRuntime {
         agent = new Agent({
           sessionId: conversationSessionId(request.threadId, request.botId),
           steeringMode: "all",
-          streamFn: (_m, ctx, options) => fallbackAwareModelStream(fallbackState, ctx, options),
+          streamFn: (_m, ctx, options) =>
+            fallbackAwareModelStream(fallbackState, ctx, {
+              ...options,
+              fetch: this.modelFetch ?? options?.fetch,
+            }),
           getApiKey: hasBackups
             ? async () => activeStreamTarget.credentials?.accessToken ?? activeStreamTarget.apiKey
             : async () => apiKey,
@@ -1570,7 +1580,11 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
       );
     },
     sessionId: conversationSessionId(host.request.threadId, host.request.botId, agentId),
-    streamFn: (_m, ctx, options) => fallbackAwareModelStream(retryState, ctx, options),
+    streamFn: (_m, ctx, options) =>
+      fallbackAwareModelStream(retryState, ctx, {
+        ...options,
+        fetch: host.modelFetch ?? options?.fetch,
+      }),
     getApiKey: async () =>
       hasBackups
         ? (selectedModel.credentials?.accessToken ?? selectedModel.apiKey)
@@ -2326,6 +2340,7 @@ interface EventQueue {
 }
 
 interface ToolHost {
+  modelFetch?: typeof globalThis.fetch;
   context?: Partial<AdapterContext>;
   onContextDecision?: PiAgentRuntimeOptions["onContextDecision"];
   modelCallObserver?: ModelCallObserver;
@@ -2438,6 +2453,8 @@ interface FallbackStreamState {
   nextIndex: number;
   onSwitch(target: RuntimeModelTarget): Promise<void>;
   isProviderFailure(message: AssistantMessage): boolean;
+  /** A rejected signature is stripped for subsequent completions in this run. */
+  dropThinkingBlocks?: boolean;
   stream(
     target: RuntimeModelTarget,
     context: TranscriptContext,
@@ -2514,7 +2531,7 @@ export function isRetryableProviderUnavailable(error: unknown): boolean {
   )
     return true;
   if ([...statuses].some((status) => status >= 400 && status < 600)) return false;
-  return /rate.?limit|too many requests|quota|overload|capacity|temporarily unavailable|service unavailable|retry[- ](?:after|delay)|server error|upstream error|gateway timeout|timed? out|timeout|connection reset|connection refused|network error|max retries exceeded|stream ended without finish_reason/.test(
+  return /rate.?limit|too many requests|quota|overload|capacity|temporarily unavailable|service unavailable|retry[- ](?:after|delay)|server error|upstream error|gateway timeout|timed? out|timeout|connection (?:error|reset|refused)|network error|max retries exceeded|stream ended without finish_reason/.test(
     text,
   );
 }
@@ -2522,10 +2539,10 @@ export function isRetryableProviderUnavailable(error: unknown): boolean {
 function canRetrySameModel(error: unknown): boolean {
   const { text, statuses } = errorFacts(error);
   // A configured backup may use a different quota. Repeating the same model
-  // cannot replenish funds, and a timeout already consumed its request budget.
+  // cannot replenish funds. Early timeouts may still have request budget left.
   return (
-    ![402, 408, 504].some((status) => statuses.has(status)) &&
-    !/timed? out|timeout|quota|billing|credit|payment|funds|(?:insufficient|low|empty|not enough|exhausted)[ _-]+balance|balance.*(?:insufficient|low|empty|exhausted)|(?:spend(?:ing)?|usage|budget)[ _-]+(?:limit|cap)/.test(
+    !statuses.has(402) &&
+    !/codex stream idle timeout|quota|billing|credit|payment|funds|(?:insufficient|low|empty|not enough|exhausted)[ _-]+balance|balance.*(?:insufficient|low|empty|exhausted)|(?:spend(?:ing)?|usage|budget)[ _-]+(?:limit|cap)/.test(
       text,
     )
   );
@@ -2613,6 +2630,8 @@ function fallbackAwareModelStream(
   const output = new AssistantMessageEventStream();
   let lastPartial: AssistantMessage | undefined;
   const signal = options?.signal ? AbortSignal.any([state.signal, options.signal]) : state.signal;
+  const requestContext = () =>
+    state.dropThinkingBlocks ? withoutThinkingBlocks(context) : context;
   const signalAborted = () => signal.aborted;
   const finishWithThrownError = (target: RuntimeModelTarget, error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -2700,7 +2719,7 @@ function fallbackAwareModelStream(
         if (
           !fallbackSupportsContext(
             candidate,
-            context,
+            requestContext(),
             options,
             state.request.model.thinkingLevel,
             state.request.tools,
@@ -2718,8 +2737,22 @@ function fallbackAwareModelStream(
   const run = async () => {
     let buffered: AssistantMessageEvent[] = [];
     let retries = 0;
+    // Same-model retries and backoff share the original completion budget.
+    // Explicit backups retain their existing header and post-header idle bounds.
+    const startedAt = Date.now();
+    const timeoutMs = options?.timeoutMs ?? MODEL_STREAM_TIMEOUT_MS;
     let firstRetryableError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
+    let signatureRetryError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
     while (!signalAborted()) {
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      const budgetError = firstRetryableError ?? signatureRetryError;
+      if (budgetError && remainingMs <= 0) {
+        output.push(budgetError);
+        output.end(budgetError.error);
+        return;
+      }
+      const attemptOptions =
+        retries > 0 || signatureRetryError ? { ...options, timeoutMs: remainingMs } : options;
       const target = state.getActive();
       lastPartial = undefined;
       let sawPartialOutput = false;
@@ -2738,8 +2771,10 @@ function fallbackAwareModelStream(
         const reasoning = thinkingLevel === "off" ? undefined : thinkingLevel;
         stream = state.stream(
           target,
-          context,
-          state.request.fallbackModels?.length ? { ...options, apiKey, reasoning } : options,
+          requestContext(),
+          state.request.fallbackModels?.length
+            ? { ...attemptOptions, apiKey, reasoning }
+            : attemptOptions,
         );
       } catch (error) {
         finishWithThrownError(target, error);
@@ -2750,6 +2785,22 @@ function fallbackAwareModelStream(
           if (event.type === "error") {
             let terminalEvent = event;
             const hasTerminalPartialOutput = assistantHasPartialOutput(event.error);
+            if (
+              !sawPartialOutput &&
+              !hasTerminalPartialOutput &&
+              event.reason === "error" &&
+              !signalAborted() &&
+              state.isProviderFailure(event.error) &&
+              !state.dropThinkingBlocks &&
+              Date.now() - startedAt < timeoutMs &&
+              isThinkingSignatureMismatch(event.error.errorMessage)
+            ) {
+              signatureRetryError = event;
+              state.dropThinkingBlocks = true;
+              buffered = [];
+              restart = true;
+              break;
+            }
             if (
               !sawPartialOutput &&
               !hasTerminalPartialOutput &&
@@ -2770,13 +2821,15 @@ function fallbackAwareModelStream(
               if (canRetrySameModel(event.error)) {
                 firstRetryableError ??= event;
                 const delay = MODEL_PROVIDER_RETRY_DELAYS_MS[retries];
-                if (delay !== undefined) {
+                if (delay !== undefined && Date.now() - startedAt + delay < timeoutMs) {
                   retries += 1;
                   await abortableDelay(delay, signal);
                   if (failIfAborted(target)) return;
-                  buffered = [];
-                  restart = true;
-                  break;
+                  if (Date.now() - startedAt < timeoutMs) {
+                    buffered = [];
+                    restart = true;
+                    break;
+                  }
                 }
                 terminalEvent = firstRetryableError;
               }

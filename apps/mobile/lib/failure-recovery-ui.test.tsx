@@ -152,6 +152,14 @@ it("reveals only cleaned selectable diagnostics and closes them when the error c
   expect(container.querySelector("section")).toBeNull();
 });
 
+it("shows computer retry advice without model usage actions", async () => {
+  await render(<RunErrorNotice error="Too many computer requests. Try again later." />);
+  expect(container.textContent).toContain("Too many computer requests. Try again later.");
+  expect(container.textContent).not.toContain("model provider");
+  expect(container.textContent).not.toContain("Manage usage");
+  expect(state.openURL).not.toHaveBeenCalled();
+});
+
 it("offers the fixed ChatGPT usage action only for a ChatGPT plan usage failure", async () => {
   await render(
     <RunErrorNotice error='{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}' />,

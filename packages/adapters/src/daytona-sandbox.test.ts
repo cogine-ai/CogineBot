@@ -16,6 +16,38 @@ describe("DaytonaSandboxProvider", () => {
     vi.unstubAllEnvs();
   });
 
+  it("preserves a newer cached handle when an older provision is invalidated by teardown", async () => {
+    const f = daytonaFixture();
+    let release!: (sandbox: Sandbox) => void;
+    f.get.mockReturnValueOnce(
+      new Promise<Sandbox>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const request = {
+      botId: "bot",
+      homePath: "/unused",
+      providerRef: "daytona-box",
+      providerKind: "daytona" as const,
+    };
+    const ref = {
+      id: "daytona-box",
+      providerRef: "daytona-box",
+      botId: "bot",
+      kind: "daytona" as const,
+    };
+    const superseded = provider.provision(request, context).catch((error: unknown) => error);
+    await provider.stop(ref, context);
+    await provider.provision(request, context);
+    release(f.sandbox as unknown as Sandbox);
+    await expect(superseded).resolves.toBeInstanceOf(Error);
+    await provider.keepAlive(ref);
+    expect(f.get).toHaveBeenCalledTimes(3);
+    expect(f.sandbox.refreshActivity).toHaveBeenCalledOnce();
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
   it.each(["stopped", "stopping", "archived", "unknown"])(
     "does not start a %s computer for attendance",
     async (state) => {

@@ -9,6 +9,8 @@ import {
 
 /** Hung completions must fail before the typical 5-minute run lease. */
 export const MODEL_STREAM_TIMEOUT_MS = 120_000;
+/** Bound DNS/TLS setup separately from the model request's remaining budget. */
+export const MODEL_CONNECT_TIMEOUT_MS = 30_000;
 /**
  * `timeoutMs` bounds only time-to-headers; the SSE body that follows is
  * unbounded. A Codex stream silent this long is a dead connection — reasoning

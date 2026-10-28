@@ -943,6 +943,8 @@ export const ComputerUpdateSchema = z.object({
 });
 export type ComputerUpdate = z.infer<typeof ComputerUpdateSchema>;
 
+export const COMPUTER_RATE_LIMITED_ERROR_MESSAGE = "Too many computer requests. Try again later.";
+
 export const ComputerStatusSchema = z.object({
   botId: Id,
   mode: ComputerModeSchema,

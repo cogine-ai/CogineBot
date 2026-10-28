@@ -133,8 +133,8 @@ export class DaytonaSandboxProvider implements SandboxProvider {
         const sandbox = await this.connect(request.providerRef);
         return this.ref(sandbox, request.botId, false);
       } catch (error) {
-        this.forget(request.providerRef);
         if (!isUnrecoverableDaytonaError(error)) throw error;
+        this.forget(request.providerRef);
       }
     }
 

@@ -4,6 +4,7 @@ import type {
   ComputerRef,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
+import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BoxSandboxEmulator } from "./box-emulator.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
@@ -393,6 +394,15 @@ afterEach(() => {
 });
 
 describe("run computer provisioning", () => {
+  it("preserves a provider start limit as safe computer retry advice", async () => {
+    const failure = new SandboxRateLimitError({
+      cause: new Error("private synthetic provider diagnosis"),
+    });
+    provisionComputer.mockRejectedValueOnce(failure);
+    await expect(runRoutine([{ name: "list_files", args: { path: "" } }])).rejects.toBe(failure);
+    expect(provisionComputer).toHaveBeenCalledOnce();
+  });
+
   for (const checkpoint of ["takeover", "takeover-skipped"] as const) {
     it.each([
       { kind: "e2b" as const, create: () => new ManagedSandboxEmulator() },
