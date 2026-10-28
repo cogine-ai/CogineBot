@@ -46,6 +46,10 @@ export class DaytonaSandboxProvider implements SandboxProvider {
   private readonly client: DaytonaSandboxSdk;
   private readonly boxes = new Map<string, Sandbox>();
   private readonly connections = new Map<string, PendingDaytonaConnection>();
+  private readonly teardowns = new Map<
+    string,
+    { pending: number; promise: Promise<void>; resolve: () => void }
+  >();
   private readonly computerOperations = new Map<string, { pending: number }>();
   private readonly workspaceRoots = new Map<string, string>();
   private readonly prepared = new Set<string>();
@@ -396,23 +400,33 @@ export class DaytonaSandboxProvider implements SandboxProvider {
 
   async stop(computer: ComputerRef, _context: AdapterContext): Promise<void> {
     const id = computer.providerRef || computer.id;
-    const { sandbox, previews } = await this.beginTeardown(id);
-    if (!sandbox) return;
-    await Promise.all(previews.map((preview) => this.revokeScreenPreview(sandbox, preview)));
-    await sandbox.computerUse.stop().catch(() => undefined);
-    await sandbox.stop(120);
+    const finish = this.beginTeardownOperation(id);
+    try {
+      const { sandbox, previews } = await this.beginTeardown(id);
+      if (!sandbox) return;
+      await Promise.all(previews.map((preview) => this.revokeScreenPreview(sandbox, preview)));
+      await sandbox.computerUse.stop().catch(() => undefined);
+      await sandbox.stop(120);
+    } finally {
+      finish();
+    }
   }
 
   async destroy(computer: ComputerRef, _context: AdapterContext): Promise<void> {
     const id = computer.providerRef || computer.id;
-    const { sandbox, previews } = await this.beginTeardown(id);
-    if (!sandbox) return;
-    await Promise.all(previews.map((preview) => this.revokeScreenPreview(sandbox, preview)));
+    const finish = this.beginTeardownOperation(id);
     try {
-      await sandbox.delete(120, true);
-    } catch (error) {
-      // Deletion is idempotent even when the sandbox disappears after lookup.
-      if (!isUnrecoverableDaytonaError(error)) throw error;
+      const { sandbox, previews } = await this.beginTeardown(id);
+      if (!sandbox) return;
+      await Promise.all(previews.map((preview) => this.revokeScreenPreview(sandbox, preview)));
+      try {
+        await sandbox.delete(120, true);
+      } catch (error) {
+        // Deletion is idempotent even when the sandbox disappears after lookup.
+        if (!isUnrecoverableDaytonaError(error)) throw error;
+      }
+    } finally {
+      finish();
     }
   }
 
@@ -435,8 +449,15 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       return pending.promise;
     }
     const signals = new Set([signal]);
+    const teardown = this.teardowns.get(id);
     let connection!: PendingDaytonaConnection;
     const promise = (async () => {
+      if (teardown) {
+        await teardown.promise;
+        if (this.connections.get(id) !== connection) {
+          throw new Error("Daytona connection was invalidated during teardown");
+        }
+      }
       const sandbox = await this.client.get(id);
       if (this.connections.get(id) !== connection) {
         throw new Error("Daytona connection was invalidated during teardown");
@@ -468,6 +489,26 @@ export class DaytonaSandboxProvider implements SandboxProvider {
 
   private async box(computer: ComputerRef): Promise<Sandbox> {
     return this.connect(computer.providerRef || computer.id);
+  }
+
+  private beginTeardownOperation(id: string): () => void {
+    let active = this.teardowns.get(id);
+    if (!active) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((finish) => {
+        resolve = finish;
+      });
+      active = { pending: 0, promise, resolve };
+      this.teardowns.set(id, active);
+    }
+    const operation = active;
+    operation.pending += 1;
+    return () => {
+      operation.pending -= 1;
+      if (operation.pending !== 0) return;
+      if (this.teardowns.get(id) === operation) this.teardowns.delete(id);
+      operation.resolve();
+    };
   }
 
   /** Invalidate old work before any lookup; retain only the handles needed by this teardown. */
