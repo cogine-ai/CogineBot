@@ -19,6 +19,11 @@ migration to a fresh PostgreSQL 17 database, all four suites passed together:
 **10 of 10 tests passed**. The new suite is also registered in the official
 integration harness.
 
+The [PostgreSQL 16 integration job for `832ea785`](https://github.com/cogine-ai/CogineBot/actions/runs/40584176943/job/122471359006)
+subsequently passed all four suites: three model-binding tests, three
+first-finalization tests, two registration tests and two credential-lock tests.
+This CI result extends the earlier eight-test harness run above.
+
 The regression uses the production login factory, encrypted secret store and
 Prisma persistence wrapper. A separate database query verifies the registration
 is committed and encrypted before the synthetic token endpoint is called. It

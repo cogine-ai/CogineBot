@@ -33,7 +33,7 @@ into accepted behavior.
 | Check | Result | Practical limit |
 | --- | --- | --- |
 | Full default offline run at `dc444133` before the first-connection follow-up | 845 suites passed / 78 skipped; 13,860 tests passed / 841 skipped | Opt-in suites remain skipped; final-head CI is recorded on the PR |
-| PostgreSQL validation after review follow-up | 8 tests passed on PostgreSQL 17 and again through the official PostgreSQL 16 integration harness | Credential locks, binding/removal row locks and first-finalization ordering; all three suites are registered in repository CI |
+| PostgreSQL validation after review follow-up | 10 tests across four suites passed on PostgreSQL 17 and in the [PostgreSQL 16 CI run at `832ea785`](https://github.com/cogine-ai/CogineBot/actions/runs/40584176943/job/122471359006) | Credential locks, binding/removal row locks, first-finalization ordering and registration persistence; all four suites are registered in repository CI |
 | First-connection disconnect follow-up | API TypeScript and 165 focused tests passed | Shared user/provider lock serializes overlapping transactions; pending sign-in cancellation remains process-local |
 | OAuth compatibility follow-up | 120 OAuth tests and 87 credential, integration, selection and executor regressions passed; adapter TypeScript passed | The existing ChatGPT catalog marker identifies strict plan records; unrelated client/host extensions remain compatible |
 | Localization follow-up | Ten relevant catalogs compiled; 51 focused web tests and web TypeScript passed | Updated messages and placeholders covered; no native or per-locale visual acceptance is inferred |
@@ -73,6 +73,8 @@ the repository's isolated PostgreSQL/scripted-runtime harness. Its account-picke
 and loopback-wait screenshots verify layout and selection using synthetic labels;
 they do not verify real OpenAI authorization or backend-derived account labels.
 The harness and ephemeral database were stopped after validation.
+This automated result is separate from the author-reported manual OpenAI
+consent/callback attempt described below.
 
 See [PostgreSQL validation](chatgpt-plan-postgres-validation.md) for the opt-in
 command, actual lock contention evidence, checkpoint commit/rollback checks and
@@ -97,13 +99,20 @@ The disposable lock-validation container was also stopped and removed.
 
 ## Unperformed acceptance and scope limits
 
-- Real browser consent and callback delivery were exercised. The callback reached
-  the loopback listener with the expected parameter structure and returned HTTP
-  200, but registration persistence failed before token exchange because the
-  existing secret scope constraint rejected its new kind. A local synthetic
-  write reproduced SQLSTATE `23514`. End-to-end authorization, real discovery,
-  inference, refresh and remote revocation remain unaccepted until the repaired
-  path is exercised successfully; browser consent alone is not a passing result.
+As of 2026-10-28 01:31 UTC, author-reported real-account acceptance is partial:
+authorization, account model discovery, text/function-tool inference and
+credential reuse after a cold process restart passed. Service-timed refresh and
+remote revocation/local credential removal remain pending. These manual results
+are separate from the synthetic CI results above.
+
+- A separate author-reported manual OpenAI consent/callback attempt before the
+  scope migration reached the loopback listener with the expected parameter
+  structure and returned HTTP 200. Registration persistence failed before token
+  exchange because the old secret scope constraint rejected its new kind. A
+  local synthetic write reproduced SQLSTATE `23514`. This historical failure is
+  distinct from the scripted-runtime E2E and does not establish end-to-end
+  acceptance. The in-progress real-account acceptance will be recorded separately
+  after its remaining checks complete.
 - Native desktop E2E was not run on the local machine, as required by repository
   guidance. Actual installed macOS/Windows/Linux and mobile device acceptance
   remains unperformed.
