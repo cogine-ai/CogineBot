@@ -71,6 +71,97 @@ test("a stopped computer panel waits for explicit Open before booting", async ({
   expect(takeovers).toBe(1);
 });
 
+test("computer attendance follows page visibility and refreshes status before resuming", async ({
+  page,
+}, testInfo) => {
+  await signup(
+    page,
+    `visible-computer-${Date.now()}@rakazo.test`,
+    "password12",
+    "Visible Computer",
+  );
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  let heartbeats = 0;
+  let screenReads = 0;
+  let boots = 0;
+  let takeovers = 0;
+  let releases = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/computer/heartbeat")) heartbeats += 1;
+    if (request.url().endsWith("/rpc/computer/screenUrl")) screenReads += 1;
+    if (request.url().endsWith("/rpc/computer/boot")) boots += 1;
+    if (request.url().endsWith("/rpc/computer/takeover")) takeovers += 1;
+    if (request.url().endsWith("/rpc/computer/release")) releases += 1;
+  });
+  await openComputerPanel(page);
+  await page.getByTestId("computer-preview").hover();
+  await page.getByTestId("computer-preview-open").click();
+  const chrome = page.getByTestId("computer-chrome");
+  await expect(chrome.getByText("Watching", { exact: true })).toBeVisible();
+  const beforeWatching = await rpc<ComputerStatus>(page, "computer/status", { botId });
+  await page.getByRole("button", { name: "Close computer", exact: true }).click();
+  await expect(
+    page.getByTestId("computer-preview").getByTitle("Bot screen preview", { exact: true }),
+  ).toBeVisible();
+  await page.clock.install();
+  const beforeHidden = heartbeats;
+  const screensBeforeHidden = screenReads;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.clock.fastForward(180_000);
+  expect(heartbeats).toBe(beforeHidden);
+  expect(screenReads).toBe(screensBeforeHidden);
+  expect(boots).toBe(1);
+  expect(takeovers).toBe(0);
+  expect(releases).toBe(0);
+  await captureScreenshot(page, testInfo, "b42-hidden-computer-no-attendance");
+
+  let statusRead = false;
+  let releaseStatus!: () => void;
+  const heldStatus = new Promise<void>((resolve) => {
+    releaseStatus = resolve;
+  });
+  await page.route("**/rpc/computer/status", async (route) => {
+    statusRead = true;
+    await heldStatus;
+    await route.continue();
+  });
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => statusRead).toBe(true);
+  expect(heartbeats).toBe(beforeHidden);
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/rpc/computer/heartbeat")),
+    Promise.resolve().then(() => releaseStatus()),
+  ]);
+  await page.unroute("**/rpc/computer/status");
+  expect(heartbeats).toBe(beforeHidden + 1);
+  await expect(
+    page.getByTestId("computer-preview").getByTitle("Bot screen preview", { exact: true }),
+  ).toBeVisible();
+  await captureScreenshot(page, testInfo, "b42-visible-computer-watching");
+  const resumed = heartbeats;
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await page.clock.fastForward(60_000);
+  await expect.poll(() => heartbeats).toBe(resumed + 1);
+  expect(boots).toBe(1);
+  expect(takeovers).toBe(0);
+  expect(releases).toBe(0);
+  await expect(rpc<ComputerStatus>(page, "computer/status", { botId })).resolves.toMatchObject({
+    state: "running",
+    controlHolder: beforeWatching.controlHolder,
+    controlBotId: beforeWatching.controlBotId,
+  });
+});
+
 test("Team Computer gives bots a home folder plus shared space while Private stays isolated", async ({
   page,
 }, testInfo) => {

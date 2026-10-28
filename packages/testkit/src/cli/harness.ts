@@ -115,6 +115,7 @@ async function main() {
         "packages/testkit/src/account-profile.postgres.test.ts",
         "apps/api/src/bot-profile.postgres.test.ts",
         "apps/api/src/bot-creation.postgres.test.ts",
+        "apps/api/src/router-computer-heartbeat.postgres.test.ts",
         "apps/api/src/routine-runs.postgres.test.ts",
         "apps/api/src/routine-silence.postgres.test.ts",
         "packages/testkit/src/thread-message-sequence.postgres.test.ts",

@@ -1,8 +1,17 @@
 import type { ComputerMode, ComputerReleaseReason } from "@rakazo/contracts";
-import { useLocalSearchParams, useNavigation } from "expo-router";
+import { createComputerHeartbeat } from "@rakazo/core";
+import { useIsFocused, useLocalSearchParams, useNavigation } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import type { RefObject } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import {
@@ -17,6 +26,7 @@ import { ComputerModePicker } from "../components/computer-mode-picker";
 import { GlassIconButton } from "../components/glass-icon-button";
 import { NativeActionButton } from "../components/native-action-button";
 import { currentApiBase, rpc } from "../lib/api";
+import { useAppActive } from "../lib/app-active";
 import type { ComputerStatus } from "../lib/computer";
 import {
   COMPUTER_HEARTBEAT_MS,
@@ -40,6 +50,12 @@ import {
 } from "../lib/computer-keyboard";
 import { createComputerRefresh } from "../lib/computer-refresh";
 import { useI18n } from "../lib/i18n";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
 import { useMobileTokens } from "../lib/native";
 import { iosAtLeast } from "../lib/native-controls";
 import { errorText } from "../lib/user-error";
@@ -49,12 +65,24 @@ export default function Computer() {
   const tokens = useMobileTokens();
   const navigation = useNavigation();
   const { botId, name: nameParam } = useLocalSearchParams<{ botId?: string; name?: string }>();
+  const appActive = useAppActive();
+  const focused = useIsFocused();
+  const visible = appActive && focused;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
+  const targetKey = `${botId ?? ""}:${scopeKey}`;
+  const viewEpoch = useMemo(() => ({ visible, targetKey }), [visible, targetKey]);
+  const viewEpochRef = useRef(viewEpoch);
+  viewEpochRef.current = viewEpoch;
+  const [verifiedView, setVerifiedView] = useState<typeof viewEpoch | null>(null);
+  const viewVisible = visible && verifiedView === viewEpoch;
   const name = nameParam || t("Bot");
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
   const [screenError, setScreenError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [readyBotId, setReadyBotId] = useState<string | null>(null);
+  const [readyTarget, setReadyTarget] = useState<string | null>(null);
   const [bootingCount, setBootingCount] = useState(0);
   const [switchingCount, setSwitchingCount] = useState(0);
   const booting = bootingCount > 0;
@@ -74,7 +102,11 @@ export default function Computer() {
 
   const hasControl = computer?.controlHolder === "user" && computer.controlBotId === botId;
   const screenVisible =
-    computerOpen && computer?.state === "running" && Boolean(embeddedScreenUrl) && !screenError;
+    viewVisible &&
+    computerOpen &&
+    computer?.state === "running" &&
+    Boolean(embeddedScreenUrl) &&
+    !screenError;
   const loadedScreenUrl = nextLoadedScreenUrl(
     heldScreenUrl.current,
     embeddedScreenUrl,
@@ -83,7 +115,7 @@ export default function Computer() {
   heldScreenUrl.current = loadedScreenUrl;
   // The gate follows the page the WebView actually loaded. A capability refresh that
   // does not reload that page must not open a session the bridge will never acknowledge.
-  const keyboardSurfaceKey = `${computerOpen}:${hasControl}:${loadedScreenUrl ?? ""}`;
+  const keyboardSurfaceKey = `${viewVisible}:${computerOpen}:${hasControl}:${loadedScreenUrl ?? ""}`;
   if (keyboardGate.current.key !== keyboardSurfaceKey) {
     keyboardGate.current = {
       key: keyboardSurfaceKey,
@@ -94,13 +126,13 @@ export default function Computer() {
   const keyboardSession = String(keyboardGate.current.session);
 
   useEffect(() => {
-    if (!computerOpen || !hasControl || !loadedScreenUrl) return;
+    if (!viewVisible || !computerOpen || !hasControl || !loadedScreenUrl) return;
     const gate = keyboardGate.current;
     if (gate.bridge.isReady()) return;
     const webView = screenWebViewRef.current;
     if (!webView) return;
     webView.injectJavaScript(computerKeyboardReadyProbe(String(gate.session)));
-  }, [computerOpen, hasControl, loadedScreenUrl, embeddedScreenUrl, keyboardSession]);
+  }, [viewVisible, computerOpen, hasControl, loadedScreenUrl, embeddedScreenUrl, keyboardSession]);
 
   function injectKeyboardCommands(commands: ComputerKeyboardCommand[]) {
     const webView = screenWebViewRef.current;
@@ -114,21 +146,66 @@ export default function Computer() {
     navigation.setOptions({ title: label });
   }, [label, navigation]);
 
-  const refreshController = useMemo(
-    () =>
-      createComputerRefresh({
-        readStatus: () => rpc<ComputerStatus>("computer/status", { botId }),
-        readScreen: (attempts) =>
-          readScreenUrl(() => rpc<{ url: string | null }>("computer/screenUrl", { botId }), {
-            attempts,
-          }),
-        onStatus: setComputer,
-        onScreen: setScreenUrl,
-        onReady: () => setReadyBotId(botId ?? null),
-        onInitialError: (err) => setError(errorText(err)),
-      }),
-    [botId],
-  );
+  const refreshController = useMemo(() => {
+    const scope = captureMobileScope();
+    const current = () =>
+      visibleRef.current &&
+      viewEpochRef.current.targetKey === targetKey &&
+      isMobileScopeCurrent(scope);
+    let heartbeat: ReturnType<typeof createComputerHeartbeat> | undefined;
+    const controller = createComputerRefresh({
+      readStatus: (signal) => {
+        if (!current()) throw new Error("Computer target changed");
+        return rpc<ComputerStatus>("computer/status", { botId }, { signal });
+      },
+      readScreen: (attempts, signal) =>
+        readScreenUrl(
+          () =>
+            current()
+              ? rpc<{ url: string | null }>("computer/screenUrl", { botId }, { signal })
+              : Promise.resolve({ url: null }),
+          { attempts, signal },
+        ),
+      onStatus: (status) => {
+        if (!current()) return;
+        setComputer(status);
+        setVerifiedView(viewEpochRef.current);
+        heartbeat?.setEnabled(status.state === "running");
+      },
+      onScreen: (url) => {
+        if (current()) setScreenUrl(url);
+      },
+      onReady: () => {
+        if (current()) setReadyTarget(`${botId ?? ""}:${scopeKey}`);
+      },
+      onInitialError: (err) => {
+        if (current()) setError(errorText(err));
+      },
+    });
+    return {
+      ...controller,
+      start(input?: { paused?: boolean }) {
+        heartbeat?.dispose();
+        heartbeat = createComputerHeartbeat({
+          intervalMs: COMPUTER_HEARTBEAT_MS,
+          ping: (signal) =>
+            current()
+              ? rpc("computer/heartbeat", { botId }, { signal })
+              : Promise.resolve(undefined),
+        });
+        controller.start(input);
+      },
+      pause() {
+        heartbeat?.setEnabled(false);
+        controller.pause();
+      },
+      dispose() {
+        heartbeat?.dispose();
+        heartbeat = undefined;
+        controller.dispose();
+      },
+    };
+  }, [botId, scopeKey]);
   const refresh = refreshController.refresh;
   const refreshAfterMaintenance = useCallback(async () => {
     await refresh();
@@ -139,14 +216,19 @@ export default function Computer() {
     setScreenUrl(null);
     setScreenError(null);
     setError(null);
-    setReadyBotId(null);
+    setReadyTarget(null);
     setBootingCount(0);
     setSwitchingCount(0);
     setComputerOpen(false);
-    autoBooted.current = null;
-    if (botId) refreshController.start();
+    if (botId) refreshController.start({ paused: !visibleRef.current });
     return () => refreshController.dispose();
   }, [botId, refreshController]);
+
+  useEffect(() => {
+    if (!botId) return;
+    if (visible) refreshController.resume();
+    else refreshController.pause();
+  }, [botId, visible, refreshController]);
 
   async function bootComputer({
     takeControl,
@@ -157,7 +239,7 @@ export default function Computer() {
     overlay: boolean;
     force?: boolean;
   }) {
-    if (!botId || !refreshController.isActive()) return false;
+    if (!botId || !visibleRef.current || !refreshController.isActive()) return false;
     const action = refreshController.beginAction();
     const needsBoot = force || computer?.state !== "running" || !screenUrl;
     const showBooting = overlay && needsBoot;
@@ -183,7 +265,7 @@ export default function Computer() {
   }
 
   useEffect(() => {
-    if (!botId || readyBotId !== botId || switching) return;
+    if (!viewVisible || !botId || !computer || readyTarget !== targetKey || switching) return;
     if (computer?.state === "booting" || computer?.state === "suspended") return;
     if (autoBooted.current === botId) return;
     autoBooted.current = botId;
@@ -192,28 +274,21 @@ export default function Computer() {
       overlay: computer?.state !== "running",
       force: true,
     }).catch(() => undefined);
-  }, [readyBotId, botId, computer?.state, switching]);
+  }, [readyTarget, targetKey, botId, computer?.state, switching, viewVisible]);
 
   useEffect(() => {
     // Let the full-screen desktop rotate to landscape; the rest of the app stays portrait.
-    const lock = computerOpen
-      ? ScreenOrientation.OrientationLock.DEFAULT
-      : ScreenOrientation.OrientationLock.PORTRAIT_UP;
+    const lock =
+      visible && computerOpen
+        ? ScreenOrientation.OrientationLock.DEFAULT
+        : ScreenOrientation.OrientationLock.PORTRAIT_UP;
     void ScreenOrientation.lockAsync(lock).catch(() => undefined);
     return () => {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(
         () => undefined,
       );
     };
-  }, [computerOpen]);
-
-  useEffect(() => {
-    if (!botId || computer?.state !== "running") return;
-    const ping = () => void rpc("computer/heartbeat", { botId }).catch(() => undefined);
-    ping();
-    const timer = setInterval(ping, COMPUTER_HEARTBEAT_MS);
-    return () => clearInterval(timer);
-  }, [botId, computer?.state]);
+  }, [computerOpen, visible]);
 
   /** Open the full window. Only an explicit Take control asks for the lease. */
   async function openComputer({ takeControl }: { takeControl: boolean }) {
@@ -301,7 +376,7 @@ export default function Computer() {
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <Text style={{ color: tokens.mutedForeground }}>{t("Open in full window")}</Text>
           </View>
-        ) : computer?.state === "running" && embeddedScreenUrl && !screenError ? (
+        ) : viewVisible && computer?.state === "running" && embeddedScreenUrl && !screenError ? (
           <ScreenWebView
             url={embeddedScreenUrl}
             interactive={false}
@@ -366,7 +441,7 @@ export default function Computer() {
       />
 
       <Modal
-        visible={booting || computerOpen}
+        visible={visible && (booting || computerOpen)}
         animationType="fade"
         presentationStyle="fullScreen"
         supportedOrientations={["portrait", "landscape-left", "landscape-right"]}
@@ -500,7 +575,7 @@ export default function Computer() {
                 </View>
               </SafeAreaView>
               <View style={{ flex: 1, backgroundColor: tokens.card }}>
-                {loadedScreenUrl ? (
+                {viewVisible && loadedScreenUrl ? (
                   <ScreenWebView
                     url={loadedScreenUrl}
                     interactive={hasControl}

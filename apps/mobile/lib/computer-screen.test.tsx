@@ -39,6 +39,10 @@ vi.mock("react-native", () => {
   }
 
   return {
+    AppState: {
+      currentState: "active",
+      addEventListener: () => ({ remove: () => undefined }),
+    },
     Modal: MockModal,
     Pressable: MockPressable,
     ScrollView: MockView,
@@ -80,6 +84,7 @@ vi.mock("react-native-safe-area-context", () => {
 });
 
 vi.mock("expo-router", () => ({
+  useIsFocused: () => true,
   useLocalSearchParams: () => ({ botId: "bot-1", name: "Basil" }),
   useNavigation: () => ({ setOptions: () => undefined }),
 }));
@@ -118,6 +123,12 @@ vi.mock("../components/computer-maintenance-actions", () => ({
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
 
 vi.mock("./api", () => ({ currentApiBase: () => "https://api.example.test", rpc }));
+vi.mock("./mobile-scope", () => ({
+  captureMobileScope: () => "test-scope",
+  isMobileScopeCurrent: () => true,
+  mobileScopeKey: () => "test-scope",
+  subscribeMobileScope: () => () => undefined,
+}));
 
 vi.mock("./i18n", () => {
   const t = (text: string, values?: Record<string, string>) =>

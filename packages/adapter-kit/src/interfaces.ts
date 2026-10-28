@@ -171,7 +171,8 @@ export interface SandboxProvider {
     context: AdapterContext,
   ): Promise<void>;
   snapshot(computer: ComputerRef, context: AdapterContext): Promise<SnapshotRef>;
-  keepAlive?(computer: ComputerRef): Promise<void>;
+  /** Passive attendance must never start or resume a stopped computer. */
+  keepAlive?(computer: ComputerRef, options?: { onlyIfRunning?: boolean }): Promise<void>;
   /** Drop a single-screen graphical claim for this bot so another Team bot can use the display. */
   releaseScreen?(
     computer: ComputerRef,

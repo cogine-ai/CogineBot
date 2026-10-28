@@ -696,7 +696,10 @@ print(json.dumps(out))
     return { id: observation.frameId, createdAt: observation.capturedAt };
   }
 
-  async keepAlive(computer: ComputerRef): Promise<void> {
+  async keepAlive(computer: ComputerRef, options?: { onlyIfRunning?: boolean }): Promise<void> {
+    // Exec is the only activity primitive; its behavior on a paused sandbox is not
+    // guaranteed. Passive attendance must not use it to start a computer.
+    if (options?.onlyIfRunning) return;
     // GET does not count as activity. An exec resets auto-pause, and callers do
     // not pass an AdapterContext through HostAwareSandbox.
     const context: AdapterContext = {

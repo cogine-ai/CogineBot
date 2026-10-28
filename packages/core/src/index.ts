@@ -19,6 +19,7 @@ export * from "./compose-update.js";
 export * from "./composer-mention-picker.js";
 export * from "./composer-mentions.js";
 export * from "./composer-slash.js";
+export * from "./computer-heartbeat.js";
 export * from "./computer-updates.js";
 export * from "./connection-catalog.js";
 export * from "./connection-selection.js";

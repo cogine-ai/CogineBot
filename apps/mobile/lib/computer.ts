@@ -1,4 +1,5 @@
 import type { ComputerMode, ComputerStatus as ContractComputerStatus } from "@rakazo/contracts";
+import { abortableDelay } from "@rakazo/core";
 import { t } from "./i18n";
 
 export const COMPUTER_HEARTBEAT_MS = 60_000;
@@ -32,19 +33,22 @@ export async function readScreenUrl(
     attempts?: number;
     delayMs?: number;
     sleep?: (ms: number) => Promise<void>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<string | null> {
   const attempts = Math.max(1, options.attempts ?? 1);
   const delayMs = options.delayMs ?? SCREEN_URL_RETRY_DELAY_MS;
-  const sleep =
-    options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const sleep = options.sleep ?? ((ms: number) => abortableDelay(ms, options.signal));
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (options.signal?.aborted) return null;
     try {
       const screen = await request();
+      if (options.signal?.aborted) return null;
       if (screen.url) return screen.url;
       lastError = undefined;
     } catch (error) {
+      if (options.signal?.aborted) return null;
       lastError = error;
     }
     if (attempt < attempts) await sleep(delayMs);

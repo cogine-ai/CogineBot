@@ -16,6 +16,78 @@ describe("DaytonaSandboxProvider", () => {
     vi.unstubAllEnvs();
   });
 
+  it.each(["stopped", "stopping", "archived", "unknown"])(
+    "does not start a %s computer for attendance",
+    async (state) => {
+      const f = daytonaFixture({ state });
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      await provider.keepAlive(
+        { id: "daytona-box", providerRef: "daytona-box", kind: "daytona", botId: "home" },
+        { onlyIfRunning: true },
+      );
+      expect(f.get).toHaveBeenCalledOnce();
+      expect(f.sandbox.refreshActivity).not.toHaveBeenCalled();
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.create).not.toHaveBeenCalled();
+      expect(f.executeCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refreshes attendance on a running computer without connecting or preparing it", async () => {
+    const f = daytonaFixture();
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    await provider.keepAlive(
+      { id: "daytona-box", providerRef: "daytona-box", kind: "daytona", botId: "home" },
+      { onlyIfRunning: true },
+    );
+    expect(f.sandbox.refreshActivity).toHaveBeenCalledOnce();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a missing attendance target", async () => {
+    const f = daytonaFixture();
+    f.get.mockRejectedValueOnce({ statusCode: 404 });
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    await provider.keepAlive(
+      { id: "daytona-box", providerRef: "daytona-box", kind: "daytona", botId: "home" },
+      { onlyIfRunning: true },
+    );
+    expect(f.sandbox.refreshActivity).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it("does not retry or start after a running attendance target stops", async () => {
+    const f = daytonaFixture();
+    const failed = new Error("Synthetic computer stopped before refresh");
+    vi.mocked(f.sandbox.refreshActivity).mockRejectedValueOnce(failed);
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    await expect(
+      provider.keepAlive(
+        { id: "daytona-box", providerRef: "daytona-box", kind: "daytona", botId: "home" },
+        { onlyIfRunning: true },
+      ),
+    ).rejects.toBe(failed);
+    expect(f.get).toHaveBeenCalledOnce();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it("preserves the active-work keepalive connection behavior", async () => {
+    const f = daytonaFixture({ state: "stopped" });
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    await provider.keepAlive({
+      id: "daytona-box",
+      providerRef: "daytona-box",
+      kind: "daytona",
+      botId: "home",
+    });
+    expect(f.start).toHaveBeenCalledOnce();
+    expect(f.sandbox.refreshActivity).toHaveBeenCalledOnce();
+  });
+
   it("does not start a stopped computer for retained-screen cleanup", async () => {
     const fixture = daytonaFixture({ state: "stopped" });
     const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, fixture.client);

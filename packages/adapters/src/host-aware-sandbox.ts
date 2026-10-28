@@ -184,8 +184,8 @@ export class HostAwareSandbox implements SandboxProvider {
     return this.route(computer).snapshot(computer, context);
   }
 
-  keepAlive(computer: ComputerRef) {
-    return this.route(computer).keepAlive?.(computer) ?? Promise.resolve();
+  keepAlive(computer: ComputerRef, options?: { onlyIfRunning?: boolean }) {
+    return this.route(computer).keepAlive?.(computer, options) ?? Promise.resolve();
   }
 
   releaseScreen(

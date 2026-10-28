@@ -36,6 +36,7 @@ import {
   buildComposerMentionOptions,
   type ComposerMention,
   clampMentionHighlightIndex,
+  createComputerHeartbeat,
   createGroupSettingsSave,
   cronFromPreset,
   formatMessageTime,
@@ -769,6 +770,12 @@ export function ShellPage() {
   const [runningRoutine, setRunningRoutine] = useState(false);
   const [routineError, setRoutineError] = useState<string | null>(null);
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
+  const [visibleComputerScreen, setVisibleComputerScreen] = useState<{
+    botId: string;
+    ownerKey: string;
+    spaceId: string | null;
+    selection: number;
+  } | null>(null);
   const [computerOpen, setComputerOpen] = useState(false);
   const [takingComputerControl, setTakingComputerControl] = useState(false);
   const computerControlPending = useRef(false);
@@ -882,7 +889,9 @@ export function ShellPage() {
   const notifiedBrowserEvents = useRef(new Set<string>());
   const pendingBrowserNotifications = useRef(new Map<string, PendingBrowserNotification>());
   const computerVisible = useRef(false);
-  computerVisible.current = panel === "computer" || computerOpen;
+  const computerSelection = currentSpaceSelectionGeneration();
+  const watchingComputer = panel === "computer" || computerOpen;
+  computerVisible.current = watchingComputer;
   const autoSpoken = useRef<string | null>(null);
   const autoSpokenBotId = useRef<string | null>(null);
 
@@ -1133,6 +1142,14 @@ export function ShellPage() {
   const groupSettingsActor = useRef({ userId, spaceId: bootstrapMe?.spaceId });
   groupSettingsActor.current = { userId, spaceId: bootstrapMe?.spaceId };
   const screenRequest = useRef(0);
+  const computerVisibilityEpoch = useRef(0);
+  const screenReadAbort = useRef<AbortController | null>(null);
+  const screenReadiness = useRef<{
+    botId: string;
+    confirmed: boolean | null;
+    wait: Promise<boolean>;
+    settle: (running: boolean) => void;
+  } | null>(null);
   const contextBot =
     botMenu?.kind === "bot" ? bots.find((bot) => bot.id === botMenu.id) : undefined;
   const contextGroup =
@@ -1546,7 +1563,12 @@ export function ShellPage() {
     return snap;
   }
 
-  async function refreshThread(id: string, signal?: AbortSignal, isCurrent?: () => boolean) {
+  async function refreshThread(
+    id: string,
+    signal?: AbortSignal,
+    isCurrent?: () => boolean,
+    explicitScreen = false,
+  ) {
     const scrollElement = messageScroll.current;
     const stickToEnd = !scrollElement || transcriptIsNearEnd(scrollElement);
     markOnce("rk:renderer:thread-request-start");
@@ -1587,7 +1609,7 @@ export function ShellPage() {
     void Promise.all([
       rpc.routines.list({ botId: id }).catch(() => null),
       rpc.skills.list({ botId: id }).catch(() => null),
-      refreshComputerScreen(id, isCurrent).catch(() => null),
+      refreshComputerScreen(id, isCurrent, explicitScreen).catch(() => null),
     ]).then(([routines, skills]) => {
       if (
         isCurrent?.() === false ||
@@ -1611,27 +1633,59 @@ export function ShellPage() {
     return snap;
   }
 
-  async function refreshComputerScreen(id: string, isCurrent?: () => boolean) {
-    if (!computerVisible.current) return null;
+  async function refreshComputerScreen(id: string, isCurrent?: () => boolean, explicit = false) {
+    if (!computerVisible.current || document.visibilityState !== "visible") return null;
+    const observation = screenReadiness.current;
+    if (
+      !explicit &&
+      (!observation ||
+        observation.botId !== id ||
+        !(await observation.wait) ||
+        screenReadiness.current !== observation)
+    )
+      return null;
+    if (
+      !computerVisible.current ||
+      document.visibilityState !== "visible" ||
+      isCurrent?.() === false
+    )
+      return null;
     const request = ++screenRequest.current;
-    const client = isCurrent
-      ? createSpaceRpc(selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null, isCurrent)
-      : rpc;
-    return loadComputerScreen({
-      load: () => client.computer.screenUrl({ botId: id }),
-      isCurrent: () =>
-        isCurrent?.() !== false &&
-        request === screenRequest.current &&
-        (activeBotId.current === id || computerBotIdRef.current === id) &&
-        computerVisible.current,
-      commit: (screen) => {
-        setScreenUrl(screen.url);
-        setComputerError(screen.error);
-        setComputerErrorFromScreen(Boolean(screen.error));
-        cacheComputerFor(id, { screenUrl: screen.url });
-      },
-      fallbackError: t`Could not connect to the computer screen`,
-    });
+    const actor = groupSettingsActor.current;
+    const owner = committedSettingsOwner.current;
+    const spaceId = selectedSpaceId() ?? actor.spaceId ?? null;
+    const selection = currentSpaceSelectionGeneration();
+    screenReadAbort.current?.abort();
+    const abort = new AbortController();
+    screenReadAbort.current = abort;
+    const current = () =>
+      !abort.signal.aborted &&
+      isCurrent?.() !== false &&
+      request === screenRequest.current &&
+      (activeBotId.current === id || computerBotIdRef.current === id) &&
+      computerVisible.current &&
+      document.visibilityState === "visible" &&
+      owner === committedSettingsOwner.current &&
+      actor.userId === groupSettingsActor.current.userId &&
+      actor.spaceId === groupSettingsActor.current.spaceId &&
+      spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null) &&
+      selection === currentSpaceSelectionGeneration();
+    const client = createSpaceRpc(spaceId, current);
+    try {
+      return await loadComputerScreen({
+        load: () => client.computer.screenUrl({ botId: id }, { signal: abort.signal }),
+        isCurrent: current,
+        commit: (screen) => {
+          setScreenUrl(screen.url);
+          setComputerError(screen.error);
+          setComputerErrorFromScreen(Boolean(screen.error));
+          cacheComputerFor(id, { screenUrl: screen.url });
+        },
+        fallbackError: t`Could not connect to the computer screen`,
+      });
+    } finally {
+      if (screenReadAbort.current === abort) screenReadAbort.current = null;
+    }
   }
 
   async function loadOlderMessages() {
@@ -3745,7 +3799,29 @@ export function ShellPage() {
         ).computer.takeover({ botId: targetBotId });
         if (!stillThisBoot()) return;
       }
-      await refreshComputerFor(targetBotId, stillThisBoot);
+      await refreshComputerFor(targetBotId, stillThisBoot, true);
+      if (
+        stillThisBoot() &&
+        document.visibilityState === "visible" &&
+        computerVisible.current &&
+        computerRef.current?.botId === targetBotId &&
+        computerRef.current.state === "running"
+      ) {
+        // Explicit Open has completed its own scoped boot/status read.
+        screenReadiness.current?.settle(false);
+        screenReadiness.current = {
+          botId: targetBotId,
+          confirmed: true,
+          wait: Promise.resolve(true),
+          settle() {},
+        };
+        setVisibleComputerScreen({
+          botId: targetBotId,
+          ownerKey: settingsOwner.key,
+          spaceId: selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null,
+          selection: currentSpaceSelectionGeneration(),
+        });
+      }
     } catch (error) {
       if (!stillThisBoot()) return;
       setComputerError(errorText(error, t`Could not take control`));
@@ -3756,10 +3832,14 @@ export function ShellPage() {
     }
   }
 
-  async function refreshComputerFor(targetBotId: string, isCurrent?: () => boolean) {
+  async function refreshComputerFor(
+    targetBotId: string,
+    isCurrent?: () => boolean,
+    explicitScreen = false,
+  ) {
     if (isCurrent?.() === false) return;
     if (activeBotId.current === targetBotId) {
-      await refreshThread(targetBotId, undefined, isCurrent);
+      await refreshThread(targetBotId, undefined, isCurrent, explicitScreen);
       return;
     }
     if (computerBotIdRef.current !== targetBotId) return;
@@ -3770,7 +3850,7 @@ export function ShellPage() {
     if (isCurrent?.() === false || computerBotIdRef.current !== targetBotId) return;
     commitComputer(status);
     cacheComputerFor(targetBotId, { computer: status });
-    await refreshComputerScreen(targetBotId, isCurrent);
+    await refreshComputerScreen(targetBotId, isCurrent, explicitScreen);
   }
 
   useEffect(() => {
@@ -3780,12 +3860,19 @@ export function ShellPage() {
     }
     if (!active) return;
     const botId = active.id;
+    const visibilityEpoch = computerVisibilityEpoch.current;
     let cancelled = false;
     void (async () => {
       // Refresh from the server first. A stale SSE "booting" snapshot used to
       // skip this effect, so an RPC takeover never showed "You have control".
       await refreshThread(botId).catch(() => null);
-      if (cancelled || activeBotId.current !== botId) return;
+      if (
+        cancelled ||
+        activeBotId.current !== botId ||
+        document.visibilityState !== "visible" ||
+        visibilityEpoch !== computerVisibilityEpoch.current
+      )
+        return;
       // A newer committed snapshot can reject the refresh response as stale.
       const snap = snapshotRef.current;
       if (snap?.botId !== botId) return;
@@ -3793,7 +3880,13 @@ export function ShellPage() {
       const observed = computerRef.current;
       const state = (observed?.botId === botId ? observed : snap.computer)?.state;
       const screen = state === "running" ? await refreshComputerScreen(botId) : null;
-      if (cancelled || activeBotId.current !== botId) return;
+      if (
+        cancelled ||
+        activeBotId.current !== botId ||
+        document.visibilityState !== "visible" ||
+        visibilityEpoch !== computerVisibilityEpoch.current
+      )
+        return;
       const current = snapshotRef.current;
       const latest = computerRef.current;
       const currentComputer = latest?.botId === botId ? latest : current?.computer;
@@ -3801,6 +3894,7 @@ export function ShellPage() {
       if (
         current?.botId !== botId ||
         !computerPanelNeedsScreen(currentComputer?.state, currentScreen) ||
+        screenReadiness.current?.confirmed !== true ||
         autoBooted.current === botId
       )
         return;
@@ -3921,14 +4015,129 @@ export function ShellPage() {
 
   useEffect(() => {
     const heartbeatBotId = computerBot?.id ?? active?.id;
-    if ((panel !== "computer" && !computerOpen) || !heartbeatBotId || computer?.state !== "running")
-      return;
-    const ping = () =>
-      void rpc.computer.heartbeat({ botId: heartbeatBotId }).catch(() => undefined);
-    ping();
-    const timer = window.setInterval(ping, 60_000);
-    return () => window.clearInterval(timer);
-  }, [panel, computerOpen, computerBot?.id, active?.id, computer?.state]);
+    if (!watchingComputer || !heartbeatBotId || !userId) return;
+    const actor = groupSettingsActor.current;
+    const owner = settingsOwner;
+    const spaceId = selectedSpaceId() ?? actor.spaceId ?? null;
+    const selection = currentSpaceSelectionGeneration();
+    let disposed = false;
+    let visibilityEpoch = 0;
+    let refreshScreen = true;
+    function prepareScreenRead() {
+      screenReadiness.current?.settle(false);
+      let resolve!: (running: boolean) => void;
+      const observation = {
+        botId: heartbeatBotId!,
+        confirmed: null as boolean | null,
+        wait: new Promise<boolean>((done) => {
+          resolve = done;
+        }),
+        settle(running: boolean) {
+          if (observation.confirmed !== null) return;
+          observation.confirmed = running;
+          resolve(running);
+        },
+      };
+      screenReadiness.current = observation;
+      return observation;
+    }
+    const presented = () =>
+      !disposed &&
+      document.visibilityState === "visible" &&
+      computerVisible.current &&
+      computerBotIdRef.current === heartbeatBotId &&
+      owner === committedSettingsOwner.current &&
+      actor.userId === groupSettingsActor.current.userId &&
+      actor.spaceId === groupSettingsActor.current.spaceId &&
+      spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null) &&
+      selection === currentSpaceSelectionGeneration();
+    const heartbeat = createComputerHeartbeat({
+      ping: async (signal) => {
+        const requestEpoch = visibilityEpoch;
+        const current = () => !signal.aborted && requestEpoch === visibilityEpoch && presented();
+        if (!current()) return;
+        const observation =
+          screenReadiness.current?.confirmed === false
+            ? prepareScreenRead()
+            : screenReadiness.current;
+        const before = computerRef.current;
+        const client = createSpaceRpc(spaceId, current);
+        let status: ComputerStatus;
+        try {
+          status = await client.computer.status({ botId: heartbeatBotId }, { signal });
+        } catch (error) {
+          observation?.settle(false);
+          throw error;
+        }
+        if (!current() || status.botId !== heartbeatBotId) {
+          observation?.settle(false);
+          return;
+        }
+        // Status has no event cursor. Never overwrite an event received while the read waited.
+        if (computerRef.current === before) {
+          commitComputer(status);
+          cacheComputerFor(heartbeatBotId, { computer: status });
+        }
+        const latest = computerRef.current;
+        if (
+          status.state !== "running" ||
+          latest?.botId !== heartbeatBotId ||
+          latest.state !== "running"
+        ) {
+          observation?.settle(false);
+          return;
+        }
+        observation?.settle(true);
+        setVisibleComputerScreen({
+          botId: heartbeatBotId,
+          ownerKey: owner.key,
+          spaceId,
+          selection,
+        });
+        if (refreshScreen) {
+          refreshScreen = false;
+          void refreshComputerScreen(heartbeatBotId, current).catch(() => undefined);
+        }
+        await client.computer.heartbeat({ botId: heartbeatBotId }, { signal });
+      },
+    });
+    const attendVisibleComputer = () => {
+      visibilityEpoch += 1;
+      computerVisibilityEpoch.current += 1;
+      setVisibleComputerScreen(null);
+      screenRequest.current += 1;
+      screenReadAbort.current?.abort();
+      heartbeat.setEnabled(false);
+      refreshScreen = true;
+      prepareScreenRead();
+      heartbeat.setEnabled(presented());
+    };
+    prepareScreenRead();
+    heartbeat.setEnabled(presented());
+    document.addEventListener("visibilitychange", attendVisibleComputer);
+    window.addEventListener("online", attendVisibleComputer);
+    return () => {
+      disposed = true;
+      visibilityEpoch += 1;
+      computerVisibilityEpoch.current += 1;
+      setVisibleComputerScreen(null);
+      screenReadiness.current?.settle(false);
+      screenReadiness.current = null;
+      heartbeat.dispose();
+      screenRequest.current += 1;
+      screenReadAbort.current?.abort();
+      document.removeEventListener("visibilitychange", attendVisibleComputer);
+      window.removeEventListener("online", attendVisibleComputer);
+    };
+  }, [
+    watchingComputer,
+    computerBot?.id,
+    active?.id,
+    userId,
+    settingsOwner,
+    settingsCurrentSpaceId,
+    computerSelection,
+  ]);
 
   /** Opening only watches; an explicit Take control requests the control lease. */
   async function openComputer(botId?: string, takeControl = false) {
@@ -4014,6 +4223,12 @@ export function ShellPage() {
     }
   }
 
+  const screenPresented =
+    document.visibilityState === "visible" &&
+    visibleComputerScreen?.botId === computerBot?.id &&
+    visibleComputerScreen?.ownerKey === settingsOwnerKey &&
+    visibleComputerScreen?.spaceId === (selectedSpaceId() ?? bootstrapMe?.spaceId ?? null) &&
+    visibleComputerScreen?.selection === currentSpaceSelectionGeneration();
   const embeddedScreenUrl = embeddableScreenUrl(screenUrl);
   const hasControl = userHoldsComputerControl(computer, computerBot?.id);
   const hideScreenLoadError = computerErrorFromScreen && Boolean(embeddedScreenUrl);
@@ -5578,7 +5793,10 @@ export function ShellPage() {
                     </div>
                   ) : computer?.kind === "desktop" ? (
                     <DesktopKindEmptyState className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground/80" />
-                  ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
+                  ) : computer?.state === "running" &&
+                    screenPresented &&
+                    embeddedScreenUrl &&
+                    !computerScreenError ? (
                     <iframe
                       title={t`Bot screen preview`}
                       src={embeddedScreenUrl}
@@ -6572,7 +6790,10 @@ export function ShellPage() {
               >
                 {computer?.kind === "desktop" ? (
                   <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-sm text-muted-foreground/80" />
-                ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
+                ) : computer?.state === "running" &&
+                  screenPresented &&
+                  embeddedScreenUrl &&
+                  !computerScreenError ? (
                   <>
                     <iframe
                       title={t`Bot screen`}

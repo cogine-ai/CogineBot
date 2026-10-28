@@ -610,6 +610,13 @@ describe("CreateOSSandboxProvider", () => {
     expect(fixture.calls.some((call) => call.startsWith("GET /v1/sandboxes/"))).toBe(false);
   });
 
+  it("does not issue unverified exec activity for passive attendance", async () => {
+    const fixture = createosFixture();
+    await provider(fixture).keepAlive(computer, { onlyIfRunning: true });
+    expect(fixture.calls).toEqual([]);
+    expect(fixture.execs).toEqual([]);
+  });
+
   it("rejects a screen URL outside the CreateOS host allowlist", async () => {
     const fixture = createosFixture({
       connectionUrl: "https://evil.example/vnc.html?token=secret",

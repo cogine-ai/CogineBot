@@ -409,8 +409,17 @@ export class E2BSandboxProvider implements SandboxProvider {
     return { id: observation.frameId, createdAt: observation.capturedAt };
   }
 
-  async keepAlive(computer: ComputerRef): Promise<void> {
-    const desktop = await this.box(computer);
+  async keepAlive(computer: ComputerRef, options?: { onlyIfRunning?: boolean }): Promise<void> {
+    if (options?.onlyIfRunning && !this.sdk.attachRunning) {
+      throw new Error("E2B SDK cannot attach a computer without resuming it");
+    }
+    const desktop = options?.onlyIfRunning
+      ? await this.sdk.attachRunning!(computer.providerRef || computer.id, {
+          apiKey: this.apiKey,
+          signal: AbortSignal.timeout(15_000),
+        })
+      : await this.box(computer);
+    if (!desktop) return;
     try {
       await desktop.setTimeout(sandboxIdleMs());
     } catch (error) {
