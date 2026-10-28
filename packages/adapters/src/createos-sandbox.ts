@@ -709,7 +709,14 @@ print(json.dumps(out))
     await this.runCommand(computer, { argv: ["true"] }, context, 10_000).catch(() => undefined);
   }
 
-  async releaseScreen(computer: ComputerRef, context: AdapterContext): Promise<void> {
+  async releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { onlyIfRunning?: boolean },
+  ): Promise<void> {
+    // These screens belong to the bot, not a Run lease. A later Run reuses the same
+    // assignment, so retained-attempt cleanup must not delete a live human session.
+    if (options?.onlyIfRunning) return;
     const screenKey = screenSessionKey(context);
     const gateKey = this.screenGateKey(computer.providerRef, screenKey);
     const screenId = await this.withScreenGate(gateKey, async () => {

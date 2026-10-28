@@ -905,11 +905,15 @@ export function releaseDesktopCommand(
   leaseId: string | undefined,
   env: DesktopEnvironment,
   retainBrowser = false,
+  preserveActiveControl = false,
 ) {
   return [
     ...registryLockCommand(screenId),
     '[ -f "$slot" ] || exit 0',
     ...acceptLeaseCommand(leaseId, true),
+    ...(preserveActiveControl
+      ? ['if [ -n "$control_token" ] || [ -n "$revoking_token" ]; then exit 0; fi']
+      : []),
     ...(retainBrowser
       ? [
           'if [ "$state" = idle ] && [ -z "$control_token" ] && [ -z "$revoking_token" ] && [ -z "$view_token" ]; then',

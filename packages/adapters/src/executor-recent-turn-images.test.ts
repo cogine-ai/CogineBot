@@ -4,10 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
 
+const provisionComputer = vi.hoisted(() =>
+  vi.fn(async () => ({ id: "computer-1", kind: "desktop" })),
+);
+
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
   acquireComputerExecutionLease: async () => null,
-  provisionComputer: async () => ({ id: "computer-1", kind: "desktop" }),
+  provisionComputer,
 }));
 
 const TEXT_ONLY_MODEL = "deepseek/deepseek-v4-flash-0731";
@@ -69,8 +73,10 @@ async function runWithModel(
     accountTimezone?: string | null;
     timezoneReadFails?: boolean;
     botOwnerId?: string;
+    useComputer?: boolean;
   } = {},
 ) {
+  provisionComputer.mockClear();
   const run = {
     id: "run-1",
     botId: "bot-1",
@@ -88,6 +94,7 @@ async function runWithModel(
   };
   const get = vi.fn(async () => new Uint8Array([1, 2, 3, 4]));
   const writeFile = vi.fn(async (..._args: unknown[]) => undefined);
+  const listFiles = vi.fn(async (..._args: unknown[]) => []);
   const exportWorkspace = vi.fn(async function* () {
     yield* [];
   });
@@ -110,6 +117,12 @@ async function runWithModel(
         costUsd: 0.00123,
         callId: "backup-call",
       });
+    }
+    if (attachmentOptions.useComputer) {
+      expect(provisionComputer).not.toHaveBeenCalled();
+      expect(writeFile).not.toHaveBeenCalled();
+      if (!next.executeTool) throw new Error("File tools are unavailable");
+      await next.executeTool("list_files", { path: "attachments" }, "list-1");
     }
     yield { type: "done" as const, text: "Done" };
   });
@@ -224,6 +237,8 @@ async function runWithModel(
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
     externalEffect: { findMany: vi.fn(async () => []) },
+    actionApprovalRule: { findMany: vi.fn(async () => []) },
+    actionAutoReviewPreference: { findUnique: vi.fn(async () => null) },
     usageRecord: { createMany: vi.fn(async () => ({ count: 1 })) },
     artifact: {
       findMany: vi.fn(async () => [
@@ -244,8 +259,9 @@ async function runWithModel(
     secretStore: { load: async (ciphertext: string) => ciphertext },
     runtime: { describe: () => ({ capabilities: { scripted } }), run: runtimeRun },
     sandbox: {
-      describe: () => ({ capabilities: { graphical: false } }),
+      describe: () => ({ id: "desktop", capabilities: { graphical: false } }),
       writeFile,
+      listFiles,
       readFile: vi.fn().mockRejectedValue(new Error("computer file not found")),
       exportWorkspace,
     },
@@ -262,7 +278,7 @@ async function runWithModel(
   expect(runtimeRun).toHaveBeenCalled();
   expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
   if (!request) throw new Error("runtime was not called");
-  return { request, get, prisma, run, writeFile, exportWorkspace };
+  return { request, get, prisma, run, writeFile, listFiles, exportWorkspace };
 }
 
 describe("recent turn images follow model vision", () => {
@@ -273,8 +289,36 @@ describe("recent turn images follow model vision", () => {
     expect(request.history.find((entry) => entry.id === "earlier")?.images).toBeUndefined();
   });
 
-  it("makes an earlier attachment available to file tools on a later text-only turn", async () => {
-    const { request, writeFile, exportWorkspace } = await runWithModel(TEXT_ONLY_MODEL);
+  it("lists an earlier attachment on a text-only turn without starting the computer", async () => {
+    const { request, get, writeFile, listFiles, exportWorkspace } =
+      await runWithModel(TEXT_ONLY_MODEL);
+
+    expect(provisionComputer).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(listFiles).not.toHaveBeenCalled();
+    expect(exportWorkspace).not.toHaveBeenCalled();
+    expect(request.history.find((entry) => entry.id === "earlier")?.images).toBeUndefined();
+    expect(request.prompt).toContain(
+      'Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
+    );
+  });
+
+  it("makes an earlier attachment available when a later text-only turn uses file tools", async () => {
+    const { request, writeFile, listFiles, exportWorkspace } = await runWithModel(
+      TEXT_ONLY_MODEL,
+      undefined,
+      false,
+      false,
+      { useComputer: true },
+    );
+
+    expect(provisionComputer).toHaveBeenCalledOnce();
+    expect(listFiles).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "computer-1" }),
+      "attachments",
+      expect.objectContaining({ botId: "bot-1", spaceId: "space-1", userId: "user-1" }),
+    );
 
     expect(writeFile).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ id: "computer-1" }),
@@ -282,18 +326,19 @@ describe("recent turn images follow model vision", () => {
       expect.objectContaining({ botId: "bot-1", spaceId: "space-1", userId: "user-1" }),
     );
     expect(request.prompt).toContain(
-      'Files attached earlier in this conversation are also on your computer:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
+      'Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:\n- "shot.png" (image/png, 4 bytes): "attachments/art-1.png"',
     );
     expect(exportWorkspace).not.toHaveBeenCalled();
   });
 
   it("prepares an earlier document in the Bot's Team Computer folder without a checkpoint", async () => {
-    const { request, writeFile, exportWorkspace } = await runWithModel(
+    const { request, writeFile, listFiles, exportWorkspace } = await runWithModel(
       TEXT_ONLY_MODEL,
       undefined,
       false,
       false,
       {
+        useComputer: true,
         computerMode: "team",
         block: {
           kind: "file",
@@ -305,6 +350,12 @@ describe("recent turn images follow model vision", () => {
       },
     );
 
+    expect(provisionComputer).toHaveBeenCalledOnce();
+    expect(listFiles).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "computer-1" }),
+      "bots/bot-1/attachments",
+      expect.objectContaining({ botId: "bot-1", spaceId: "space-1", userId: "user-1" }),
+    );
     expect(writeFile).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ id: "computer-1" }),
       { path: "bots/bot-1/attachments/art-1.txt", content: new Uint8Array([1, 2, 3, 4]) },

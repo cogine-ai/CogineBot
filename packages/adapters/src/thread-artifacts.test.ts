@@ -15,6 +15,7 @@ import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import {
   attachWorkspaceFileToThread,
   currentTurnFilesInstruction,
+  listRecentThreadFiles,
   materializeCurrentTurnFiles,
   materializeRecentThreadFiles,
   recentThreadFilesInstruction,
@@ -130,7 +131,7 @@ describe("current-turn thread files", () => {
           sandbox: { writeFile } as unknown as SandboxProvider,
         },
         blocks,
-        { context, computer, computerMode: "team", markWorkspaceDirty },
+        { context, computer: async () => computer, computerMode: "team", markWorkspaceDirty },
       );
 
       expect(get).toHaveBeenCalledWith("stored-1", context);
@@ -198,12 +199,12 @@ describe("current-turn thread files", () => {
           botId: "bot-1",
           signal: new AbortController().signal,
         },
-        computer: {
+        computer: async () => ({
           id: "computer-1",
           botId: "bot-1",
           kind: "fake",
           providerRef: "fake-1",
-        },
+        }),
         computerMode: "team",
       },
     );
@@ -329,7 +330,8 @@ describe("recent thread files", () => {
             botId: "bot",
             signal: new AbortController().signal,
           },
-          computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
+          computer: async () =>
+            ({ id: "computer", kind: "fake", providerRef: "fake" }) as ComputerRef,
           computerMode: "dedicated",
           maxTurns: 3,
         },
@@ -389,7 +391,8 @@ describe("recent thread files", () => {
           botId: "bot",
           signal: new AbortController().signal,
         },
-        computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
+        computer: async () =>
+          ({ id: "computer", kind: "fake", providerRef: "fake" }) as ComputerRef,
         computerMode: "dedicated",
         maxTurns: 3,
       },
@@ -428,7 +431,8 @@ describe("recent thread files", () => {
           botId: "bot",
           signal: new AbortController().signal,
         },
-        computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
+        computer: async () =>
+          ({ id: "computer", kind: "fake", providerRef: "fake" }) as ComputerRef,
         computerMode: "dedicated",
         maxTurns: 3,
         skipMessageId: "current",
@@ -493,7 +497,8 @@ describe("recent thread files", () => {
         ],
         {
           context,
-          computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
+          computer: async () =>
+            ({ id: "computer", kind: "fake", providerRef: "fake" }) as ComputerRef,
           computerMode: "dedicated",
           maxTurns: 3,
         },
@@ -551,7 +556,7 @@ describe("recent history attachment selection and preservation", () => {
           },
           [{ id: "earlier", role: "user" }],
           [{ id: "earlier", blocks: [block] }],
-          { context, computer, computerMode: "dedicated", maxTurns: 3 },
+          { context, computer: async () => computer, computerMode: "dedicated", maxTurns: 3 },
         );
         expect(readFile).toHaveBeenCalledExactlyOnceWith(
           computer,
@@ -615,7 +620,8 @@ describe("recent history attachment selection and preservation", () => {
             botId: "bot",
             signal: new AbortController().signal,
           },
-          computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
+          computer: async () =>
+            ({ id: "computer", kind: "fake", providerRef: "fake" }) as ComputerRef,
           computerMode,
           maxTurns: 3,
           markWorkspaceDirty,
@@ -687,7 +693,8 @@ describe("recent history attachment selection and preservation", () => {
           botId: "bot",
           signal: new AbortController().signal,
         },
-        computer: { id: "computer", kind: "fake", providerRef: "fake" } as ComputerRef,
+        computer: async () =>
+          ({ id: "computer", kind: "fake", providerRef: "fake" }) as ComputerRef,
         computerMode: "team",
         maxTurns,
         skipMessageId: "current",
@@ -764,7 +771,8 @@ describe("recent history attachment selection and preservation", () => {
       ],
       {
         context,
-        computer: { id: "computer-1", kind: "fake", providerRef: "fake-1" } as ComputerRef,
+        computer: async () =>
+          ({ id: "computer-1", kind: "fake", providerRef: "fake-1" }) as ComputerRef,
         computerMode: "team",
         maxTurns: 3,
       },
@@ -778,9 +786,330 @@ describe("recent history attachment selection and preservation", () => {
     );
     expect(recentThreadFilesInstruction(files)).toBe(
       [
-        "Files attached earlier in this conversation are also on your computer:",
+        "Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:",
         '- "screenshot.png" (image/png, 3 bytes): "attachments/image-1.png"',
       ].join("\n"),
     );
+  });
+});
+
+describe("attachments that start a computer only when needed", () => {
+  const computer: ComputerRef = { id: "computer", botId: "bot", kind: "fake", providerRef: "fake" };
+  const block: MessageBlock = {
+    kind: "file",
+    artifactId: "notes",
+    name: "notes.txt",
+    mimeType: "text/plain",
+    size: 3,
+  };
+  const row = {
+    id: "notes",
+    name: "notes.txt",
+    mimeType: "text/plain",
+    size: 3,
+    storageKey: "stored",
+  };
+  const context = (signal: AbortSignal) => ({
+    operationId: "run",
+    traceId: "run",
+    spaceId: "space",
+    userId: "user",
+    botId: "bot",
+    signal,
+  });
+
+  it.each([undefined, [{ kind: "text", text: "Hello" }]] as const)(
+    "does not look up files or start a computer without attachments: %s",
+    async (blocks) => {
+      const findMany = vi.fn();
+      const get = vi.fn();
+      const ensure = vi.fn();
+      const writeFile = vi.fn();
+      await expect(
+        materializeCurrentTurnFiles(
+          {
+            prisma: { artifact: { findMany } } as unknown as PrismaClient,
+            artifacts: { get } as unknown as ArtifactStore,
+            sandbox: { writeFile } as unknown as SandboxProvider,
+          },
+          blocks ? [...blocks] : undefined,
+          {
+            context: context(new AbortController().signal),
+            computer: ensure,
+            computerMode: "team",
+          },
+        ),
+      ).resolves.toEqual([]);
+      expect(findMany).not.toHaveBeenCalled();
+      expect(get).not.toHaveBeenCalled();
+      expect(ensure).not.toHaveBeenCalled();
+      expect(writeFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["missing", "unreadable", "oversized"])(
+    "does not start a computer for a %s current attachment",
+    async (reason) => {
+      const ensure = vi.fn();
+      const writeFile = vi.fn();
+      const get = vi.fn(async () => {
+        if (reason === "unreadable") throw new Error("attachment unreadable");
+        return new Uint8Array(ATTACHMENT_MAX_BYTES + 1);
+      });
+      await expect(
+        materializeCurrentTurnFiles(
+          {
+            prisma: {
+              artifact: { findMany: vi.fn().mockResolvedValue(reason === "missing" ? [] : [row]) },
+            } as unknown as PrismaClient,
+            artifacts: { get } as unknown as ArtifactStore,
+            sandbox: { writeFile } as unknown as SandboxProvider,
+          },
+          [block],
+          {
+            context: context(new AbortController().signal),
+            computer: ensure,
+            computerMode: "team",
+          },
+        ),
+      ).rejects.toThrow(
+        reason === "missing"
+          ? "Attached file is unavailable"
+          : reason === "unreadable"
+            ? "attachment unreadable"
+            : "10 MiB limit",
+      );
+      expect(ensure).not.toHaveBeenCalled();
+      expect(writeFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["artifact read", "computer start"])(
+    "does not write a current attachment after cancellation during %s",
+    async (phase) => {
+      const controller = new AbortController();
+      const writeFile = vi.fn();
+      const ensure = vi.fn(async () => {
+        if (phase === "computer start") controller.abort(new Error("cancelled"));
+        return computer;
+      });
+      const get = vi.fn(async () => {
+        if (phase === "artifact read") controller.abort(new Error("cancelled"));
+        return new Uint8Array([1, 2, 3]);
+      });
+      await expect(
+        materializeCurrentTurnFiles(
+          {
+            prisma: {
+              artifact: { findMany: vi.fn().mockResolvedValue([row]) },
+            } as unknown as PrismaClient,
+            artifacts: { get } as unknown as ArtifactStore,
+            sandbox: { writeFile } as unknown as SandboxProvider,
+          },
+          [block],
+          { context: context(controller.signal), computer: ensure, computerMode: "team" },
+        ),
+      ).rejects.toThrow("cancelled");
+      expect(ensure).toHaveBeenCalledTimes(phase === "artifact read" ? 0 : 1);
+      expect(writeFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not probe or copy history after cancellation during a computer start", async () => {
+    const controller = new AbortController();
+    const readFile = vi.fn();
+    const writeFile = vi.fn();
+    const get = vi.fn();
+    await expect(
+      materializeRecentThreadFiles(
+        {
+          prisma: {
+            artifact: { findMany: vi.fn().mockResolvedValue([row]) },
+          } as unknown as PrismaClient,
+          artifacts: { get } as unknown as ArtifactStore,
+          sandbox: { readFile, writeFile } as unknown as SandboxProvider,
+        },
+        [{ id: "earlier", role: "user" }],
+        [{ id: "earlier", blocks: [block] }],
+        {
+          context: context(controller.signal),
+          computer: async () => {
+            controller.abort(new Error("cancelled"));
+            return computer;
+          },
+          computerMode: "team",
+          maxTurns: 3,
+        },
+      ),
+    ).rejects.toThrow("cancelled");
+    expect(readFile).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("recent thread file metadata", () => {
+  const context: AdapterContext = {
+    operationId: "run",
+    traceId: "run",
+    spaceId: "space",
+    userId: "user",
+    signal: new AbortController().signal,
+  };
+  const block = (id: string): MessageBlock => ({
+    kind: "file",
+    artifactId: id,
+    name: `${id}.txt`,
+    mimeType: "text/plain",
+    size: 3,
+  });
+
+  it("describes candidates conditionally when missing bytes make the copied files differ", async () => {
+    const findMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+      where.id.in.map((id) => ({
+        id,
+        name: `${id}.txt`,
+        mimeType: "text/plain",
+        size: 3,
+        storageKey: id,
+      })),
+    );
+    const get = vi.fn(async (id: string) => {
+      if (id === "missing") throw new Error("artifact bytes unavailable");
+      return new Uint8Array([1, 2, 3]);
+    });
+    const readFile = vi.fn().mockRejectedValue(new Error("computer file not found"));
+    const writeFile = vi.fn().mockResolvedValue(undefined);
+    const computer = vi.fn(
+      async (): Promise<ComputerRef> => ({
+        id: "computer",
+        botId: "bot",
+        kind: "fake",
+        providerRef: "fake",
+      }),
+    );
+    const deps = {
+      prisma: { artifact: { findMany } } as unknown as PrismaClient,
+      artifacts: { get } as unknown as ArtifactStore,
+      sandbox: { readFile, writeFile } as unknown as SandboxProvider,
+    };
+    const messages = [
+      { id: "older", blocks: [block("backfill")] },
+      { id: "newer", blocks: [block("third"), block("second"), block("first"), block("missing")] },
+    ];
+    const history = messages.map(({ id }) => ({ id, role: "user" }));
+    const candidates = await listRecentThreadFiles(deps, history, messages, {
+      context,
+      maxTurns: 3,
+    });
+    expect(candidates.map((file) => file.path)).toEqual([
+      "attachments/missing.txt",
+      "attachments/first.txt",
+      "attachments/second.txt",
+      "attachments/third.txt",
+    ]);
+    expect(get).not.toHaveBeenCalled();
+    expect(computer).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+
+    const markWorkspaceDirty = vi.fn();
+    const copied = await materializeRecentThreadFiles(deps, history, messages, {
+      context: { ...context, botId: "bot" },
+      computer,
+      computerMode: "team",
+      maxTurns: 3,
+      markWorkspaceDirty,
+    });
+    expect(copied.map((file) => file.path)).toEqual([
+      "attachments/first.txt",
+      "attachments/second.txt",
+      "attachments/third.txt",
+      "attachments/backfill.txt",
+    ]);
+    expect(get.mock.calls.map(([id]) => id)).toEqual([
+      "missing",
+      "first",
+      "second",
+      "third",
+      "backfill",
+    ]);
+    expect(writeFile.mock.calls.map(([, file]) => file.path)).toEqual([
+      "bots/bot/attachments/first.txt",
+      "bots/bot/attachments/second.txt",
+      "bots/bot/attachments/third.txt",
+      "bots/bot/attachments/backfill.txt",
+    ]);
+    expect(markWorkspaceDirty).not.toHaveBeenCalled();
+    const prompt = recentThreadFilesInstruction(candidates);
+    expect(prompt).toContain(
+      "Earlier attachment candidates may be restored on first computer use. Check the workspace before relying on these paths:",
+    );
+    expect(prompt).not.toContain("are also on your computer");
+    expect(prompt).toContain('"attachments/missing.txt"');
+    expect(prompt).not.toContain('"attachments/backfill.txt"');
+  });
+
+  it("lists scoped available history files without needing a computer or artifact bytes", async () => {
+    const findMany = vi.fn(async () =>
+      ["latest", "oversized", "same", "middle", "oldest", "extra"].map((id) => ({
+        id,
+        name: `${id}.txt`,
+        mimeType: "text/plain",
+        size: id === "oversized" ? ATTACHMENT_MAX_BYTES + 1 : 3,
+      })),
+    );
+    const messages = [
+      { id: "outside", blocks: [block("outside")] },
+      { id: "older", blocks: [block("extra")] },
+      { id: "previous", blocks: [block("oldest"), block("middle"), block("same")] },
+      {
+        id: "newest",
+        blocks: [block("same"), block("missing"), block("oversized"), block("latest")],
+      },
+      { id: "assistant", blocks: [block("assistant")] },
+      { id: "current", blocks: [block("current")] },
+    ];
+    const files = await listRecentThreadFiles(
+      { prisma: { artifact: { findMany } } as unknown as PrismaClient },
+      messages
+        .filter(({ id }) => id !== "outside")
+        .map(({ id }) => ({
+          id,
+          role: id === "assistant" ? "assistant" : "user",
+        })),
+      messages,
+      { context, skipMessageId: "current", maxTurns: 3 },
+    );
+
+    expect(findMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        id: { in: ["latest", "oversized", "missing", "same", "middle", "oldest", "extra"] },
+        spaceId: "space",
+        userId: "user",
+      },
+    });
+    expect(files).toEqual([
+      { name: "latest.txt", mimeType: "text/plain", size: 3, path: "attachments/latest.txt" },
+      { name: "same.txt", mimeType: "text/plain", size: 3, path: "attachments/same.txt" },
+      { name: "middle.txt", mimeType: "text/plain", size: 3, path: "attachments/middle.txt" },
+      { name: "oldest.txt", mimeType: "text/plain", size: 3, path: "attachments/oldest.txt" },
+    ]);
+  });
+
+  it("does not look up metadata without an eligible history attachment", async () => {
+    const findMany = vi.fn();
+    await expect(
+      listRecentThreadFiles(
+        { prisma: { artifact: { findMany } } as unknown as PrismaClient },
+        [
+          { id: "assistant", role: "assistant" },
+          { id: "current", role: "user" },
+        ],
+        ["assistant", "current", "compacted"].map((id) => ({ id, blocks: [block(id)] })),
+        { context, maxTurns: 3, skipMessageId: "current" },
+      ),
+    ).resolves.toEqual([]);
+    expect(findMany).not.toHaveBeenCalled();
   });
 });

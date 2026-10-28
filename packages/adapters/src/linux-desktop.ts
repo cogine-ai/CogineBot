@@ -343,21 +343,27 @@ export class LinuxDesktop {
     await this.run(computer, stopAllDesktopBrowsersCommand(env), context);
   }
 
-  async releaseScreen(computer: ComputerRef, context: AdapterContext) {
+  async releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    host: Pick<LinuxDesktopHost, "environment" | "run"> = this.host,
+    options?: { preserveActiveControl?: boolean },
+  ) {
     const pending = this.pendingCleanups(computer, context).filter(
       (entry) => entry.leaseId === context.screenLeaseId,
     );
-    const env = await this.host.environment(computer);
+    const env = await host.environment(computer);
     // A stale release is a successful no-op. A failed stop must retain the slot
     // for retry. Once the browser has stopped, a later slot-cleanup error must
     // not look like Chromium is still running.
-    const result = await this.host.run(
+    const result = await host.run(
       computer,
       releaseDesktopCommand(
         screenSessionKey(context),
         context.screenLeaseId,
         env,
         !context.cancelRunWork,
+        options?.preserveActiveControl,
       ),
       context,
     );

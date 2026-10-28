@@ -204,6 +204,51 @@ function createosBotProfile(botId: string) {
 }
 
 describe("CreateOSSandboxProvider", () => {
+  it("retains the per-bot interactive screen across a cleanup-only Run handback", async () => {
+    const fixture = createosFixture({
+      connectionUrl: "https://novnc.sb.createos.sh/vnc.html",
+      annotateScreen: true,
+    });
+    const firstWorker = provider(fixture);
+    await firstWorker.connectScreen(computer, { view: "stream" }, context);
+    const botB = { ...context, botId: "bot-b", screenLeaseId: "run-a:1" };
+    const interactive = await firstWorker.connectScreen(
+      computer,
+      { view: "stream", interactive: true, controlToken: "new-human-lease" },
+      botB,
+    );
+    expect(new URL(interactive.url!).searchParams.get("screen")).toBe("screen-1");
+    expect(new URL(interactive.url!).searchParams.has("view_only")).toBe(false);
+    const cleanupAt = fixture.calls.length;
+    await firstWorker.releaseScreen(
+      computer,
+      { ...botB, screenLeaseId: "run-a:2" },
+      { onlyIfRunning: true },
+    );
+    expect(fixture.calls.slice(cleanupAt)).toEqual([]);
+
+    const nextRun = await provider(fixture).connectScreen(
+      computer,
+      { view: "stream" },
+      { ...botB, screenLeaseId: "run-b:8" },
+    );
+    expect(new URL(nextRun.url!).searchParams.get("screen")).toBe("screen-1");
+    expect(
+      fixture.calls.filter((call) => call === "POST /v1/sandboxes/sbx-1/computer/screens"),
+    ).toHaveLength(1);
+    expect(fixture.events.some((event) => event.startsWith("delete:"))).toBe(false);
+  });
+
+  it.each(["running", "paused", "gone"])(
+    "does not contact a %s computer for Run-claim-only cleanup",
+    async (status) => {
+      const fixture = createosFixture({ statuses: [status] });
+      await provider(fixture).releaseScreen(computer, context, { onlyIfRunning: true });
+      expect(fixture.calls).toEqual([]);
+      expect(fixture.execs).toEqual([]);
+    },
+  );
+
   it("creates a sandbox and waits until it runs", async () => {
     const fixture = createosFixture({ statuses: ["provisioning", "running"] });
     const ref = await provider(fixture).provision({ botId: "bot-a", homePath: "/unused" }, context);

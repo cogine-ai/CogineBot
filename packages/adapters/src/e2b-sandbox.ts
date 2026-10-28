@@ -1,4 +1,10 @@
-import { type CommandResult, Sandbox, TimeoutError } from "@e2b/desktop";
+import {
+  ApiClient,
+  type CommandResult,
+  ConnectionConfig,
+  Sandbox,
+  TimeoutError,
+} from "@e2b/desktop";
 import type {
   AdapterContext,
   CommandRequest,
@@ -32,6 +38,57 @@ export interface E2BSandboxSdk {
   create(options: ReturnType<typeof e2bCreateOptions>): Promise<Sandbox>;
   connect(id: string, options: { apiKey: string; timeoutMs: number }): Promise<Sandbox>;
   pause(id: string, options: { apiKey: string }): Promise<void>;
+  attachRunning?(
+    id: string,
+    options: { apiKey: string; signal: AbortSignal },
+  ): Promise<Sandbox | undefined>;
+}
+
+class RetainedE2BSandbox extends Sandbox {
+  constructor(
+    options: ConstructorParameters<typeof Sandbox>[0] & {
+      sandboxDomain?: string;
+      envdAccessToken?: string;
+    },
+  ) {
+    super(options);
+  }
+
+  static async attachRunning(
+    id: string,
+    options: { apiKey: string; signal: AbortSignal },
+  ): Promise<Sandbox | undefined> {
+    const config = new ConnectionConfig({ ...options, requestTimeoutMs: 15_000, retries: 0 });
+    const result = await new ApiClient(config).api.GET("/sandboxes/{sandboxID}", {
+      params: { path: { sandboxID: id } },
+      signal: config.getSignal(undefined, options.signal),
+    });
+    if (result.response.status === 404) return undefined;
+    if (!result.response.ok || !result.data) {
+      throw new Error(`E2B retained-screen state lookup failed (${result.response.status})`);
+    }
+    if (result.data.state === "paused") return undefined;
+    if (result.data.state !== "running") {
+      throw new Error("E2B retained-screen state is unknown");
+    }
+    if (result.data.lifecycle?.autoResume !== false) {
+      throw new Error("E2B retained-screen cleanup requires auto-resume to be disabled");
+    }
+    if (result.data.sandboxID !== id || !result.data.envdVersion) {
+      throw new Error("E2B retained-screen state is incomplete");
+    }
+    // connect() resumes paused sandboxes. The SDK's internal constructor only builds
+    // an envd handle; keep this no-resume path covered when upgrading the SDK.
+    return new RetainedE2BSandbox({
+      ...options,
+      sandboxId: id,
+      sandboxDomain: result.data.domain ?? undefined,
+      envdVersion: result.data.envdVersion,
+      envdAccessToken: result.data.envdAccessToken,
+      requestTimeoutMs: 15_000,
+      retries: 0,
+    });
+  }
 }
 
 export function e2bCreateOptions(botId: string, apiKey: string) {
@@ -88,7 +145,7 @@ export class E2BSandboxProvider implements SandboxProvider {
 
   constructor(
     private readonly apiKey: string,
-    private readonly sdk: E2BSandboxSdk = Sandbox as unknown as E2BSandboxSdk,
+    private readonly sdk: E2BSandboxSdk = RetainedE2BSandbox as unknown as E2BSandboxSdk,
   ) {}
 
   describe() {
@@ -367,8 +424,38 @@ export class E2BSandboxProvider implements SandboxProvider {
     this.lastTouchedAt.set(desktop.sandboxId, Date.now());
   }
 
-  async releaseScreen(computer: ComputerRef, context: AdapterContext): Promise<void> {
-    return this.desktops.releaseScreen(computer, context);
+  async releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { onlyIfRunning?: boolean },
+  ): Promise<void> {
+    if (!options?.onlyIfRunning) return this.desktops.releaseScreen(computer, context);
+    if (!this.sdk.attachRunning) {
+      throw new Error("E2B SDK cannot attach a retained computer without resuming it");
+    }
+    const desktop = await this.sdk.attachRunning(computer.providerRef || computer.id, {
+      apiKey: this.apiKey,
+      signal: context.signal,
+    });
+    if (!desktop) return;
+    return this.desktops.releaseScreen(
+      computer,
+      context,
+      {
+        environment: async () => ({
+          homeDir: "/home/user",
+          workspaceDir: E2B_WORKSPACE,
+          browserProfilesDir: E2B_BROWSER_PROFILES,
+          displayStart: 20,
+          portStart: 6100,
+        }),
+        run: async (_computer, command, cleanupContext) => {
+          const result = await this.runSetupCommand(desktop, command, cleanupContext.signal);
+          return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+        },
+      },
+      { preserveActiveControl: true },
+    );
   }
 
   async stop(computer: ComputerRef, _context: AdapterContext): Promise<void> {

@@ -668,27 +668,22 @@ export function computerTakeoverBlocked(
   return isActive(runStatus as RunStatus);
 }
 
-export function computerPanelAutoBoot(
+/**
+ * Showing a panel only reconnects a running computer. Starting one waits for Open.
+ * Reconnect uses computer.boot; computer.recover would destroy the sandbox.
+ */
+export function computerPanelNeedsScreen(
   state: ComputerStatus["state"] | undefined,
   screenUrl?: string | null,
-): "boot" | "recover-screen" | "wait" {
-  if (state === "booting" || state === "suspended") return "wait";
-  if (state === "running") return screenUrl ? "wait" : "recover-screen";
-  return "boot";
-}
-
-/** Auto panel reconnect must use computer.boot — never computer.recover (that destroys the sandbox). */
-export function computerPanelAutoUsesBoot(
-  action: ReturnType<typeof computerPanelAutoBoot>,
 ): boolean {
-  return action === "boot" || action === "recover-screen";
+  return state === "running" && !screenUrl;
 }
 
 export function computerPanelNeedsMaintenance(
   state: ComputerStatus["state"] | undefined,
   booting: boolean,
 ): boolean {
-  return !booting && (state === "error" || state === "stopped");
+  return !booting && state === "error";
 }
 
 export function reduceComputerStatus(

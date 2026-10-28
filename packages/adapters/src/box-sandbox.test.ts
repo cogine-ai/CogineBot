@@ -19,6 +19,70 @@ afterEach(() => {
 });
 
 describe("BoxSandboxProvider", () => {
+  it("does not run retained-screen cleanup on an archived box", async () => {
+    const fixture = boxFixture({ state: "archived" });
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await provider.releaseScreen(
+      { id: "bx_testbox2", botId: "home", kind: "box", providerRef: "bx_testbox2" },
+      { ...context, screenLeaseId: "run-a:2" },
+      { onlyIfRunning: true },
+    );
+    expect(fixture.command).not.toHaveBeenCalled();
+    expect(fixture.get).toHaveBeenCalledOnce();
+    expect(fixture.resume).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["ready", "idle", "running"])(
+    "cleans an existing %s box without starting or preparing it",
+    async (state) => {
+      const fixture = boxFixture({ state });
+      const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+      await provider.releaseScreen(
+        { id: "bx_testbox2", botId: "home", kind: "box", providerRef: "bx_testbox2" },
+        { ...context, screenLeaseId: "run-a:2" },
+        { onlyIfRunning: true },
+      );
+      expect(fixture.get).toHaveBeenCalledOnce();
+      expect(fixture.command).toHaveBeenCalledOnce();
+      expect(fixture.command.mock.calls[0]?.[0].commandRequest.command).toContain("run-a:2");
+      expect(fixture.resume).not.toHaveBeenCalled();
+      expect(fixture.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not restart a box that stops after the cleanup state read", async () => {
+    const fixture = boxFixture();
+    fixture.command.mockRejectedValueOnce(new Error("box stopped before exec"));
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await expect(
+      provider.releaseScreen(
+        { id: "bx_testbox2", botId: "home", kind: "box", providerRef: "bx_testbox2" },
+        { ...context, screenLeaseId: "run-a:2" },
+        { onlyIfRunning: true },
+      ),
+    ).rejects.toThrow("box stopped before exec");
+    expect(fixture.command).toHaveBeenCalledOnce();
+    expect(fixture.resume).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+  });
+
+  it("treats a missing retained box as already released without starting one", async () => {
+    const fixture = boxFixture();
+    fixture.get.mockRejectedValueOnce({ status: 404 });
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await expect(
+      provider.releaseScreen(
+        { id: "bx_testbox2", botId: "home", kind: "box", providerRef: "bx_testbox2" },
+        context,
+        { onlyIfRunning: true },
+      ),
+    ).resolves.toBeUndefined();
+    expect(fixture.command).not.toHaveBeenCalled();
+    expect(fixture.resume).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+  });
+
   it("creates no-env boxes and implements execution and file operations", async () => {
     const fixture = boxFixture();
     const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);

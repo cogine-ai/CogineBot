@@ -940,16 +940,22 @@ app.delete("/computers/:id/screen", async (c) => {
     containerFound = true;
     const screenId = c.req.header("x-rakazo-screen-id") || c.req.header("x-rakazo-bot-id") || id;
     const cancelRunWork = c.req.header("x-rakazo-cancel-run-work") === "1";
+    const onlyIfRunning = c.req.header("x-rakazo-screen-only-if-running") === "1";
     const screenLeaseId = c.req.header("x-rakazo-screen-lease-id");
     await withComputerScreenLifecycle(c, () =>
       withComputerScreenLock(id, async () => {
         const info = await container.inspect();
+        if (onlyIfRunning && !info.State?.Running) return;
         const assigned = currentComputerScreens(
           computerScreens,
           computerScreenBoots,
           id,
           info.State?.StartedAt,
         );
+        // A newer human grant can arrive after the executor's database check.
+        // Control version alone is historical; current authority lives in the token.
+        const slot = assigned?.get(screenId);
+        if (onlyIfRunning && (slot?.controlled || slot?.controlToken)) return;
         const index = assigned
           ? releaseAssignedScreen(assigned, screenId, screenLeaseId)
           : undefined;

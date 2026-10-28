@@ -252,6 +252,25 @@ describe("Docker sandbox", () => {
     );
   });
 
+  it.each([false, true])(
+    "only sends the retained screen guard when requested (%s)",
+    async (onlyIfRunning) => {
+      const fetchMock = vi.fn(
+        async (_input: unknown, _init?: RequestInit) => new Response(null, { status: 200 }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
+      await provider.releaseScreen(
+        { id: "computer", botId: "home-bot", kind: "docker", providerRef: "computer" },
+        context,
+        onlyIfRunning ? { onlyIfRunning: true } : undefined,
+      );
+      const headers = fetchMock.mock.calls[0]?.[1]?.headers;
+      if (onlyIfRunning) expect(headers).toMatchObject({ "x-rakazo-screen-only-if-running": "1" });
+      else expect(headers).not.toHaveProperty("x-rakazo-screen-only-if-running");
+    },
+  );
+
   it("still releases the screen after the run abort signal has fired", async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       Response.json({ error: "computer not found" }, { status: 404 }),

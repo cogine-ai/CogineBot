@@ -248,9 +248,8 @@ import {
   activeThreadRuns,
   applyThreadSendReceipt,
   clearActiveThreadRuns,
-  computerPanelAutoBoot,
-  computerPanelAutoUsesBoot,
   computerPanelNeedsMaintenance,
+  computerPanelNeedsScreen,
   computerTakeoverBlocked,
   isComputerStatusEvent,
   isThreadSnapshotEvent,
@@ -3785,23 +3784,31 @@ export function ShellPage() {
     void (async () => {
       // Refresh from the server first. A stale SSE "booting" snapshot used to
       // skip this effect, so an RPC takeover never showed "You have control".
-      const snap = await refreshThread(botId).catch(() => null);
+      await refreshThread(botId).catch(() => null);
       if (cancelled || activeBotId.current !== botId) return;
-      const state = snap?.computer?.state;
+      // A newer committed snapshot can reject the refresh response as stale.
+      const snap = snapshotRef.current;
+      if (snap?.botId !== botId) return;
+      // Status events update the computer independently of the thread snapshot.
+      const observed = computerRef.current;
+      const state = (observed?.botId === botId ? observed : snap.computer)?.state;
       const screen = state === "running" ? await refreshComputerScreen(botId) : null;
       if (cancelled || activeBotId.current !== botId) return;
-      const action = computerPanelAutoBoot(state, screen);
-      if (action === "wait") {
-        if (state === "running") autoBooted.current = botId;
+      const current = snapshotRef.current;
+      const latest = computerRef.current;
+      const currentComputer = latest?.botId === botId ? latest : current?.computer;
+      const currentScreen = computerCacheRef.current.get(botId)?.screenUrl ?? screen;
+      if (
+        current?.botId !== botId ||
+        !computerPanelNeedsScreen(currentComputer?.state, currentScreen) ||
+        autoBooted.current === botId
+      )
         return;
-      }
-      if (action === "boot" && autoBooted.current === botId) return;
       autoBooted.current = botId;
-      if (!computerPanelAutoUsesBoot(action)) return;
       await bootComputer({
         botId,
         takeControl: false,
-        overlay: action === "boot",
+        overlay: false,
         force: true,
       }).catch(() => undefined);
     })();

@@ -79,6 +79,11 @@ export class HostAwareSandbox implements SandboxProvider {
     return computer.kind === "desktop" ? this.host : this.isolated;
   }
 
+  async provisionKind() {
+    const provider = (await this.hostEnabled()) ? this.host : this.isolated;
+    return provider.describe().id as ComputerRef["kind"];
+  }
+
   async provision(
     request: {
       botId: string;
@@ -183,8 +188,12 @@ export class HostAwareSandbox implements SandboxProvider {
     return this.route(computer).keepAlive?.(computer) ?? Promise.resolve();
   }
 
-  releaseScreen(computer: ComputerRef, context: AdapterContext) {
-    return this.route(computer).releaseScreen?.(computer, context) ?? Promise.resolve();
+  releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { onlyIfRunning?: boolean },
+  ) {
+    return this.route(computer).releaseScreen?.(computer, context, options) ?? Promise.resolve();
   }
 
   setScreenControl(

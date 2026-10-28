@@ -173,7 +173,13 @@ async function fixture() {
     };
     return { entered, release };
   };
-  const request = (screen: string, lease: string, body?: object, cancel = false) =>
+  const request = (
+    screen: string,
+    lease: string,
+    body?: object,
+    cancel = false,
+    onlyIfRunning = false,
+  ) =>
     supervisorApp.request(`/computers/computer/screen${body ? "-mode" : ""}`, {
       method: body ? "POST" : "DELETE",
       headers: {
@@ -184,6 +190,7 @@ async function fixture() {
         "x-rakazo-screen-id": screen,
         "x-rakazo-screen-lease-id": lease,
         ...(cancel ? { "x-rakazo-cancel-run-work": "1" } : {}),
+        ...(onlyIfRunning ? { "x-rakazo-screen-only-if-running": "1" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
@@ -212,8 +219,8 @@ async function fixture() {
     directWatch,
     grant,
     revoke,
-    release: (screen = "a", lease = "run-a:1", cancel = false) =>
-      request(screen, lease, undefined, cancel),
+    release: (screen = "a", lease = "run-a:1", cancel = false, onlyIfRunning = false) =>
+      request(screen, lease, undefined, cancel, onlyIfRunning),
     setBoot: (value: string) => {
       boot = value;
     },
@@ -239,6 +246,37 @@ describe("screen retention through supervisor routes", () => {
     expect(f.commands.slice(start).join("\n")).toContain("desktop-targets/terminal-1");
     const after = (await (await f.watch()).json()) as { screenUrl: string };
     expect(after.screenUrl).not.toBe(before.screenUrl);
+  });
+
+  it("keeps an active human grant when retained cleanup arrives under a newer same-Run fence", async () => {
+    const f = await fixture();
+    await f.grant("control-a");
+    const start = f.commands.length;
+    expect((await f.release("a", "run-a:2", false, true)).status).toBe(200);
+    expect(f.commands.slice(start)).toEqual([]);
+    expect(f.token()).toBe("control-a");
+    expect((await f.watch("a", "run-a:2")).status).toBe(200);
+    expect(f.token()).toBe("control-a");
+  });
+
+  it("allows retained cleanup after revoke even when its historical version remains", async () => {
+    const f = await fixture();
+    await f.grant("control-a");
+    await f.revoke("control-a");
+    const start = f.commands.length;
+    expect((await f.release("a", "run-a:2", false, true)).status).toBe(200);
+    expect(f.commands.length).toBeGreaterThan(start);
+    expect(f.token()).toBeUndefined();
+  });
+
+  it("does not exec a retained release into a stopped computer", async () => {
+    const f = await fixture();
+    await f.watch();
+    const info = await f.container.inspect();
+    f.container.inspect.mockResolvedValue({ ...info, State: { ...info.State, Running: false } });
+    const start = f.commands.length;
+    expect((await f.release("a", "run-a:2", false, true)).status).toBe(200);
+    expect(f.commands.slice(start)).toEqual([]);
   });
 
   it("fully stops only the cancelled screen and rejects a late old execution release", async () => {

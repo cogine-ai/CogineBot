@@ -322,8 +322,45 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     await (await this.box(computer)).refreshActivity();
   }
 
-  async releaseScreen(computer: ComputerRef, context: AdapterContext): Promise<void> {
-    return this.desktops.releaseScreen(computer, context);
+  async releaseScreen(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { onlyIfRunning?: boolean },
+  ): Promise<void> {
+    if (!options?.onlyIfRunning) return this.desktops.releaseScreen(computer, context);
+    const sandbox = await this.client.get(computer.providerRef || computer.id).catch((error) => {
+      if (isUnrecoverableDaytonaError(error)) return undefined;
+      throw error;
+    });
+    if (!sandbox || sandbox.state !== SandboxState.STARTED) return;
+    return this.desktops.releaseScreen(
+      computer,
+      context,
+      {
+        environment: async () => {
+          const home = (await sandbox.getUserHomeDir()) ?? "/home/daytona";
+          const root = await this.workspaceRoot(sandbox);
+          return {
+            homeDir: home,
+            workspaceDir: root,
+            browserProfilesDir: path.posix.join(root, ".browser-profiles"),
+            displayStart: 20,
+            portStart: 6100,
+          };
+        },
+        run: async (_computer, command, cleanupContext) => {
+          cleanupContext.signal.throwIfAborted();
+          const result = await sandbox.process.executeCommand(
+            `bash -c ${shellQuote(command)}`,
+            undefined,
+            undefined,
+            boundedSandboxCommandTimeoutMs(undefined) / 1000,
+          );
+          return { code: result.exitCode, stdout: result.result, stderr: result.result };
+        },
+      },
+      { preserveActiveControl: true },
+    );
   }
 
   async stop(computer: ComputerRef, _context: AdapterContext): Promise<void> {

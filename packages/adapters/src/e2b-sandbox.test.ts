@@ -15,6 +15,139 @@ const context = {
 };
 
 describe("E2B computer backend", () => {
+  it("releases a cold worker's screen through only the SDK state GET and envd command", async () => {
+    await withRetainedE2BServer({}, async (requests, backend) => {
+      await backend.releaseScreen(
+        { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+        { ...context, botId: "bot-a", screenLeaseId: "run-a:2" },
+        { onlyIfRunning: true },
+      );
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /sandboxes/existing",
+        "POST /process.Process/Start",
+      ]);
+      expect(requests[1]?.token).toBe("test-envd-token");
+      expect(requests[1]?.body).toContain("run-a:2");
+    });
+  });
+
+  it.each(["paused", "gone"])(
+    "does not issue envd traffic or resume an existing %s sandbox for cleanup",
+    async (state) => {
+      await withRetainedE2BServer({ state }, async (requests, backend) => {
+        await backend.releaseScreen(
+          { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+          context,
+          { onlyIfRunning: true },
+        );
+        expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+          "GET /sandboxes/existing",
+        ]);
+      });
+    },
+  );
+
+  it.each([true, undefined])(
+    "rejects retained cleanup when the auto-resume policy is %s",
+    async (autoResume) => {
+      await withRetainedE2BServer({ autoResume }, async (requests, backend) => {
+        await expect(
+          backend.releaseScreen(
+            { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+            context,
+            { onlyIfRunning: true },
+          ),
+        ).rejects.toThrow("requires auto-resume to be disabled");
+        expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+          "GET /sandboxes/existing",
+        ]);
+      });
+    },
+  );
+
+  it("does not guess how to resume a sandbox with an unknown cleanup state", async () => {
+    await withRetainedE2BServer({ state: "unknown" }, async (requests, backend) => {
+      await expect(
+        backend.releaseScreen(
+          { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+          context,
+          { onlyIfRunning: true },
+        ),
+      ).rejects.toThrow("retained-screen state is unknown");
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /sandboxes/existing",
+      ]);
+    });
+  });
+
+  it("does not reconnect or extend the timeout when a sandbox pauses before cleanup exec", async () => {
+    await withRetainedE2BServer({ execFails: true }, async (requests, backend) => {
+      await expect(
+        backend.releaseScreen(
+          { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+          context,
+          { onlyIfRunning: true },
+        ),
+      ).rejects.toThrow();
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /sandboxes/existing",
+        "POST /process.Process/Start",
+      ]);
+    });
+  });
+
+  it("uses only a running-handle lookup for retained-screen cleanup in a cold worker", async () => {
+    const command = vi.fn(async (_value: string) => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const sdk = {
+      attachRunning: vi.fn(async () => ({ sandboxId: "existing", commands: { run: command } })),
+      connect: vi.fn(async () => ({ sandboxId: "existing", commands: { run: command } })),
+      create: vi.fn(),
+      pause: vi.fn(),
+    };
+    const backend = new E2BSandboxProvider("test-key", sdk as unknown as E2BSandboxSdk);
+    await backend.releaseScreen(
+      { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+      { ...context, botId: "bot-a", screenLeaseId: "run-a:2" },
+      { onlyIfRunning: true },
+    );
+    expect(sdk.attachRunning).toHaveBeenCalledOnce();
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect(command).toHaveBeenCalledOnce();
+    expect(command.mock.calls[0]?.[0]).toContain("run-a:2");
+  });
+
+  it("checks retained cleanup state again instead of using a cached active handle", async () => {
+    const command = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn().mockResolvedValue({ sandboxId: "existing", commands: { run: command } }),
+      connect: vi.fn(),
+      pause: vi.fn(),
+      attachRunning: vi.fn().mockResolvedValue(undefined),
+    };
+    const backend = new E2BSandboxProvider("test-key", sdk);
+    const computer = await backend.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    await backend.releaseScreen(computer, context, { onlyIfRunning: true });
+    expect(sdk.attachRunning).toHaveBeenCalledOnce();
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it.each([429, 503])("does not retry a failed retained-state GET (%s)", async (lookupStatus) => {
+    await withRetainedE2BServer({ lookupStatus }, async (requests, backend) => {
+      await expect(
+        backend.releaseScreen(
+          { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+          context,
+          { onlyIfRunning: true },
+        ),
+      ).rejects.toThrow(`state lookup failed (${lookupStatus})`);
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /sandboxes/existing",
+      ]);
+    });
+  });
+
   it("removes inherited variables after the command environment overlay", async () => {
     const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
     const provider = new E2BSandboxProvider("test-key", {
@@ -727,6 +860,97 @@ describe("E2B computer backend", () => {
     });
   });
 });
+
+interface RetainedE2BRequest {
+  method: string;
+  path: string;
+  body: string;
+  token?: string;
+}
+
+async function withRetainedE2BServer(
+  options: { state?: string; autoResume?: boolean; execFails?: boolean; lookupStatus?: number },
+  check: (requests: RetainedE2BRequest[], backend: E2BSandboxProvider) => Promise<void>,
+): Promise<void> {
+  const requests: RetainedE2BRequest[] = [];
+  const autoResume = Object.hasOwn(options, "autoResume") ? options.autoResume : false;
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      requests.push({
+        method: request.method ?? "",
+        path: request.url ?? "",
+        body: Buffer.concat(chunks).toString("utf8"),
+        token:
+          typeof request.headers["x-access-token"] === "string"
+            ? request.headers["x-access-token"]
+            : undefined,
+      });
+      if (request.method === "GET" && request.url === "/sandboxes/existing") {
+        response.writeHead(options.lookupStatus ?? (options.state === "gone" ? 404 : 200), {
+          "content-type": "application/json",
+          "retry-after": "0",
+        });
+        response.end(
+          JSON.stringify(
+            options.state === "gone"
+              ? { code: 404 }
+              : {
+                  sandboxID: "existing",
+                  state: options.state ?? "running",
+                  envdVersion: "0.3.0",
+                  envdAccessToken: "test-envd-token",
+                  lifecycle:
+                    autoResume === undefined ? undefined : { autoResume, onTimeout: "pause" },
+                },
+          ),
+        );
+        return;
+      }
+      if (request.method === "POST" && request.url === "/process.Process/Start") {
+        if (options.execFails) {
+          response.writeHead(409, { "content-type": "application/json" });
+          response.end(JSON.stringify({ code: "failed_precondition", message: "sandbox paused" }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/connect+json" });
+        const envelope = (data: unknown, flag = 0) => {
+          const body = Buffer.from(JSON.stringify(data));
+          const header = Buffer.alloc(5);
+          header[0] = flag;
+          header.writeUInt32BE(body.length, 1);
+          return Buffer.concat([header, body]);
+        };
+        response.end(
+          Buffer.concat([
+            envelope({ event: { start: { pid: 42 } } }),
+            envelope({ event: { end: { exitCode: 0, exited: true } } }),
+            envelope({}, 2),
+          ]),
+        );
+        return;
+      }
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "unexpected test request" }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    vi.stubEnv("E2B_API_URL", baseUrl);
+    vi.stubEnv("E2B_SANDBOX_URL", baseUrl);
+    vi.stubEnv("HTTP_PROXY", "");
+    vi.stubEnv("HTTPS_PROXY", "");
+    await check(requests, new E2BSandboxProvider("test-key"));
+  } finally {
+    vi.unstubAllEnvs();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
 
 describe("sandbox-gone detection", () => {
   // Wordings verified against @e2b/desktop 2.4.0 (e2b 2.49.1 dist).

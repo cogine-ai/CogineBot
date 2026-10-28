@@ -104,6 +104,11 @@ export interface SandboxProvider {
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;
+  /**
+   * The kind provision() would return now, without starting anything. Only providers that
+   * choose between kinds at provision time implement it.
+   */
+  provisionKind?(): Promise<ComputerRef["kind"]>;
   /** Read-only probe: true only when this exact reference is already running. */
   isRunning?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
   /** Perform idempotent provider setup after the lifecycle has captured the reference. */
@@ -168,7 +173,12 @@ export interface SandboxProvider {
   snapshot(computer: ComputerRef, context: AdapterContext): Promise<SnapshotRef>;
   keepAlive?(computer: ComputerRef): Promise<void>;
   /** Drop a single-screen graphical claim for this bot so another Team bot can use the display. */
-  releaseScreen?(computer: ComputerRef, context: AdapterContext): Promise<void>;
+  releaseScreen?(
+    computer: ComputerRef,
+    context: AdapterContext,
+    /** Earlier-attempt cleanup must not start the computer or revoke newer user control. */
+    options?: { onlyIfRunning?: boolean },
+  ): Promise<void>;
   stop(computer: ComputerRef, context: AdapterContext): Promise<void>;
   destroy(computer: ComputerRef, context: AdapterContext): Promise<void>;
 }

@@ -14,6 +14,9 @@ export class ManagedSandboxEmulator extends FakeSandboxProvider {
   override describe() {
     return { ...super.describe(), id: this.emulator.id };
   }
+  async provisionKind(): Promise<ComputerRef["kind"]> {
+    return this.emulator.kind;
+  }
   override async provision(
     request: { botId: string; homePath: string },
     context: AdapterContext,

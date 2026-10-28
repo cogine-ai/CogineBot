@@ -224,6 +224,14 @@ jobs:
           path: apps/web/test-results/message-jump-*/**/b31-jump-*.png
           if-no-files-found: error
           retention-days: 7
+      - name: Retain passive computer panel acceptance screenshots
+        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: passive-computer-panel-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/team-computer-*/**/b41-*.png
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain successful synthetic UI screenshots
         if: inputs.upload_artifacts == true && matrix.lane == 'web' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
