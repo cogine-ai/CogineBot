@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { Sandbox, SandboxNotFoundError, TimeoutError } from "@e2b/desktop";
+import { FileNotFoundError, Sandbox, SandboxNotFoundError, TimeoutError } from "@e2b/desktop";
 import { describe, expect, it, vi } from "vitest";
 import { shouldSkipPortableWorkspaceFile } from "./computer-workspace.js";
 import type { E2BSandboxSdk } from "./e2b-sandbox.js";
@@ -1609,6 +1609,155 @@ describe("workspace export activity", () => {
 });
 
 describe("sandbox-gone detection", () => {
+  it.each(["stop", "abort"] as const)(
+    "returns an already dispatched replacement for caller cleanup after %s",
+    async (teardown) => {
+      let create!: (sandbox: Sandbox) => void;
+      const replacement = new Promise<Sandbox>((resolve) => {
+        create = resolve;
+      });
+      let creating!: () => void;
+      const started = new Promise<void>((resolve) => {
+        creating = resolve;
+      });
+      const sdk: E2BSandboxSdk = {
+        connect: vi
+          .fn()
+          .mockRejectedValueOnce(new SandboxNotFoundError("Synthetic sandbox missing")),
+        create: vi.fn(() => {
+          creating();
+          return replacement;
+        }),
+        pause: vi.fn().mockResolvedValue(undefined),
+      };
+      const controller = new AbortController();
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+      const recovering = provider.provision(
+        { botId: ref.botId, homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+        { ...context, signal: controller.signal },
+      );
+      await started;
+      if (teardown === "stop") await provider.stop(ref, context);
+      else controller.abort();
+      const kill = vi.fn().mockResolvedValue(undefined);
+      create({ sandboxId: "replacement", kill } as unknown as Sandbox);
+      const fresh = await recovering;
+      expect(fresh).toMatchObject({ providerRef: "replacement", fresh: true });
+      await provider.destroy(fresh, context);
+      expect(kill).toHaveBeenCalledOnce();
+      expect(sdk.create).toHaveBeenCalledOnce();
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it("returns an already connected handle for caller settlement after cancellation", async () => {
+    let connect!: (sandbox: Sandbox) => void;
+    const connection = new Promise<Sandbox>((resolve) => {
+      connect = resolve;
+    });
+    const sdk: E2BSandboxSdk = {
+      connect: vi.fn(() => connection),
+      create: vi.fn(),
+      pause: vi.fn(),
+    };
+    const controller = new AbortController();
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const connecting = provider.provision(
+      { botId: "bot", homePath: "/unused", providerRef: "existing", providerKind: "e2b" },
+      { ...context, signal: controller.signal },
+    );
+    controller.abort();
+    connect({ sandboxId: "existing" } as Sandbox);
+    await expect(connecting).resolves.toMatchObject({ providerRef: "existing", fresh: false });
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+  });
+
+  it("does not create a replacement after the existing-resource request is cancelled", async () => {
+    let reject!: (error: unknown) => void;
+    const connection = new Promise<Sandbox>((_resolve, fail) => {
+      reject = fail;
+    });
+    const sdk: E2BSandboxSdk = {
+      connect: vi.fn().mockReturnValueOnce(connection),
+      create: vi.fn().mockResolvedValue({ sandboxId: "unexpected" }),
+      pause: vi.fn(),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const controller = new AbortController();
+    const cancelled = new Error("Synthetic request cancelled");
+    const recovering = provider
+      .provision(
+        { botId: "bot", homePath: "/unused", providerRef: "existing", providerKind: "e2b" },
+        { ...context, signal: controller.signal },
+      )
+      .catch((error: unknown) => error);
+    controller.abort(cancelled);
+    reject(new SandboxNotFoundError("Synthetic sandbox missing"));
+    await expect(recovering).resolves.toBe(cancelled);
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["sandbox settings.json not found", false],
+    ["sandbox settings.json not found", true],
+    ["sandbox 菜单😀.json not found", false],
+    ["sandbox 菜单😀.json not found", true],
+    ["sandbox settings.json does not exist", false],
+    ["sandbox settings.json does not exist", true],
+  ] as const)("preserves a typed missing file %s with wrapper %s", (message, wrapped) => {
+    const missing = new FileNotFoundError(message);
+    const error = wrapped ? new Error("sandbox not found", { cause: missing }) : missing;
+    expect(isSandboxGoneError(error)).toBe(false);
+  });
+
+  it.each(["stop", "destroy"] as const)(
+    "rejects Gone handed from box to provision after explicit %s",
+    async (teardown) => {
+      let reject!: (error: unknown) => void;
+      const connection = new Promise<Sandbox>((_resolve, fail) => {
+        reject = fail;
+      });
+      const sdk: E2BSandboxSdk = {
+        connect: vi
+          .fn()
+          .mockReturnValueOnce(connection)
+          .mockResolvedValue({
+            sandboxId: "existing",
+            kill: vi.fn().mockResolvedValue(undefined),
+          }),
+        create: vi.fn().mockResolvedValue({ sandboxId: "unexpected" }),
+        pause: vi.fn().mockResolvedValue(undefined),
+      };
+      const provider = new E2BSandboxProvider("test-key", sdk);
+      const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+      const recovering = provider
+        .provision(
+          { botId: ref.botId, homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+          context,
+        )
+        .catch((error: unknown) => error);
+      let stopped: Promise<void> | undefined;
+      const schedule = (remaining: number) =>
+        queueMicrotask(() => {
+          if (remaining) return schedule(remaining - 1);
+          stopped = provider[teardown](ref, context);
+        });
+      reject(new SandboxNotFoundError("Synthetic sandbox missing"));
+      // Reach the later handoff after box's own rejection/finally checks have run.
+      schedule(4);
+      try {
+        await expect(recovering).resolves.toMatchObject({
+          message: "computer connection stopped during teardown",
+        });
+        expect(sdk.create).not.toHaveBeenCalled();
+      } finally {
+        await stopped;
+      }
+    },
+  );
+
   it.each<["stop" | "destroy", boolean]>([
     ["stop", false],
     ["destroy", false],

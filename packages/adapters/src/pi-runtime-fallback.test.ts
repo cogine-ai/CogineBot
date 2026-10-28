@@ -2100,3 +2100,295 @@ describe("Pi runtime thinking blocks bound to a different conversation", () => {
     expect(providerState.delay).not.toHaveBeenCalled();
   });
 });
+
+describe("Pi runtime corrective dispatch deadlines", () => {
+  const failures = [
+    { label: "availability", message: "Connection error.", waitMs: 90_000 },
+    { label: "signature", message: "Invalid signature in thinking block", waitMs: 91_000 },
+  ];
+
+  it.each(failures)(
+    "does not dispatch $label recovery after an asynchronous reservation exhausts its budget",
+    async ({ message: failure, waitMs }) => {
+      let now = 10_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      providerState.delay.mockImplementation(async (delay) => {
+        now += delay;
+      });
+      providerState.stream
+        .mockImplementationOnce(() => {
+          now += 30_000;
+          return stream(primary, message(primary, [], "error", failure));
+        })
+        .mockImplementation(() =>
+          stream(primary, message(primary, [{ type: "text", text: "Too late" }], "stop")),
+        );
+      let reservations = 0;
+      const beforeCall = vi.fn(async () => {
+        reservations += 1;
+        if (reservations === 2) {
+          await Promise.resolve();
+          now += waitMs;
+        }
+        return `reservation-${reservations}`;
+      });
+      const afterCall = vi.fn(async () => undefined);
+      const events: AgentRuntimeEvent[] = [];
+      await expect(
+        run(
+          request(),
+          events,
+          new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } }),
+        ),
+      ).rejects.toThrow(failure);
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(beforeCall).toHaveBeenCalledTimes(2);
+      expect(afterCall).toHaveBeenCalledTimes(2);
+      expect(afterCall.mock.calls[1]).toEqual(["reservation-2", null]);
+      expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+    },
+  );
+
+  it("deducts reservation time and starts a new budget after a completed tool", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.delay.mockImplementation(async (delay) => {
+      now += delay;
+    });
+    providerState.stream
+      .mockImplementationOnce(() => {
+        now += 30_000;
+        return stream(primary, message(primary, [], "error", "Connection error."));
+      })
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              {
+                type: "toolCall",
+                id: "effect-once",
+                name: "write_effect",
+                arguments: { value: "once" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementation(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Done" }], "stop")),
+      );
+    let calls = 0;
+    const beforeCall = async () => {
+      if (++calls === 2) {
+        await Promise.resolve();
+        now += 40_000;
+      }
+      return `reservation-${calls}`;
+    };
+    const input = request();
+    await run(
+      input,
+      [],
+      new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall: vi.fn() } }),
+    );
+    expect(providerState.stream.mock.calls.map(([, , options]) => options.timeoutMs)).toEqual([
+      120_000, 48_000, 120_000,
+    ]);
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    for (const [, , options] of providerState.stream.mock.calls) {
+      expect(options).not.toHaveProperty("requestDeadline");
+      expect(options).not.toHaveProperty("onRequestDeadlineExceeded");
+    }
+  });
+
+  it("retains the first backup's header window after a slow reservation", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.stream
+      .mockImplementationOnce(() => {
+        now += 30_000;
+        return stream(primary, message(primary, [], "error", "HTTP 503 unavailable"));
+      })
+      .mockImplementation(() =>
+        stream(backupA, message(backupA, [{ type: "text", text: "Backup" }], "stop")),
+      );
+    let calls = 0;
+    const beforeCall = async () => {
+      if (++calls === 2) {
+        await Promise.resolve();
+        now += 130_000;
+      }
+      return `reservation-${calls}`;
+    };
+    await run(
+      request([{ provider: backupA.provider, id: backupA.id, apiKey: "fixture-backup" }]),
+      [],
+      new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall: vi.fn() } }),
+    );
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+    expect(providerState.stream.mock.calls[1]?.[2].timeoutMs).toBe(120_000);
+  });
+
+  it.each(["reservation", "settlement"])(
+    "keeps a local %s failure above the original provider error",
+    async (phase) => {
+      let now = 10_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      providerState.delay.mockImplementation(async (delay) => {
+        now += delay;
+      });
+      providerState.stream
+        .mockImplementationOnce(() => {
+          now += 30_000;
+          return stream(primary, message(primary, [], "error", "Connection error."));
+        })
+        .mockImplementation(() =>
+          stream(primary, message(primary, [], "error", "HTTP 503 unavailable")),
+        );
+      let calls = 0;
+      const localError = new Error(`503 local ${phase} rejected`);
+      const beforeCall = async () => {
+        if (++calls === 2 && phase === "reservation") {
+          now += 130_000;
+          throw localError;
+        }
+        return `reservation-${calls}`;
+      };
+      const afterCall = vi.fn(async (id: string) => {
+        if (id === "reservation-2" && phase === "settlement") throw localError;
+      });
+      await expect(
+        run(request(), [], new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } })),
+      ).rejects.toThrow(localError);
+      expect(providerState.stream).toHaveBeenCalledTimes(phase === "reservation" ? 1 : 2);
+      expect(providerState.delay).toHaveBeenCalledOnce();
+      expect(afterCall).toHaveBeenCalledTimes(phase === "reservation" ? 1 : 2);
+    },
+  );
+
+  it("does not replace deadline termination with a secondary cleanup failure", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.delay.mockImplementation(async (delay) => {
+      now += delay;
+    });
+    providerState.stream.mockImplementation(() => {
+      now += 30_000;
+      return stream(primary, message(primary, [], "error", "Connection error."));
+    });
+    let calls = 0;
+    const beforeCall = async () => {
+      if (++calls === 2) now += 90_000;
+      return `reservation-${calls}`;
+    };
+    const afterCall = vi.fn(async (id: string) => {
+      if (id === "reservation-2") throw new Error("Secondary cleanup failure");
+    });
+    await expect(
+      run(request(), [], new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } })),
+    ).rejects.toThrow("Connection error.");
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(afterCall.mock.calls).toHaveLength(2);
+    expect(afterCall.mock.calls[1]).toEqual(["reservation-2", null]);
+  });
+
+  it("gives cancellation priority when a late reservation completes", async () => {
+    let now = 10_000;
+    const controller = new AbortController();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.delay.mockImplementation(async (delay) => {
+      now += delay;
+    });
+    providerState.stream.mockImplementation(() => {
+      now += 30_000;
+      return stream(primary, message(primary, [], "error", "Connection error."));
+    });
+    let calls = 0;
+    const beforeCall = async () => {
+      if (++calls === 2) {
+        now += 90_000;
+        controller.abort(new Error("Synthetic cancellation"));
+      }
+      return `reservation-${calls}`;
+    };
+    const afterCall = vi.fn();
+    const operation = async () => {
+      for await (const _event of new PiAgentRuntime({
+        modelCallObserver: { beforeCall, afterCall },
+      }).run(request(), { signal: controller.signal })) {
+        /* Consume cancellation. */
+      }
+    };
+    await operation().catch(() => undefined);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(afterCall.mock.calls[1]).toEqual(["reservation-2", null]);
+  });
+
+  it("bounds a helper retry after reservation without replaying its parent call", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.delay.mockImplementation(async (delay) => {
+      now += delay;
+    });
+    const input = request();
+    input.tools.push({
+      name: "run_subagent",
+      description: "Run helper",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" }, task: { type: "string" } },
+        required: ["name", "task"],
+      },
+      readOnly: true,
+    });
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              {
+                type: "toolCall",
+                id: "helper-once",
+                name: "run_subagent",
+                arguments: { name: "helper", task: "Report fixture" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementationOnce(() => {
+        now += 30_000;
+        return stream(primary, message(primary, [], "error", "Connection error."));
+      })
+      .mockImplementation(() =>
+        stream(primary, message(primary, [{ type: "text", text: "Parent complete" }], "stop")),
+      );
+    let calls = 0;
+    const beforeCall = async () => {
+      if (++calls === 3) {
+        await Promise.resolve();
+        now += 90_000;
+      }
+      return `reservation-${calls}`;
+    };
+    const afterCall = vi.fn();
+    const events = await run(
+      input,
+      [],
+      new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } }),
+    );
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "subagent", status: "failed", result: "Connection error." }),
+    );
+    expect(afterCall.mock.calls[2]).toEqual(["reservation-3", null]);
+    expect(providerState.stream.mock.calls[2]?.[2].timeoutMs).toBe(120_000);
+    expect(input.executeTool).not.toHaveBeenCalled();
+  });
+});

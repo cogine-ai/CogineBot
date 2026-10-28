@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { SandboxNotFoundError } from "@e2b/desktop";
+import { FileNotFoundError, SandboxNotFoundError } from "@e2b/desktop";
 import type { AgentHomeStore, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
@@ -18,6 +18,7 @@ describePostgres("idle missing-computer suspension claim", () => {
   let claimAt: Date;
   let beforeMissing: (() => Promise<unknown>) | undefined;
   const clearCounts: number[] = [];
+  let exportError: Error;
   const stop = vi.fn();
   const enqueue = vi.fn().mockResolvedValue(undefined);
   const commit = vi.fn();
@@ -52,7 +53,7 @@ describePostgres("idle missing-computer suspension claim", () => {
         inspectBackgroundWork: async () => "idle",
         exportWorkspace: async function* () {
           await beforeMissing?.();
-          yield await Promise.reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+          yield await Promise.reject(exportError);
         },
         stop,
       } as unknown as SandboxProvider,
@@ -62,6 +63,7 @@ describePostgres("idle missing-computer suspension claim", () => {
   beforeEach(async () => {
     computerId = `idle-computer-${randomUUID()}`;
     beforeMissing = undefined;
+    exportError = new SandboxNotFoundError("Synthetic sandbox unavailable");
     clearCounts.length = 0;
     stop.mockClear();
     enqueue.mockClear();
@@ -113,6 +115,27 @@ describePostgres("idle missing-computer suspension claim", () => {
     expect(stop).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("retains the current resource and control after a typed file error with sandbox-like wording", async () => {
+    exportError = new FileNotFoundError("sandbox settings.json not found");
+    await expect(sleepComputerIfIdle(deps, computerId)).rejects.toBe(exportError);
+    expect(clearCounts).toEqual([]);
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      state: "running",
+      providerRef: "missing-provider",
+      homeRevision: "saved-before",
+      controlHolder: "user",
+      controlLeaseId: "old-control",
+      controlLeaseExpiresAt: new Date("2100-01-01"),
+      controlBotId: "old-bot",
+      controlRunId: "old-run",
+    });
+    expect(stop).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledOnce();
   });
 
   it.each(["reference", "generation", "kind", "maintenance", "state"])(

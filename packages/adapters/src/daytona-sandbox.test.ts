@@ -16,6 +16,771 @@ describe("DaytonaSandboxProvider", () => {
     vi.unstubAllEnvs();
   });
 
+  it.each([
+    ["stop", false],
+    ["stop", true],
+    ["destroy", false],
+    ["destroy", true],
+  ] as const)(
+    "does not re-enable old recovery after %s lookup is missing %s",
+    async (teardown, missing) => {
+      const f = daytonaFixture();
+      let reject!: (error: unknown) => void;
+      f.get.mockReturnValueOnce(
+        new Promise<Sandbox>((_resolve, fail) => {
+          reject = fail;
+        }),
+      );
+      const failure = new Error("Synthetic provider unavailable");
+      f.get.mockRejectedValueOnce(missing ? { statusCode: 404 } : failure);
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const request = {
+        botId: ref.botId,
+        homePath: "/unused",
+        providerRef: ref.id,
+        providerKind: ref.kind,
+      };
+      const recovering = provider.provision(request, context).catch((error: unknown) => error);
+      const stopping = provider[teardown](ref, context).catch((error: unknown) => error);
+      await expect(stopping).resolves.toBe(missing ? undefined : failure);
+      reject({ statusCode: 404 });
+      await expect(recovering).resolves.toMatchObject({
+        message: "Daytona connection was invalidated during teardown",
+      });
+      await expect(provider.provision(request, context)).resolves.toMatchObject({
+        providerRef: ref.id,
+        fresh: false,
+      });
+      expect(f.create).not.toHaveBeenCalled();
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it.each([
+    ["stop", "cold"],
+    ["stop", "warm"],
+    ["destroy", "cold"],
+    ["destroy", "warm"],
+  ] as const)(
+    "waits for an active %s on a %s resource before recovering the same remote computer",
+    async (teardown, cache) => {
+      const f = sharedRemoteDaytonaFixture();
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const request = {
+        botId: ref.botId,
+        homePath: "/unused",
+        providerRef: ref.id,
+        providerKind: ref.kind,
+      };
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const active = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      if (cache === "cold") {
+        const handle = f.snapshot(ref.id);
+        f.get.mockImplementationOnce(async () => {
+          entered();
+          await gate;
+          return handle;
+        });
+      } else {
+        await provider.provision(request, context);
+        const handle = f.handles[0]!;
+        const action = teardown === "stop" ? handle.stop : handle.deleteSandbox;
+        const original = action.getMockImplementation()!;
+        action.mockImplementationOnce(async () => {
+          entered();
+          await gate;
+          return original();
+        });
+      }
+      const old = provider[teardown](ref, context);
+      await active;
+      let completed = false;
+      const successor = provider.provision(request, context).then((next) => {
+        completed = true;
+        return next;
+      });
+      for (let phase = 0; phase < 10; phase++) await Promise.resolve();
+      const completedEarly = completed;
+      const earlyGetCount = f.get.mock.calls.length;
+      release();
+      await old;
+      const next = await successor;
+      expect(completedEarly).toBe(false);
+      expect(earlyGetCount).toBe(1);
+      expect(f.remote.get(next.providerRef!)).toBe("started");
+      expect(Buffer.from(await provider.readFile(next, "evidence.txt", context)).toString()).toBe(
+        "workspace-preserved",
+      );
+      const again = await provider.provision(
+        { ...request, providerRef: next.providerRef },
+        context,
+      );
+      expect(again).toMatchObject({ providerRef: next.providerRef, fresh: false });
+      expect(f.create).toHaveBeenCalledTimes(teardown === "destroy" ? 1 : 0);
+      expect(f.handles.reduce((count, handle) => count + handle.start.mock.calls.length, 0)).toBe(
+        teardown === "stop" ? 1 : 0,
+      );
+      expect((Reflect.get(provider, "teardowns") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it.each([
+    ["stop", "lookup"],
+    ["stop", "operation"],
+    ["destroy", "lookup"],
+    ["destroy", "operation"],
+  ] as const)("releases waiting recovery when %s fails during %s", async (teardown, phase) => {
+    const f = sharedRemoteDaytonaFixture();
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const ref = {
+      id: "daytona-box",
+      providerRef: "daytona-box",
+      botId: "bot",
+      kind: "daytona" as const,
+    };
+    const request = {
+      botId: ref.botId,
+      homePath: "/unused",
+      providerRef: ref.id,
+      providerKind: ref.kind,
+    };
+    const failure = new Error("Synthetic teardown service unavailable");
+    let fail!: (error: unknown) => void;
+    let entered!: () => void;
+    const active = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    if (phase === "lookup") {
+      f.get.mockImplementationOnce(() => {
+        entered();
+        return new Promise<Sandbox>((_resolve, reject) => {
+          fail = reject;
+        });
+      });
+    } else {
+      await provider.provision(request, context);
+      const handle = f.handles[0]!;
+      const action = teardown === "stop" ? handle.stop : handle.deleteSandbox;
+      action.mockImplementationOnce(() => {
+        entered();
+        return new Promise<undefined>((_resolve, reject) => {
+          fail = reject;
+        });
+      });
+    }
+    const stopping = provider[teardown](ref, context).catch((error: unknown) => error);
+    await active;
+    const waiting = provider.provision(request, context);
+    for (let phase = 0; phase < 10; phase++) await Promise.resolve();
+    const earlyGetCount = f.get.mock.calls.length;
+    fail(failure);
+    await expect(stopping).resolves.toBe(failure);
+    const next = await waiting;
+    expect(earlyGetCount).toBe(1);
+    expect(Buffer.from(await provider.readFile(next, "evidence.txt", context)).toString()).toBe(
+      "workspace-preserved",
+    );
+    expect(f.create).not.toHaveBeenCalled();
+    expect((Reflect.get(provider, "teardowns") as Map<string, unknown>).size).toBe(0);
+    expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(0);
+    expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+  });
+
+  it.each([
+    ["stop", 1],
+    ["stop", 2],
+    ["destroy", 1],
+    ["destroy", 2],
+  ] as const)(
+    "does not recover when all callers cancel while waiting for %s (%s callers)",
+    async (teardown, callers) => {
+      const f = sharedRemoteDaytonaFixture();
+      const handle = f.snapshot("daytona-box");
+      let find!: (sandbox: Sandbox) => void;
+      f.get.mockReturnValueOnce(
+        new Promise<Sandbox>((resolve) => {
+          find = resolve;
+        }),
+      );
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const request = {
+        botId: ref.botId,
+        homePath: "/unused",
+        providerRef: ref.id,
+        providerKind: ref.kind,
+      };
+      const stopping = provider[teardown](ref, context);
+      const controllers = Array.from({ length: callers }, () => new AbortController());
+      const cancelled = new Error("Synthetic cancellation while teardown is pending");
+      const waiting = controllers.map((controller) =>
+        provider
+          .provision(request, { ...context, signal: controller.signal })
+          .catch((error: unknown) => error),
+      );
+      for (const controller of controllers) controller.abort(cancelled);
+      find(handle);
+      await stopping;
+      expect(await Promise.all(waiting)).toEqual(controllers.map(() => cancelled));
+      expect(f.remote.get(ref.id)).toBe(teardown === "stop" ? "stopped" : undefined);
+      expect(f.handles.every((handle) => handle.start.mock.calls.length === 0)).toBe(true);
+      expect(f.create).not.toHaveBeenCalled();
+      const next = await provider.provision(request, context);
+      expect(Buffer.from(await provider.readFile(next, "evidence.txt", context)).toString()).toBe(
+        "workspace-preserved",
+      );
+      expect((Reflect.get(provider, "teardowns") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it.each(["live", "implicit"] as const)(
+    "retains a %s sibling while a cancelled caller waits for teardown",
+    async (sibling) => {
+      const f = sharedRemoteDaytonaFixture();
+      const handle = f.snapshot("daytona-box");
+      let find!: (sandbox: Sandbox) => void;
+      f.get.mockReturnValueOnce(
+        new Promise<Sandbox>((resolve) => {
+          find = resolve;
+        }),
+      );
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const request = {
+        botId: ref.botId,
+        homePath: "/unused",
+        providerRef: ref.id,
+        providerKind: ref.kind,
+      };
+      const stopping = provider.stop(ref, context);
+      const controller = new AbortController();
+      const cancelled = provider.provision(request, { ...context, signal: controller.signal });
+      controller.abort();
+      const valid =
+        sibling === "live" ? provider.provision(request, context) : provider.keepAlive(ref);
+      find(handle);
+      await stopping;
+      const next = await cancelled;
+      await valid;
+      expect(f.handles.reduce((count, handle) => count + handle.start.mock.calls.length, 0)).toBe(
+        1,
+      );
+      expect(Buffer.from(await provider.readFile(next, "evidence.txt", context)).toString()).toBe(
+        "workspace-preserved",
+      );
+      expect((Reflect.get(provider, "teardowns") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it.each(["stop", "destroy"] as const)(
+    "invalidates an old waiter across an overlapping %s and stop",
+    async (firstTeardown) => {
+      const f = sharedRemoteDaytonaFixture();
+      const firstHandle = f.snapshot("daytona-box");
+      const secondHandle = f.snapshot("daytona-box");
+      let findFirst!: (sandbox: Sandbox) => void;
+      let findSecond!: (sandbox: Sandbox) => void;
+      f.get
+        .mockReturnValueOnce(
+          new Promise<Sandbox>((resolve) => {
+            findFirst = resolve;
+          }),
+        )
+        .mockReturnValueOnce(
+          new Promise<Sandbox>((resolve) => {
+            findSecond = resolve;
+          }),
+        );
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const request = {
+        botId: ref.botId,
+        homePath: "/unused",
+        providerRef: ref.id,
+        providerKind: ref.kind,
+      };
+      const first = provider[firstTeardown](ref, context);
+      const superseded = provider.provision(request, context).catch((error: unknown) => error);
+      const second = provider.stop(ref, context);
+      const successor = provider.provision(request, context);
+      findSecond(secondHandle);
+      await second;
+      for (let phase = 0; phase < 10; phase++) await Promise.resolve();
+      const earlyGetCount = f.get.mock.calls.length;
+      findFirst(firstHandle);
+      await first;
+      await expect(superseded).resolves.toMatchObject({
+        message: "Daytona connection was invalidated during teardown",
+      });
+      const next = await successor;
+      expect(earlyGetCount).toBe(2);
+      expect(f.get).toHaveBeenCalledTimes(3);
+      expect(f.create).toHaveBeenCalledTimes(firstTeardown === "destroy" ? 1 : 0);
+      expect(Buffer.from(await provider.readFile(next, "evidence.txt", context)).toString()).toBe(
+        "workspace-preserved",
+      );
+      expect((Reflect.get(provider, "teardowns") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it.each(["stop", "destroy"] as const)(
+    "retains captured preview revocations without deleting another computer's preview after %s",
+    async (teardown) => {
+      const f = daytonaFixture();
+      const next = daytonaFixture({ id: "daytona-next" });
+      f.getSignedPreviewUrl.mockResolvedValue({
+        url: "https://old.proxy.daytona.test",
+        token: "old-token",
+      });
+      next.getSignedPreviewUrl.mockResolvedValue({
+        url: "https://next.proxy.daytona.test",
+        token: "next-token",
+      });
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = await provider.provision({ botId: "bot", homePath: "/unused" }, context);
+      f.create.mockResolvedValue(next.sandbox);
+      await provider.prepare(ref, context);
+      await provider.connectScreen(
+        ref,
+        { view: "stream", interactive: false },
+        { ...context, botId: "old-viewer" },
+      );
+      let revoke!: () => void;
+      const revocation = new Promise<undefined>((resolve) => {
+        revoke = () => resolve(undefined);
+      });
+      let revoking!: () => void;
+      const started = new Promise<void>((resolve) => {
+        revoking = resolve;
+      });
+      f.expireSignedPreviewUrl.mockImplementationOnce(() => {
+        revoking();
+        return revocation;
+      });
+      const old = provider[teardown](ref, context);
+      await started;
+      const nextRef = await provider.provision({ botId: ref.botId, homePath: "/unused" }, context);
+      const viewer = { ...context, botId: "next-viewer" };
+      const preview = await provider.connectScreen(
+        nextRef,
+        { view: "stream", interactive: false },
+        viewer,
+      );
+      revoke();
+      await old;
+      const retained = await provider.connectScreen(
+        nextRef,
+        { view: "stream", interactive: false },
+        viewer,
+      );
+      expect(retained.url).toBe(preview.url);
+      expect(next.getSignedPreviewUrl).toHaveBeenCalledOnce();
+      expect(f.expireSignedPreviewUrl).toHaveBeenCalledWith(6100, "old-token");
+      expect(next.expireSignedPreviewUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["stop", "abort"] as const)(
+    "returns an already dispatched replacement for caller cleanup after %s",
+    async (teardown) => {
+      const f = daytonaFixture();
+      const replacement = daytonaFixture({ id: "replacement" });
+      f.get.mockRejectedValueOnce({ statusCode: 404 });
+      let create!: (sandbox: Sandbox) => void;
+      const pending = new Promise<Sandbox>((resolve) => {
+        create = resolve;
+      });
+      let creating!: () => void;
+      const started = new Promise<void>((resolve) => {
+        creating = resolve;
+      });
+      f.create.mockImplementationOnce(() => {
+        creating();
+        return pending;
+      });
+      const controller = new AbortController();
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const recovering = provider.provision(
+        { botId: ref.botId, homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+        { ...context, signal: controller.signal },
+      );
+      await started;
+      if (teardown === "stop") await provider.stop(ref, context);
+      else controller.abort();
+      create(replacement.sandbox);
+      const fresh = await recovering;
+      expect(fresh).toMatchObject({ providerRef: "replacement", fresh: true });
+      await provider.destroy(fresh, context);
+      expect(replacement.deleteSandbox).toHaveBeenCalledOnce();
+      expect(f.create).toHaveBeenCalledOnce();
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it("returns an already connected handle for caller settlement after cancellation", async () => {
+    const f = daytonaFixture();
+    let connect!: (sandbox: Sandbox) => void;
+    f.get.mockReturnValueOnce(
+      new Promise<Sandbox>((resolve) => {
+        connect = resolve;
+      }),
+    );
+    const controller = new AbortController();
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const connecting = provider.provision(
+      { botId: "bot", homePath: "/unused", providerRef: "daytona-box", providerKind: "daytona" },
+      { ...context, signal: controller.signal },
+    );
+    controller.abort();
+    connect(f.sandbox);
+    await expect(connecting).resolves.toMatchObject({ providerRef: "daytona-box", fresh: false });
+    expect(f.create).not.toHaveBeenCalled();
+    expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+  });
+
+  it("does not create a replacement after the existing-resource request is cancelled", async () => {
+    const f = daytonaFixture();
+    let reject!: (error: unknown) => void;
+    f.get.mockReturnValueOnce(
+      new Promise<Sandbox>((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const controller = new AbortController();
+    const cancelled = new Error("Synthetic request cancelled");
+    const recovering = provider
+      .provision(
+        { botId: "bot", homePath: "/unused", providerRef: "daytona-box", providerKind: "daytona" },
+        { ...context, signal: controller.signal },
+      )
+      .catch((error: unknown) => error);
+    controller.abort(cancelled);
+    reject({ statusCode: 404 });
+    await expect(recovering).resolves.toBe(cancelled);
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2])(
+    "does not resume when all %s pending provision callers are cancelled",
+    async (callers) => {
+      const f = daytonaFixture({ state: "stopped" });
+      let connect!: (sandbox: Sandbox) => void;
+      f.get.mockReturnValueOnce(
+        new Promise<Sandbox>((resolve) => {
+          connect = resolve;
+        }),
+      );
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const controllers = Array.from({ length: callers }, () => new AbortController());
+      const cancelled = new Error("Synthetic pending lookup cancelled");
+      const request = {
+        botId: "bot",
+        homePath: "/unused",
+        providerRef: "daytona-box",
+        providerKind: "daytona" as const,
+      };
+      const pending = controllers.map((controller) =>
+        provider
+          .provision(request, { ...context, signal: controller.signal })
+          .catch((error: unknown) => error),
+      );
+      for (const controller of controllers) controller.abort(cancelled);
+      connect(f.sandbox);
+      expect(await Promise.all(pending)).toEqual(Array.from({ length: callers }, () => cancelled));
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.create).not.toHaveBeenCalled();
+      expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+      await expect(provider.provision(request, context)).resolves.toMatchObject({ fresh: false });
+      expect(f.get).toHaveBeenCalledTimes(2);
+      expect(f.start).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["first", "last"] as const)(
+    "retains a valid shared recovery when the %s provision caller is cancelled",
+    async (cancelledOrder) => {
+      const f = daytonaFixture({ state: "stopped" });
+      let connect!: (sandbox: Sandbox) => void;
+      f.get.mockReturnValueOnce(
+        new Promise<Sandbox>((resolve) => {
+          connect = resolve;
+        }),
+      );
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const controller = new AbortController();
+      const request = {
+        botId: "bot",
+        homePath: "/unused",
+        providerRef: "daytona-box",
+        providerKind: "daytona" as const,
+      };
+      const contexts = [context, { ...context, signal: controller.signal }];
+      if (cancelledOrder === "first") contexts.reverse();
+      const first = provider.provision(request, contexts[0]!);
+      controller.abort();
+      const second = provider.provision(request, contexts[1]!);
+      connect(f.sandbox);
+      for (const ref of await Promise.all([first, second]))
+        expect(ref).toMatchObject({ fresh: false });
+      expect(f.get).toHaveBeenCalledOnce();
+      expect(f.start).toHaveBeenCalledOnce();
+      expect(f.create).not.toHaveBeenCalled();
+      expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it.each(["first", "last"] as const)(
+    "retains an existing non-provision connection when its provision sibling is %s",
+    async (provisionOrder) => {
+      const f = daytonaFixture({ state: "stopped" });
+      let connect!: (sandbox: Sandbox) => void;
+      f.get.mockReturnValueOnce(
+        new Promise<Sandbox>((resolve) => {
+          connect = resolve;
+        }),
+      );
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const controller = new AbortController();
+      const ref = {
+        id: "daytona-box",
+        botId: "bot",
+        providerRef: "daytona-box",
+        kind: "daytona" as const,
+      };
+      const provision = () =>
+        provider.provision(
+          { botId: ref.botId, homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+          { ...context, signal: controller.signal },
+        );
+      const first = provisionOrder === "first" ? provision() : provider.keepAlive(ref);
+      controller.abort();
+      const second = provisionOrder === "first" ? provider.keepAlive(ref) : provision();
+      connect(f.sandbox);
+      await Promise.all([first, second]);
+      expect(f.get).toHaveBeenCalledOnce();
+      expect(f.start).toHaveBeenCalledOnce();
+      expect(f.sandbox.refreshActivity).toHaveBeenCalledOnce();
+      expect(f.create).not.toHaveBeenCalled();
+      expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(0);
+      expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+    },
+  );
+
+  it("returns an already dispatched start for caller settlement after cancellation", async () => {
+    const f = daytonaFixture({ state: "stopped" });
+    let complete!: () => void;
+    const starting = new Promise<undefined>((resolve) => {
+      complete = () => resolve(undefined);
+    });
+    let dispatched!: () => void;
+    const started = new Promise<void>((resolve) => {
+      dispatched = resolve;
+    });
+    f.start.mockImplementationOnce(() => {
+      dispatched();
+      return starting;
+    });
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const controller = new AbortController();
+    const pending = provider.provision(
+      { botId: "bot", homePath: "/unused", providerRef: "daytona-box", providerKind: "daytona" },
+      { ...context, signal: controller.signal },
+    );
+    await started;
+    controller.abort();
+    complete();
+    await expect(pending).resolves.toMatchObject({ fresh: false });
+    expect(f.start).toHaveBeenCalledOnce();
+    expect(f.create).not.toHaveBeenCalled();
+    expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(0);
+    expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+  });
+
+  it("does not let a cancelled old lookup erase its successor after teardown", async () => {
+    const f = daytonaFixture({ state: "stopped" });
+    const teardown = daytonaFixture();
+    const next = daytonaFixture({ state: "stopped" });
+    let connectOld!: (sandbox: Sandbox) => void;
+    let connectNext!: (sandbox: Sandbox) => void;
+    f.get
+      .mockReturnValueOnce(
+        new Promise<Sandbox>((resolve) => {
+          connectOld = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(teardown.sandbox)
+      .mockReturnValueOnce(
+        new Promise<Sandbox>((resolve) => {
+          connectNext = resolve;
+        }),
+      );
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const controller = new AbortController();
+    const ref = {
+      id: "daytona-box",
+      botId: "bot",
+      providerRef: "daytona-box",
+      kind: "daytona" as const,
+    };
+    const request = {
+      botId: ref.botId,
+      homePath: "/unused",
+      providerRef: ref.id,
+      providerKind: ref.kind,
+    };
+    const old = provider
+      .provision(request, { ...context, signal: controller.signal })
+      .catch((error: unknown) => error);
+    controller.abort();
+    await provider.stop(ref, context);
+    const successor = provider.provision(request, context);
+    connectOld(f.sandbox);
+    await expect(old).resolves.toMatchObject({
+      message: "Daytona connection was invalidated during teardown",
+    });
+    expect(f.start).not.toHaveBeenCalled();
+    expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(1);
+    connectNext(next.sandbox);
+    await expect(successor).resolves.toMatchObject({ fresh: false });
+    await provider.keepAlive(ref);
+    expect(next.start).toHaveBeenCalledOnce();
+    expect(next.sandbox.refreshActivity).toHaveBeenCalledOnce();
+    expect(f.get).toHaveBeenCalledTimes(3);
+    expect(f.create).not.toHaveBeenCalled();
+    expect((Reflect.get(provider, "connections") as Map<string, unknown>).size).toBe(0);
+    expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
+  });
+
+  it.each(["stop", "destroy"] as const)(
+    "rejects Gone handed from connect to provision after explicit %s",
+    async (teardown) => {
+      const f = daytonaFixture();
+      let reject!: (error: unknown) => void;
+      const connection = new Promise<Sandbox>((_resolve, fail) => {
+        reject = fail;
+      });
+      f.get.mockReturnValueOnce(connection);
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const recovering = provider
+        .provision(
+          { botId: ref.botId, homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+          context,
+        )
+        .catch((error: unknown) => error);
+      let stopped: Promise<void> | undefined;
+      const schedule = (remaining: number): void =>
+        queueMicrotask(() => {
+          if (remaining) return schedule(remaining - 1);
+          stopped = provider[teardown](ref, context);
+        });
+      reject({ statusCode: 404 });
+      schedule(3);
+      try {
+        await expect(recovering).resolves.toMatchObject({
+          message: "Daytona connection was invalidated during teardown",
+        });
+        expect(f.create).not.toHaveBeenCalled();
+      } finally {
+        await stopped;
+      }
+    },
+  );
+
+  it.each(["stop", "destroy"] as const)(
+    "does not resume a pending old connection after explicit %s begins",
+    async (teardown) => {
+      const f = daytonaFixture();
+      const stopped = daytonaFixture({ state: "stopped" });
+      let connect!: (sandbox: Sandbox) => void;
+      const connection = new Promise<Sandbox>((resolve) => {
+        connect = resolve;
+      });
+      let find!: (sandbox: Sandbox) => void;
+      const lookup = new Promise<Sandbox>((resolve) => {
+        find = resolve;
+      });
+      f.get.mockReturnValueOnce(connection).mockReturnValueOnce(lookup);
+      const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+      const ref = {
+        id: "daytona-box",
+        providerRef: "daytona-box",
+        botId: "bot",
+        kind: "daytona" as const,
+      };
+      const connecting = provider
+        .provision(
+          { botId: ref.botId, homePath: "/unused", providerRef: ref.id, providerKind: ref.kind },
+          context,
+        )
+        .catch((error: unknown) => error);
+      const teardownPending = provider[teardown](ref, context);
+      connect(stopped.sandbox);
+      try {
+        await expect(connecting).resolves.toMatchObject({
+          message: "Daytona connection was invalidated during teardown",
+        });
+        expect(stopped.start).not.toHaveBeenCalled();
+        expect(f.create).not.toHaveBeenCalled();
+      } finally {
+        find(f.sandbox);
+        await teardownPending;
+      }
+    },
+  );
+
   it.each(["pending", "connected"])(
     "does not recover an old Gone after its successor connection is %s",
     async (state) => {
@@ -774,6 +1539,55 @@ function daytonaFixture(options: { id?: string; state?: string; prepareFails?: b
     press,
     type,
     scroll,
+  };
+}
+
+function sharedRemoteDaytonaFixture() {
+  const remote = new Map<string, string>([["daytona-box", "started"]]);
+  const handles: ReturnType<typeof daytonaFixture>[] = [];
+  const snapshot = (id: string): Sandbox => {
+    const state = remote.get(id);
+    if (!state) throw { statusCode: 404 };
+    const f = daytonaFixture({ id, state });
+    handles.push(f);
+    f.start.mockImplementation(async () => {
+      if (!remote.has(id)) throw { statusCode: 404 };
+      remote.set(id, "started");
+      Reflect.set(f.sandbox, "state", "started");
+      return undefined;
+    });
+    f.stop.mockImplementation(async () => {
+      remote.set(id, "stopped");
+      Reflect.set(f.sandbox, "state", "stopped");
+      return undefined;
+    });
+    f.deleteSandbox.mockImplementation(async () => {
+      remote.delete(id);
+      Reflect.set(f.sandbox, "state", "destroyed");
+      return undefined;
+    });
+    Reflect.set(
+      f.sandbox.fs,
+      "downloadFile",
+      vi.fn(async () => {
+        if (remote.get(id) !== "started") throw new Error("Synthetic remote toolbox unavailable");
+        return Buffer.from("workspace-preserved");
+      }),
+    );
+    return f.sandbox;
+  };
+  const get = vi.fn(async (id: string) => snapshot(id));
+  const create = vi.fn(async () => {
+    remote.set("daytona-replacement", "started");
+    return snapshot("daytona-replacement");
+  });
+  return {
+    client: { get, create } satisfies DaytonaSandboxSdk,
+    get,
+    create,
+    remote,
+    handles,
+    snapshot,
   };
 }
 

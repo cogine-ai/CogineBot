@@ -2,6 +2,7 @@ import {
   ApiClient,
   type CommandResult,
   ConnectionConfig,
+  FileNotFoundError,
   Sandbox,
   TimeoutError,
 } from "@e2b/desktop";
@@ -112,17 +113,18 @@ const SHELL_MISSING_TARGET = /command not found|no such file|^path .* not found/
 export function isSandboxGoneError(error: unknown): boolean {
   const message = errorMessage(error);
   if (SHELL_MISSING_TARGET.test(message)) return false;
-  if (SANDBOX_GONE_MESSAGE.test(message)) return true;
   const seen = new Set<Error>();
+  let sandboxGone = false;
   for (
     let current: unknown = error;
     current instanceof Error && !seen.has(current);
     current = current.cause
   ) {
     seen.add(current);
-    if (current.name === "SandboxNotFoundError") return true;
+    if (current instanceof FileNotFoundError) return false;
+    if (current.name === "SandboxNotFoundError") sandboxGone = true;
   }
-  return false;
+  return sandboxGone || SANDBOX_GONE_MESSAGE.test(message);
 }
 
 function errorMessage(error: unknown): string {
@@ -258,40 +260,57 @@ export class E2BSandboxProvider implements SandboxProvider {
     },
     _context: AdapterContext,
   ): Promise<ComputerRef> {
-    if (request.providerRef && request.providerKind === "e2b") {
-      try {
-        const desktop = await this.box({
-          id: request.providerRef,
-          providerRef: request.providerRef,
-          kind: "e2b",
-          botId: request.botId,
-        });
-        return {
-          id: desktop.sandboxId,
-          botId: request.botId,
-          kind: "e2b",
-          providerRef: desktop.sandboxId,
-          fresh: false,
-        };
-      } catch (error) {
-        // A transport failure says nothing about the workspace still on the server.
-        if (!isSandboxGoneError(error)) throw error;
-        if (this.boxes.has(request.providerRef) || this.connections.has(request.providerRef)) {
-          throw new Error("computer connection stopped during teardown");
-        }
-        this.forgetCached(request.providerRef);
+    const id = request.providerKind === "e2b" ? request.providerRef : undefined;
+    const operation = id ? this.beginOperation(id) : undefined;
+    const assertCurrent = () => {
+      if (id && this.computerOperations.get(id) !== operation) {
+        throw new Error("computer connection stopped during teardown");
       }
-    }
-    const desktop = await this.sdk.create(e2bCreateOptions(request.botId, this.apiKey));
-    this.boxes.set(desktop.sandboxId, desktop);
-    this.lastTouchedAt.set(desktop.sandboxId, Date.now());
-    return {
-      id: desktop.sandboxId,
-      botId: request.botId,
-      kind: "e2b",
-      providerRef: desktop.sandboxId,
-      fresh: true,
     };
+    try {
+      if (id) {
+        try {
+          const desktop = await this.box({
+            id,
+            providerRef: id,
+            kind: "e2b",
+            botId: request.botId,
+          });
+          assertCurrent();
+          return {
+            id: desktop.sandboxId,
+            botId: request.botId,
+            kind: "e2b",
+            providerRef: desktop.sandboxId,
+            fresh: false,
+          };
+        } catch (error) {
+          assertCurrent();
+          // A transport failure says nothing about the workspace still on the server.
+          if (!isSandboxGoneError(error)) throw error;
+          if (this.boxes.has(id) || this.connections.has(id)) {
+            throw new Error("computer connection stopped during teardown");
+          }
+          this.forgetCached(id);
+        }
+      }
+      // The generation must survive box's rejection handoff until this dispatch decision.
+      assertCurrent();
+      if (id) _context.signal.throwIfAborted();
+      const desktop = await this.sdk.create(e2bCreateOptions(request.botId, this.apiKey));
+      this.boxes.set(desktop.sandboxId, desktop);
+      this.lastTouchedAt.set(desktop.sandboxId, Date.now());
+      // A create already sent before teardown still returns its handle for caller cleanup.
+      return {
+        id: desktop.sandboxId,
+        botId: request.botId,
+        kind: "e2b",
+        providerRef: desktop.sandboxId,
+        fresh: true,
+      };
+    } finally {
+      if (id && operation) this.endOperation(id, operation);
+    }
   }
 
   async prepare(computer: ComputerRef, _context: AdapterContext): Promise<void> {
