@@ -5043,6 +5043,7 @@ export function ShellPage() {
                                     rosterParent.get(draggedBotId) === parentId
                                   ) {
                                     event.preventDefault();
+                                    event.stopPropagation();
                                     event.dataTransfer.dropEffect = "move";
                                     sidebarAnnouncements.target(item.chat.name);
                                   }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import type { DragEvent } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -162,5 +163,88 @@ describe("actual Shell drop persistence announcements", () => {
     await value.settle();
     expect(value.report).toHaveBeenCalledOnce();
     expect(value.view.textContent).toBe("Could not move Research");
+  });
+});
+
+describe("actual Shell nested drag-over announcements", () => {
+  const callback = (indent: string) => {
+    const code = slice(`${indent}onDragOver={(event) => {`, `${indent}onDrop=`).trim();
+    return code.slice("onDragOver={".length, code.lastIndexOf("}"));
+  };
+  const groupHover = callback("                    ");
+  const rowHover = callback("                                ");
+
+  async function hoverSetup(rowMatches = true, sameSpace = true) {
+    let controls!: ReturnType<typeof useSidebarAnnouncements>;
+    function Sidebar() {
+      controls = useSidebarAnnouncements("scope");
+      const env = {
+        sidebarAnnouncements: controls,
+        draggedSection: null,
+        draggedChat: { chat: { spaceId: sameSpace ? "space" : "other" } },
+        draggedBotId: "source",
+        group: { spaceId: "space", sectionId: "section", kind: "section" },
+        displayTitle: "Product group",
+        item: { kind: "bot", chat: { name: "Product bot" } },
+        groupBotIds: ["source", "target"],
+        rosterParent: new Map([["source", null]]),
+        parentId: rowMatches ? null : "other-parent",
+        t: (parts: TemplateStringsArray) => parts.join(""),
+      };
+      const handler = (code: string) =>
+        new Function(...Object.keys(env), `return (${code});`)(...Object.values(env)) as (
+          event: DragEvent<HTMLDivElement>,
+        ) => void;
+      return (
+        <>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: Match the real nested drag targets to exercise DOM bubbling. */}
+          <div data-target="group" onDragOver={handler(groupHover)}>
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: Match the real row target without adding unrelated input behavior. */}
+            <div data-target="row" onDragOver={handler(rowHover)} />
+          </div>
+          <div role="status">{controls.text}</div>
+        </>
+      );
+    }
+    const view = document.createElement("div");
+    const root = createRoot(view);
+    cleanup = async () => {
+      await act(async () => root.unmount());
+    };
+    await act(async () => root.render(<Sidebar />));
+    await act(async () => controls.start("Research"));
+    await act(async () => vi.runOnlyPendingTimers());
+    const dispatch = async (target: "row" | "group") => {
+      const event = new Event("dragover", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", { value: { dropEffect: "none" } });
+      await act(async () => view.querySelector(`[data-target="${target}"]`)!.dispatchEvent(event));
+      const timers = vi.getTimerCount();
+      await act(async () => vi.runOnlyPendingTimers());
+      return { timers, prevented: event.defaultPrevented };
+    };
+    return { dispatch, text: () => view.querySelector('[role="status"]')!.textContent };
+  }
+
+  it("announces a matching row once without alternating with its containing group", async () => {
+    const value = await hoverSetup();
+    expect((await value.dispatch("row")).prevented).toBe(true);
+    expect(value.text()).toBe("Move Research to Product bot");
+    for (let index = 0; index < 3; index++) {
+      expect((await value.dispatch("row")).timers).toBe(0);
+      expect(value.text()).toBe("Move Research to Product bot");
+    }
+  });
+
+  it.each(["group", "unmatched-row"])("keeps the group target for %s", async (target) => {
+    const value = await hoverSetup(target !== "unmatched-row");
+    expect((await value.dispatch(target === "group" ? "group" : "row")).prevented).toBe(true);
+    expect(value.text()).toBe("Move Research to Product group");
+    expect((await value.dispatch(target === "group" ? "group" : "row")).timers).toBe(0);
+  });
+
+  it("does not accept an unmatched row in another Space", async () => {
+    const value = await hoverSetup(false, false);
+    expect((await value.dispatch("row")).prevented).toBe(false);
+    expect(value.text()).toBe("Moving Research");
   });
 });
