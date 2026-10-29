@@ -10,6 +10,7 @@ const REPLY_ANNOUNCEMENT_CASES = replyAnnouncementCases as {
   name: string;
   blocks: MessageBlock[];
   spoken: string;
+  nativeSpoken?: string;
 }[];
 
 function snapshot(runId: string | null = "run-a", text?: string): AnnouncementSnapshot {
@@ -60,6 +61,30 @@ describe("durable visible reply announcements", () => {
       expect(observer.update("scope", true, completed)).toEqual([]);
     },
   );
+  it("uses its caller's text projection independently for every text block", () => {
+    const received: string[] = [];
+    const observer = new ReplyAnnouncements((text) => {
+      received.push(text);
+      return text === "first" ? "Visible first" : "Visible second";
+    });
+    observer.update("scope", true, snapshot());
+    observer.observe("scope", true, terminal());
+    const completed = snapshot(null);
+    completed.messages = [
+      {
+        id: "final",
+        role: "bot",
+        runId: "run-a",
+        blocks: [
+          { kind: "text", text: "first" },
+          { kind: "progress", text: "Tool", activity: true },
+          { kind: "text", text: "second" },
+        ],
+      },
+    ];
+    expect(observer.update("scope", true, completed)).toEqual(["Visible first\nVisible second"]);
+    expect(received).toEqual(["first", "second"]);
+  });
   it("consumes an empty visible result without announcing a later edit or duplicate receipt", () => {
     const observer = new ReplyAnnouncements();
     observer.update("scope", true, snapshot());

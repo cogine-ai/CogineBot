@@ -108,7 +108,8 @@
         "text": "**done**"
       }
     ],
-    "spoken": "**literal\n\ndone"
+    "spoken": "**literal\n\ndone",
+    "nativeSpoken": "**literal\ndone"
   },
   {
     "name": "formatting-only empty result",
@@ -121,24 +122,26 @@
     "spoken": ""
   },
   {
-    "name": "non-rendered HTML",
+    "name": "raw HTML kept literally only on native",
     "blocks": [
       {
         "kind": "text",
         "text": "<div>hidden https://example.test/secret</div>"
       }
     ],
-    "spoken": ""
+    "spoken": "",
+    "nativeSpoken": "<div>hidden example.test/secret</div>"
   },
   {
-    "name": "non-rendered comment",
+    "name": "HTML comment kept literally only on native",
     "blocks": [
       {
         "kind": "text",
         "text": "<!-- secret https://example.test/hidden -->"
       }
     ],
-    "spoken": ""
+    "spoken": "",
+    "nativeSpoken": "<!-- secret example.test/hidden -->"
   },
   {
     "name": "image-only canonical projection omits hidden destination",
@@ -148,7 +151,8 @@
         "text": "![chart](https://example.test/hidden)"
       }
     ],
-    "spoken": ""
+    "spoken": "",
+    "nativeSpoken": "chart"
   },
   {
     "name": "canonical table whitespace",
@@ -158,7 +162,8 @@
         "text": "| Name | Value |\n| --- | ---: |\n| Alice | 5 |"
       }
     ],
-    "spoken": "Name\t Value Alice\t 5"
+    "spoken": "Name\t Value Alice\t 5",
+    "nativeSpoken": "Name\tValue\nAlice\t5"
   },
   {
     "name": "literal HTML is retained inside a code fence",
@@ -178,6 +183,130 @@
         "text": "Open <https://example.test/visible> now"
       }
     ],
-    "spoken": "Open https://example.test/visible now"
+    "spoken": "Open https://example.test/visible now",
+    "nativeSpoken": "Open example.test/visible now"
+  },
+  {
+    "name": "HTML body still parses nested Markdown and hidden link destinations on native",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<div>**Important** [report](https://example.test/hidden)</div>"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "<div>Important report</div>"
+  },
+  {
+    "name": "inline HTML preserves its literal tags only on native",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "Visible <b>bold</b> &amp; [report](https://example.test/hidden)"
+      }
+    ],
+    "spoken": "Visible bold & report",
+    "nativeSpoken": "Visible <b>bold</b> & report"
+  },
+  {
+    "name": "script-looking source is literal text rather than executable HTML",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<script>keep &amp; text</script>"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "<script>keep & text</script>"
+  },
+  {
+    "name": "comment-looking source still parses inner Markdown with native HTML disabled",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<!-- **note** [report](https://example.test/hidden) -->"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "<!-- note report -->"
+  },
+  {
+    "name": "native literal HTML does not change code fences",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "```html\n<div>**literal** [report](https://example.test/literal)</div>\n```"
+      }
+    ],
+    "spoken": "<div>**literal** [report](https://example.test/literal)</div>\n"
+  },
+  {
+    "name": "HTML-shaped source remains separate across text blocks",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<div>**First**"
+      },
+      {
+        "kind": "text",
+        "text": "[Last](https://example.test/hidden)</div>"
+      }
+    ],
+    "spoken": "\nLast",
+    "nativeSpoken": "<div>First\nLast</div>"
+  },
+  {
+    "name": "HTML anchor attribute still renders emphasis on native",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<a href=\"https://example.test/visible\">**Open**</a>"
+      }
+    ],
+    "spoken": "Open",
+    "nativeSpoken": "<a href=“example.test/visible”>Open</a>"
+  },
+  {
+    "name": "Markdown image inside literal HTML keeps its native label",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<div>![chart](https://example.test/pic)</div>"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "<div>chart</div>"
+  },
+  {
+    "name": "native image without alt keeps its visible host",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![](https://example.test/pic)"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "example.test"
+  },
+  {
+    "name": "native custom autolink preserves its visible label",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<coginebot://thread/test>"
+      }
+    ],
+    "spoken": "coginebot://thread/test"
+  },
+  {
+    "name": "native table keeps literal HTML markers",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "| A | B |\n|---|---|\n| one<br>two | <img src=x alt=chart> |"
+      }
+    ],
+    "spoken": "A\t B one two\t chart",
+    "nativeSpoken": "A\tB\none<br>two\t<img src=x alt=chart>"
   }
 ]

@@ -81,6 +81,15 @@ vi.mock("./native", () => ({
 }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: state.announce },
+  StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 },
+  Platform: {
+    OS: "ios",
+    select: (values: Record<string, unknown>) => values.ios ?? values.default,
+  },
+  I18nManager: { isRTL: false },
+  Image: () => null,
+  Pressable: () => null,
+  Alert: {},
   AppState: {
     currentState: "active",
     addEventListener: (_event: string, listener: (value: string) => void) => {

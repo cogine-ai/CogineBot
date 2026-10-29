@@ -31,6 +31,8 @@ export class ReplyAnnouncements {
   private consumed = new Set<string>();
   private receipts = new Map<string, string>();
 
+  constructor(private readonly textFromMarkdown = visibleTextFromMarkdown) {}
+
   stop(scope: string, runIds: readonly string[]): void {
     if (scope !== this.scope) return;
     for (const id of runIds) {
@@ -136,7 +138,7 @@ export class ReplyAnnouncements {
       );
       if (!message) continue;
       const text = message.blocks
-        .flatMap((block) => (block.kind === "text" ? [visibleTextFromMarkdown(block.text)] : []))
+        .flatMap((block) => (block.kind === "text" ? [this.textFromMarkdown(block.text)] : []))
         .join("\n");
       this.consumed.add(messageId);
       this.receipts.delete(runId);

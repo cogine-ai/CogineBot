@@ -60,6 +60,7 @@ describe("duplicate artifact identities", () => {
             : container.querySelector<HTMLButtonElement>("button")!;
         if (mimeType === "application/pdf")
           expect(download.getAttribute("aria-describedby")).toBe(identity.id);
+        else expect(download.contains(identity)).toBe(true);
         await act(async () => download.click());
         expect(api.download).toHaveBeenCalledExactlyOnceWith(
           { botId: "bot" },

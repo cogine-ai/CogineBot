@@ -167,6 +167,7 @@ import {
   MermaidDiagramContext,
   RemoteImagesContext,
   RemoteMarkdownImage,
+  visibleNativeTextFromMarkdown,
 } from "./markdown.native";
 import { CHAT_DIAGRAM_MAX_TEXT_SIZE } from "./mermaid";
 
@@ -1261,4 +1262,43 @@ it("shows a full long native URL and opens it only on confirmation", async () =>
   await act(async () => {
     root.unmount();
   });
+});
+
+describe("native literal HTML text", () => {
+  it("preserves empty table cells in the native text projection", () => {
+    expect(visibleNativeTextFromMarkdown("| A | B |\n|---|---|\n| | X |")).toBe("A\tB\n\tX");
+  });
+
+  it.each([
+    '<a href="https://example.test/visible">**Open**</a>',
+    "<div>**Important** [report](https://example.test/hidden)</div>",
+    "<!-- **note** [report](https://example.test/hidden) -->",
+    "<script>keep &amp; text</script>",
+    "Visible <b>bold</b> &amp; [report](https://example.test/hidden)",
+  ])("projects actual native rendered HTML text without a second parser: %s", (source) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+    expect(visibleNativeTextFromMarkdown(source)).toBe(
+      container.textContent?.replace(/[\u2060\u2068\u2069]/g, ""),
+    );
+    expect(visibleNativeTextFromMarkdown(source)).not.toContain("**");
+    expect(visibleNativeTextFromMarkdown(source)).not.toContain("https://example.test/hidden");
+  });
+
+  it.each([
+    ["<div>Visible text</div>", "<div>Visible text</div>"],
+    ["<!-- Visible comment -->", "<!-- Visible comment -->"],
+    [
+      "<div>**Important** [report](https://example.test/hidden)</div>",
+      "<div>Important report</div>",
+    ],
+  ])(
+    "keeps displayed HTML-looking source while rendering inner Markdown: %s",
+    (source, expected) => {
+      const container = document.createElement("div");
+      container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+      expect(container.textContent?.replace(/[\u2060\u2068\u2069]/g, "")).toBe(expected);
+      expect(container.textContent).not.toContain("https://example.test/hidden");
+    },
+  );
 });

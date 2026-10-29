@@ -589,3 +589,15 @@ describe("web external link confirmation", () => {
     await view.cleanup();
   });
 });
+
+describe("web skipped HTML text", () => {
+  it.each([
+    "<div>Visible text</div>",
+    "<!-- Visible comment -->",
+    "<div>**Important** [report](https://example.test/hidden)</div>",
+  ])("keeps raw HTML skipped: %s", (source) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+    expect(container.textContent).toBe("");
+  });
+});

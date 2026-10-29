@@ -2,6 +2,7 @@ import {
   replyAnnouncementsVisible,
   subscribeReplyAnnouncementVisibility,
 } from "@rakazo/chat-ui/announcement-visibility";
+import { visibleNativeTextFromMarkdown } from "@rakazo/chat-ui/native";
 import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { ReplyAnnouncements } from "@rakazo/core";
 import { useIsFocused } from "expo-router";
@@ -19,7 +20,7 @@ export function useReplyAnnouncements(
     replyAnnouncementsVisible,
     replyAnnouncementsVisible,
   );
-  const observer = useRef(new ReplyAnnouncements());
+  const observer = useRef(new ReplyAnnouncements(visibleNativeTextFromMarkdown));
   const [revision, setRevision] = useState(0);
   const currentScope = useRef(scope);
   currentScope.current = scope;

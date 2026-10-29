@@ -13,6 +13,7 @@ const REPLY_ANNOUNCEMENT_CASES = replyAnnouncementCases as {
   name: string;
   blocks: MessageBlock[];
   spoken: string;
+  nativeSpoken?: string;
 }[];
 
 const screen = vi.hoisted(() => ({ focused: true, active: true, announce: vi.fn() }));
@@ -20,6 +21,19 @@ vi.mock("expo-router", () => ({ useIsFocused: () => screen.focused }));
 vi.mock("./app-active", () => ({ useAppActive: () => screen.active }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: screen.announce },
+  StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 },
+  I18nManager: { isRTL: false },
+  Platform: {
+    OS: "ios",
+    select: (values: Record<string, unknown>) => values.ios ?? values.default,
+  },
+  Text: () => null,
+  View: () => null,
+  Image: () => null,
+  ScrollView: () => null,
+  Pressable: () => null,
+  Linking: {},
+  Alert: {},
 }));
 let stop = () => {};
 let observe: (event: AnnouncementEvent) => void = () => {};
@@ -75,15 +89,32 @@ async function setup() {
 describe("native completed reply announcements", () => {
   it.each(REPLY_ANNOUNCEMENT_CASES)(
     "calls the native API with visible $name only once",
-    async ({ blocks, spoken }) => {
+    async ({ blocks, spoken, nativeSpoken }) => {
       const render = await setup();
       await render("running");
       await render("completed", "r", "scope", blocks);
       await render("completed", "r", "scope", blocks);
-      if (spoken) expect(screen.announce).toHaveBeenCalledExactlyOnceWith(spoken);
+      const expected = nativeSpoken ?? spoken;
+      if (expected) expect(screen.announce).toHaveBeenCalledExactlyOnceWith(expected);
       else expect(screen.announce).not.toHaveBeenCalled();
     },
   );
+  it.each(["stop", "hidden"])("keeps a literal HTML result silent after %s", async (reason) => {
+    const render = await setup();
+    await render("running");
+    if (reason === "stop") stop();
+    else {
+      screen.active = false;
+      await render("running");
+    }
+    const blocks: MessageBlock[] = [
+      { kind: "text", text: "<div>**Late** [report](https://example.test/hidden)</div>" },
+    ];
+    await render("completed", "r", "scope", blocks);
+    screen.active = true;
+    await render("completed", "r", "scope", blocks);
+    expect(screen.announce).not.toHaveBeenCalled();
+  });
   it("does not announce a late edit after consuming a formatting-only completion", async () => {
     const render = await setup();
     await render("running");
