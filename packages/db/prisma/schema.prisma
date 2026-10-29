@@ -146,6 +146,7 @@ model BillingAccount {
   endedAt             DateTime?
   subscribedAt        DateTime?
   syncedAt            DateTime?
+  statusRefreshStartedAt DateTime?
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
 

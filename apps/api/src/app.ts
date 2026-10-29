@@ -768,7 +768,10 @@ export async function createApp(
     app,
     { prisma, secrets, assertAccess: (actor) => billing?.assertAccess(actor) ?? Promise.resolve() },
     async (c) => {
-      const actor = await sessionActor(c.req.raw);
+      const session = await requestSession(c.req.raw);
+      if (session && !session.actor)
+        throw new ORPCError("FORBIDDEN", { data: { reason: "space_forbidden" } });
+      const actor = session?.actor ?? null;
       if (actor) enrichLogContext({ "user.id": actor.userId, "space.id": actor.spaceId });
       return actor;
     },

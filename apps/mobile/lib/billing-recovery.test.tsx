@@ -269,9 +269,50 @@ describe("native access recovery", () => {
     status = unpaid({ price: null });
     await render();
     expect(container.textContent).not.toContain("Start 7-day");
+    expect(container.textContent).not.toContain("Subscribe");
     expect(button("Retry")).not.toBeNull();
     expect(container.textContent).not.toContain("$12");
+    await act(async () => button("Retry").click());
+    expect(state.rpc.mock.calls.some(([procedure]) => procedure === "billing/checkout")).toBe(
+      false,
+    );
   });
+  it.each([false, true])(
+    "keeps configured checkout available when interval formatting is unsupported (trial: %s)",
+    async (trialAvailable) => {
+      status = unpaid({ trialAvailable });
+      const NumberFormat = Intl.NumberFormat;
+      const unsupportedUnit = vi.fn();
+      const formatter = vi.spyOn(Intl, "NumberFormat").mockImplementation(function (
+        this: Intl.NumberFormat,
+        locales,
+        options,
+      ) {
+        if (options?.style === "unit") {
+          unsupportedUnit();
+          throw new RangeError("Unsupported unit formatter");
+        }
+        return new NumberFormat(locales, options);
+      });
+      try {
+        await render();
+        expect(unsupportedUnit).toHaveBeenCalled();
+        expect(container.textContent).not.toContain("$12");
+        expect(container.textContent).not.toContain("month");
+        const label = trialAvailable ? "Start 7-day free trial" : "Subscribe";
+        expect(button(label).disabled).toBe(false);
+        await act(async () => button(label).click());
+        expect(
+          state.rpc.mock.calls.filter(([procedure]) => procedure === "billing/checkout"),
+        ).toHaveLength(1);
+        expect(state.openURL).toHaveBeenCalledExactlyOnceWith(
+          "https://billing.example.test/session",
+        );
+      } finally {
+        formatter.mockRestore();
+      }
+    },
+  );
   it("coalesces foreground events and retries once per pending request", async () => {
     await render();
     const response = deferred<BillingStatus>();

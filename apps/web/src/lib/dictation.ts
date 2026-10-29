@@ -3,7 +3,7 @@ import { getActiveUiLocale } from "./i18n.js";
 import type { RpcRecoveryScope } from "./rpc.js";
 import {
   captureRpcRecoveryScope,
-  currentRpcSessionGeneration,
+  isRpcRecoveryScopeCurrent,
   noteSubscriptionRequired,
   selectedSpaceId,
   withSpaceHeaders,
@@ -550,7 +550,7 @@ export class Dictation {
   private async transcribeChunks(mine: number, spaceId: string | null) {
     if (this.token !== mine) return;
     const recoveryScope = this.recoveryScope;
-    if (!recoveryScope || recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+    if (!recoveryScope || !isRpcRecoveryScopeCurrent(recoveryScope)) {
       this.stop();
       return;
     }
@@ -575,7 +575,7 @@ export class Dictation {
     try {
       const audioBase64 = await blobToBase64(blob);
       if (this.token !== mine) return;
-      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
         this.stop();
         return;
       }
@@ -597,7 +597,7 @@ export class Dictation {
         cancelResponse(res);
         return;
       }
-      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
         cancelResponse(res);
         this.stop();
         return;
@@ -606,7 +606,7 @@ export class Dictation {
         noteSubscriptionRequired(recoveryScope, () => this.token === mine && !abort.signal.aborted);
       const body = await readTranscriptionBody(res, abort.signal);
       if (this.token !== mine) return;
-      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
         this.stop();
         return;
       }
@@ -623,7 +623,7 @@ export class Dictation {
       );
     } catch (error) {
       if (this.token !== mine) return;
-      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
         this.stop();
         return;
       }

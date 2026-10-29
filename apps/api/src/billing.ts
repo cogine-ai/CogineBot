@@ -4,6 +4,7 @@ import type { Actor, BillingStatus } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import {
   billingAccountForOrganization,
+  claimBillingStatusRefresh,
   createBillingAccount,
   hasBillingAccess,
   organizationForMember,
@@ -15,6 +16,7 @@ import { getLogger } from "@rakazo/logging";
 
 export const TRIAL_DAYS = 7;
 const PRICE_CACHE_MS = 60 * 60 * 1000;
+export const BILLING_STATUS_RESPONSE_TIMEOUT_MS = 10_000;
 /** Stripe returns here after checkout; served by the API through the web origin. */
 export const BILLING_RETURN_PATH = "/api/v1/billing/return";
 
@@ -48,6 +50,53 @@ export function createBillingService(deps: {
     return url.href;
   };
   let cachedPrice: { value: BillingPrice; expiresAt: number } | undefined;
+  const statusRefreshes = new Map<string, { promise: Promise<void>; startedAt: number }>();
+
+  const unavailable = (retryAfterSeconds: number) =>
+    new ORPCError("SERVICE_UNAVAILABLE", {
+      message: "Could not refresh billing",
+      data: { reason: "billing_unavailable", retryAfterSeconds },
+    });
+
+  async function refreshStatus(organizationId: string): Promise<void> {
+    let pending = statusRefreshes.get(organizationId);
+    if (!pending) {
+      const promise = (async () => {
+        const claim = await claimBillingStatusRefresh(prisma, organizationId);
+        if (claim.state === "busy") throw unavailable(claim.retryAfterSeconds);
+        if (claim.state === "claimed") await sync(claim.customerId);
+      })().finally(() => {
+        if (statusRefreshes.get(organizationId)?.promise === promise)
+          statusRefreshes.delete(organizationId);
+      });
+      pending = { promise, startedAt: performance.now() };
+      statusRefreshes.set(organizationId, pending);
+    }
+    const remaining = BILLING_STATUS_RESPONSE_TIMEOUT_MS - (performance.now() - pending.startedAt);
+    if (remaining <= 0) throw unavailable(5);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        pending.promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(unavailable(5)), remaining);
+        }),
+      ]);
+    } catch (error) {
+      if (
+        error instanceof ORPCError &&
+        error.code === "SERVICE_UNAVAILABLE" &&
+        typeof error.data === "object" &&
+        error.data !== null &&
+        "reason" in error.data &&
+        error.data.reason === "billing_unavailable"
+      )
+        throw error;
+      throw unavailable(15);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function price(): Promise<BillingPrice | null> {
     if (cachedPrice && cachedPrice.expiresAt > Date.now()) return cachedPrice.value;
@@ -122,14 +171,7 @@ export function createBillingService(deps: {
       if (options?.refresh) {
         const stored = await billingAccountForOrganization(prisma, organizationId);
         if (stored) {
-          try {
-            await sync(stored.customerId);
-          } catch {
-            throw new ORPCError("SERVICE_UNAVAILABLE", {
-              message: "Could not refresh billing",
-              data: { reason: "billing_unavailable" },
-            });
-          }
+          await refreshStatus(organizationId);
         }
         // A membership revoked while the provider answered must not publish its status.
         await organization(actor);

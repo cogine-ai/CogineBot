@@ -26,9 +26,24 @@ function fixture(status: string | null) {
     spaceMember: { findUnique: membership },
     space: { findUnique: vi.fn().mockResolvedValue({ organizationId: "organization-other" }) },
     member: { findUnique: owner, count: vi.fn().mockResolvedValue(1) },
-    billingAccount: { findUnique: account, updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-    $queryRaw: vi.fn().mockResolvedValue([{ startedAt: new Date("2030-01-01") }]),
+    billingAccount: {
+      findUnique: account,
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    $executeRaw: vi.fn().mockResolvedValue(0),
+    $transaction: vi.fn(),
+    $queryRaw: vi.fn().mockResolvedValue([
+      {
+        startedAt: new Date("2030-01-01"),
+        now: new Date("2030-01-01"),
+        acquired: true,
+      },
+    ]),
   };
+  prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => Promise<unknown>) =>
+    callback(prisma),
+  );
   return {
     membership,
     owner,
@@ -84,6 +99,21 @@ describe("new work admission", () => {
 });
 
 describe("bound billing refresh and return", () => {
+  it("coalesces simultaneous recovery refreshes for one organization", async () => {
+    const f = fixture("incomplete");
+    let release!: () => void;
+    const snapshot = new Promise<null>((resolve) => {
+      release = () => resolve(null);
+    });
+    f.provider.getCustomerSubscription.mockImplementation(() => snapshot);
+    const pending = Array.from({ length: 20 }, () => f.service.status(actor, { refresh: true }));
+    await vi.waitFor(() => expect(f.provider.getCustomerSubscription).toHaveBeenCalled());
+    // All callers share one external read, rather than queueing another after it settles.
+    const calls = f.provider.getCustomerSubscription.mock.calls.length;
+    release();
+    await Promise.all(pending);
+    expect(calls).toBe(1);
+  });
   it("binds portal return to the initiating Space rather than the browser's default", async () => {
     const f = fixture("incomplete");
     await f.service.portal(actor);
@@ -115,6 +145,14 @@ describe("bound billing refresh and return", () => {
   it("reports refresh unavailability rather than fabricating unpaid or active status", async () => {
     const f = fixture("incomplete");
     f.provider.getCustomerSubscription.mockRejectedValue(new Error("offline"));
+    await expect(f.service.status(actor, { refresh: true })).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      data: { reason: "billing_unavailable" },
+    });
+  });
+  it("does not turn a provider authentication error into a rejected application session", async () => {
+    const f = fixture("incomplete");
+    f.provider.getCustomerSubscription.mockRejectedValue(new ORPCError("UNAUTHORIZED"));
     await expect(f.service.status(actor, { refresh: true })).rejects.toMatchObject({
       code: "SERVICE_UNAVAILABLE",
       data: { reason: "billing_unavailable" },

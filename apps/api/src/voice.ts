@@ -399,9 +399,22 @@ export function mountVoiceHttpRoutes(
   deps: VoiceDeps,
   authenticate: (c: Context) => Promise<Actor | null>,
 ) {
+  async function actorFor(c: Context): Promise<Actor | Response> {
+    try {
+      return (await authenticate(c)) ?? c.json({ error: "Unauthorized" }, 401);
+    } catch (error) {
+      if (
+        error instanceof ORPCError &&
+        (error.code === "UNAUTHORIZED" || error.code === "FORBIDDEN")
+      )
+        return voiceHttpError(c, error);
+      getLogger().warn("voice authentication failed", { route: c.req.path });
+      return c.json({ error: "Authentication failed." }, 500);
+    }
+  }
   app.post("/api/voice/speak", async (c) => {
-    const actor = await authenticate(c);
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await actorFor(c);
+    if (actor instanceof Response) return actor;
     const raw = await readBoundedBody(c.req.raw, MAX_SPEAK_REQUEST_BYTES);
     if (raw === null) return c.json({ error: "Request body is too large." }, 413);
     const body = parseVoiceRequestBody(raw);
@@ -431,8 +444,8 @@ export function mountVoiceHttpRoutes(
   });
 
   app.post("/api/voice/transcribe", async (c) => {
-    const actor = await authenticate(c);
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await actorFor(c);
+    if (actor instanceof Response) return actor;
     const raw = await readBoundedBody(c.req.raw, MAX_TRANSCRIBE_REQUEST_BYTES);
     if (raw === null) return c.json({ error: "Request body is too large." }, 413);
     const body = parseVoiceRequestBody(raw);

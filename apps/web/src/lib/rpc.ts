@@ -83,7 +83,7 @@ export function subscribeSubscriptionRequired(listener: () => void): () => void 
   };
 }
 
-export function noteSubscriptionRequired(scope: RpcRecoveryScope, isCurrent: () => boolean): void {
+export function isRpcRecoveryScopeCurrent(scope: RpcRecoveryScope): boolean {
   const selected = selectedSpaceId();
   const effective =
     selected ??
@@ -91,13 +91,15 @@ export function noteSubscriptionRequired(scope: RpcRecoveryScope, isCurrent: () 
     implicitSpace.selectionGeneration === spaceSelectionGeneration
       ? implicitSpace.id
       : null);
-  if (
-    !isCurrent() ||
-    scope.sessionGeneration !== rpcSessionGeneration ||
-    scope.selectionGeneration !== currentSpaceSelectionGeneration() ||
-    (scope.spaceId !== selected && scope.spaceId !== effective)
-  )
-    return;
+  return (
+    scope.sessionGeneration === rpcSessionGeneration &&
+    scope.selectionGeneration === currentSpaceSelectionGeneration() &&
+    (scope.spaceId === selected || scope.spaceId === effective)
+  );
+}
+
+export function noteSubscriptionRequired(scope: RpcRecoveryScope, isCurrent: () => boolean): void {
+  if (!isCurrent() || !isRpcRecoveryScopeCurrent(scope)) return;
   for (const listener of subscriptionListeners) {
     try {
       listener();

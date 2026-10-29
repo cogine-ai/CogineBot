@@ -319,7 +319,7 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
           {showManagement && priceLabel ? (
             <Text style={{ color: tokens.mutedForeground }}>{priceLabel}</Text>
           ) : null}
-          {showManagement && status?.canManage && priceLabel ? (
+          {showManagement && status?.canManage && status.price ? (
             <NativeActionButton
               label={
                 status.trialAvailable

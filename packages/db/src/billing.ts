@@ -28,6 +28,51 @@ export function createBillingAccount(
   });
 }
 
+export const BILLING_STATUS_FRESH_MS = 2_000;
+export const BILLING_STATUS_RETRY_MS = 15_000;
+export type BillingStatusRefreshClaim =
+  | { state: "claimed"; customerId: string }
+  | { state: "fresh" | "missing" }
+  | { state: "busy"; retryAfterSeconds: number };
+
+/** A short, non-waiting database claim; never keep its connection during provider I/O. */
+export function claimBillingStatusRefresh(
+  prisma: PrismaClient,
+  organizationId: string,
+): Promise<BillingStatusRefreshClaim> {
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw(Prisma.sql`SET LOCAL lock_timeout = '100ms'`);
+      const [clock] = await tx.$queryRaw<[{ now: Date; acquired: boolean }]>(Prisma.sql`
+      SELECT clock_timestamp() AS "now",
+        pg_try_advisory_xact_lock(hashtextextended(${`billing-status:${organizationId}`}, 3)) AS "acquired"
+    `);
+      if (!clock.acquired) return { state: "busy", retryAfterSeconds: 1 };
+      const account = await tx.billingAccount.findUnique({ where: { organizationId } });
+      if (!account) return { state: "missing" };
+      const now = clock.now.getTime();
+      const synced = account.syncedAt?.getTime();
+      const started = account.statusRefreshStartedAt?.getTime();
+      const succeeded = synced !== undefined && (started === undefined || synced >= started);
+      if (succeeded && now - synced < BILLING_STATUS_FRESH_MS) return { state: "fresh" };
+      if (!succeeded && started !== undefined && now - started < BILLING_STATUS_RETRY_MS)
+        return {
+          state: "busy",
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil((BILLING_STATUS_RETRY_MS - (now - started)) / 1000),
+          ),
+        };
+      await tx.billingAccount.update({
+        where: { organizationId },
+        data: { statusRefreshStartedAt: clock.now },
+      });
+      return { state: "claimed", customerId: account.customerId };
+    },
+    { maxWait: 500, timeout: 1_500 },
+  );
+}
+
 /**
  * Loads the customer's current subscription and overwrites the stored snapshot (`null` clears
  * it). The write only lands if no sync that started later has written first, so an older read

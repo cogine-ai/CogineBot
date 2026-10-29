@@ -194,10 +194,11 @@ describePostgres("billing service (PostgreSQL)", () => {
     }
   });
 
-  it("pulls completed checkout before a webhook has delivered the new status", async () => {
+  it("pulls completed checkout on verified return before a webhook has delivered the new status", async () => {
     const account = (await billingAccountForOrganization(prisma, organizationId))!;
     emulator.completeCheckout(account.customerId, "active");
     expect((await billingAccountForOrganization(prisma, organizationId))!.status).toBe("canceled");
+    await billing.syncForActor(owner);
     await expect(billing.status(owner, { refresh: true })).resolves.toMatchObject({
       access: true,
       state: "active",
