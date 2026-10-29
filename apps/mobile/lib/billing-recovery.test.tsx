@@ -462,19 +462,30 @@ describe("native access recovery", () => {
     await act(async () => refreshed.resolve(unpaid()));
     expect(button("Start 7-day free trial").disabled).toBe(false);
   });
-  it("rechecks current identity after a denial despite cached optional-billing capabilities", async () => {
-    state.capabilities.mockResolvedValue({ billing: false });
-    await render();
-    expect(statusCalls()).toHaveLength(0);
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
-    await act(async () => {
-      for (const listener of state.deniedListeners) listener();
-    });
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(statusCalls()).toHaveLength(1);
-    expect(statusCalls()[0]?.[1]).toEqual({ refresh: true });
-    expect(button("Start 7-day free trial").disabled).toBe(false);
-  });
+  it.each(["billable", "user-exempt", "deployment-owner"])(
+    "rechecks current identity after a denial despite cached optional-billing capabilities for %s",
+    async (kind) => {
+      state.capabilities.mockResolvedValue({ billing: false });
+      await render();
+      expect(statusCalls()).toHaveLength(0);
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      me.billingEnabled = kind !== "user-exempt";
+      me.isDeploymentOwner = kind === "deployment-owner";
+      await act(async () => {
+        for (const listener of state.deniedListeners) listener();
+      });
+      expect(state.rpc.mock.calls.filter(([procedure]) => procedure === "me")).toHaveLength(1);
+      if (kind === "billable") {
+        expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+        expect(statusCalls()).toHaveLength(1);
+        expect(statusCalls()[0]?.[1]).toEqual({ refresh: true });
+        expect(button("Start 7-day free trial").disabled).toBe(false);
+      } else {
+        expect(container.querySelector('[role="dialog"]')).toBeNull();
+        expect(statusCalls()).toHaveLength(0);
+      }
+    },
+  );
   it("retains a denial and error when provider refresh fails", async () => {
     await render();
     state.rpc.mockImplementation(async (procedure: string) => {

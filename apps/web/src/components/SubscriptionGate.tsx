@@ -63,6 +63,8 @@ export function SubscriptionGate({
     let inFlight: Promise<void> | undefined;
     let bills: boolean | undefined;
     let denied = false;
+    let denialGeneration = 0;
+    let queuedRefresh = false;
     const spaceId = selectedSpaceId();
     const sessionGeneration = currentRpcSessionGeneration();
     const current = () =>
@@ -78,8 +80,8 @@ export function SubscriptionGate({
     setDismissed(false);
     setHasOpened(false);
 
-    async function me(): Promise<Me> {
-      const primed = peekInitialBootstrap();
+    async function me(initial: boolean): Promise<Me> {
+      const primed = initial ? peekInitialBootstrap() : undefined;
       if (primed) {
         try {
           const { me } = await primed;
@@ -93,21 +95,24 @@ export function SubscriptionGate({
 
     function refresh(initial = false): Promise<void> {
       if (inFlight) return inFlight;
+      const requestDenialGeneration = denialGeneration;
+      const currentRequest = () => current() && requestDenialGeneration === denialGeneration;
       inFlight = (async () => {
         try {
           if (bills === undefined) {
             const capabilities = await fetchAuthCapabilities();
-            if (!current()) return;
-            if (capabilities.billing) {
-              const identity = await me();
-              if (!current()) return;
+            if (!currentRequest()) return;
+            if (capabilities.billing || denied) {
+              const identity = await me(initial);
+              if (!currentRequest()) return;
               if (spaceId === null && identity.userId === userId)
                 rememberImplicitRpcSpace(identity.spaceId, sessionGeneration, generation);
               bills = identity.billingEnabled;
             } else bills = false;
           }
-          if (!current()) return;
+          if (!currentRequest()) return;
           if (!bills) {
+            denied = false;
             setState({ kind: "open" });
             setHasOpened(true);
             return;
@@ -115,14 +120,14 @@ export function SubscriptionGate({
           const status = await scoped.billing.status(initial ? undefined : { refresh: true }, {
             signal: AbortSignal.timeout(BILLING_REQUEST_TIMEOUT_MS),
           });
-          if (current()) {
+          if (currentRequest()) {
             setRefreshError(null);
             denied = !status.access;
             if (status.access) setHasOpened(true);
             setState(gateFor(status));
           }
         } catch (error) {
-          if (!current()) return;
+          if (!currentRequest()) return;
           // Initial lookup failure still enters the app; API admission is authoritative.
           if (initial) {
             setState({ kind: "open" });
@@ -137,6 +142,10 @@ export function SubscriptionGate({
         }
       })().finally(() => {
         inFlight = undefined;
+        if (queuedRefresh) {
+          queuedRefresh = false;
+          if (current()) void refresh();
+        }
       });
       return inFlight;
     }
@@ -149,6 +158,9 @@ export function SubscriptionGate({
     document.addEventListener("visibilitychange", recheckVisible);
     const stopDenied = subscribeSubscriptionRequired(() => {
       if (!current()) return;
+      denialGeneration += 1;
+      bills = undefined;
+      if (inFlight) queuedRefresh = true;
       setDismissed(false);
       denied = true;
       setState((previous) =>
@@ -158,6 +170,8 @@ export function SubscriptionGate({
     });
     return () => {
       active = false;
+      denialGeneration += 1;
+      queuedRefresh = false;
       stopDenied();
       window.removeEventListener("focus", recheckVisible);
       document.removeEventListener("visibilitychange", recheckVisible);
