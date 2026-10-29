@@ -8,9 +8,7 @@ import {
   isFarewell,
   isInterimCallBargeIn,
   latestSpokenCallReply,
-  recognitionLanguage,
   spokenMemory,
-  transcriptionLanguageHint,
 } from "@rakazo/core";
 import type { AudioRecorder } from "expo-audio";
 import { File } from "expo-file-system";
@@ -33,7 +31,8 @@ import {
   stopWaitSound,
 } from "./call-sounds";
 import * as dictation from "./dictation";
-import { getActiveUiLocale, t } from "./i18n";
+import { t } from "./i18n";
+import { recognitionLanguage, transcriptionLanguage } from "./speech-locale";
 import { errorText } from "./user-error";
 import { speakText, stopSpeaking } from "./voice";
 
@@ -645,7 +644,7 @@ function productionDeps(): CallDeps {
 /** The device's own speech recognition, which works with a speak-only voice provider. */
 async function dictateTurn(handlers: DictationHandlers, signal: AbortSignal): Promise<boolean> {
   if (!(await dictation.available())) return false;
-  await dictation.listen({ ...handlers, signal, lang: recognitionLanguage(getActiveUiLocale()) });
+  await dictation.listen({ ...handlers, signal, lang: recognitionLanguage() });
   return true;
 }
 
@@ -712,7 +711,7 @@ async function transcribeClip(clip: CallClip, signal: AbortSignal): Promise<stri
     body: JSON.stringify({
       audioBase64: clip.base64,
       mimeType: clip.mimeType,
-      language: transcriptionLanguageHint(getActiveUiLocale()),
+      language: transcriptionLanguage(),
     }),
     signal,
   });

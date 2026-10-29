@@ -2,12 +2,8 @@ import { useSyncExternalStore } from "react";
 import { DE_MESSAGES } from "./locales/de";
 import { RU_MESSAGES } from "./locales/ru";
 import { ZH_MESSAGES } from "./locales/zh";
-import {
-  htmlLangForLocale,
-  resolveUiLocale,
-  UI_LOCALE_STORAGE_KEY,
-  type UiLocale,
-} from "./ui-locale";
+import type { UiLocale } from "./ui-locale";
+import { htmlLangForLocale, resolveUiLocale, UI_LOCALE_STORAGE_KEY } from "./ui-locale";
 
 const catalogs: Partial<Record<UiLocale, Record<string, string>>> = {
   "zh-CN": ZH_MESSAGES,
@@ -16,6 +12,8 @@ const catalogs: Partial<Record<UiLocale, Record<string, string>>> = {
 };
 
 let activeLocale: UiLocale = "en";
+let hasUiLocalePreference = false;
+let deviceSpeechLocale: string | null = null;
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -31,6 +29,16 @@ export function subscribeI18n(listener: () => void): () => void {
 
 export function getActiveUiLocale(): UiLocale {
   return activeLocale;
+}
+
+/** A saved/configured UI choice is distinct from English display fallback. */
+export function getUiLocalePreference(): UiLocale | undefined {
+  return hasUiLocalePreference ? activeLocale : undefined;
+}
+
+/** Keep the device's original BCP-47 tag even when it has no UI catalog. */
+export function getDeviceSpeechLocale(): string | undefined {
+  return deviceSpeechLocale ?? readDeviceLanguage() ?? undefined;
 }
 
 export function dateLocaleForUi(locale: UiLocale = activeLocale): string {
@@ -97,6 +105,12 @@ export async function bootstrapI18n(): Promise<UiLocale> {
       ? process.env.EXPO_PUBLIC_DEFAULT_UI_LOCALE
       : null;
   const locale = resolveUiLocale({ stored, envDefault, deviceLanguage });
+  const preference = stored || envDefault;
+  // Unknown saved/configured values can fall back to English without selecting it.
+  hasUiLocalePreference = Boolean(
+    preference && (locale !== "en" || /^en(?:[-_]|$)/i.test(preference.trim())),
+  );
+  deviceSpeechLocale = deviceLanguage;
   activateUiLocale(locale);
   await applyDirection(locale);
   return locale;
@@ -117,6 +131,7 @@ let uiLocaleWriteChain: Promise<void> = Promise.resolve();
 export async function setUiLocale(locale: UiLocale): Promise<UiLocale> {
   const write = uiLocaleWriteChain.then(async () => {
     await persistUiLocale(locale);
+    hasUiLocalePreference = true;
     activateUiLocale(locale);
     await applyDirection(locale);
     return locale;
@@ -131,6 +146,8 @@ export async function setUiLocale(locale: UiLocale): Promise<UiLocale> {
 /** Test-only: set the in-memory locale without I/O. */
 export function resetI18nForTests(locale: UiLocale = "en"): void {
   activeLocale = locale;
+  hasUiLocalePreference = true;
+  deviceSpeechLocale = null;
   uiLocaleWriteChain = Promise.resolve();
   emit();
 }

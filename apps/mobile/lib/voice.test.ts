@@ -1,9 +1,11 @@
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
+import { getLocales } from "expo-localization";
 import * as SecureStore from "expo-secure-store";
 import * as Speech from "expo-speech";
 import { Platform } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureApiRequestContext, currentApiBase, noteSubscriptionRequired, rpc } from "./api";
+import { bootstrapI18n } from "./i18n";
 import {
   deviceSpeechAvailable,
   getVoicePlaybackState,
@@ -20,7 +22,7 @@ import {
   VOICE_RESPONSE_TIMEOUT_MS,
 } from "./voice";
 
-vi.mock("expo-localization", () => ({ getLocales: () => [{ languageTag: "en-US" }] }));
+vi.mock("expo-localization", () => ({ getLocales: vi.fn(() => [{ languageTag: "en-US" }]) }));
 
 vi.mock("./ai-consent", () => ({ promptAiConsent: vi.fn() }));
 vi.mock("expo-file-system", () => ({
@@ -994,3 +996,77 @@ describe("on-device speech", () => {
     await expect(second).resolves.toBe(true);
   });
 });
+
+describe.each(["hosted", "device"] as const)(
+  "output %s speech keeps its existing voice contract",
+  (path) => {
+    afterEach(() => {
+      stopVoicePlayback();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+      vi.mocked(getLocales).mockReturnValue([{ languageTag: "en-US" }] as unknown as ReturnType<
+        typeof getLocales
+      >);
+    });
+    it.each([
+      { device: "es-ES", stored: null },
+      { device: "it-IT", stored: null },
+      { device: "zh-TW", stored: null },
+      { device: "unknown", stored: null },
+      { device: "it-IT", stored: "en" },
+      { device: "zh-TW", stored: "zh-CN" },
+    ])(
+      "does not apply input language hints to $device / stored $stored output",
+      async ({ device, stored }) => {
+        vi.stubEnv("EXPO_PUBLIC_DEFAULT_UI_LOCALE", "");
+        vi.mocked(getLocales).mockReturnValue([{ languageTag: device }] as unknown as ReturnType<
+          typeof getLocales
+        >);
+        vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) =>
+          key === "rakazo.uiLocale"
+            ? stored
+            : key === "rakazo.device-voice" && path === "device"
+              ? "1"
+              : null,
+        );
+        await bootstrapI18n();
+        vi.mocked(Speech.stop).mockReset().mockResolvedValue();
+        vi.mocked(Speech.speak)
+          .mockReset()
+          .mockImplementation((_text, opts) => {
+            opts?.onDone?.();
+          });
+        vi.mocked(Speech.getAvailableVoicesAsync).mockClear();
+        const requestContext = {
+          apiBase: "https://voice.example.test",
+          headers: { authorization: "Bearer synthetic", "x-rakazo-space-id": "space-input" },
+        };
+        vi.mocked(captureApiRequestContext).mockReset().mockResolvedValue(requestContext);
+        vi.mocked(rpc)
+          .mockReset()
+          .mockResolvedValue({ ready: true, utterances: ["Read this"] } as never);
+        const fetchMock = vi.fn(
+          async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+        );
+        vi.stubGlobal("fetch", fetchMock);
+        vi.stubGlobal("Audio", FakeAudio);
+        await expect(speakText("Read this")).resolves.toBe(true);
+        if (path === "device") {
+          expect(Speech.speak).toHaveBeenCalledOnce();
+          expect(vi.mocked(Speech.speak).mock.calls[0]![1]).not.toHaveProperty("language");
+          expect(vi.mocked(Speech.speak).mock.calls[0]![1]).not.toHaveProperty("voice");
+          expect(Speech.getAvailableVoicesAsync).not.toHaveBeenCalled();
+          expect(rpc).not.toHaveBeenCalled();
+          expect(fetchMock).not.toHaveBeenCalled();
+        } else {
+          expect(fetchMock).toHaveBeenCalledOnce();
+          const [url, init] = vi.mocked(fetch).mock.calls[0]!;
+          expect(url).toBe("https://voice.example.test/api/voice/speak");
+          expect(JSON.parse(init!.body as string)).toEqual({ text: "Read this" });
+          expect(init!.headers).toMatchObject(requestContext.headers);
+          expect(Speech.speak).not.toHaveBeenCalled();
+        }
+      },
+    );
+  },
+);
