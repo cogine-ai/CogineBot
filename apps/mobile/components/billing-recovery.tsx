@@ -53,6 +53,8 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
   const [owner] = useState(captureMobileScope);
   const alive = useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
+  const denialRevision = useRef(0);
+  const refreshQueued = useRef(false);
   const actionBusy = useRef(false);
   const actionRevision = useRef(0);
   const denied = useRef(false);
@@ -76,14 +78,17 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
     async function load() {
       if (!current()) return;
       if (inFlight.current) return inFlight.current;
-      const initial = !checked.current;
+      refreshQueued.current = false;
+      const revision = denialRevision.current;
+      const responseCurrent = () => current() && revision === denialRevision.current;
+      const initial = !checked.current && !denied.current;
       setView((previous) => ({ ...previous, pending: true }));
       const operation = async () => {
         try {
-          if (!(await loadSessionToken()) || !current()) return;
+          if (!(await loadSessionToken()) || !responseCurrent()) return;
           const capabilities = await passwordResetCapabilities();
-          if (!current()) return;
-          if (!capabilities.billing) {
+          if (!responseCurrent()) return;
+          if (!capabilities.billing && !denied.current) {
             denied.current = false;
             actionRevision.current += 1;
             setView((previous) => ({ ...previous, denied: false, status: null, recovery: null }));
@@ -91,11 +96,11 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
           }
           const requestContext = {
             ...(await captureApiRequestContext(owner.spaceId)),
-            isCurrent: current,
+            isCurrent: responseCurrent,
           };
-          if (!current()) return;
+          if (!responseCurrent()) return;
           const me = await rpc<Me>("me", {}, { requestContext });
-          if (!current()) return;
+          if (!responseCurrent()) return;
           if (!me.billingEnabled || me.isDeploymentOwner) {
             denied.current = false;
             actionRevision.current += 1;
@@ -107,7 +112,7 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
             initial ? {} : { refresh: true },
             { requestContext },
           );
-          if (!current()) return;
+          if (!responseCurrent()) return;
           denied.current = !status.access;
           if (status.access) actionRevision.current += 1;
           setView((previous) => ({
@@ -120,9 +125,9 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
           if (!status.access) {
             const accountContext = {
               ...(await captureApiRequestContext(null)),
-              isCurrent: current,
+              isCurrent: responseCurrent,
             };
-            if (!current()) return;
+            if (!responseCurrent()) return;
             const navigation = await rpc<SpaceNavigation>(
               "spaces/list",
               {},
@@ -130,17 +135,17 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
                 requestContext: accountContext,
               },
             ).catch(() => null);
-            if (current() && navigation)
+            if (responseCurrent() && navigation)
               setView((previous) => ({ ...previous, spaces: navigation.spaces }));
           }
         } catch (error) {
-          if (!current()) return;
+          if (!responseCurrent()) return;
           let recovery = accessRecoveryState(error);
           if (recovery === "session_expired") {
             // The existing safe read distinguishes a lost Space from an expired session,
             // retains the rejected editor, and never replays the failed mutation.
             const me = await rpc<Me>("me").catch(() => null);
-            if (!current()) return;
+            if (!responseCurrent()) return;
             if (me) recovery = "space_forbidden";
           }
           if (!initial && (recovery === "session_expired" || recovery === "space_forbidden"))
@@ -156,12 +161,16 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
             }));
           }
         } finally {
-          checked.current = true;
-          if (current()) setView((previous) => ({ ...previous, pending: false }));
+          if (responseCurrent()) {
+            checked.current = true;
+            setView((previous) => ({ ...previous, pending: false }));
+          }
         }
       };
       const request = operation().finally(() => {
-        if (inFlight.current === request) inFlight.current = null;
+        if (inFlight.current !== request) return;
+        inFlight.current = null;
+        if (current() && refreshQueued.current) void load();
       });
       inFlight.current = request;
       return request;
@@ -170,6 +179,9 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
     void load();
     const unsubscribe = subscribeSubscriptionRequired(() => {
       if (!current()) return;
+      // Recovery needs a read started after this denial, not an older in-flight snapshot.
+      denialRevision.current += 1;
+      refreshQueued.current = true;
       denied.current = true;
       setDismissed(false);
       setView((previous) => ({
@@ -186,6 +198,9 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
     });
     return () => {
       alive.current = false;
+      denialRevision.current += 1;
+      refreshQueued.current = false;
+      inFlight.current = null;
       actionRevision.current += 1;
       unsubscribe();
       foreground.remove();
