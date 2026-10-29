@@ -98,6 +98,28 @@ async function render(overrides: Partial<BillingStatus> = {}) {
   );
   return container;
 }
+function mockRequestDeadline() {
+  vi.useFakeTimers();
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+    const controller = new AbortController();
+    setTimeout(
+      () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+      milliseconds,
+    );
+    return controller.signal;
+  });
+}
+function watchNavigation() {
+  const originalWindow = window;
+  vi.stubGlobal(
+    "window",
+    new Proxy(originalWindow, {
+      get(target, key, receiver) {
+        return key === "location" ? { assign: api.assign } : Reflect.get(target, key, receiver);
+      },
+    }),
+  );
+}
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   current = true;
@@ -105,10 +127,15 @@ beforeEach(() => {
   api.checkout.mockReset();
   api.portal.mockReset();
   api.logout.mockReset().mockResolvedValue(undefined);
+  api.list.mockReset().mockResolvedValue({ spaces: [] });
+  api.assign.mockReset();
 });
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 it("offers members Space recovery without an ineffective purchase action", async () => {
@@ -223,4 +250,103 @@ it("does not navigate after the paywall unmounts while the same scope remains cu
   );
   await act(async () => pending.resolve({ url: "https://billing.example.test/checkout" }));
   expect(assign).not.toHaveBeenCalled();
+});
+
+it("aborts a hung Space lookup and restores recovery controls for a safe retry", async () => {
+  mockRequestDeadline();
+  watchNavigation();
+  let signal: AbortSignal | undefined;
+  api.list.mockImplementationOnce((_input, options?: { signal?: AbortSignal }) => {
+    signal = options?.signal;
+    return new Promise<never>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal?.reason), { once: true });
+    });
+  });
+  const node = await render({ canManage: false });
+  const switchSpace = [...node.querySelectorAll("button")].find(
+    (button) => button.textContent === "Switch Space",
+  )!;
+  const back = [...node.querySelectorAll("button")].find(
+    (button) => button.textContent === "Back to chats",
+  )!;
+  await act(async () => {
+    switchSpace.click();
+    switchSpace.click();
+  });
+  expect(api.list).toHaveBeenCalledTimes(1);
+  expect(switchSpace.disabled).toBe(true);
+  expect(back.disabled).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(14_999));
+  expect(switchSpace.disabled).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(switchSpace.disabled).toBe(false);
+  expect(back.disabled).toBe(false);
+  expect(signal?.aborted).toBe(true);
+  expect(signal?.reason).toMatchObject({ name: "TimeoutError" });
+  expect(node.textContent).toContain("Could not load Spaces");
+  expect(api.assign).not.toHaveBeenCalled();
+  expect(api.logout).not.toHaveBeenCalled();
+  api.list.mockResolvedValueOnce({ spaces: [{ id: "space-2", name: "Another Space" }] });
+  await act(async () => switchSpace.click());
+  expect(api.list).toHaveBeenCalledTimes(2);
+  expect(switchSpace.disabled).toBe(false);
+  expect(node.textContent).toContain("Another Space");
+  expect(node.querySelector('[role="alert"]')).toBeNull();
+  expect(api.assign).not.toHaveBeenCalled();
+  expect(api.logout).not.toHaveBeenCalled();
+});
+
+it.each(["scope", "unmount"])("ignores a late Space result after %s disposal", async (owner) => {
+  watchNavigation();
+  const pending = deferred<{ spaces: Array<{ id: string; name: string }> }>();
+  api.list.mockReturnValue(pending.promise);
+  const node = await render({ canManage: false });
+  await act(async () =>
+    [...node.querySelectorAll("button")]
+      .find((button) => button.textContent === "Switch Space")!
+      .click(),
+  );
+  await act(async () => {
+    if (owner === "scope") current = false;
+    else {
+      root!.unmount();
+      root = undefined;
+    }
+    pending.resolve({ spaces: [{ id: "old-space", name: "Old Space" }] });
+  });
+  expect(node.textContent).not.toContain("Old Space");
+  expect(node.querySelector("fieldset")).toBeNull();
+  expect(api.assign).not.toHaveBeenCalled();
+  expect(api.logout).not.toHaveBeenCalled();
+});
+
+it.each(["scope", "unmount"])("ignores a Space timeout after %s disposal", async (owner) => {
+  mockRequestDeadline();
+  watchNavigation();
+  let signal: AbortSignal | undefined;
+  api.list.mockImplementationOnce((_input, options?: { signal?: AbortSignal }) => {
+    signal = options?.signal;
+    return new Promise<never>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal?.reason), { once: true });
+    });
+  });
+  const node = await render({ canManage: false });
+  await act(async () =>
+    [...node.querySelectorAll("button")]
+      .find((button) => button.textContent === "Switch Space")!
+      .click(),
+  );
+  await act(async () => {
+    if (owner === "scope") current = false;
+    else {
+      root!.unmount();
+      root = undefined;
+    }
+    await vi.advanceTimersByTimeAsync(15_000);
+  });
+  expect(signal?.aborted).toBe(true);
+  expect(node.textContent).not.toContain("Could not load Spaces");
+  expect(api.list).toHaveBeenCalledTimes(1);
+  expect(api.assign).not.toHaveBeenCalled();
+  expect(api.logout).not.toHaveBeenCalled();
 });
