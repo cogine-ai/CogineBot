@@ -331,6 +331,150 @@ describe("native access recovery", () => {
     await act(async () => response.resolve(unpaid({ access: true, state: "active" })));
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
+  it.each(["active", "error"])(
+    "retains a newer denial while an older initial lookup returns %s",
+    async (outcome) => {
+      const old = deferred<BillingStatus>();
+      const refreshed = deferred<BillingStatus>();
+      let reads = 0;
+      state.rpc.mockImplementation(async (procedure: string) => {
+        if (procedure === "me") return me;
+        if (procedure === "billing/status") return ++reads === 1 ? old.promise : refreshed.promise;
+        return { spaces: [] };
+      });
+      await render();
+      await act(async () => {
+        for (const listener of state.deniedListeners) {
+          listener();
+          listener();
+          listener();
+        }
+      });
+      expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(statusCalls()).toHaveLength(1);
+      await act(async () => {
+        if (outcome === "active") old.resolve(unpaid({ access: true, state: "active" }));
+        else old.reject(new Error("old lookup failed"));
+      });
+      expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(statusCalls()).toHaveLength(2);
+      expect(statusCalls()[1]?.[1]).toEqual({ refresh: true });
+      expect(container.textContent).not.toContain("$12");
+      await act(async () => refreshed.resolve(unpaid()));
+      expect(button("Start 7-day free trial").disabled).toBe(false);
+    },
+  );
+  it("queues a fresh lookup for a denial that arrives during the forced recheck", async () => {
+    const first = deferred<BillingStatus>();
+    const second = deferred<BillingStatus>();
+    const third = deferred<BillingStatus>();
+    const responses = [first, second, third];
+    let reads = 0;
+    state.rpc.mockImplementation(async (procedure: string) => {
+      if (procedure === "me") return me;
+      if (procedure === "billing/status") return responses[reads++]?.promise;
+      return { spaces: [] };
+    });
+    await render();
+    await act(async () => {
+      for (const listener of state.deniedListeners) listener();
+      first.resolve(unpaid({ access: true }));
+    });
+    expect(statusCalls()).toHaveLength(2);
+    await act(async () => {
+      for (const listener of state.deniedListeners) {
+        listener();
+        listener();
+      }
+    });
+    expect(statusCalls()).toHaveLength(2);
+    await act(async () => second.resolve(unpaid({ access: true })));
+    expect(statusCalls()).toHaveLength(3);
+    expect(statusCalls()[2]?.[1]).toEqual({ refresh: true });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => third.reject(new Error("current refresh failed")));
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(button("Retry").disabled).toBe(false);
+    expect(statusCalls()).toHaveLength(3);
+  });
+  it("does not carry a queued denial refresh into a newly selected Space", async () => {
+    const old = deferred<BillingStatus>();
+    state.rpc.mockImplementation(async (procedure: string) => {
+      if (procedure === "me") return me;
+      if (procedure === "billing/status")
+        return state.scope.spaceId === "space-a" ? old.promise : unpaid({ access: true });
+      return { spaces: [] };
+    });
+    await render();
+    await act(async () => {
+      for (const listener of state.deniedListeners) listener();
+    });
+    await changeScope({ spaceId: "space-b", spaceGeneration: 1, selectionSeq: 1 });
+    expect(statusCalls()).toHaveLength(2);
+    await act(async () => old.resolve(unpaid({ access: true })));
+    expect(statusCalls()).toHaveLength(2);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+  it("does not revive a queued lookup after a recovery-route A to B to A", async () => {
+    const old = deferred<BillingStatus>();
+    const refreshed = deferred<BillingStatus>();
+    let reads = 0;
+    state.rpc.mockImplementation(async (procedure: string) => {
+      if (procedure === "me") return me;
+      if (procedure === "billing/status") return ++reads === 1 ? old.promise : refreshed.promise;
+      return { spaces: [] };
+    });
+    await render();
+    await act(async () => {
+      for (const listener of state.deniedListeners) listener();
+    });
+    state.pathname = "/server";
+    await render();
+    state.pathname = "/";
+    await render();
+    expect(statusCalls()).toHaveLength(2);
+    await act(async () => old.resolve(unpaid({ access: true })));
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(button("Retry").disabled).toBe(true);
+    expect(statusCalls()).toHaveLength(2);
+    await act(async () => refreshed.resolve(unpaid()));
+    expect(button("Retry").disabled).toBe(false);
+    expect(statusCalls()).toHaveLength(2);
+  });
+  it("does not let an older optional-billing result dismiss a newer server denial", async () => {
+    const oldCapabilities = deferred<{ billing: boolean }>();
+    const refreshed = deferred<BillingStatus>();
+    state.capabilities.mockImplementationOnce(() => oldCapabilities.promise);
+    state.rpc.mockImplementation(async (procedure: string) => {
+      if (procedure === "me") return me;
+      if (procedure === "billing/status") return refreshed.promise;
+      return { spaces: [] };
+    });
+    await render();
+    await act(async () => {
+      for (const listener of state.deniedListeners) listener();
+      oldCapabilities.resolve({ billing: false });
+    });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(statusCalls()).toHaveLength(1);
+    expect(statusCalls()[0]?.[1]).toEqual({ refresh: true });
+    await act(async () => refreshed.resolve(unpaid()));
+    expect(button("Start 7-day free trial").disabled).toBe(false);
+  });
+  it("rechecks current identity after a denial despite cached optional-billing capabilities", async () => {
+    state.capabilities.mockResolvedValue({ billing: false });
+    await render();
+    expect(statusCalls()).toHaveLength(0);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => {
+      for (const listener of state.deniedListeners) listener();
+    });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(statusCalls()).toHaveLength(1);
+    expect(statusCalls()[0]?.[1]).toEqual({ refresh: true });
+    expect(button("Start 7-day free trial").disabled).toBe(false);
+  });
   it("retains a denial and error when provider refresh fails", async () => {
     await render();
     state.rpc.mockImplementation(async (procedure: string) => {
