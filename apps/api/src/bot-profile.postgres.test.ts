@@ -274,7 +274,7 @@ describePostgres("independent bot profile HTTP acceptance", () => {
       expectedInstructions: "Original rules",
     };
     // A foreign Space header fails membership before the bot endpoint gets an actor.
-    expect((await raw(stranger.cookie, "bots/update", input, owner.me.spaceId)).status).toBe(401);
+    expect((await raw(stranger.cookie, "bots/update", input, owner.me.spaceId)).status).toBe(403);
     // Existing bot-scope failures reach the generic opaque-error boundary.
     const foreignBot = await raw(stranger.cookie, "bots/update", input);
     expect(foreignBot.status).toBe(500);
