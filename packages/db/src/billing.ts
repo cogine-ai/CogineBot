@@ -43,7 +43,7 @@ export async function hasFreshBillingStatus(
   const [row] = await prisma.$queryRaw<[{ fresh: boolean }]>(Prisma.sql`
     SELECT EXISTS (
       SELECT 1 FROM billing_accounts WHERE "organizationId" = ${organizationId}
-        AND "syncedAt" > clock_timestamp() - (${BILLING_STATUS_FRESH_MS}::double precision * interval '1 millisecond')
+        AND "syncedAt" > (clock_timestamp() AT TIME ZONE 'UTC') - (${BILLING_STATUS_FRESH_MS}::double precision * interval '1 millisecond')
         AND ("statusRefreshStartedAt" IS NULL OR "syncedAt" >= "statusRefreshStartedAt")
     ) AS "fresh"
   `);
@@ -59,7 +59,7 @@ export function claimBillingStatusRefresh(
     async (tx) => {
       await tx.$executeRaw(Prisma.sql`SET LOCAL lock_timeout = '100ms'`);
       const [clock] = await tx.$queryRaw<[{ now: Date; acquired: boolean }]>(Prisma.sql`
-      SELECT clock_timestamp() AS "now",
+      SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now",
         pg_try_advisory_xact_lock(hashtextextended(${`billing-status:${organizationId}`}, 3)) AS "acquired"
     `);
       if (!clock.acquired) return { state: "busy", retryAfterSeconds: 1 };
@@ -98,9 +98,10 @@ export async function syncBillingSnapshot(
   customerId: string,
   load: () => Promise<BillingSubscriptionSnapshot | null>,
 ): Promise<boolean> {
-  // The database clock, so API instances with skewed clocks still order correctly.
+  // A UTC timestamp keeps the adapter's Date conversion independent of the session timezone.
+  // The database clock still orders API instances with skewed local clocks.
   const [{ startedAt }] = await prisma.$queryRaw<[{ startedAt: Date }]>(
-    Prisma.sql`SELECT clock_timestamp() AS "startedAt"`,
+    Prisma.sql`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "startedAt"`,
   );
   const snapshot = await load();
   const written = await prisma.billingAccount.updateMany({

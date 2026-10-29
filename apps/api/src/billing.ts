@@ -58,14 +58,25 @@ export function createBillingService(deps: {
       message: "Could not refresh billing",
       data: { reason: "billing_unavailable", retryAfterSeconds },
     });
+  const expectedUnavailable = (error: unknown) =>
+    error instanceof ORPCError &&
+    error.code === "SERVICE_UNAVAILABLE" &&
+    typeof error.data === "object" &&
+    error.data !== null &&
+    "reason" in error.data &&
+    error.data.reason === "billing_unavailable";
+  const reportFailure = (error: unknown): never => {
+    getLogger().error("billing status refresh failed", error);
+    throw error;
+  };
 
   async function refreshStatus(organizationId: string): Promise<void> {
     let pending = statusRefreshes.get(organizationId);
     if (!pending) {
       const promise = (async () => {
-        const claim = await claimBillingStatusRefresh(prisma, organizationId);
+        const claim = await claimBillingStatusRefresh(prisma, organizationId).catch(reportFailure);
         if (claim.state === "busy") throw unavailable(claim.retryAfterSeconds);
-        if (claim.state === "claimed") await sync(claim.customerId);
+        if (claim.state === "claimed") await sync(claim.customerId).catch(reportFailure);
       })().finally(() => {
         if (statusRefreshes.get(organizationId)?.promise === promise)
           statusRefreshes.delete(organizationId);
@@ -84,15 +95,7 @@ export function createBillingService(deps: {
         }),
       ]);
     } catch (error) {
-      if (
-        error instanceof ORPCError &&
-        error.code === "SERVICE_UNAVAILABLE" &&
-        typeof error.data === "object" &&
-        error.data !== null &&
-        "reason" in error.data &&
-        error.data.reason === "billing_unavailable"
-      )
-        throw error;
+      if (expectedUnavailable(error)) throw error;
       throw unavailable(15);
     } finally {
       clearTimeout(timer);
