@@ -571,7 +571,7 @@ whole GiB; the volume requirement accepts only `0` or `1`.
 The size estimate uses source growth, a 25% margin and an additional GiB. Each dump/archive output
 is capped using the remaining budget and free space, and final metadata is included in the checks.
 Other processes can still consume disk space during the backup. Insufficient space, invalid
-capacity readings or a failed write leave existing completed snapshots intact. Unfinished
+capacity readings or a failed write leave protected completed snapshots intact. Unfinished
 snapshot directories are removed under the same lock on a later run.
 
 `SHA256SUMS` is published only after the dump and archive can be listed, checksums have been

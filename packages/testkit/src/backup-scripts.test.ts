@@ -312,6 +312,14 @@ process.exit(process.env.LOCK_BUSY === "1" ? 1 : 0);
       });
       return { ...result, diagnostics };
     },
+    setStamp(stamp: string) {
+      const date = path.join(bin, "date");
+      write(
+        date,
+        `#!/bin/bash\nif [[ "$*" == '-u +%Y%m%dT%H%M%SZ' ]]; then echo '${stamp}'; else exec /bin/date "$@"; fi\n`,
+      );
+      chmodSync(date, 0o755);
+    },
     start(overrides: NodeJS.ProcessEnv = {}) {
       const child = spawn("/bin/bash", [path.join(checkout, "infra/compose/backup-prod.sh")], {
         cwd: root,
@@ -351,6 +359,13 @@ process.exit(process.env.LOCK_BUSY === "1" ? 1 : 0);
 /** Snapshot directories, without the backup lock file. */
 function snapshotNames(root: string) {
   return existsSync(root) ? readdirSync(root).filter((name) => name !== ".lock") : [];
+}
+
+function nextStamp() {
+  return new Date(Date.now() + 60_000)
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -1001,12 +1016,7 @@ describe("production backup deployment and archive behavior", () => {
     expect(first.status, first.stderr).toBe(0);
     const snapshot = first.stdout.trim().split("written to ")[1],
       manifest = readFileSync(path.join(snapshot, "SHA256SUMS"), "utf8");
-    const date = path.join(f.root, "bin/date");
-    write(
-      date,
-      `#!/bin/bash\nif [[ "$*" == '-u +%Y%m%dT%H%M%SZ' ]]; then echo '${path.basename(snapshot)}'; else exec /bin/date "$@"; fi\n`,
-    );
-    chmodSync(date, 0o755);
+    f.setStamp(path.basename(snapshot));
     const before = f.commands().length,
       second = f.run("infra/compose/backup-prod.sh", [], { FAIL_DUMP: "1" });
     expect(second.status).not.toBe(0);
@@ -1099,16 +1109,7 @@ describe.skipIf(process.platform !== "linux")(
         expect(existsSync(old)).toBe(true);
         if (signal === "SIGKILL") {
           expect(snapshotNames(f.snapshots).length).toBeGreaterThan(1);
-          const nextStamp = new Date(Date.now() + 60_000)
-            .toISOString()
-            .replace(/[-:]/g, "")
-            .replace(/\.\d{3}Z$/, "Z");
-          const date = path.join(f.root, "bin/date");
-          write(
-            date,
-            `#!/bin/bash\nif [[ "$*" == '-u +%Y%m%dT%H%M%SZ' ]]; then echo '${nextStamp}'; else exec /bin/date "$@"; fi\n`,
-          );
-          chmodSync(date, 0o755);
+          f.setStamp(nextStamp());
           const next = f.run("infra/compose/backup-prod.sh", [], { FREE_KB: "1" });
           expect(next.status).not.toBe(0);
         }
@@ -1127,16 +1128,7 @@ describe.skipIf(process.platform !== "linux")(
       expect(refused.stderr).toContain("Another Rakazo backup is running");
       write(f.env.DUMP_RELEASE, "release");
       await first.result;
-      const nextStamp = new Date(Date.now() + 60_000)
-        .toISOString()
-        .replace(/[-:]/g, "")
-        .replace(/\.\d{3}Z$/, "Z");
-      const date = path.join(f.root, "bin/date");
-      write(
-        date,
-        `#!/bin/bash\nif [[ "$*" == '-u +%Y%m%dT%H%M%SZ' ]]; then echo '${nextStamp}'; else exec /bin/date "$@"; fi\n`,
-      );
-      chmodSync(date, 0o755);
+      f.setStamp(nextStamp());
       const next = f.run("infra/compose/backup-prod.sh", [], { FREE_KB: "1" });
       expect(next.status).not.toBe(0);
       expect(snapshotNames(f.snapshots)).toEqual([]);
