@@ -33,6 +33,11 @@ afterEach(() => {
   api.me.mockReset();
   api.generation = 0;
   api.space = "space-old";
+  if (vi.isFakeTimers()) {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 async function render() {
@@ -88,6 +93,61 @@ it("does not recover an old A to B to A selection after a late read", async () =
   await act(async () => f.node.querySelector("button")!.click());
   api.generation += 2;
   await act(async () => resolve({ userId: "user-fake" }));
+  expect(f.signIn).not.toHaveBeenCalled();
+  expect(f.recover).not.toHaveBeenCalled();
+});
+
+function useTimedAbort() {
+  vi.useFakeTimers();
+  // The platform timeout uses its own clock; use a controlled clock with a real AbortSignal.
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+    const controller = new AbortController();
+    setTimeout(
+      () => controller.abort(new DOMException("Request timed out", "TimeoutError")),
+      milliseconds,
+    );
+    return controller.signal;
+  });
+}
+function stalledAuthProbe(_input: undefined, options?: { signal?: AbortSignal }) {
+  return new Promise<never>((_resolve, reject) => {
+    const signal = options?.signal;
+    if (!signal) return;
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+}
+it("bounds a stalled auth probe and permits a new recovery attempt without signing out", async () => {
+  useTimedAbort();
+  api.me.mockImplementation(stalledAuthProbe);
+  const f = await render();
+  await act(async () => {
+    f.node.querySelector("button")!.click();
+    f.node.querySelector("button")!.click();
+  });
+  expect(api.me).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(14_999));
+  expect(f.retry).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(f.retry).toHaveBeenCalledOnce();
+  expect(f.signIn).not.toHaveBeenCalled();
+  expect(f.recover).not.toHaveBeenCalled();
+  await act(async () => f.node.querySelector("button")!.click());
+  expect(api.me).toHaveBeenCalledTimes(2);
+});
+
+it.each(["space-aba", "unmount"])("ignores a timed-out auth probe after %s", async (boundary) => {
+  useTimedAbort();
+  api.me.mockImplementation(stalledAuthProbe);
+  const f = await render();
+  await act(async () => f.node.querySelector("button")!.click());
+  if (boundary === "space-aba") api.generation += 2;
+  else {
+    act(() => root?.unmount());
+    root = undefined;
+  }
+  await act(async () => vi.advanceTimersByTimeAsync(15_000));
+  expect(api.me.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  expect(f.retry).not.toHaveBeenCalled();
   expect(f.signIn).not.toHaveBeenCalled();
   expect(f.recover).not.toHaveBeenCalled();
 });

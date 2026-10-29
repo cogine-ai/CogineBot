@@ -189,8 +189,11 @@ export function PaywallPage({
             if (busy.current || !current()) return;
             busy.current = true;
             setPending(true);
+            setError(null);
             void createSpaceRpc(null, current)
-              .spaces.list()
+              .spaces.list(undefined, {
+                signal: AbortSignal.timeout(BILLING_REQUEST_TIMEOUT_MS),
+              })
               .then((navigation) => {
                 if (current()) setSpaces(navigation.spaces);
               })

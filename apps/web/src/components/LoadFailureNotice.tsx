@@ -2,6 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import { accessRecoveryState, loadFailureKind } from "@rakazo/core";
 import { Button } from "@rakazo/ui-web";
 import { useEffect, useRef } from "react";
+import { BILLING_REQUEST_TIMEOUT_MS } from "../lib/billing";
 import { createSpaceRpc, currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
 
 export function LoadFailureNotice({
@@ -44,7 +45,9 @@ export function LoadFailureNotice({
         try {
           // A missing selected membership also returns401. Probe a read only,
           // never replay the original write in a different Space.
-          await createSpaceRpc(null, current).me();
+          await createSpaceRpc(null, current).me(undefined, {
+            signal: AbortSignal.timeout(BILLING_REQUEST_TIMEOUT_MS),
+          });
           if (current()) onRecoverSpace();
           return;
         } catch (error) {
