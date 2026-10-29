@@ -308,5 +308,82 @@
     ],
     "spoken": "A\t B one two\t chart",
     "nativeSpoken": "A\tB\none<br>two\t<img src=x alt=chart>"
+  },
+  {
+    "name": "native remote image whitespace alt retains visible host",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![   ](https://whitespace.example.test/auto.png)"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "whitespace.example.test"
+  },
+  {
+    "name": "literal HTML with whitespace-alt image retains visible host",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<div>![   ](https://whitespace.example.test/auto.png)</div>"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "<div>whitespace.example.test</div>"
+  },
+  {
+    "name": "native meaningful image alt keeps original surrounding spaces",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![  chart  ](https://whitespace.example.test/auto.png)"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "  chart  "
+  },
+  {
+    "name": "inline data image whitespace alt does not expose its source",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![   ](data:image/png;base64,aA==)"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": ""
+  },
+  {
+    "name": "nonremote whitespace alt does not expose an otherwise hidden source",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![   ](local-image.png)"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": ""
+  },
+  {
+    "name": "native remote NBSP-only alt retains host",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![ ](https://whitespace.example.test/auto.png)"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "whitespace.example.test"
+  },
+  {
+    "name": "native remote tab-only alt retains host",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![\t](https://whitespace.example.test/auto.png)"
+      }
+    ],
+    "spoken": "",
+    "nativeSpoken": "whitespace.example.test"
   }
 ]

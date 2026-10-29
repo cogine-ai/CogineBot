@@ -1265,6 +1265,29 @@ it("shows a full long native URL and opens it only on confirmation", async () =>
 });
 
 describe("native literal HTML text", () => {
+  it.each([
+    ["![   ](https://whitespace.example.test/auto.png)", "whitespace.example.test"],
+    [
+      "<div>![   ](https://whitespace.example.test/auto.png)</div>",
+      "<div>whitespace.example.test</div>",
+    ],
+  ])(
+    "retains a remote image's displayed host when its alt is whitespace: %s",
+    (source, expected) => {
+      const container = document.createElement("div");
+      container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+      expect(container.textContent).toContain("whitespace.example.test");
+      expect(visibleNativeTextFromMarkdown(source)).toBe(expected);
+    },
+  );
+  it.each([
+    ["![  chart  ](https://whitespace.example.test/auto.png)", "  chart  "],
+    ["![   ](data:image/png;base64,aA==)", "   "],
+    ["![   ](local-image.png)", "   "],
+  ])("keeps alt whitespace and nonremote source visibility contracts: %s", (source, expected) => {
+    expect(visibleNativeTextFromMarkdown(source)).toBe(expected);
+  });
+
   it("preserves empty table cells in the native text projection", () => {
     expect(visibleNativeTextFromMarkdown("| A | B |\n|---|---|\n| | X |")).toBe("A\tB\n\tX");
   });

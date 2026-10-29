@@ -91,7 +91,8 @@ function announcementNodeText(node: ASTNode): string {
     const src = node.attributes.src ?? "";
     const alt = node.attributes.alt;
     const remote = remoteMarkdownImage(src);
-    return alt || remote?.host || (inlineMarkdownImageSrc(src) ? "" : src);
+    if (remote) return alt?.trim() ? alt : remote.host;
+    return alt || (inlineMarkdownImageSrc(src) ? "" : src);
   }
   if (node.type === "link" && isWebsiteLink(node)) {
     const href = sanitizeMarkdownUrl(node.attributes.href ?? "");
