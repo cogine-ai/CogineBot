@@ -779,6 +779,21 @@ describe("dictation engine choice", () => {
 });
 
 describe("Dictation web speech", () => {
+  it.each([
+    ["en", "en-US"],
+    ["zh-CN", "zh-CN"],
+    ["pt-BR", "pt-BR"],
+  ])("starts the actual recognizer in explicitly selected %s", async (locale, expected) => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => (key === "rakazo.uiLocale" ? locale : null),
+    });
+    vi.stubGlobal("navigator", { language: "it-IT" });
+    const value = new Dictation();
+    await value.listen({ mode: "endpoint", onFinal: () => undefined });
+    expect(instances[0]?.lang).toBe(expected);
+    value.stop("cancel");
+  });
+
   class FakeRecognition {
     continuous = false;
     interimResults = false;

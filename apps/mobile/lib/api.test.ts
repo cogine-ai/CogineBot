@@ -4598,7 +4598,7 @@ describe("mobile clipboard text", () => {
     ).toBe("Hello\nSMS · Sender: Reply");
   });
 
-  it("keeps leading whitespace for selection while copying trims it", async () => {
+  it("keeps original boundary whitespace in both selection and copy", async () => {
     const { copyableMobileMessageText, selectableMobileMessageText } = await import("./api");
     const message: MobileMessage = {
       id: "message",
@@ -4606,7 +4606,7 @@ describe("mobile clipboard text", () => {
       blocks: [{ kind: "text", text: "    indented\nnext  " }],
     };
     expect(selectableMobileMessageText(message)).toBe("    indented\nnext  ");
-    expect(copyableMobileMessageText(message)).toBe("indented\nnext");
+    expect(copyableMobileMessageText(message)).toBe("    indented\nnext  ");
   });
 });
 

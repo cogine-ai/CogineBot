@@ -465,6 +465,35 @@ async function render(node: ReactNode) {
 }
 
 describe("web external link confirmation", () => {
+  it("restores keyboard focus to the exact activating link after cancellation or Escape", async () => {
+    const view = await render(
+      <ChatMarkdown>
+        {"[First](https://example.test/same) [Second](https://example.test/same)"}
+      </ChatMarkdown>,
+    );
+    const links = [...view.container.querySelectorAll("a")];
+    const trigger = links[1]!;
+    trigger.focus();
+    await act(async () => {
+      trigger.click();
+    });
+    await act(async () => {
+      buttonNamed(document, "Cancel")?.click();
+    });
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => {
+      trigger.click();
+    });
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(document.querySelector("[role='alertdialog']")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    await view.cleanup();
+  });
+
   it("asks before an external bot link and opens it only after confirmation", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const view = await render(

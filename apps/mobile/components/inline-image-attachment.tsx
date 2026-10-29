@@ -19,6 +19,7 @@ export function InlineImageAttachment({
   threadTarget,
   artifactId,
   name,
+  description,
   mimeType,
   onOpen,
   pressableProps,
@@ -27,6 +28,7 @@ export function InlineImageAttachment({
   threadTarget: MobileArtifactTarget;
   artifactId: string;
   name: string;
+  description?: string;
   mimeType: string;
   onOpen: () => void;
   pressableProps?: Omit<PressableProps, "onPress" | "children" | "style">;
@@ -62,18 +64,27 @@ export function InlineImageAttachment({
   if (state.status === "ready") {
     const size = fitImageSize(state.size, maxWidth, MAX_INLINE_HEIGHT);
     return (
-      <Pressable
-        {...pressableProps}
-        accessibilityRole="imagebutton"
-        accessibilityLabel={t("Open image {name}", { name })}
-        onPress={onOpen}
-      >
-        <Image
-          source={{ uri: state.uri }}
-          style={[styles.image, size, { backgroundColor: tokens.muted }]}
-          accessibilityIgnoresInvertColors
-        />
-      </Pressable>
+      <View>
+        <Pressable
+          {...pressableProps}
+          accessibilityRole="imagebutton"
+          accessibilityLabel={t("Open image {name}", {
+            name: description ? `${name} · ${description}` : name,
+          })}
+          onPress={onOpen}
+        >
+          <Image
+            source={{ uri: state.uri }}
+            style={[styles.image, size, { backgroundColor: tokens.muted }]}
+            accessibilityIgnoresInvertColors
+          />
+        </Pressable>
+        {description ? (
+          <Text style={[styles.label, { color: labelColor }]}>
+            {name} · {description}
+          </Text>
+        ) : null}
+      </View>
     );
   }
   return (

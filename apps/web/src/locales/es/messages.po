@@ -6359,3 +6359,23 @@ msgstr "Cambiar de espacio"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "No se pudo cerrar sesión. Inténtalo de nuevo."
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "Moviendo {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "Mover {name} a {targetName}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "Se movió {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "No se pudo mover {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "Movimiento cancelado"

@@ -6359,3 +6359,23 @@ msgstr "Changer d’espace"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "Impossible de se déconnecter. Réessayez."
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "Déplacement de {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "Déplacer {name} vers {targetName}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "{name} a été déplacé"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "Impossible de déplacer {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "Déplacement annulé"

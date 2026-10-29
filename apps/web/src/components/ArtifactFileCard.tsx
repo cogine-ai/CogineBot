@@ -16,6 +16,7 @@ type ArtifactFileCardProps = {
   target: ArtifactTarget;
   artifactId: string;
   name: string;
+  description?: string;
   mimeType: string;
   size: number;
 };
@@ -50,6 +51,7 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
         >
           <div className="truncate font-medium" title={props.name}>
             {props.name}
+            {props.description ? ` · ${props.description}` : ""}
           </div>
           <div className="mt-1 truncate text-muted-foreground">
             {props.mimeType} · {formatBytes(props.size)}
@@ -81,6 +83,7 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[14px] font-medium" title={props.name}>
                 {props.name}
+                {props.description ? ` · ${props.description}` : ""}
               </span>
               <span className="mt-0.5 block text-[13px] text-muted-foreground">
                 {formatBytes(props.size)}

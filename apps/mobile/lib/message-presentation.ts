@@ -1,6 +1,6 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { REPLY_QUOTE_MAX_LENGTH } from "@rakazo/contracts";
-import { isToolActivityBlock } from "@rakazo/core";
+import { isToolActivityBlock, messageBlocksForQuestionCards } from "@rakazo/core";
 import { MAX_QUOTABLE_SOURCE_LENGTH, visibleTextFromMarkdown } from "@rakazo/core/message-quote";
 
 export function isCenteredAgentEvent(blocks: readonly MessageBlock[]): boolean {
@@ -25,8 +25,11 @@ function isCardBlock(block: MessageBlock): boolean {
 
 export function messagePresentationSegments(
   blocks: readonly MessageBlock[],
+  canRenderChoice = true,
 ): MessagePresentationSegment[] {
-  const content = blocks.filter((block) => !isCardBlock(block) && !isToolActivityBlock(block));
+  const content = messageBlocksForQuestionCards(blocks, canRenderChoice).filter(
+    (block) => !isCardBlock(block) && !isToolActivityBlock(block),
+  );
   return content.length > 0 ? [{ kind: "content", blocks: content }] : [];
 }
 

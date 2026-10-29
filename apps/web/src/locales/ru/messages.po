@@ -6359,3 +6359,23 @@ msgstr "Сменить пространство"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "Не удалось выйти. Повторите попытку."
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "Перемещение {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "Переместить {name} в {targetName}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "{name} перемещён"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "Не удалось переместить {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "Перемещение отменено"

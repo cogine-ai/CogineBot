@@ -96,11 +96,17 @@ export default function Computer() {
     bridge: createComputerKeyboardBridge(),
   });
   const heldScreenUrl = useRef<string | null>(null);
+  const [screenRecovery, setScreenRecovery] = useState({ generation: 0, watchOnly: false });
+  const screenRecoveryRef = useRef(screenRecovery);
+  screenRecoveryRef.current = screenRecovery;
 
   const embeddedScreenUrl = embeddableScreenUrl(screenUrl, currentApiBase());
   useEffect(() => setScreenError(null), [embeddedScreenUrl]);
 
-  const hasControl = computer?.controlHolder === "user" && computer.controlBotId === botId;
+  const hasControl =
+    !screenRecovery.watchOnly &&
+    computer?.controlHolder === "user" &&
+    computer.controlBotId === botId;
   const screenVisible =
     viewVisible &&
     computerOpen &&
@@ -115,7 +121,7 @@ export default function Computer() {
   heldScreenUrl.current = loadedScreenUrl;
   // The gate follows the page the WebView actually loaded. A capability refresh that
   // does not reload that page must not open a session the bridge will never acknowledge.
-  const keyboardSurfaceKey = `${viewVisible}:${computerOpen}:${hasControl}:${loadedScreenUrl ?? ""}`;
+  const keyboardSurfaceKey = `${viewVisible}:${computerOpen}:${hasControl}:${screenRecovery.generation}:${loadedScreenUrl ?? ""}`;
   if (keyboardGate.current.key !== keyboardSurfaceKey) {
     keyboardGate.current = {
       key: keyboardSurfaceKey,
@@ -207,6 +213,32 @@ export default function Computer() {
     };
   }, [botId, scopeKey]);
   const refresh = refreshController.refresh;
+  function resetScreen() {
+    const next = { generation: screenRecoveryRef.current.generation + 1, watchOnly: true };
+    screenRecoveryRef.current = next;
+    // A new renderer must not accept queued commands or acknowledgements from its predecessor.
+    keyboardGate.current = {
+      key: "",
+      session: keyboardGate.current.session + 1,
+      bridge: createComputerKeyboardBridge(),
+    };
+    heldScreenUrl.current = null;
+    setScreenUrl(null);
+    setScreenError(null);
+    setScreenRecovery(next);
+    refreshController.invalidateScreen();
+  }
+  function rendererLost() {
+    if (
+      !visibleRef.current ||
+      viewEpochRef.current !== viewEpoch ||
+      screenRecoveryRef.current.generation !== screenRecovery.generation ||
+      !refreshController.isActive()
+    )
+      return;
+    resetScreen();
+    void refresh().catch(() => undefined);
+  }
   const refreshAfterMaintenance = useCallback(async () => {
     await refresh();
   }, [refresh]);
@@ -223,6 +255,10 @@ export default function Computer() {
     if (botId) refreshController.start({ paused: !visibleRef.current });
     return () => refreshController.dispose();
   }, [botId, refreshController]);
+
+  useLayoutEffect(() => {
+    if (!visible) resetScreen();
+  }, [visible, refreshController]);
 
   useEffect(() => {
     if (!botId) return;
@@ -241,6 +277,13 @@ export default function Computer() {
   }) {
     if (!botId || !visibleRef.current || !refreshController.isActive()) return false;
     const action = refreshController.beginAction();
+    const actionView = viewEpochRef.current;
+    const actionGeneration = screenRecoveryRef.current.generation;
+    const currentInteraction = () =>
+      action.isActive() &&
+      visibleRef.current &&
+      viewEpochRef.current === actionView &&
+      screenRecoveryRef.current.generation === actionGeneration;
     const needsBoot = force || computer?.state !== "running" || !screenUrl;
     const showBooting = overlay && needsBoot;
     if (showBooting) setBootingCount((count) => count + 1);
@@ -248,10 +291,19 @@ export default function Computer() {
       if (needsBoot)
         await rpc("computer/boot", { botId }, { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS });
       if (!action.isActive()) return false;
-      if (takeControl) await rpc("computer/takeover", { botId });
+      if (takeControl) {
+        if (!currentInteraction()) return false;
+        await rpc("computer/takeover", { botId });
+      }
       if (!action.isActive()) return false;
       await action.refresh({ screenAttempts: SCREEN_URL_OPEN_ATTEMPTS });
       if (!action.isActive()) return false;
+      if (takeControl) {
+        if (!currentInteraction()) return false;
+        const next = { ...screenRecoveryRef.current, watchOnly: false };
+        screenRecoveryRef.current = next;
+        setScreenRecovery(next);
+      }
       setError(null);
       return true;
     } catch (err) {
@@ -378,8 +430,10 @@ export default function Computer() {
           </View>
         ) : viewVisible && computer?.state === "running" && embeddedScreenUrl && !screenError ? (
           <ScreenWebView
+            key={screenRecovery.generation}
             url={embeddedScreenUrl}
             interactive={false}
+            onRendererLost={rendererLost}
             onError={() => {
               refreshController.invalidateScreen();
               setScreenError(
@@ -577,12 +631,21 @@ export default function Computer() {
               <View style={{ flex: 1, backgroundColor: tokens.card }}>
                 {viewVisible && loadedScreenUrl ? (
                   <ScreenWebView
+                    key={screenRecovery.generation}
                     url={loadedScreenUrl}
                     interactive={hasControl}
                     nativeKeyboard={hasControl}
                     keyboardSession={keyboardSession}
                     webViewRef={screenWebViewRef}
+                    onRendererLost={rendererLost}
                     onKeyboardMessage={(data) => {
+                      if (
+                        !viewVisible ||
+                        !hasControl ||
+                        viewEpochRef.current !== viewEpoch ||
+                        screenRecoveryRef.current.generation !== screenRecovery.generation
+                      )
+                        return;
                       const gate = keyboardGate.current;
                       if (!isComputerKeyboardReadyMessage(data, String(gate.session))) return;
                       injectKeyboardCommands(gate.bridge.ready());
@@ -607,6 +670,13 @@ export default function Computer() {
               {hasControl ? (
                 <ComputerKeyboardBar
                   onCommand={(command) => {
+                    if (
+                      !viewVisible ||
+                      !hasControl ||
+                      viewEpochRef.current !== viewEpoch ||
+                      screenRecoveryRef.current.generation !== screenRecovery.generation
+                    )
+                      return;
                     injectKeyboardCommands(keyboardGate.current.bridge.push(command));
                   }}
                 />
@@ -657,6 +727,7 @@ function ScreenWebView({
   keyboardSession,
   webViewRef,
   onKeyboardMessage,
+  onRendererLost,
   onError,
 }: {
   url: string;
@@ -665,6 +736,7 @@ function ScreenWebView({
   keyboardSession?: string;
   webViewRef?: RefObject<WebView | null>;
   onKeyboardMessage?: (data: string) => void;
+  onRendererLost: () => void;
   onError: () => void;
 }) {
   const tokens = useMobileTokens();
@@ -708,6 +780,8 @@ function ScreenWebView({
       overScrollMode="never"
       onError={onError}
       onHttpError={onError}
+      onRenderProcessGone={onRendererLost}
+      onContentProcessDidTerminate={onRendererLost}
     />
   );
 }

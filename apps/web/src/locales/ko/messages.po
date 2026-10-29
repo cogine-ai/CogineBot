@@ -6359,3 +6359,23 @@ msgstr "스페이스 전환"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "로그아웃할 수 없습니다. 다시 시도하세요."
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "{name} 이동 중"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "{name}을(를) {targetName}(으)로 이동"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "{name} 이동됨"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "{name}을(를) 이동할 수 없습니다"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "이동 취소됨"

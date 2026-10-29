@@ -56,3 +56,8 @@ describe("copyableMessageText", () => {
     ).toBe("iMessage · Alice: hello");
   });
 });
+
+it("copies Unicode and original boundary newlines without ASCII or whitespace normalization", () => {
+  const text = "\n  中文 日本語 한국어 العربية e\u0301 👩‍👩‍👧‍👦\r\nnext\n";
+  expect(copyableMessageText(message([{ kind: "text", text }]))).toBe(text);
+});

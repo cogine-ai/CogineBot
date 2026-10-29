@@ -18,6 +18,11 @@ const state = vi.hoisted(() => ({
   scopeListeners: new Set<() => void>(),
   navigation: { setOptions: vi.fn() },
   lockOrientation: vi.fn().mockResolvedValue(undefined),
+  screenProps: null as null | {
+    onRenderProcessGone: () => void;
+    onContentProcessDidTerminate: () => void;
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+  },
 }));
 
 vi.mock("./api", () => ({ rpc: state.rpc, currentApiBase: () => "https://api.example.test" }));
@@ -73,7 +78,16 @@ vi.mock("react-native-safe-area-context", () => {
   return { SafeAreaProvider: View, SafeAreaView: View, initialWindowMetrics: null };
 });
 vi.mock("react-native-webview", () => ({
-  WebView: ({ source }: { source: { uri: string } }) => <div data-screen={source.uri} />,
+  WebView: (props: {
+    source: { uri: string };
+    pointerEvents?: string;
+    onRenderProcessGone: () => void;
+    onContentProcessDidTerminate: () => void;
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+  }) => {
+    state.screenProps = props;
+    return <div data-screen={props.source.uri} data-pointer={props.pointerEvents} />;
+  },
 }));
 vi.mock("./i18n", () => {
   const t = (text: string) => text;
@@ -165,6 +179,7 @@ beforeEach(() => {
   state.appState = "active";
   state.scope = "space-a:user-a:0";
   currentStatus = status();
+  state.screenProps = null;
   statusError = undefined;
   nextStatus = undefined;
   nextScreen = undefined;
@@ -398,6 +413,119 @@ it("does not apply the old Bot's status while the new Bot's first read is pendin
   expect(calls("computer/heartbeat").filter(([, body]) => body.botId === "bot-b")).toHaveLength(0);
   await act(async () => fresh.resolve(currentStatus));
   expect(host.querySelector("[data-screen]")?.getAttribute("data-screen")).toContain("/bot-b/");
+});
+
+it.each(["onRenderProcessGone", "onContentProcessDidTerminate"] as const)(
+  "%s rebuilds the same screen as Watching until an explicit takeover",
+  async (event) => {
+    currentStatus = status({ controlHolder: "user", controlBotId: "bot-a" });
+    await render();
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button[aria-label="Open computer"]')?.click();
+    });
+    const oldScreen = host.querySelector("section[data-full] [data-screen]");
+    expect(oldScreen?.getAttribute("data-pointer")).toBe("auto");
+    const oldRenderer = state.screenProps;
+    const boots = calls("computer/boot").length;
+    const screens = calls("computer/screenUrl").length;
+    await act(async () => oldRenderer?.[event]());
+    const recovered = host.querySelector("section[data-full] [data-screen]");
+    expect(recovered).not.toBeNull();
+    expect(recovered).not.toBe(oldScreen);
+    expect(recovered?.getAttribute("data-pointer")).toBe("none");
+    expect(state.screenProps?.onMessage).toBeUndefined();
+    expect(calls("computer/screenUrl")).toHaveLength(screens + 1);
+    expect(calls("computer/boot")).toHaveLength(boots);
+    expect(calls("computer/takeover")).toHaveLength(0);
+    const afterRecovery = state.rpc.mock.calls.length;
+    await act(async () => oldRenderer?.[event]());
+    expect(state.rpc).toHaveBeenCalledTimes(afterRecovery);
+    const takeControl = Array.from(host.querySelectorAll<HTMLButtonElement>("section button")).find(
+      (button) => button.textContent === "Take control",
+    );
+    await act(async () => takeControl?.click());
+    expect(calls("computer/takeover")).toHaveLength(1);
+    expect(
+      host.querySelector("section[data-full] [data-screen]")?.getAttribute("data-pointer"),
+    ).toBe("auto");
+  },
+);
+
+it("foreground recovery does not revive the old control or accept an old renderer callback", async () => {
+  currentStatus = status({ controlHolder: "user", controlBotId: "bot-a" });
+  await render();
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>('button[aria-label="Open computer"]')?.click();
+  });
+  const oldRenderer = state.screenProps;
+  await appState("background");
+  await appState("active");
+  expect(host.querySelector("section[data-full] [data-screen]")?.getAttribute("data-pointer")).toBe(
+    "none",
+  );
+  expect(state.screenProps?.onMessage).toBeUndefined();
+  expect(calls("computer/takeover")).toHaveLength(0);
+  expect(calls("computer/release")).toHaveLength(0);
+  const before = state.rpc.mock.calls.length;
+  await act(async () => oldRenderer?.onRenderProcessGone());
+  expect(state.rpc).toHaveBeenCalledTimes(before);
+});
+
+it("a dead renderer cannot refresh the new Bot's screen", async () => {
+  await render();
+  const oldRenderer = state.screenProps;
+  state.params = { botId: "bot-b", name: "Other Bot" };
+  currentStatus = status();
+  await act(async () => {
+    state.scope = "space-b:user-b:1";
+    for (const listener of state.scopeListeners) listener();
+  });
+  const before = state.rpc.mock.calls.length;
+  await act(async () => oldRenderer?.onContentProcessDidTerminate());
+  expect(state.rpc).toHaveBeenCalledTimes(before);
+  expect(host.querySelector("[data-screen]")?.getAttribute("data-screen")).toContain("bot-b");
+});
+
+it("a takeover returned after renderer loss cannot enable the replacement keyboard", async () => {
+  await render();
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>('button[aria-label="Open computer"]')?.click();
+  });
+  const pending = deferred<{ ok: boolean }>();
+  const respond = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((proc: string, body: { botId: string }) =>
+    proc === "computer/takeover" ? pending.promise : respond(proc, body),
+  );
+  const takeControl = Array.from(host.querySelectorAll<HTMLButtonElement>("section button")).find(
+    (button) => button.textContent === "Take control",
+  );
+  await act(async () => takeControl?.click());
+  expect(calls("computer/takeover")).toHaveLength(1);
+  currentStatus = status({ controlHolder: "user", controlBotId: "bot-a" });
+  await act(async () => state.screenProps?.onRenderProcessGone());
+  await act(async () => pending.resolve({ ok: true }));
+  expect(host.querySelector("section[data-full] [data-screen]")?.getAttribute("data-pointer")).toBe(
+    "none",
+  );
+  expect(state.screenProps?.onMessage).toBeUndefined();
+});
+
+it("does not dispatch a pending takeover after the app backgrounds during boot", async () => {
+  currentStatus = status({ state: "suspended", screenAvailable: false });
+  await render();
+  const pending = deferred<{ ok: boolean }>();
+  const respond = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((proc: string, body: { botId: string }) =>
+    proc === "computer/boot" ? pending.promise : respond(proc, body),
+  );
+  const takeControl = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
+    (button) => button.textContent === "Take control",
+  );
+  await act(async () => takeControl?.click());
+  expect(calls("computer/boot")).toHaveLength(1);
+  await appState("background");
+  await act(async () => pending.resolve({ ok: true }));
+  expect(calls("computer/takeover")).toHaveLength(0);
 });
 
 it("does not retain an old Bot's stream after a late explicit screen refresh", async () => {

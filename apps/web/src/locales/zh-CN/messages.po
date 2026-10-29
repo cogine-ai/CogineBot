@@ -6359,3 +6359,23 @@ msgstr "切换空间"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "无法退出登录，请重试。"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "正在移动{name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "将{name}移至{targetName}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "已移动{name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "无法移动{name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "已取消移动"

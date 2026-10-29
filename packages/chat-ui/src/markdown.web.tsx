@@ -212,7 +212,9 @@ type EnclosingLink = false | "open" | "rejected";
 
 const InsideLinkContext = createContext<EnclosingLink>(false);
 
-const ConfirmLinkContext = createContext<(url: string) => void>(() => undefined);
+const ConfirmLinkContext = createContext<(url: string, trigger: HTMLAnchorElement) => void>(
+  () => undefined,
+);
 
 function pageOrigin() {
   if (typeof window === "undefined") return null;
@@ -220,12 +222,15 @@ function pageOrigin() {
   return origin && origin !== "null" ? origin : null;
 }
 
-function holdExternalLink(event: MouseEvent<HTMLAnchorElement>, request: (url: string) => void) {
+function holdExternalLink(
+  event: MouseEvent<HTMLAnchorElement>,
+  request: (url: string, trigger: HTMLAnchorElement) => void,
+) {
   if (event.button !== 0 && event.button !== 1) return;
   const destination = event.currentTarget.href;
   if (!destination || !markdownLinkRequiresConfirmation(destination, pageOrigin())) return;
   event.preventDefault();
-  request(destination);
+  request(destination, event.currentTarget);
 }
 
 function ExternalLinkUrl({ url }: { url: string }) {
@@ -240,7 +245,15 @@ function ExternalLinkUrl({ url }: { url: string }) {
   );
 }
 
-function ExternalLinkAlert({ url, onDismiss }: { url: string; onDismiss: () => void }) {
+function ExternalLinkAlert({
+  url,
+  trigger,
+  onDismiss,
+}: {
+  url: string;
+  trigger: HTMLAnchorElement;
+  onDismiss: () => void;
+}) {
   const copy = useMarkdownLinkCopy();
   return (
     <AlertDialog
@@ -249,7 +262,10 @@ function ExternalLinkAlert({ url, onDismiss }: { url: string; onDismiss: () => v
         if (!open) onDismiss();
       }}
     >
-      <AlertDialogContent className="sm:max-w-md">
+      <AlertDialogContent
+        className="sm:max-w-md"
+        finalFocus={() => (trigger.isConnected && trigger.href === url ? trigger : false)}
+      >
         <AlertDialogHeader className="place-items-start text-left">
           <AlertDialogTitle>{copy.title}</AlertDialogTitle>
           <AlertDialogDescription className="break-all text-left text-foreground">
@@ -273,11 +289,13 @@ function ExternalLinkAlert({ url, onDismiss }: { url: string; onDismiss: () => v
 }
 
 function useExternalLinkConfirm() {
-  const [url, setUrl] = useState<string | null>(null);
-  const request = useCallback((destination: string) => {
-    setUrl(destination);
+  const [target, setTarget] = useState<{ url: string; trigger: HTMLAnchorElement } | null>(null);
+  const request = useCallback((url: string, trigger: HTMLAnchorElement) => {
+    setTarget({ url, trigger });
   }, []);
-  const dialog = url ? <ExternalLinkAlert url={url} onDismiss={() => setUrl(null)} /> : null;
+  const dialog = target ? (
+    <ExternalLinkAlert {...target} onDismiss={() => setTarget(null)} />
+  ) : null;
   return { request, dialog };
 }
 
