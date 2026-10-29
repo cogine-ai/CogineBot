@@ -2,7 +2,8 @@ import { ORPCError } from "@orpc/server";
 import type { BillingProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { describe, expect, it, vi } from "vitest";
+import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBillingService } from "./billing.js";
 
 const actor: Actor = {
@@ -11,6 +12,10 @@ const actor: Actor = {
   email: "fake@example.test",
   isDeploymentOwner: false,
 };
+afterEach(() => {
+  vi.useRealTimers();
+  installLogger(createLogger({ service: "rakazo-api", level: "off", sinks: [] }));
+});
 function fixture(status: string | null) {
   const membership = vi.fn().mockResolvedValue({ id: "member-1" });
   const owner = vi.fn().mockResolvedValue({ role: "owner" });
@@ -99,6 +104,91 @@ describe("new work admission", () => {
 });
 
 describe("bound billing refresh and return", () => {
+  it.each(["claim", "provider"])(
+    "records one sanitized underlying %s failure for coalesced callers",
+    async (phase) => {
+      const sink = createTestSink();
+      installLogger(createLogger({ service: "rakazo-api", sinks: [sink] }));
+      const f = fixture("incomplete");
+      const failure = new Error("Synthetic failure secret=private-fixture", {
+        cause: new Error("Connection refused Authorization: Bearer private-cause"),
+      });
+      let reject!: (error: unknown) => void;
+      const pending = new Promise<never>((_resolve, no) => {
+        reject = no;
+      });
+      if (phase === "claim") f.prisma.$transaction.mockReturnValue(pending);
+      else f.provider.getCustomerSubscription.mockReturnValue(pending);
+      const all = Promise.allSettled(
+        Array.from({ length: 12 }, () => f.service.status(actor, { refresh: true })),
+      );
+      await vi.waitFor(() =>
+        expect(
+          phase === "claim" ? f.prisma.$transaction : f.provider.getCustomerSubscription,
+        ).toHaveBeenCalledOnce(),
+      );
+      reject(failure);
+      const results = await all;
+      expect(results.every((result) => result.status === "rejected")).toBe(true);
+      const events = sink.events.filter(
+        (event) => event.message === "billing status refresh failed",
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]?.error).toMatchObject({ name: "Error", cause: { name: "Error" } });
+      expect(JSON.stringify(events)).toContain("[Redacted]");
+      expect(JSON.stringify(events)).not.toContain("private-fixture");
+      expect(JSON.stringify(events)).not.toContain("private-cause");
+      expect(JSON.stringify(results)).not.toContain("Synthetic failure");
+    },
+  );
+
+  it("records an eventual provider failure once after the caller response timed out", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const sink = createTestSink();
+    installLogger(createLogger({ service: "rakazo-api", sinks: [sink] }));
+    const f = fixture("incomplete");
+    let reject!: (error: unknown) => void;
+    f.provider.getCustomerSubscription.mockReturnValue(
+      new Promise<never>((_resolve, no) => {
+        reject = no;
+      }),
+    );
+    const result = f.service.status(actor, { refresh: true }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(f.provider.getCustomerSubscription).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await result).toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    expect(sink.events).toHaveLength(0);
+    reject(new Error("Late provider failure", { cause: new Error("secret=private-late-cause") }));
+    await vi.waitFor(() => expect(sink.events).toHaveLength(1));
+    expect(sink.events[0]?.message).toBe("billing status refresh failed");
+    expect(JSON.stringify(sink.events)).not.toContain("private-late-cause");
+    expect(f.provider.getCustomerSubscription).toHaveBeenCalledOnce();
+  });
+
+  it("keeps expected claim contention out of failure diagnostics", async () => {
+    const sink = createTestSink();
+    installLogger(createLogger({ service: "rakazo-api", sinks: [sink] }));
+    const f = fixture("incomplete");
+    f.prisma.$queryRaw.mockResolvedValue([{ now: new Date(), acquired: false }]);
+    await expect(f.service.status(actor, { refresh: true })).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+    expect(sink.events).toHaveLength(0);
+  });
+  it("records a provider failure even when it already carries the public recovery code", async () => {
+    const sink = createTestSink();
+    installLogger(createLogger({ service: "rakazo-api", sinks: [sink] }));
+    const f = fixture("incomplete");
+    f.provider.getCustomerSubscription.mockRejectedValue(
+      new ORPCError("SERVICE_UNAVAILABLE", {
+        data: { reason: "billing_unavailable" },
+      }),
+    );
+    await expect(f.service.status(actor, { refresh: true })).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+    expect(sink.events).toHaveLength(1);
+  });
   it("coalesces simultaneous recovery refreshes for one organization", async () => {
     const f = fixture("incomplete");
     let release!: () => void;
