@@ -622,10 +622,13 @@ export class Dictation {
         mine,
       );
     } catch (error) {
-      // User cancel bumps token in stop() before aborting, so a matching token
-      // means the deadline timer fired. Browsers may reject fetch as AbortError
-      // instead of signal.reason; surface the timeout either way.
       if (this.token !== mine) return;
+      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+        this.stop();
+        return;
+      }
+      // User cancel bumps token before aborting. A remaining AbortError comes
+      // from the deadline; browsers may return it instead of signal.reason.
       const timedOut =
         (abort.signal.reason instanceof Error &&
           abort.signal.reason.message === "Transcription request timed out.") ||

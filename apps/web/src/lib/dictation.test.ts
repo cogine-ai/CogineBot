@@ -1605,6 +1605,67 @@ describe("Dictation web speech", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { failure: "network", prefix: "" },
+    { failure: "network", prefix: "call me later" },
+    { failure: "timeout", prefix: "" },
+    { failure: "timeout", prefix: "call me later" },
+  ])(
+    "discards an old account $failure transcription failure with retained speech '$prefix'",
+    async ({ failure, prefix }) => {
+      vi.useFakeTimers();
+      const store = new Map([["rakazo:space-id", "space-a"]]);
+      const localStorage = {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => store.set(key, value),
+        removeItem: (key: string) => store.delete(key),
+      };
+      vi.stubGlobal("window", { SpeechRecognition: FakeRecognition, localStorage });
+      synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+      let reject!: (error: Error) => void;
+      let signal: AbortSignal | undefined;
+      const fetch = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, no) => {
+            reject = no;
+            signal = init?.signal ?? undefined;
+          }),
+      );
+      stubRecorderFallback(fetch);
+      const listener = vi.fn();
+      const unsubscribe = subscribeSubscriptionRequired(listener);
+      const onFinal = vi.fn();
+      const dictation = new Dictation();
+      try {
+        await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+        if (prefix) said(instances[0], prefix);
+        instances[0]?.onerror?.({ error: "network" });
+        await vi.waitFor(() => expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+        dictation.submitHold();
+        await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+        expect(dictation.state.status).toBe("transcribing");
+        expect(dictation.state.transcript).toBe(prefix);
+        synchronizeRpcSession("authenticated", "recording-owner-b", "recording-session-b");
+        synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+
+        if (failure === "timeout") {
+          await vi.advanceTimersByTimeAsync(TRANSCRIPTION_RESPONSE_TIMEOUT_MS);
+          expect(signal?.aborted).toBe(true);
+        } else {
+          reject(new TypeError("Old account request failed"));
+          await vi.waitFor(() => expect(dictation.state.status).toBe("idle"));
+        }
+
+        expect(dictation.state).toEqual({ status: "idle", transcript: "" });
+        expect(onFinal).not.toHaveBeenCalled();
+        expect(listener).not.toHaveBeenCalled();
+      } finally {
+        dictation.stop();
+        unsubscribe();
+      }
+    },
+  );
+
   it("keeps a Web Speech permission error when no server fallback applies", async () => {
     const instances: Array<{
       onerror: ((event: { error?: string }) => void) | null;
