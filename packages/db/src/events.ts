@@ -1460,6 +1460,7 @@ async function finalizeRunOnce(
     });
     if (task.count !== 1) throw new Error("Run task was not available to finalize");
 
+    let completedMessageId: string | undefined;
     if (input.outcome === "completed") {
       const completedBlocks = completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now);
       if (completedBlocks.length > 0) {
@@ -1471,6 +1472,7 @@ async function finalizeRunOnce(
           runId: input.runId,
           markUnread: input.markUnread,
         });
+        completedMessageId = message.id;
         await appendEventInTransaction(tx, {
           spaceId: input.spaceId,
           threadId: input.threadId,
@@ -1492,7 +1494,12 @@ async function finalizeRunOnce(
       botId: input.botId,
       type: input.outcome === "completed" ? "run.completed" : "run.failed",
       runId: input.runId,
-      payload: input.outcome === "completed" ? {} : { error: input.error },
+      payload:
+        input.outcome === "completed"
+          ? completedMessageId
+            ? { messageId: completedMessageId }
+            : {}
+          : { error: input.error },
     });
     await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
     if (input.outcome === "completed") {

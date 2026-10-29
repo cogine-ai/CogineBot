@@ -9,7 +9,7 @@ import type {
   Routine,
 } from "@rakazo/contracts";
 import { canReactToThreadMessage, MESSAGE_REACTIONS } from "@rakazo/contracts";
-import type { SlashActionId, ThreadItem } from "@rakazo/core";
+import type { AnnouncementEvent, SlashActionId, ThreadItem } from "@rakazo/core";
 import {
   abortableDelay,
   appendNewerThreadPage,
@@ -91,6 +91,7 @@ import { useReducedMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppConnectCard } from "../components/AppConnectCard";
 import { AskActions } from "../components/AskActions";
+import { AttachmentLabel } from "../components/attachment-label";
 import { BotAvatar } from "../components/bot-avatar";
 import { ChoiceCard } from "../components/ChoiceCard";
 import { ComputerCard } from "../components/ComputerCard";
@@ -702,6 +703,7 @@ function Thread({
   const call = useCallSession();
   const onCall = Boolean(botId) && call?.botId === botId;
   const voiceCallStarting = useRef(false);
+  const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
   const scroll = useRef<FlatList<ThreadItem<MobileMessage>>>(null);
   const pinnedScroll = useRef<ScrollView>(null);
   const scrollBehavior = useRef(new ThreadScrollBehavior());
@@ -955,11 +957,18 @@ function Thread({
   }, [inGroup, snap?.activeRuns, snap?.members, snap?.run]);
   const working = inGroup ? workingGroupBots.length > 0 : isWorkingStatus(currentBotStatus);
 
-  const stopReplyAnnouncements = useReplyAnnouncements(
+  const [stopReplyAnnouncements, observeReplyEvent] = useReplyAnnouncements(
     JSON.stringify([ownerUserId, sessionEpoch, profileScope, snap?.threadId]),
     snap,
     readOnly || showingSaved || onCall,
   );
+
+  useLayoutEffect(() => {
+    replyEventObserver.current = observeReplyEvent;
+    return () => {
+      replyEventObserver.current = () => {};
+    };
+  }, [observeReplyEvent]);
 
   const speakFinishedReply = useCallback(() => {
     if (!botId || inGroup || !currentBot) return;
@@ -1742,6 +1751,7 @@ function Thread({
                   event.threadId !== snapRef.current.threadId)
               )
                 return;
+              replyEventObserver.current(event);
               cursor = Math.max(cursor, event.seq ?? -1);
               retryMs = 250;
               if (
@@ -2998,6 +3008,7 @@ function Thread({
               <View
                 key={attachment.id}
                 style={{
+                  maxWidth: "100%",
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 8,
@@ -3022,12 +3033,13 @@ function Thread({
                     color={tokens.mutedForeground}
                   />
                 )}
-                <Text style={{ color: tokens.foreground, maxWidth: 140 }} numberOfLines={1}>
-                  {attachment.name}
-                  {pendingAttachmentDescriptions.has(attachment.id)
-                    ? ` · ${pendingAttachmentDescriptions.get(attachment.id)}`
-                    : ""}
-                </Text>
+                <View style={{ maxWidth: 140, minWidth: 0, flexShrink: 1 }}>
+                  <AttachmentLabel
+                    name={attachment.name}
+                    description={pendingAttachmentDescriptions.get(attachment.id)}
+                    color={tokens.foreground}
+                  />
+                </View>
                 <Pressable
                   accessibilityLabel={t("Remove {name}", {
                     name: `${attachment.name}${pendingAttachmentDescriptions.has(attachment.id) ? ` · ${pendingAttachmentDescriptions.get(attachment.id)}` : ""}`,

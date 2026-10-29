@@ -31,7 +31,7 @@ import {
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
-import type { BotCreationReceipt } from "@rakazo/core";
+import type { AnnouncementEvent, BotCreationReceipt } from "@rakazo/core";
 import {
   attachmentLabels,
   buildComposerMentionOptions,
@@ -551,6 +551,7 @@ export function ShellPage() {
   // A very fast run can finish over SSE while its threads.send response is still
   // returning. Do not let that late receipt resurrect terminal work as queued.
   const terminalRunReceipts = useRef(new Set<string>());
+  const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
   // Last-known computer/screen per bot, so switching back to an already-seen
   // bot paints its computer pane instantly instead of blanking it while the
   // thread + screen RPCs round-trip again (see refreshThread / refreshComputerScreen).
@@ -2073,6 +2074,7 @@ export function ShellPage() {
       applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
+        replyEventObserver.current(event);
         const currentBot = botsRef.current.find((bot) => bot.id === active.id);
         notifyBrowserForEvent(
           event,
@@ -2189,6 +2191,7 @@ export function ShellPage() {
       applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
+        replyEventObserver.current(event);
         if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
           clearHistoryWindow();
@@ -2946,7 +2949,7 @@ export function ShellPage() {
       : snapshot?.botId === active?.id
         ? snapshot
         : null;
-  const [replyAnnouncement, stopReplyAnnouncements] = useReplyAnnouncements(
+  const [replyAnnouncement, stopReplyAnnouncements, observeReplyEvent] = useReplyAnnouncements(
     JSON.stringify([
       settingsOwnerKey,
       bootstrapMe?.spaceId,
@@ -2960,6 +2963,12 @@ export function ShellPage() {
       bootstrapLoad.pending ||
       Boolean(bootstrapLoad.error),
   );
+  useLayoutEffect(() => {
+    replyEventObserver.current = observeReplyEvent;
+    return () => {
+      replyEventObserver.current = () => {};
+    };
+  }, [observeReplyEvent]);
   useLayoutEffect(() => {
     const sessionId = session.data?.session.id;
     const targetId = groupId ?? botId;
@@ -9035,7 +9044,7 @@ const MessageView = memo(function MessageView({
                 className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}
               >
                 {artifactDescriptions.has(block.artifactId) ? (
-                  <span className="text-xs text-muted-foreground">
+                  <span className="max-w-full wrap-anywhere text-xs text-muted-foreground">
                     {block.name} · {artifactDescriptions.get(block.artifactId)}
                   </span>
                 ) : null}

@@ -64,9 +64,7 @@ export function AttachmentPreview({
         )}
       </div>
       {description ? (
-        <span className="mt-1 block whitespace-nowrap text-[10px] text-foreground">
-          {description}
-        </span>
+        <span className="mt-1 block break-words text-[10px] text-foreground">{description}</span>
       ) : null}
       <button
         type="button"

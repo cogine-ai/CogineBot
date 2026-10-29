@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { AnnouncementSnapshot } from "@rakazo/core";
+import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,8 +12,9 @@ vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: screen.announce },
 }));
 let stop = () => {};
+let observe: (event: AnnouncementEvent) => void = () => {};
 function Thread({ value, scope = "scope" }: { value: AnnouncementSnapshot; scope?: string }) {
-  stop = useReplyAnnouncements(scope, value);
+  [stop, observe] = useReplyAnnouncements(scope, value);
   return null;
 }
 let cleanup = async () => {};
@@ -26,15 +27,18 @@ afterEach(async () => {
 function value(status: string, run = "r"): AnnouncementSnapshot {
   return {
     threadId: "t",
-    run: { id: run, status },
-    messages: [
-      {
-        id: `m-${run}`,
-        role: "bot",
-        runId: run,
-        blocks: [{ kind: "text", text: "完整新回复 👩‍👩‍👧‍👦" }],
-      },
-    ],
+    run: status === "completed" ? null : { id: run, status },
+    messages:
+      status === "completed"
+        ? [
+            {
+              id: `m-${run}`,
+              role: "bot",
+              runId: run,
+              blocks: [{ kind: "text", text: "完整新回复 👩‍👩‍👧‍👦" }],
+            },
+          ]
+        : [],
   };
 }
 async function setup() {
@@ -45,11 +49,32 @@ async function setup() {
     await act(async () => root.unmount());
   };
   return async (status: string, run = "r", scope = "scope") => {
+    if (status === "completed")
+      await act(async () =>
+        observe({
+          type: "run.completed",
+          threadId: "t",
+          runId: run,
+          payload: { messageId: `m-${run}` },
+        }),
+      );
     await act(async () => root.render(<Thread value={value(status, run)} scope={scope} />));
   };
 }
 
 describe("native completed reply announcements", () => {
+  it("retains Stop across background reentry with an unchanged running snapshot", async () => {
+    const render = await setup();
+    await render("running");
+    await act(async () => stop());
+    screen.active = false;
+    await render("running");
+    screen.active = true;
+    await render("running");
+    await render("completed");
+    expect(screen.announce).not.toHaveBeenCalled();
+  });
+
   it("calls the native accessibility API once for a visible completed Run", async () => {
     const render = await setup();
     await render("running");

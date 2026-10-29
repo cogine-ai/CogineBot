@@ -1,6 +1,6 @@
-import type { AnnouncementSnapshot } from "@rakazo/core";
+import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { ReplyAnnouncements } from "@rakazo/core";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useLiveAnnouncement } from "./use-live-announcement";
 
@@ -10,6 +10,7 @@ export function useReplyAnnouncements(
   hidden = false,
 ) {
   const observer = useRef(new ReplyAnnouncements());
+  const [revision, setRevision] = useState(0);
   const currentScope = useRef(scope);
   currentScope.current = scope;
   const { text: announcement, announce, clear } = useLiveAnnouncement(scope);
@@ -23,7 +24,7 @@ export function useReplyAnnouncements(
     update();
     document.addEventListener("visibilitychange", update);
     return () => document.removeEventListener("visibilitychange", update);
-  }, [scope, snapshot, hidden, announce, clear]);
+  }, [scope, snapshot, hidden, announce, clear, revision]);
   const stop = useCallback(() => {
     if (currentScope.current !== scope) return;
     observer.current.update(scope, !hidden && document.visibilityState === "visible", snapshot);
@@ -34,5 +35,13 @@ export function useReplyAnnouncements(
     );
     clear();
   }, [scope, snapshot, hidden, clear]);
-  return [announcement, stop] as const;
+  const observe = useCallback(
+    (event: AnnouncementEvent) => {
+      if (currentScope.current !== scope) return;
+      observer.current.observe(scope, !hidden && document.visibilityState === "visible", event);
+      if (event.type === "run.completed") setRevision((value) => value + 1);
+    },
+    [scope, hidden],
+  );
+  return [announcement, stop, observe] as const;
 }

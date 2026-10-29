@@ -1,7 +1,7 @@
-import type { AnnouncementSnapshot } from "@rakazo/core";
+import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { ReplyAnnouncements } from "@rakazo/core";
 import { useIsFocused } from "expo-router";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo } from "react-native";
 import { useAppActive } from "./app-active";
 
@@ -11,6 +11,7 @@ export function useReplyAnnouncements(
   hidden = false,
 ) {
   const observer = useRef(new ReplyAnnouncements());
+  const [revision, setRevision] = useState(0);
   const currentScope = useRef(scope);
   currentScope.current = scope;
   const focused = useIsFocused();
@@ -18,8 +19,8 @@ export function useReplyAnnouncements(
   useEffect(() => {
     for (const text of observer.current.update(scope, focused && active && !hidden, snapshot))
       AccessibilityInfo.announceForAccessibility(text);
-  }, [scope, snapshot, focused, active, hidden]);
-  return useCallback(() => {
+  }, [scope, snapshot, focused, active, hidden, revision]);
+  const stop = useCallback(() => {
     if (currentScope.current !== scope) return;
     observer.current.update(scope, focused && active && !hidden, snapshot);
     const runs = [...(snapshot?.activeRuns ?? []), ...(snapshot?.run ? [snapshot.run] : [])];
@@ -28,4 +29,14 @@ export function useReplyAnnouncements(
       runs.map((run) => run.id),
     );
   }, [scope, snapshot, focused, active, hidden]);
+
+  const observe = useCallback(
+    (event: AnnouncementEvent) => {
+      if (currentScope.current !== scope) return;
+      observer.current.observe(scope, focused && active && !hidden, event);
+      if (event.type === "run.completed") setRevision((value) => value + 1);
+    },
+    [scope, focused, active, hidden],
+  );
+  return [stop, observe] as const;
 }

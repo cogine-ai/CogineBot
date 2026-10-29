@@ -7,6 +7,7 @@ import { imageArtifactPreview } from "../lib/artifact-open";
 import { useI18n } from "../lib/i18n";
 import type { ImageSize } from "../lib/inline-image";
 import { fitImageSize } from "../lib/inline-image";
+import { AttachmentLabel } from "./attachment-label";
 
 const MAX_INLINE_HEIGHT = 360;
 
@@ -64,7 +65,7 @@ export function InlineImageAttachment({
   if (state.status === "ready") {
     const size = fitImageSize(state.size, maxWidth, MAX_INLINE_HEIGHT);
     return (
-      <View>
+      <View style={{ maxWidth }}>
         <Pressable
           {...pressableProps}
           accessibilityRole="imagebutton"
@@ -80,17 +81,15 @@ export function InlineImageAttachment({
           />
         </Pressable>
         {description ? (
-          <Text style={[styles.label, { color: labelColor }]}>
-            {name} · {description}
-          </Text>
+          <AttachmentLabel name={name} description={description} color={labelColor} />
         ) : null}
       </View>
     );
   }
   return (
     <Pressable {...pressableProps} onPress={state.status === "error" ? onOpen : undefined}>
-      <View style={[styles.placeholder, { backgroundColor: tokens.muted }]}>
-        <Text style={[styles.label, { color: labelColor }]}>🖼 {name}</Text>
+      <View style={[styles.placeholder, { backgroundColor: tokens.muted, maxWidth }]}>
+        <AttachmentLabel name={`🖼 ${name}`} description={description} color={labelColor} />
         <Text style={[styles.hint, { color: tokens.mutedForeground }]}>
           {state.status === "loading" ? t("Loading image…") : t("Tap to open")}
         </Text>
@@ -108,6 +107,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  label: { fontSize: 15 },
   hint: { fontSize: 13, marginTop: 2 },
 });

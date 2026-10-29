@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import type { AnnouncementSnapshot } from "@rakazo/core";
+import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useReplyAnnouncements } from "./use-reply-announcements";
 
 let stop = () => {};
+let observe: (event: AnnouncementEvent) => void = () => {};
 function Screen({
   scope,
   snapshot,
@@ -15,22 +16,26 @@ function Screen({
   snapshot: AnnouncementSnapshot;
   hidden?: boolean;
 }) {
-  const [text, cancel] = useReplyAnnouncements(scope, snapshot, hidden);
+  const [text, cancel, receive] = useReplyAnnouncements(scope, snapshot, hidden);
+  observe = receive;
   stop = cancel;
   return <div role="status">{text}</div>;
 }
 function snapshot(status: string, run = "r"): AnnouncementSnapshot {
   return {
     threadId: "thread",
-    run: { id: run, status },
-    messages: [
-      {
-        id: `m-${run}`,
-        runId: run,
-        role: "bot",
-        blocks: [{ kind: "text", text: "Same complete reply" }],
-      },
-    ],
+    run: status === "completed" ? null : { id: run, status },
+    messages:
+      status === "completed"
+        ? [
+            {
+              id: `m-${run}`,
+              runId: run,
+              role: "bot",
+              blocks: [{ kind: "text", text: "Same complete reply" }],
+            },
+          ]
+        : [],
   };
 }
 let cleanup = async () => {};
@@ -55,6 +60,15 @@ async function setup() {
     status: string,
     options: { scope?: string; run?: string; hidden?: boolean } = {},
   ) => {
+    if (status === "completed")
+      await act(async () =>
+        observe({
+          type: "run.completed",
+          threadId: "thread",
+          runId: options.run ?? "r",
+          payload: { messageId: `m-${options.run ?? "r"}` },
+        }),
+      );
     await act(async () =>
       root.render(
         <Screen
@@ -72,6 +86,17 @@ async function setup() {
 }
 
 describe("rendered reply live region", () => {
+  it("retains Stop across hidden reentry even when the Run snapshot is stale", async () => {
+    const { view, render, flush } = await setup();
+    await render("running");
+    await act(async () => stop());
+    await render("running", { hidden: true });
+    await render("running");
+    await render("completed");
+    await flush();
+    expect(view.textContent).toBe("");
+  });
+
   it("does not let a previous scope's Stop handler suppress a new scope's pending reply", async () => {
     const { view, render, flush } = await setup();
     await render("running");
