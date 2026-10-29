@@ -362,7 +362,7 @@ test("a shared Space member can open settings without owner actions or a chat sw
       headers: { "x-rakazo-space-id": privateSpace.id },
       data: { json: {} },
     });
-    expect(inaccessible.status()).toBe(401);
+    expect(inaccessible.status()).toBe(403);
     const chatUrl = member.url();
     const composer = member.getByRole("combobox", { name: "Message Chief" });
     await composer.fill("Keep this member's chat draft.");
