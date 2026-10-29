@@ -1,4 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { visibleTextFromMarkdown } from "./message-quote.js";
 import { isBackgroundRunTrigger } from "./run-state.js";
 
 export type AnnouncementSnapshot = {
@@ -135,7 +136,7 @@ export class ReplyAnnouncements {
       );
       if (!message) continue;
       const text = message.blocks
-        .flatMap((block) => (block.kind === "text" ? [block.text] : []))
+        .flatMap((block) => (block.kind === "text" ? [visibleTextFromMarkdown(block.text)] : []))
         .join("\n");
       this.consumed.add(messageId);
       this.receipts.delete(runId);

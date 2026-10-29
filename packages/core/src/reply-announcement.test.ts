@@ -1,6 +1,16 @@
+import type { MessageBlock } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
+import replyAnnouncementCases from "../../testkit/src/reply-announcement-fixtures.json" with {
+  type: "json",
+};
 import type { AnnouncementEvent, AnnouncementSnapshot } from "./reply-announcement.js";
 import { ReplyAnnouncements } from "./reply-announcement.js";
+
+const REPLY_ANNOUNCEMENT_CASES = replyAnnouncementCases as {
+  name: string;
+  blocks: MessageBlock[];
+  spoken: string;
+}[];
 
 function snapshot(runId: string | null = "run-a", text?: string): AnnouncementSnapshot {
   return {
@@ -24,7 +34,40 @@ function terminal(overrides: Partial<AnnouncementEvent> = {}): AnnouncementEvent
   };
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 describe("durable visible reply announcements", () => {
+  it.each(REPLY_ANNOUNCEMENT_CASES)(
+    "announces visible $name without mutating stored blocks",
+    ({ blocks, spoken }) => {
+      const observer = new ReplyAnnouncements();
+      observer.update("scope", true, snapshot());
+      observer.observe("scope", true, terminal());
+      const completed = snapshot(null);
+      const storedBlocks = deepFreeze(structuredClone(blocks));
+      completed.messages = [{ id: "final", role: "bot", runId: "run-a", blocks: storedBlocks }];
+      const original = structuredClone(blocks);
+      expect(observer.update("scope", true, completed)).toEqual(spoken ? [spoken] : []);
+      expect(completed.messages[0]!.blocks).toBe(storedBlocks);
+      expect(storedBlocks).toEqual(original);
+      observer.observe("scope", true, terminal());
+      expect(observer.update("scope", true, completed)).toEqual([]);
+    },
+  );
+  it("consumes an empty visible result without announcing a later edit or duplicate receipt", () => {
+    const observer = new ReplyAnnouncements();
+    observer.update("scope", true, snapshot());
+    observer.observe("scope", true, terminal());
+    expect(observer.update("scope", true, snapshot(null, "***"))).toEqual([]);
+    observer.observe("scope", true, terminal());
+    expect(observer.update("scope", true, snapshot(null, "Late visible edit"))).toEqual([]);
+  });
   it("does not announce background ticket work that never became the visible Run", () => {
     const observer = new ReplyAnnouncements();
     observer.update("scope", true, snapshot(null));
@@ -49,7 +92,7 @@ describe("durable visible reply announcements", () => {
     observer.update("scope", true, snapshot());
     observer.observe("scope", true, terminal());
     expect(observer.update("scope", true, snapshot(null, "最终\nreply 👩‍👩‍👧‍👦"))).toEqual([
-      "最终\nreply 👩‍👩‍👧‍👦",
+      "最终 reply 👩‍👩‍👧‍👦",
     ]);
     observer.observe("scope", true, terminal());
     expect(observer.update("scope", true, snapshot(null, "最终\nreply 👩‍👩‍👧‍👦"))).toEqual([]);

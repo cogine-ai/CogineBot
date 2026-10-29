@@ -12,7 +12,15 @@ describe.skipIf(!enabled)("durable completion receipt delivery", () => {
     {
       outcome: "completed",
       blocks: [{ kind: "text", text: "  Final\nUnicode 👩‍👩‍👧‍👦\n" }],
-      spoken: "  Final\nUnicode 👩‍👩‍👧‍👦\n",
+      spoken: "Final Unicode 👩‍👩‍👧‍👦",
+    },
+    {
+      outcome: "completed",
+      blocks: [
+        { kind: "text", text: "# Done\n\n**Ready** [report](https://example.test/hidden)" },
+        { kind: "text", text: "中 é 👩‍👩‍👧‍👦" },
+      ],
+      spoken: "Done\n\nReady report\n中 é 👩‍👩‍👧‍👦",
     },
     { outcome: "completed", blocks: [], spoken: null },
     {
@@ -127,6 +135,10 @@ describe.skipIf(!enabled)("durable completion receipt delivery", () => {
           outcome === "completed" ? 1 : 0,
         );
         expect(messages).toHaveLength(outcome === "completed" && blocks.length ? 1 : 0);
+        if (messages.length)
+          expect(
+            (messages[0]!.blocks as MessageBlock[]).filter((block) => block.kind === "text"),
+          ).toEqual(blocks.filter((block) => block.kind === "text"));
         const terminal = rows.find((row) => row.type === "run.completed");
         if (terminal)
           expect(terminal.payload).toEqual(messages.length ? { messageId: messages[0]!.id } : {});
@@ -142,7 +154,15 @@ describe.skipIf(!enabled)("durable completion receipt delivery", () => {
         }
         if (outcome !== "cancelled") expect(snapshot?.run?.status).not.toBe("running");
         if (outcome === "completed") expect(snapshot?.run).toBeNull();
+        if (messages.length)
+          expect(snapshot?.messages[0]?.blocks.filter((block) => block.kind === "text")).toEqual(
+            blocks.filter((block) => block.kind === "text"),
+          );
         expect(observer.update("scope", true, snapshot)).toEqual(spoken ? [spoken] : []);
+        if (messages.length)
+          expect(snapshot?.messages[0]?.blocks.filter((block) => block.kind === "text")).toEqual(
+            blocks.filter((block) => block.kind === "text"),
+          );
         for (const row of rows)
           observer.observe("scope", true, {
             ...row,

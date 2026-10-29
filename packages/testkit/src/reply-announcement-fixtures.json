@@ -1,0 +1,183 @@
+[
+  {
+    "name": "headings, emphasis and hidden link destination",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "# Done\n\n**Ready** and _safe_ [report](https://example.test/hidden)"
+      }
+    ],
+    "spoken": "Done\n\nReady and safe report"
+  },
+  {
+    "name": "list items and inline code",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "1. **One**\n2. [Two](https://example.test/private)\n3. Run `x < y && z > 0`"
+      }
+    ],
+    "spoken": "One\nTwo\nRun x < y && z > 0"
+  },
+  {
+    "name": "fenced code and Unicode",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "```ts\nconst x = \"中é👩‍👩‍👧‍👦\";\n```"
+      }
+    ],
+    "spoken": "const x = \"中é👩‍👩‍👧‍👦\";\n"
+  },
+  {
+    "name": "entities and original combining characters",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "&copy; &#x1F600; 中 é 👩‍👩‍👧‍👦"
+      }
+    ],
+    "spoken": "© 😀 中 é 👩‍👩‍👧‍👦"
+  },
+  {
+    "name": "reference link label",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "Read [report][ref]\n\n[ref]: https://example.test/hidden"
+      }
+    ],
+    "spoken": "Read report"
+  },
+  {
+    "name": "separate rendered blocks do not pair emphasis across boundaries",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "**Alpha"
+      },
+      {
+        "kind": "text",
+        "text": "Beta**"
+      }
+    ],
+    "spoken": "**Alpha\nBeta**"
+  },
+  {
+    "name": "separate rendered blocks do not share reference definitions",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "[report][ref]"
+      },
+      {
+        "kind": "text",
+        "text": "[ref]: https://example.test/hidden"
+      }
+    ],
+    "spoken": "[report][ref]\n"
+  },
+  {
+    "name": "text blocks stay separate around ignored tool logs",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "**First**"
+      },
+      {
+        "kind": "progress",
+        "text": "Internal tool log",
+        "activity": true
+      },
+      {
+        "kind": "text",
+        "text": "[Last](https://example.test/hidden)"
+      }
+    ],
+    "spoken": "First\nLast"
+  },
+  {
+    "name": "an unclosed code fence does not swallow the next rendered block",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "```text\n**literal"
+      },
+      {
+        "kind": "text",
+        "text": "**done**"
+      }
+    ],
+    "spoken": "**literal\n\ndone"
+  },
+  {
+    "name": "formatting-only empty result",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "***"
+      }
+    ],
+    "spoken": ""
+  },
+  {
+    "name": "non-rendered HTML",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<div>hidden https://example.test/secret</div>"
+      }
+    ],
+    "spoken": ""
+  },
+  {
+    "name": "non-rendered comment",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "<!-- secret https://example.test/hidden -->"
+      }
+    ],
+    "spoken": ""
+  },
+  {
+    "name": "image-only canonical projection omits hidden destination",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "![chart](https://example.test/hidden)"
+      }
+    ],
+    "spoken": ""
+  },
+  {
+    "name": "canonical table whitespace",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "| Name | Value |\n| --- | ---: |\n| Alice | 5 |"
+      }
+    ],
+    "spoken": "Name\t Value Alice\t 5"
+  },
+  {
+    "name": "literal HTML is retained inside a code fence",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "```html\n<div>literal</div>\n```"
+      }
+    ],
+    "spoken": "<div>literal</div>\n"
+  },
+  {
+    "name": "a visibly displayed autolink remains audible",
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "Open <https://example.test/visible> now"
+      }
+    ],
+    "spoken": "Open https://example.test/visible now"
+  }
+]

@@ -1,9 +1,19 @@
 // @vitest-environment jsdom
+import type { MessageBlock } from "@rakazo/contracts";
 import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import replyAnnouncementCases from "../../../packages/testkit/src/reply-announcement-fixtures.json" with {
+  type: "json",
+};
 import { useReplyAnnouncements } from "./use-reply-announcements";
+
+const REPLY_ANNOUNCEMENT_CASES = replyAnnouncementCases as {
+  name: string;
+  blocks: MessageBlock[];
+  spoken: string;
+}[];
 
 const screen = vi.hoisted(() => ({ focused: true, active: true, announce: vi.fn() }));
 vi.mock("expo-router", () => ({ useIsFocused: () => screen.focused }));
@@ -24,7 +34,7 @@ afterEach(async () => {
   screen.active = true;
   screen.announce.mockClear();
 });
-function value(status: string, run = "r"): AnnouncementSnapshot {
+function value(status: string, run = "r", blocks?: MessageBlock[]): AnnouncementSnapshot {
   return {
     threadId: "t",
     run: status === "completed" ? null : { id: run, status },
@@ -35,7 +45,7 @@ function value(status: string, run = "r"): AnnouncementSnapshot {
               id: `m-${run}`,
               role: "bot",
               runId: run,
-              blocks: [{ kind: "text", text: "完整新回复 👩‍👩‍👧‍👦" }],
+              blocks: blocks ?? [{ kind: "text", text: "完整新回复 👩‍👩‍👧‍👦" }],
             },
           ]
         : [],
@@ -48,7 +58,7 @@ async function setup() {
   cleanup = async () => {
     await act(async () => root.unmount());
   };
-  return async (status: string, run = "r", scope = "scope") => {
+  return async (status: string, run = "r", scope = "scope", blocks?: MessageBlock[]) => {
     if (status === "completed")
       await act(async () =>
         observe({
@@ -58,11 +68,29 @@ async function setup() {
           payload: { messageId: `m-${run}` },
         }),
       );
-    await act(async () => root.render(<Thread value={value(status, run)} scope={scope} />));
+    await act(async () => root.render(<Thread value={value(status, run, blocks)} scope={scope} />));
   };
 }
 
 describe("native completed reply announcements", () => {
+  it.each(REPLY_ANNOUNCEMENT_CASES)(
+    "calls the native API with visible $name only once",
+    async ({ blocks, spoken }) => {
+      const render = await setup();
+      await render("running");
+      await render("completed", "r", "scope", blocks);
+      await render("completed", "r", "scope", blocks);
+      if (spoken) expect(screen.announce).toHaveBeenCalledExactlyOnceWith(spoken);
+      else expect(screen.announce).not.toHaveBeenCalled();
+    },
+  );
+  it("does not announce a late edit after consuming a formatting-only completion", async () => {
+    const render = await setup();
+    await render("running");
+    await render("completed", "r", "scope", [{ kind: "text", text: "***" }]);
+    await render("completed", "r", "scope", [{ kind: "text", text: "Late visible edit" }]);
+    expect(screen.announce).not.toHaveBeenCalled();
+  });
   it("retains Stop across background reentry with an unchanged running snapshot", async () => {
     const render = await setup();
     await render("running");

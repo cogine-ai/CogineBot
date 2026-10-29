@@ -1,9 +1,19 @@
 // @vitest-environment jsdom
+import type { MessageBlock } from "@rakazo/contracts";
 import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import replyAnnouncementCases from "../../../../packages/testkit/src/reply-announcement-fixtures.json" with {
+  type: "json",
+};
 import { useReplyAnnouncements } from "./use-reply-announcements";
+
+const REPLY_ANNOUNCEMENT_CASES = replyAnnouncementCases as {
+  name: string;
+  blocks: MessageBlock[];
+  spoken: string;
+}[];
 
 let stop = () => {};
 let observe: (event: AnnouncementEvent) => void = () => {};
@@ -21,7 +31,7 @@ function Screen({
   stop = cancel;
   return <div role="status">{text}</div>;
 }
-function snapshot(status: string, run = "r"): AnnouncementSnapshot {
+function snapshot(status: string, run = "r", blocks?: MessageBlock[]): AnnouncementSnapshot {
   return {
     threadId: "thread",
     run: status === "completed" ? null : { id: run, status },
@@ -32,7 +42,7 @@ function snapshot(status: string, run = "r"): AnnouncementSnapshot {
               id: `m-${run}`,
               runId: run,
               role: "bot",
-              blocks: [{ kind: "text", text: "Same complete reply" }],
+              blocks: blocks ?? [{ kind: "text", text: "Same complete reply" }],
             },
           ]
         : [],
@@ -58,7 +68,7 @@ async function setup() {
   };
   const render = async (
     status: string,
-    options: { scope?: string; run?: string; hidden?: boolean } = {},
+    options: { scope?: string; run?: string; hidden?: boolean; blocks?: MessageBlock[] } = {},
   ) => {
     if (status === "completed")
       await act(async () =>
@@ -73,7 +83,7 @@ async function setup() {
       root.render(
         <Screen
           scope={options.scope ?? "scope"}
-          snapshot={snapshot(status, options.run)}
+          snapshot={snapshot(status, options.run, options.blocks)}
           hidden={options.hidden}
         />,
       ),
@@ -86,6 +96,25 @@ async function setup() {
 }
 
 describe("rendered reply live region", () => {
+  it.each(REPLY_ANNOUNCEMENT_CASES)("publishes visible $name", async ({ blocks, spoken }) => {
+    const { view, render, flush } = await setup();
+    await render("running");
+    await render("completed", { blocks });
+    await flush();
+    expect(view.querySelector('[role="status"]')?.textContent).toBe(spoken);
+    await render("completed", { blocks });
+    await flush();
+    expect(view.querySelector('[role="status"]')?.textContent).toBe(spoken);
+  });
+  it("does not publish a late edit after consuming a formatting-only completion", async () => {
+    const { view, render, flush } = await setup();
+    await render("running");
+    await render("completed", { blocks: [{ kind: "text", text: "***" }] });
+    await flush();
+    await render("completed", { blocks: [{ kind: "text", text: "Late visible edit" }] });
+    await flush();
+    expect(view.textContent).toBe("");
+  });
   it("retains Stop across hidden reentry even when the Run snapshot is stale", async () => {
     const { view, render, flush } = await setup();
     await render("running");
