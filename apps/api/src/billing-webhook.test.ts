@@ -19,7 +19,11 @@ const actor: Actor = {
 
 function mount(
   parseWebhook: BillingProvider["parseWebhook"],
-  options: { sync?: () => Promise<void>; actor?: Actor | null } = {},
+  options: {
+    sync?: () => Promise<void>;
+    actor?: Actor | null;
+    authenticate?: (request: Request, spaceId?: string) => Promise<Actor | null>;
+  } = {},
 ) {
   const sync = vi.fn(options.sync ?? (async () => undefined));
   const syncForActor = vi.fn(async () => undefined);
@@ -28,7 +32,8 @@ function mount(
     billing: { sync, syncForActor } as unknown as BillingService,
     provider: { parseWebhook },
     webOrigin: "https://app.example.com",
-    authenticate: async () => (options.actor === undefined ? actor : options.actor),
+    authenticate:
+      options.authenticate ?? (async () => (options.actor === undefined ? actor : options.actor)),
   });
   return { app, sync, syncForActor };
 }
@@ -84,6 +89,24 @@ describe("billing webhook", () => {
 });
 
 describe("billing checkout return", () => {
+  it("passes the initiating Space to authentication before sync", async () => {
+    const authenticate = vi.fn(async (_request: Request, spaceId?: string) => ({
+      ...actor,
+      spaceId: spaceId!,
+    }));
+    const { app, syncForActor } = mount(() => null, { authenticate });
+    await app.request(`${BILLING_RETURN_PATH}?space=space-other`);
+    expect(authenticate).toHaveBeenCalledWith(expect.any(Request), "space-other");
+    expect(syncForActor).toHaveBeenCalledWith({ ...actor, spaceId: "space-other" });
+  });
+
+  it("does not sync a return target that authentication cannot authorize", async () => {
+    const { app, syncForActor } = mount(() => null, { authenticate: async () => null });
+    const response = await app.request(`${BILLING_RETURN_PATH}?space=foreign-space`);
+    expect(response.status).toBe(303);
+    expect(syncForActor).not.toHaveBeenCalled();
+  });
+
   it("syncs the signed-in user's organization and returns to the app", async () => {
     const { app, syncForActor } = mount(() => null);
     const res = await app.request(BILLING_RETURN_PATH);

@@ -6330,3 +6330,32 @@ msgstr "已达到 ChatGPT 套餐用量上限。请查看用量设置。"
 #: src/lib/run-error.ts
 msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
 msgstr "ChatGPT 套餐用量暂不可用。请查看用量设置或重新连接 ChatGPT。"
+
+#: src/pages/Paywall.tsx
+msgid "Back to chats"
+msgstr "返回聊天"
+
+#: src/pages/Paywall.tsx
+msgid "Contact your organization owner"
+msgstr "联系组织所有者"
+
+#: src/pages/Paywall.tsx
+msgid "Could not refresh billing"
+msgstr "无法刷新账单状态"
+
+#: src/pages/Paywall.tsx
+msgid "Could not load Spaces"
+msgstr "无法加载空间"
+
+#: src/components/LoadFailureNotice.tsx
+msgid "Contact your organization owner for an invitation"
+msgstr "请联系组织所有者获取邀请"
+
+#: src/pages/Paywall.tsx
+#: src/components/LoadFailureNotice.tsx
+msgid "Switch Space"
+msgstr "切换空间"
+
+#: src/lib/sign-out.ts
+msgid "Could not log out. Try again."
+msgstr "无法退出登录，请重试。"

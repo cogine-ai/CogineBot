@@ -7,6 +7,58 @@ import { desktopBridge } from "./desktop";
 
 const SPACE_STORAGE_KEY = "rakazo:space-id";
 let spaceSelectionGeneration = 0;
+const spaceSelectionListeners = new Set<() => void>();
+const subscriptionListeners = new Set<() => void>();
+
+export function subscribeSelectedSpace(listener: () => void): () => void {
+  spaceSelectionListeners.add(listener);
+  const storageChanged = (event: StorageEvent) => {
+    if (event.key === SPACE_STORAGE_KEY || event.key === null) changedSpaceSelection();
+  };
+  window.addEventListener("storage", storageChanged);
+  return () => {
+    spaceSelectionListeners.delete(listener);
+    window.removeEventListener("storage", storageChanged);
+  };
+}
+
+export function subscribeSubscriptionRequired(listener: () => void): () => void {
+  subscriptionListeners.add(listener);
+  return () => {
+    subscriptionListeners.delete(listener);
+  };
+}
+
+export function noteSubscriptionRequired(
+  spaceId: string | null,
+  generation: number,
+  isCurrent: () => boolean,
+): void {
+  if (
+    !isCurrent() ||
+    generation !== currentSpaceSelectionGeneration() ||
+    spaceId !== selectedSpaceId()
+  )
+    return;
+  for (const listener of subscriptionListeners) {
+    try {
+      listener();
+    } catch {
+      /* Preserve the original HTTP admission response. */
+    }
+  }
+}
+
+function changedSpaceSelection(): void {
+  spaceSelectionGeneration += 1;
+  for (const listener of spaceSelectionListeners) {
+    try {
+      listener();
+    } catch {
+      /* A UI observer cannot change the selection receipt. */
+    }
+  }
+}
 
 export function currentSpaceSelectionGeneration(): number {
   return spaceSelectionGeneration;
@@ -26,7 +78,7 @@ export function selectedSpaceId(): string | null {
 export function selectSpace(id: string): boolean {
   try {
     window.localStorage.setItem(SPACE_STORAGE_KEY, id);
-    spaceSelectionGeneration += 1;
+    changedSpaceSelection();
     return true;
   } catch {
     try {
@@ -39,7 +91,7 @@ export function selectSpace(id: string): boolean {
 }
 
 export function clearSpaceSelection(): void {
-  spaceSelectionGeneration += 1;
+  changedSpaceSelection();
   try {
     window.localStorage.removeItem(SPACE_STORAGE_KEY);
   } catch {
@@ -83,11 +135,20 @@ const link = new RPCLink<RpcClientContext>({
     }
     const spaceId =
       options.context.spaceId === undefined ? selectedSpaceId() : options.context.spaceId;
-    return fetch(request, {
+    const selectionGeneration = currentSpaceSelectionGeneration();
+    const response = await fetch(request, {
       headers: withSpaceHeaders(request.headers, spaceId),
       credentials: "include",
       signal: options.signal,
     });
+    if (response.status === 402) {
+      noteSubscriptionRequired(
+        spaceId,
+        selectionGeneration,
+        () => options.context.isCurrent?.() !== false && !options.signal?.aborted,
+      );
+    }
+    return response;
   },
 });
 

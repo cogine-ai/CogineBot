@@ -1,4 +1,16 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Back to chats": "Вернуться к чатам",
+  "Subscription required": "Требуется подписка",
+  "Contact your organization owner": "Свяжитесь с владельцем организации",
+  "Start {days}-day free trial": "Пробный период на {days} дней",
+  Subscribe: "Подписаться",
+  "Manage billing": "Управление оплатой",
+  "Could not refresh billing": "Не удалось обновить данные оплаты",
+  "Could not open billing": "Не удалось открыть страницу оплаты",
+  "Could not save the selected Space": "Не удалось сохранить выбранный Space",
+  "Switch Space": "Сменить Space",
+  "Contact your organization owner for an invitation":
+    "Обратитесь к владельцу организации за приглашением",
   "Manage usage": "Управление использованием",
   "Your ChatGPT plan usage limit was reached. Review your usage settings.":
     "Достигнут лимит использования вашего плана ChatGPT. Проверьте настройки использования.",

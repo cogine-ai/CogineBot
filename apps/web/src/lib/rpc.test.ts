@@ -7,6 +7,7 @@ import {
   rpcForSpace,
   selectedSpaceId,
   selectSpace,
+  subscribeSubscriptionRequired,
 } from "./rpc.js";
 
 afterEach(() => {
@@ -128,5 +129,102 @@ describe("settings RPC target attribution", () => {
     current = false;
     await expect(client.me()).rejects.toThrow();
     expect(h.spaces()).toEqual(["space-b"]);
+  });
+});
+
+describe("subscription-denial ownership", () => {
+  function setup() {
+    const stored = new Map([["rakazo:space-id", "space-a"]]);
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+        removeItem: (key: string) => stored.delete(key),
+      },
+      location: { origin: "https://example.test", pathname: "/app" },
+    });
+  }
+  function denied() {
+    return Response.json(
+      {
+        json: {
+          defined: false,
+          code: "PAYMENT_REQUIRED",
+          status: 402,
+          message: "Subscription required",
+          data: { reason: "subscription_required" },
+        },
+      },
+      { status: 402 },
+    );
+  }
+  it("notifies current selection denial while preserving the exact RPC error", async () => {
+    setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => denied()),
+    );
+    const listener = vi.fn();
+    const stop = subscribeSubscriptionRequired(listener);
+    try {
+      await expect(rpc.me()).rejects.toMatchObject({ status: 402, code: "PAYMENT_REQUIRED" });
+      expect(listener).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+    }
+  });
+  it("does not let a throwing observer replace the server's response", async () => {
+    setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => denied()),
+    );
+    const stop = subscribeSubscriptionRequired(() => {
+      throw new Error("observer");
+    });
+    try {
+      await expect(rpc.me()).rejects.toMatchObject({ status: 402 });
+    } finally {
+      stop();
+    }
+  });
+  it("ignores a late denial after the selection moves A to B to A", async () => {
+    setup();
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((yes) => {
+            resolve = yes;
+          }),
+      ),
+    );
+    const listener = vi.fn();
+    const stop = subscribeSubscriptionRequired(listener);
+    const request = rpc.me();
+    const rejection = expect(request).rejects.toMatchObject({ status: 402 });
+    await vi.waitFor(() => expect(resolve).toBeDefined());
+    selectSpace("space-b");
+    selectSpace("space-a");
+    resolve(denied());
+    await rejection;
+    expect(listener).not.toHaveBeenCalled();
+    stop();
+  });
+  it("does not project a settings target's denial onto a different selected Space", async () => {
+    setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => denied()),
+    );
+    const listener = vi.fn();
+    const stop = subscribeSubscriptionRequired(listener);
+    try {
+      await expect(createSpaceRpc("space-b").me()).rejects.toMatchObject({ status: 402 });
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
   });
 });

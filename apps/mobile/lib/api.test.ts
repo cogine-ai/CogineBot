@@ -27,6 +27,7 @@ import {
   MAX_MOBILE_RPC_RESPONSE_BYTES,
   mergeMobileSnapshot,
   mobileThreadRefreshResult,
+  noteSubscriptionRequired,
   passwordResetCapabilities,
   prependMobileMessagePage,
   requestAccountDeletionCode,
@@ -45,6 +46,7 @@ import {
   subscribeServerReachable,
   subscribeSessionRejected,
   subscribeSpaceSelectionPending,
+  subscribeSubscriptionRequired,
   subscribeThread,
 } from "./api.js";
 import {
@@ -1173,7 +1175,7 @@ describe("mobile API authentication", () => {
       vi.fn(async () => Promise.reject(new Error("offline"))),
     );
 
-    await expect(signOut()).resolves.toBeUndefined();
+    await expect(signOut()).resolves.toBe(true);
     expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith("rakazo.session_token");
   });
 
@@ -5168,4 +5170,172 @@ it("accepts complete mobile history after clear without retaining an obsolete ol
       },
     }),
   ).toBe(current);
+});
+
+describe("access recovery ownership", () => {
+  const store = new Map<string, string>();
+  beforeEach(async () => {
+    store.clear();
+    store.set("rakazo.api_base", "https://access.example.test");
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => store.get(key) ?? null);
+    vi.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      store.set(key, value);
+    });
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      store.delete(key);
+    });
+    await loadApiBase();
+    await saveSessionToken("synthetic-access-session");
+    await selectSpace("space-a");
+  });
+
+  it("publishes HTTP denials only for the original current context", async () => {
+    const denied = vi.fn();
+    const stop = subscribeSubscriptionRequired(denied);
+    try {
+      const context = await captureApiRequestContext();
+      const copied = { ...context, headers: { ...context.headers } };
+      noteSubscriptionRequired(copied);
+      expect(denied).toHaveBeenCalledOnce();
+      await selectSpace("space-b");
+      await selectSpace("space-a");
+      noteSubscriptionRequired(context);
+      expect(denied).toHaveBeenCalledOnce();
+      const other = await captureApiRequestContext("space-b");
+      noteSubscriptionRequired(other);
+      expect(denied).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+    }
+  });
+
+  it("revokes a captured billing action before its awaited dispatch", async () => {
+    const requestContext = await captureApiRequestContext();
+    let current = true;
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const pending = rpc(
+      "billing/checkout",
+      {},
+      { requestContext: { ...requestContext, isCurrent: () => current } },
+    );
+    current = false;
+    await expect(pending).rejects.toThrow("Request canceled");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps a valid no-Space session on an authoritative403", async () => {
+    const rejected = vi.fn();
+    const stop = subscribeSessionRejected(rejected);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => rpcErrorResponse(403, "FORBIDDEN", "Space unavailable")),
+    );
+    try {
+      await expect(rpc("me")).rejects.toMatchObject({ status: 403 });
+      expect(rejected).not.toHaveBeenCalled();
+      expect(store.get("rakazo.session_token")).toBe("synthetic-access-session");
+    } finally {
+      stop();
+    }
+  });
+
+  it("publishes current subscription denial without masking the original error", async () => {
+    const interrupted = subscribeSubscriptionRequired(() => {
+      throw new Error("view failed");
+    });
+    const denied = vi.fn();
+    const stop = subscribeSubscriptionRequired(denied);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => rpcErrorResponse(402, "PAYMENT_REQUIRED", "Subscription required")),
+    );
+    try {
+      await expect(rpc("computer/boot", { botId: "synthetic" })).rejects.toMatchObject({
+        status: 402,
+      });
+      expect(denied).toHaveBeenCalledOnce();
+    } finally {
+      interrupted();
+      stop();
+    }
+  });
+
+  it("does not publish another explicitly targeted Space's denial", async () => {
+    const denied = vi.fn();
+    const stop = subscribeSubscriptionRequired(denied);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => rpcErrorResponse(402, "PAYMENT_REQUIRED", "Subscription required")),
+    );
+    try {
+      const requestContext = await captureApiRequestContext("space-b");
+      await expect(rpc("computer/boot", {}, { requestContext })).rejects.toMatchObject({
+        status: 402,
+      });
+      expect(denied).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
+  });
+
+  it("ignores a late denial after selecting A to B to A", async () => {
+    let finish!: (value: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    );
+    const denied = vi.fn();
+    const stop = subscribeSubscriptionRequired(denied);
+    const pending = rpc("computer/boot", {}).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      await selectSpace("space-b");
+      await selectSpace("space-a");
+      finish(rpcErrorResponse(402, "PAYMENT_REQUIRED", "Subscription required"));
+      await expect(pending).resolves.toMatchObject({ status: 402 });
+      expect(denied).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
+  });
+
+  it.each(["new-session", "space-aba", "endpoint-aba"])(
+    "does not clear replacement credentials after %s while logout waits",
+    async (boundary) => {
+      let finish!: (value: Response) => void;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string) =>
+          url.endsWith("/rpc/notifications/unregisterPush")
+            ? Promise.resolve(jsonResponse({ json: null }))
+            : new Promise<Response>((resolve) => {
+                finish = resolve;
+              }),
+        ),
+      );
+      const pending = signOut();
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      if (boundary === "new-session") await saveSessionToken("synthetic-replacement-session");
+      else if (boundary === "space-aba") {
+        await selectSpace("space-b");
+        await selectSpace("space-a");
+      } else {
+        store.set("rakazo.api_base", "https://temporary.example.test");
+        await loadApiBase();
+        store.set("rakazo.api_base", "https://access.example.test");
+        await loadApiBase();
+      }
+      finish(jsonResponse({ success: true }));
+      await expect(pending).resolves.toBe(false);
+      expect(store.get("rakazo.session_token")).toBe(
+        boundary === "new-session" ? "synthetic-replacement-session" : "synthetic-access-session",
+      );
+    },
+  );
 });

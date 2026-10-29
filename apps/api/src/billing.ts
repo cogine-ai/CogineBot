@@ -20,7 +20,9 @@ export const BILLING_RETURN_PATH = "/api/v1/billing/return";
 
 /** Product-side billing: access rules, checkout, and pull-based sync from the provider. */
 export interface BillingService {
-  status(actor: Actor): Promise<BillingStatus>;
+  status(actor: Actor, options?: { refresh?: boolean }): Promise<BillingStatus>;
+  /** Admit new user work using the stored subscription, without contacting the provider. */
+  assertAccess(actor: Actor): Promise<void>;
   checkout(actor: Actor): Promise<{ url: string }>;
   portal(actor: Actor): Promise<{ url: string }>;
   /** Re-fetches the customer's subscription from the provider and overwrites the stored snapshot. */
@@ -40,6 +42,11 @@ export function createBillingService(deps: {
 }): BillingService {
   const { prisma, provider } = deps;
   const appUrl = `${deps.webOrigin}/app`;
+  const returnUrl = (actor: Actor) => {
+    const url = new URL(BILLING_RETURN_PATH, deps.webOrigin);
+    url.searchParams.set("space", actor.spaceId);
+    return url.href;
+  };
   let cachedPrice: { value: BillingPrice; expiresAt: number } | undefined;
 
   async function price(): Promise<BillingPrice | null> {
@@ -55,6 +62,11 @@ export function createBillingService(deps: {
   }
 
   async function organization(actor: Actor) {
+    const membership = await prisma.spaceMember.findUnique({
+      where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
+      select: { id: true },
+    });
+    if (!membership) throw new ORPCError("FORBIDDEN");
     const found = await organizationForMember(prisma, {
       spaceId: actor.spaceId,
       userId: actor.userId,
@@ -78,7 +90,19 @@ export function createBillingService(deps: {
   }
 
   return {
-    async status(actor) {
+    async assertAccess(actor) {
+      if (actor.isDeploymentOwner) return;
+      const { organizationId } = await organization(actor);
+      const account = await billingAccountForOrganization(prisma, organizationId);
+      if (!hasBillingAccess(account?.status ?? null))
+        throw new ORPCError("PAYMENT_REQUIRED", {
+          status: 402,
+          message: "Subscription required",
+          data: { reason: "subscription_required" },
+        });
+    },
+
+    async status(actor, options) {
       if (actor.isDeploymentOwner) {
         return {
           access: true,
@@ -95,6 +119,21 @@ export function createBillingService(deps: {
         };
       }
       const { organizationId, isOwner } = await organization(actor);
+      if (options?.refresh) {
+        const stored = await billingAccountForOrganization(prisma, organizationId);
+        if (stored) {
+          try {
+            await sync(stored.customerId);
+          } catch {
+            throw new ORPCError("SERVICE_UNAVAILABLE", {
+              message: "Could not refresh billing",
+              data: { reason: "billing_unavailable" },
+            });
+          }
+        }
+        // A membership revoked while the provider answered must not publish its status.
+        await organization(actor);
+      }
       const [account, currentPrice] = await Promise.all([
         billingAccountForOrganization(prisma, organizationId),
         price(),
@@ -133,20 +172,27 @@ export function createBillingService(deps: {
         });
         account = await createBillingAccount(prisma, { organizationId, customerId });
       }
-      return provider.createCheckout({
+      const result = await provider.createCheckout({
         customerId: account.customerId,
         seats: await organizationSeatCount(prisma, organizationId),
         ...(account.subscribedAt ? {} : { trialDays: TRIAL_DAYS }),
-        successUrl: `${deps.webOrigin}${BILLING_RETURN_PATH}`,
+        successUrl: returnUrl(actor),
         cancelUrl: appUrl,
       });
+      await managedOrganization(actor);
+      return result;
     },
 
     async portal(actor) {
       const { organizationId } = await managedOrganization(actor);
       const account = await billingAccountForOrganization(prisma, organizationId);
       if (!account) throw new ORPCError("NOT_FOUND", { message: "No billing account" });
-      return provider.createPortal({ customerId: account.customerId, returnUrl: appUrl });
+      const result = await provider.createPortal({
+        customerId: account.customerId,
+        returnUrl: returnUrl(actor),
+      });
+      await managedOrganization(actor);
+      return result;
     },
 
     sync,

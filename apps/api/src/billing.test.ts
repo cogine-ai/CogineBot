@@ -14,6 +14,7 @@ const price = { amount: 1000, currency: "usd", interval: "month" as const, inter
 
 function service(getPrice: BillingProvider["getPrice"], role = "owner") {
   const prisma = {
+    spaceMember: { findUnique: vi.fn().mockResolvedValue({ id: "membership-1" }) },
     space: { findUnique: vi.fn().mockResolvedValue({ organizationId: "org-1" }) },
     member: {
       findUnique: vi.fn().mockResolvedValue({ role }),

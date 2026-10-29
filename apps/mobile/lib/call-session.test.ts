@@ -17,6 +17,7 @@ vi.mock("./api", () => ({
   applyMobileThreadEvent: vi.fn(),
   blockText: vi.fn(),
   captureApiRequestContext: vi.fn(),
+  noteSubscriptionRequired: vi.fn(),
   rpc: vi.fn(),
   subscribeThread: vi.fn(),
 }));

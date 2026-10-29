@@ -1,6 +1,11 @@
 import { readBoundedResponseBytes } from "@rakazo/core";
 import { getActiveUiLocale } from "./i18n.js";
-import { selectedSpaceId, withSpaceHeaders } from "./rpc.js";
+import {
+  currentSpaceSelectionGeneration,
+  noteSubscriptionRequired,
+  selectedSpaceId,
+  withSpaceHeaders,
+} from "./rpc.js";
 import type { UiLocale } from "./ui-locale.js";
 import { errorText } from "./user-error.js";
 
@@ -540,6 +545,7 @@ export class Dictation {
 
   private async transcribeChunks(mine: number, spaceId: string | null) {
     if (this.token !== mine) return;
+    const selectionGeneration = currentSpaceSelectionGeneration();
     const blob = new Blob(this.chunks, { type: this.chunks[0]?.type || "audio/webm" });
     this.chunks = [];
     if (!blob.size) {
@@ -579,6 +585,12 @@ export class Dictation {
         cancelResponse(res);
         return;
       }
+      if (res.status === 402)
+        noteSubscriptionRequired(
+          spaceId,
+          selectionGeneration,
+          () => this.token === mine && !abort.signal.aborted,
+        );
       const body = await readTranscriptionBody(res, abort.signal);
       if (this.token !== mine) return;
       if (!res.ok) {

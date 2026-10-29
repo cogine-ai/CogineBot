@@ -123,7 +123,9 @@ it.each([
     );
     expect(container.textContent).toContain(message);
     expect(container.textContent).toContain("Showing saved chats.");
-    await press(kind === "auth" ? "Sign in" : "Retry");
+    if (kind === "space")
+      expect(container.textContent).toContain("Contact your organization owner for an invitation");
+    await press(kind === "auth" ? "Sign in" : kind === "space" ? "Switch Space" : "Retry");
     expect(signIn).toHaveBeenCalledTimes(kind === "auth" ? 1 : 0);
     expect(retry).toHaveBeenCalledTimes(kind === "auth" ? 0 : 1);
   },

@@ -28,6 +28,7 @@ import { readBoundedBody } from "./http-body.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 
 export interface VoiceDeps {
+  assertAccess?: (actor: Actor) => Promise<void>;
   prisma: PrismaClient;
   secrets: SecretStore;
 }
@@ -405,6 +406,7 @@ export function mountVoiceHttpRoutes(
     if (raw === null) return c.json({ error: "Request body is too large." }, 413);
     const body = parseVoiceRequestBody(raw);
     try {
+      await deps.assertAccess?.(actor);
       const clip = await synthesizeVoice(deps, actor, {
         text: String((body as { text?: unknown }).text ?? ""),
         voiceId: optionalString((body as { voiceId?: unknown }).voiceId),
@@ -437,6 +439,7 @@ export function mountVoiceHttpRoutes(
     const audioBase64 = String((body as { audioBase64?: unknown }).audioBase64 ?? "");
     const language = optionalString((body as { language?: unknown }).language);
     try {
+      await deps.assertAccess?.(actor);
       const audio = decodeAudioBase64(audioBase64);
       const result = await transcribeVoice(deps, actor, {
         audio,
@@ -485,8 +488,16 @@ function voiceHttpError(c: Context, error: unknown) {
   if (error instanceof ORPCError) {
     const code = String(error.code ?? "BAD_REQUEST");
     const status =
-      code === "UNAUTHORIZED" ? 401 : code === "NOT_FOUND" ? 404 : code === "CONFLICT" ? 409 : 400;
-    return c.json({ error: error.message }, status);
+      code === "UNAUTHORIZED"
+        ? 401
+        : code === "NOT_FOUND"
+          ? 404
+          : code === "CONFLICT"
+            ? 409
+            : code === "PAYMENT_REQUIRED"
+              ? 402
+              : 400;
+    return c.json({ error: error.message, code, data: error.data }, status);
   }
   const message = error instanceof Error ? error.message : "Voice request failed.";
   // Message only: request bodies, keys and audio never reach the log.

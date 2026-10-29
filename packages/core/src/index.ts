@@ -1,3 +1,4 @@
+export * from "./access-recovery.js";
 export * from "./action-approval.js";
 export * from "./agent-skill.js";
 export * from "./ai-consent.js";

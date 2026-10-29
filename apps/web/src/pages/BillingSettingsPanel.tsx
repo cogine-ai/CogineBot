@@ -1,44 +1,86 @@
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
 import type { BillingStatus } from "@rakazo/contracts";
 import { Button, Skeleton } from "@rakazo/ui-web";
-import { useEffect, useState } from "react";
-import { formatBillingDate, formatBillingPrice } from "../lib/billing";
-import { rpc } from "../lib/rpc";
+import { useEffect, useRef, useState } from "react";
+import { BILLING_REQUEST_TIMEOUT_MS, formatBillingDate, formatBillingPrice } from "../lib/billing";
+import type { RpcClient } from "../lib/rpc";
 
-export function BillingSettingsPanel() {
+export function BillingSettingsPanel({
+  client,
+  isCurrent,
+}: {
+  client: RpcClient;
+  isCurrent: () => boolean;
+}) {
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const currentPanel = () => mounted.current && isCurrent();
   const { t, i18n } = useLingui();
   const locale = i18n.locale || "en";
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const busy = useRef(false);
+  const recheck = useRef<() => void>(() => {});
 
   useEffect(() => {
     let active = true;
-    rpc.billing
-      .status()
-      .then((next) => {
-        if (active) setStatus(next);
-      })
-      .catch(() => {
-        if (active) setError(t`Could not load billing`);
-      });
+    let inFlight = false;
+    const current = () => active && isCurrent();
+    const load = (refresh = false) => {
+      if (inFlight || !current() || document.visibilityState === "hidden") return;
+      inFlight = true;
+      void client.billing
+        .status(refresh ? { refresh: true } : undefined, {
+          signal: AbortSignal.timeout(BILLING_REQUEST_TIMEOUT_MS),
+        })
+        .then((next) => {
+          if (current()) {
+            setStatus(next);
+            setError(null);
+          }
+        })
+        .catch(() => {
+          if (current()) setError(t`Could not load billing`);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    recheck.current = () => load(true);
+    load();
+    const visible = () => load(true);
+    window.addEventListener("focus", visible);
+    document.addEventListener("visibilitychange", visible);
     return () => {
       active = false;
+      recheck.current = () => {};
+      window.removeEventListener("focus", visible);
+      document.removeEventListener("visibilitychange", visible);
     };
-  }, [t]);
+  }, [client, isCurrent, t]);
 
   async function openPortal() {
-    if (pending) return;
+    if (busy.current || !currentPanel()) return;
+    busy.current = true;
     setPending(true);
     setError(null);
     try {
-      const { url } = await rpc.billing.portal();
-      window.location.assign(url);
+      const { url } = await client.billing.portal(undefined, {
+        signal: AbortSignal.timeout(BILLING_REQUEST_TIMEOUT_MS),
+      });
+      if (currentPanel()) window.location.assign(url);
     } catch {
-      setError(t`Could not open billing`);
+      if (currentPanel()) setError(t`Could not open billing`);
     } finally {
       // Desktop opens the URL in the system browser and this page stays, so re-enable.
-      setPending(false);
+      busy.current = false;
+      if (currentPanel()) setPending(false);
     }
   }
 
@@ -105,6 +147,9 @@ export function BillingSettingsPanel() {
       {error ? (
         <p role="alert" className="mt-3 text-sm text-destructive">
           {error}
+          <Button variant="ghost" size="sm" onClick={() => recheck.current()}>
+            <Trans>Retry</Trans>
+          </Button>
         </p>
       ) : null}
     </div>

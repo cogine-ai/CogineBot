@@ -1,5 +1,11 @@
 import { readBoundedResponseBytes } from "@rakazo/core";
-import { rpc, selectedSpaceId, withSpaceHeaders } from "./rpc.js";
+import {
+  currentSpaceSelectionGeneration,
+  noteSubscriptionRequired,
+  rpc,
+  selectedSpaceId,
+  withSpaceHeaders,
+} from "./rpc.js";
 import { errorText } from "./user-error.js";
 
 export type SpeechStatus = "idle" | "preparing" | "speaking";
@@ -187,6 +193,7 @@ export class Speaker {
     spaceId: string | null,
   ): Promise<Blob> {
     const deadline = requestDeadline(signal, VOICE_RESPONSE_TIMEOUT_MS);
+    const selectionGeneration = currentSpaceSelectionGeneration();
     try {
       const res = await withAbort(deadline.signal, () =>
         fetch("/api/voice/speak", {
@@ -197,6 +204,12 @@ export class Speaker {
           signal: deadline.signal,
         }),
       );
+      if (res.status === 402)
+        noteSubscriptionRequired(
+          spaceId,
+          selectionGeneration,
+          () => !deadline.signal.aborted && opts.isCurrent?.() !== false,
+        );
       if (!res.ok) {
         const body = await readVoiceError(res, deadline.signal);
         throw new Error(body.error ?? "");

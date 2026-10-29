@@ -6330,3 +6330,32 @@ msgstr "ChatGPT 요금제 사용 한도에 도달했습니다. 사용량 설정�
 #: src/lib/run-error.ts
 msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
 msgstr "ChatGPT 요금제 사용이 불가능합니다. 사용량 설정을 확인하거나 ChatGPT에 다시 연결하세요."
+
+#: src/pages/Paywall.tsx
+msgid "Back to chats"
+msgstr "채팅으로 돌아가기"
+
+#: src/pages/Paywall.tsx
+msgid "Contact your organization owner"
+msgstr "조직 소유자에게 문의하세요"
+
+#: src/pages/Paywall.tsx
+msgid "Could not refresh billing"
+msgstr "결제 정보를 새로 고칠 수 없습니다"
+
+#: src/pages/Paywall.tsx
+msgid "Could not load Spaces"
+msgstr "스페이스를 불러올 수 없습니다"
+
+#: src/components/LoadFailureNotice.tsx
+msgid "Contact your organization owner for an invitation"
+msgstr "조직 소유자에게 초대를 요청하세요"
+
+#: src/pages/Paywall.tsx
+#: src/components/LoadFailureNotice.tsx
+msgid "Switch Space"
+msgstr "스페이스 전환"
+
+#: src/lib/sign-out.ts
+msgid "Could not log out. Try again."
+msgstr "로그아웃할 수 없습니다. 다시 시도하세요."

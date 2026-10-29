@@ -6330,3 +6330,32 @@ msgstr "Das Nutzungslimit deines ChatGPT-Abos wurde erreicht. Prüfe deine Nutzu
 #: src/lib/run-error.ts
 msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
 msgstr "Die Nutzung des ChatGPT-Abos ist nicht verfügbar. Prüfe deine Nutzungseinstellungen oder verbinde ChatGPT erneut."
+
+#: src/pages/Paywall.tsx
+msgid "Back to chats"
+msgstr "Zurück zu Chats"
+
+#: src/pages/Paywall.tsx
+msgid "Contact your organization owner"
+msgstr "Organisationsinhaber kontaktieren"
+
+#: src/pages/Paywall.tsx
+msgid "Could not refresh billing"
+msgstr "Abrechnungsstatus konnte nicht aktualisiert werden"
+
+#: src/pages/Paywall.tsx
+msgid "Could not load Spaces"
+msgstr "Spaces konnten nicht geladen werden"
+
+#: src/components/LoadFailureNotice.tsx
+msgid "Contact your organization owner for an invitation"
+msgstr "Bitte den Organisationsinhaber um eine Einladung"
+
+#: src/pages/Paywall.tsx
+#: src/components/LoadFailureNotice.tsx
+msgid "Switch Space"
+msgstr "Space wechseln"
+
+#: src/lib/sign-out.ts
+msgid "Could not log out. Try again."
+msgstr "Abmelden nicht möglich. Erneut versuchen."

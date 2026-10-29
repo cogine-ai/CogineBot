@@ -200,8 +200,7 @@ function AccountSettings() {
     setPending(true);
     setSignOutError(null);
     try {
-      await signOut();
-      replaceWithSignIn();
+      if (await signOut()) replaceWithSignIn();
     } catch (err) {
       setSignOutError(errorText(err, t("Could not sign out")));
       setPending(false);

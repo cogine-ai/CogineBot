@@ -92,7 +92,7 @@ describePostgres("billing service (PostgreSQL)", () => {
       customerId,
       seats: 1,
       trialDays: TRIAL_DAYS,
-      successUrl: `${webOrigin}${BILLING_RETURN_PATH}`,
+      successUrl: `${webOrigin}${BILLING_RETURN_PATH}?space=${encodeURIComponent(spaceId)}`,
       cancelUrl: `${webOrigin}/app`,
     });
 
@@ -162,5 +162,94 @@ describePostgres("billing service (PostgreSQL)", () => {
       access: false,
       state: "canceled",
     });
+  });
+
+  it.each([
+    ["trialing", true],
+    ["active", true],
+    ["past_due", true],
+    ["incomplete", false],
+    ["canceled", false],
+  ] as const)("keeps %s admission consistent for owner and member", async (state, allowed) => {
+    const account = (await billingAccountForOrganization(prisma, organizationId))!;
+    emulator.setStatus(account.customerId, state);
+    await billing.sync(account.customerId);
+    await expect(billing.status(owner)).resolves.toMatchObject({
+      access: allowed,
+      canManage: true,
+      state,
+    });
+    await expect(billing.status(member)).resolves.toMatchObject({
+      access: allowed,
+      canManage: false,
+      state,
+    });
+    for (const actor of [owner, member]) {
+      if (allowed) await expect(billing.assertAccess(actor)).resolves.toBeUndefined();
+      else
+        await expect(billing.assertAccess(actor)).rejects.toMatchObject({
+          status: 402,
+          data: { reason: "subscription_required" },
+        });
+    }
+  });
+
+  it("pulls completed checkout before a webhook has delivered the new status", async () => {
+    const account = (await billingAccountForOrganization(prisma, organizationId))!;
+    emulator.completeCheckout(account.customerId, "active");
+    expect((await billingAccountForOrganization(prisma, organizationId))!.status).toBe("canceled");
+    await expect(billing.status(owner, { refresh: true })).resolves.toMatchObject({
+      access: true,
+      state: "active",
+    });
+  });
+
+  it("binds management and return to another organization and refuses revoked membership", async () => {
+    const otherOrg = `billing-other-organization-${suffix}`;
+    const otherSpace = `billing-other-space-${suffix}`;
+    try {
+      await prisma.organization.create({
+        data: { id: otherOrg, name: "Other Billing", slug: otherOrg, createdAt: new Date() },
+      });
+      await prisma.space.create({
+        data: { id: otherSpace, organizationId: otherOrg, name: "Other" },
+      });
+      await prisma.member.create({
+        data: {
+          id: `other-m-${suffix}`,
+          organizationId: otherOrg,
+          userId: ownerId,
+          role: "owner",
+          createdAt: new Date(),
+        },
+      });
+      await prisma.spaceMember.create({
+        data: {
+          id: `other-sm-${suffix}`,
+          createdAt: new Date(),
+          organizationId: otherOrg,
+          spaceId: otherSpace,
+          userId: ownerId,
+          role: "owner",
+        },
+      });
+      const otherActor = { ...owner, spaceId: otherSpace };
+      await billing.checkout(otherActor);
+      const other = (await billingAccountForOrganization(prisma, otherOrg))!;
+      expect(emulator.checkouts.get(other.customerId)?.successUrl).toBe(
+        `${webOrigin}${BILLING_RETURN_PATH}?space=${encodeURIComponent(otherSpace)}`,
+      );
+      await expect(billing.status(otherActor)).resolves.toMatchObject({
+        access: false,
+        canManage: true,
+        state: "none",
+      });
+      await expect(billing.status(owner)).resolves.toMatchObject({ access: true, state: "active" });
+      await prisma.spaceMember.delete({ where: { id: `other-sm-${suffix}` } });
+      await expect(billing.assertAccess(otherActor)).rejects.toMatchObject({ status: 403 });
+      await expect(billing.portal(otherActor)).rejects.toMatchObject({ status: 403 });
+    } finally {
+      await prisma.organization.deleteMany({ where: { id: otherOrg } });
+    }
   });
 });

@@ -3,7 +3,7 @@ import * as SecureStore from "expo-secure-store";
 import * as Speech from "expo-speech";
 import { Platform } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureApiRequestContext, currentApiBase, rpc } from "./api";
+import { captureApiRequestContext, currentApiBase, noteSubscriptionRequired, rpc } from "./api";
 import {
   getVoicePlaybackState,
   MAX_VOICE_AUDIO_BYTES,
@@ -52,6 +52,7 @@ vi.mock("./api", () => ({
   aiConsentCoalesceKey: vi.fn(() => "test-consent-context"),
   authHeaders: vi.fn(),
   captureApiRequestContext: vi.fn(),
+  noteSubscriptionRequired: vi.fn(),
   currentApiBase: vi.fn(() => "https://api.example"),
   rpc: vi.fn(),
 }));
@@ -78,6 +79,7 @@ class FakeAudio {
 
 describe("mobile speech", () => {
   beforeEach(() => {
+    vi.mocked(noteSubscriptionRequired).mockClear();
     vi.mocked(SecureStore.getItemAsync).mockResolvedValue(null);
     vi.mocked(captureApiRequestContext).mockResolvedValue({
       apiBase: "https://support.example",
@@ -174,6 +176,30 @@ describe("mobile speech", () => {
     vi.stubGlobal("Audio", ImmediateAudio);
 
     await expect(playMpeg(new Uint8Array([1, 2, 3]))).resolves.toBeUndefined();
+  });
+
+  it("opens access recovery for a current HTTP speech denial", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: "Subscription required" }, { status: 402 })),
+    );
+    const requestContext = await captureApiRequestContext();
+    await expect(speakUtterance("Hello", { requestContext })).rejects.toThrow(
+      "Subscription required",
+    );
+    expect(noteSubscriptionRequired).toHaveBeenCalledExactlyOnceWith(requestContext);
+  });
+
+  it("does not present a late HTTP denial for a superseded speech request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: "Subscription required" }, { status: 402 })),
+    );
+    const requestContext = await captureApiRequestContext();
+    await expect(
+      speakUtterance("Hello", { requestContext, isCurrent: () => false }),
+    ).rejects.toThrow("Subscription required");
+    expect(noteSubscriptionRequired).not.toHaveBeenCalled();
   });
 
   it("rejects oversized audio without waiting for response cancellation", async () => {

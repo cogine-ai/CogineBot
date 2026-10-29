@@ -4,7 +4,12 @@ import type * as ExpoSpeech from "expo-speech";
 import { Platform } from "react-native";
 import { promptAiConsent } from "./ai-consent";
 import type { ApiRequestContext } from "./api";
-import { aiConsentCoalesceKey, captureApiRequestContext, rpc } from "./api";
+import {
+  aiConsentCoalesceKey,
+  captureApiRequestContext,
+  noteSubscriptionRequired,
+  rpc,
+} from "./api";
 import { voiceForBot } from "./bot-voices";
 import { loadDeviceVoiceEnabled } from "./device-voice";
 import { t } from "./i18n";
@@ -397,6 +402,8 @@ async function renderUtterance(
         : new Error(errorText(error, t("Could not speak that.")));
     });
     if (!res.ok) {
+      if (res.status === 402 && !deadline.signal.aborted && opts.isCurrent?.() !== false)
+        noteSubscriptionRequired(requestContext);
       const body = await readVoiceError(res, deadline.signal);
       throw new Error(errorText(body.error ?? "", t("Could not speak that.")));
     }

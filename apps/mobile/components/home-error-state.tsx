@@ -32,11 +32,16 @@ export function HomeErrorState({
   return (
     <View accessibilityLiveRegion="polite" style={{ gap: 8, paddingVertical: 12 }}>
       <Text style={{ color: tokens.destructive, fontSize: 15 }}>{message}</Text>
+      {kind === "space" ? (
+        <Text style={{ color: tokens.mutedForeground }}>
+          {t("Contact your organization owner for an invitation")}
+        </Text>
+      ) : null}
       {cached ? (
         <Text style={{ color: tokens.mutedForeground }}>{t("Showing saved chats.")}</Text>
       ) : null}
       <NativeActionButton
-        label={kind === "auth" ? t("Sign in") : t("Retry")}
+        label={kind === "auth" ? t("Sign in") : kind === "space" ? t("Switch Space") : t("Retry")}
         disabled={busy}
         fill={false}
         onPress={kind === "auth" ? onSignIn : onRetry}

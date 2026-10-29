@@ -15,7 +15,7 @@ export function mountBillingRoutes(
     billing: BillingService;
     provider: Pick<BillingProvider, "parseWebhook">;
     webOrigin: string;
-    authenticate: (request: Request) => Promise<Actor | null>;
+    authenticate: (request: Request, spaceId?: string) => Promise<Actor | null>;
   },
 ): void {
   // The payload only names the customer; sync re-reads the subscription from the provider.
@@ -36,7 +36,8 @@ export function mountBillingRoutes(
   });
 
   app.get(BILLING_RETURN_PATH, async (c) => {
-    const actor = await deps.authenticate(c.req.raw);
+    const target = c.req.query("space");
+    const actor = await deps.authenticate(c.req.raw, target);
     if (!actor) return c.redirect(deps.webOrigin, 303);
     try {
       await deps.billing.syncForActor(actor);
