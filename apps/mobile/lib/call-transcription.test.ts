@@ -134,6 +134,14 @@ const localeCases: LocaleCase[] = [
   { device: "es-ES", env: "it-IT", ui: "en", recognition: "es-ES", hint: "es" },
   { device: "zh-TW", stored: "zh-TW", ui: "en", recognition: "zh-TW", hint: undefined },
   { device: "it-IT", stored: "en-GB", ui: "en", recognition: "en-US", hint: "en" },
+  { device: "zh-TW", stored: "   ", env: "de", ui: "en", recognition: "zh-TW", hint: undefined },
+  { device: "it-IT", stored: "enochian", ui: "en", recognition: "it-IT", hint: undefined },
+  { device: "es-ES", stored: "unknown", ui: "en", recognition: "es-ES", hint: "es" },
+  { device: "it-IT", stored: " EN_gb ", ui: "en", recognition: "en-US", hint: "en" },
+  { device: "it-IT", stored: "ZH_hans_CN", ui: "zh-CN", recognition: "zh-CN", hint: "zh" },
+  { device: "zh-TW", env: "   ", ui: "en", recognition: "zh-TW", hint: undefined },
+  { device: "it-IT", env: "enochian", ui: "en", recognition: "it-IT", hint: undefined },
+  { device: "it-IT", env: "EN_gb", ui: "en", recognition: "en-US", hint: "en" },
 ];
 
 describe.each(["hosted", "device"] as const)(

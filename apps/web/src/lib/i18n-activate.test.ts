@@ -54,6 +54,30 @@ describe("activateUiLocale", () => {
     expect(getUiLocalePreference()).toBeUndefined();
   });
 
+  it.each(["it-IT", "unknown", "enochian", "   ", "zh-TW", "ZH_hant_HK"])(
+    "does not turn unsupported stored %s into a preference through activation",
+    async (stored) => {
+      const storage = stubLocaleStorage();
+      storage.set(UI_LOCALE_STORAGE_KEY, stored);
+      vi.stubGlobal("navigator", { language: "de-CH" });
+      setCatalogLoadersForTests(
+        Object.fromEntries(
+          UI_LOCALES.map((locale) => [locale, async () => ({ messages: {} })]),
+        ) as NonNullable<Parameters<typeof setCatalogLoadersForTests>[0]>,
+      );
+      await bootstrapI18n();
+      expect(getActiveUiLocale()).toBe("en");
+      expect(getUiLocalePreference()).toBeUndefined();
+      await activateUiLocale("de");
+      expect(getActiveUiLocale()).toBe("de");
+      expect(getUiLocalePreference()).toBeUndefined();
+      expect(storage.get(UI_LOCALE_STORAGE_KEY)).toBe(stored);
+      await setUiLocale("en");
+      expect(getUiLocalePreference()).toBe("en");
+      expect(storage.get(UI_LOCALE_STORAGE_KEY)).toBe("en");
+    },
+  );
+
   it("retains an explicit English choice even when storage is unavailable", async () => {
     vi.stubGlobal("localStorage", {
       getItem: () => null,

@@ -97,17 +97,14 @@ export type ResolveUiLocaleOptions = {
   navigator?: Pick<Navigator, "language" | "languages"> | null;
 };
 
-/** A saved or configured choice, distinct from the browser's normalized display fallback. */
-export function resolveUiLocalePreference(
-  options: ResolveUiLocaleOptions = {},
-): UiLocale | undefined {
+function readUiLocaleChoice(options: ResolveUiLocaleOptions): string | null {
   const stored =
     options.stored !== undefined
       ? options.stored
       : readStoredLocale(
           options.storage ?? (typeof localStorage !== "undefined" ? localStorage : null),
         );
-  if (stored) return normalizeUiLocale(stored);
+  if (stored) return stored;
 
   const envDefault =
     options.envDefault !== undefined
@@ -120,13 +117,23 @@ export function resolveUiLocalePreference(
                 }
               : undefined),
         );
-  return envDefault ? normalizeUiLocale(envDefault) : undefined;
+  return envDefault || null;
+}
+
+/** A supported saved/configured choice, distinct from an English display fallback. */
+export function resolveUiLocalePreference(
+  options: ResolveUiLocaleOptions = {},
+): UiLocale | undefined {
+  const choice = readUiLocaleChoice(options);
+  if (!choice) return undefined;
+  const locale = normalizeUiLocale(choice);
+  return locale !== "en" || /^en(?:[-_]|$)/i.test(choice.trim()) ? locale : undefined;
 }
 
 /** Saved choice → configured default → browser language → English. */
 export function resolveUiLocale(options: ResolveUiLocaleOptions = {}): UiLocale {
-  const preference = resolveUiLocalePreference(options);
-  if (preference !== undefined) return preference;
+  const choice = readUiLocaleChoice(options);
+  if (choice) return normalizeUiLocale(choice);
   const navigatorLanguage =
     options.navigatorLanguage !== undefined
       ? options.navigatorLanguage
