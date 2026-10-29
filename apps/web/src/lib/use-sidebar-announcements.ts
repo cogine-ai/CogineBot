@@ -2,6 +2,7 @@ import { useLingui } from "@lingui/react/macro";
 import { useCallback, useRef } from "react";
 import { useLiveAnnouncement } from "./use-live-announcement";
 
+type DragResult = boolean | "cancelled";
 type Drag = { scope: string; name: string; target: string | null; pending: boolean };
 
 export function useSidebarAnnouncements(scope: string) {
@@ -30,13 +31,19 @@ export function useSidebarAnnouncements(scope: string) {
   );
   const accept = useCallback(() => {
     const current = drag.current;
-    if (!current || current.scope !== currentScope.current) return (_success: boolean) => {};
+    if (!current || current.scope !== currentScope.current) return (_result: DragResult) => {};
     current.pending = true;
-    return (success: boolean) => {
+    return (result: DragResult) => {
       if (drag.current !== current || current.scope !== currentScope.current) return;
       drag.current = null;
       const { name } = current;
-      live.announce(success ? t`Moved ${name}` : t`Could not move ${name}`);
+      live.announce(
+        result === "cancelled"
+          ? t`Move cancelled`
+          : result
+            ? t`Moved ${name}`
+            : t`Could not move ${name}`,
+      );
     };
   }, [live.announce, t]);
   const end = useCallback(() => {

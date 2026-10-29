@@ -97,11 +97,10 @@ export type ResolveUiLocaleOptions = {
   navigator?: Pick<Navigator, "language" | "languages"> | null;
 };
 
-/**
- * Order: saved choice (`localStorage`) → `VITE_DEFAULT_UI_LOCALE` →
- * `navigator.language` → English.
- */
-export function resolveUiLocale(options: ResolveUiLocaleOptions = {}): UiLocale {
+/** A saved or configured choice, distinct from the browser's normalized display fallback. */
+export function resolveUiLocalePreference(
+  options: ResolveUiLocaleOptions = {},
+): UiLocale | undefined {
   const stored =
     options.stored !== undefined
       ? options.stored
@@ -121,8 +120,13 @@ export function resolveUiLocale(options: ResolveUiLocaleOptions = {}): UiLocale 
                 }
               : undefined),
         );
-  if (envDefault) return normalizeUiLocale(envDefault);
+  return envDefault ? normalizeUiLocale(envDefault) : undefined;
+}
 
+/** Saved choice → configured default → browser language → English. */
+export function resolveUiLocale(options: ResolveUiLocaleOptions = {}): UiLocale {
+  const preference = resolveUiLocalePreference(options);
+  if (preference !== undefined) return preference;
   const navigatorLanguage =
     options.navigatorLanguage !== undefined
       ? options.navigatorLanguage

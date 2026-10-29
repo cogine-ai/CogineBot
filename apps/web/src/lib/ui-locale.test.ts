@@ -3,6 +3,7 @@ import {
   normalizeUiLocale,
   persistUiLocale,
   resolveUiLocale,
+  resolveUiLocalePreference,
   UI_LOCALE_STORAGE_KEY,
 } from "./ui-locale";
 
@@ -140,5 +141,25 @@ describe("persistUiLocale", () => {
       },
     });
     expect(store.get(UI_LOCALE_STORAGE_KEY)).toBe("ko");
+  });
+});
+
+describe("explicit UI locale preference", () => {
+  it("distinguishes a chosen/configured English UI from browser normalization", () => {
+    expect(
+      resolveUiLocalePreference({ stored: "en", envDefault: "de", navigatorLanguage: "zh-TW" }),
+    ).toBe("en");
+    expect(
+      resolveUiLocalePreference({ stored: null, envDefault: "en", navigatorLanguage: "en-GB" }),
+    ).toBe("en");
+    expect(
+      resolveUiLocalePreference({ stored: null, envDefault: null, navigatorLanguage: "zh-TW" }),
+    ).toBeUndefined();
+    expect(
+      resolveUiLocalePreference({ stored: null, envDefault: null, navigatorLanguage: "en-GB" }),
+    ).toBeUndefined();
+    expect(resolveUiLocale({ stored: null, envDefault: null, navigatorLanguage: "zh-TW" })).toBe(
+      "en",
+    );
   });
 });

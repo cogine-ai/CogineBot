@@ -2478,10 +2478,11 @@ export function ShellPage() {
     });
   };
   const moveChatToSection = async (item: SidebarChatTarget, sectionId: string | null) => {
-    if (item.chat.sectionId === sectionId && !item.chat.pinned) return;
+    if (item.chat.sectionId === sectionId && !item.chat.pinned) return false;
     await saveChatOrganization(item, { sectionId, pinned: false });
     expandSection(item.chat.spaceId, sectionId);
     setSidebarNotice(item.chat.pinned ? t`Moved and unpinned` : null);
+    return true;
   };
   const renameSection = async (
     section: BotSection,
@@ -2523,14 +2524,15 @@ export function ShellPage() {
     });
   };
   const reorderSection = async (sourceId: string, targetId: string, spaceId: string) => {
-    if (sourceId === targetId) return;
+    if (sourceId === targetId) return false;
     const ids = sectionsForSpace(spaceId).map((section) => section.id);
     const from = ids.indexOf(sourceId),
       to = ids.indexOf(targetId);
-    if (from < 0 || to < 0) return;
+    if (from < 0 || to < 0) return false;
     ids.splice(from, 1);
     ids.splice(to, 0, sourceId);
     await saveSectionOrder(spaceId, ids);
+    return true;
   };
   const stepSection = async (id: string, spaceId: string, direction: number) => {
     const ids = sectionsForSpace(spaceId).map((section) => section.id);
@@ -4795,7 +4797,7 @@ export function ShellPage() {
                         event.preventDefault();
                         const settle = sidebarAnnouncements.accept();
                         void reorderSection(draggedSection.id, group.sectionId, group.spaceId).then(
-                          () => settle(true),
+                          (moved) => settle(moved ? true : "cancelled"),
                           (error) => {
                             settle(false);
                             reportSidebarError(error);
@@ -4809,7 +4811,7 @@ export function ShellPage() {
                         event.preventDefault();
                         const settle = sidebarAnnouncements.accept();
                         void moveChatToSection(draggedChat, group.sectionId).then(
-                          () => settle(true),
+                          (moved) => settle(moved ? true : "cancelled"),
                           (error) => {
                             settle(false);
                             reportSidebarError(error);

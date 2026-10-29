@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateUiLocale,
+  bootstrapI18n,
   getActiveUiLocale,
+  getUiLocalePreference,
   i18n,
   setCatalogLoadersForTests,
   setUiLocale,
 } from "./i18n";
-import { UI_LOCALE_STORAGE_KEY } from "./ui-locale";
+import { UI_LOCALE_STORAGE_KEY, UI_LOCALES } from "./ui-locale";
 
 vi.mock("./apply-ui-direction", () => ({
   applyUiDirection: vi.fn(),
@@ -37,6 +39,36 @@ describe("activateUiLocale", () => {
     i18n.load("en", {});
     i18n.activate("en");
     vi.unstubAllGlobals();
+  });
+
+  it("does not turn the browser's display fallback into an explicit speech preference", async () => {
+    stubLocaleStorage();
+    vi.stubGlobal("navigator", { language: "zh-TW" });
+    setCatalogLoadersForTests(
+      Object.fromEntries(
+        UI_LOCALES.map((locale) => [locale, async () => ({ messages: {} })]),
+      ) as NonNullable<Parameters<typeof setCatalogLoadersForTests>[0]>,
+    );
+    await bootstrapI18n();
+    expect(getActiveUiLocale()).toBe("en");
+    expect(getUiLocalePreference()).toBeUndefined();
+  });
+
+  it("retains an explicit English choice even when storage is unavailable", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("Private mode");
+      },
+    });
+    vi.stubGlobal("navigator", { language: "zh-TW" });
+    setCatalogLoadersForTests(
+      Object.fromEntries(
+        UI_LOCALES.map((locale) => [locale, async () => ({ messages: {} })]),
+      ) as NonNullable<Parameters<typeof setCatalogLoadersForTests>[0]>,
+    );
+    await setUiLocale("en");
+    expect(getUiLocalePreference()).toBe("en");
   });
 
   it("falls back to English when the preferred catalog fails to load", async () => {
@@ -193,5 +225,6 @@ describe("activateUiLocale", () => {
     await expect(pendingKo).resolves.toBe("ko");
     expect(getActiveUiLocale()).toBe("ko");
     expect(store.get(UI_LOCALE_STORAGE_KEY)).toBe("ko");
+    expect(getUiLocalePreference()).toBe("ko");
   });
 });

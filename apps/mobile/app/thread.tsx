@@ -3389,8 +3389,13 @@ const MessageRow = memo(function MessageRow({
   const colorScheme = useResolvedAppearance();
   const { t, locale } = useI18n();
   const menuVersion = useMemo(() => ({}), [message, readOnly, onCall, canAnswer, canSpeak]);
-  const currentMenuVersion = useRef(menuVersion);
-  currentMenuVersion.current = menuVersion;
+  const currentMenuVersion = useRef<typeof menuVersion | null>(null);
+  useLayoutEffect(() => {
+    currentMenuVersion.current = menuVersion;
+    return () => {
+      currentMenuVersion.current = null;
+    };
+  }, [menuVersion]);
   const menuActive = useRef(true);
   const closeMenu = useRef<(() => void) | null>(null);
   useEffect(() => {

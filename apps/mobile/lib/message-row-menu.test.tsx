@@ -1,7 +1,17 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
-import { act } from "react";
+import type { EffectCallback } from "react";
+import {
+  act,
+  Suspense,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessageMenuEntry } from "./message-context-menu";
@@ -52,10 +62,15 @@ if (start < 0 || end < 0) throw new Error("MessageRow menu callback factory not 
 const factory =
   stripTypeScriptTypes(`function createMenu() {\n${source.slice(start, end)}\n}`) +
   "; return createMenu();";
-function row(canSpeak: boolean) {
-  const version = {},
-    current = { current: version },
-    active = { current: true };
+type MenuBinding = {
+  version: object;
+  current: { current: object | null };
+  active: { current: boolean };
+};
+function row(canSpeak: boolean, binding?: MenuBinding) {
+  const version = binding?.version ?? {},
+    current = binding?.current ?? { current: version },
+    active = binding?.active ?? { current: true };
   let sheet: Sheet | undefined;
   let overlay: { groups: Array<Array<{ name: string; onPress: () => void }>> } | undefined;
   const actions = Object.fromEntries(
@@ -169,7 +184,75 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function useFixtureFocusEffect(effect: EffectCallback) {
+  useEffect(effect, [effect]);
+}
+
 describe("actual MessageRow callback lifetime", () => {
+  it("keeps the committed native callback current across an abandoned suspended render", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const versionStart = source.indexOf(
+      "  const menuVersion = useMemo",
+      source.indexOf("const MessageRow = memo"),
+    );
+    const versionEnd = source.indexOf("  const artifactTarget =", versionStart);
+    if (versionStart < 0 || versionEnd < 0) throw new Error("MessageRow lifetime hooks not found");
+    const bind = new Function(
+      "useMemo",
+      "useRef",
+      "useEffect",
+      "useLayoutEffect",
+      "useFocusEffect",
+      "useCallback",
+      "message",
+      `${stripTypeScriptTypes(`function bindMenuVersion() {
+        const readOnly = false, onCall = false, canAnswer = true, canSpeak = true;
+        ${source.slice(versionStart, versionEnd)}
+        return { version: menuVersion, current: currentMenuVersion, active: menuActive };
+      }`)}; return bindMenuVersion();`,
+    ) as (...args: unknown[]) => MenuBinding;
+    const never = new Promise<void>(() => {});
+    let committed!: ReturnType<typeof row>;
+    function Message({ message, suspend }: { message: object; suspend: boolean }) {
+      const binding = bind(
+        useMemo,
+        useRef,
+        useEffect,
+        useLayoutEffect,
+        useFixtureFocusEffect,
+        useCallback,
+        message,
+      );
+      const menu = row(true, binding);
+      useLayoutEffect(() => {
+        committed = menu;
+      });
+      if (suspend) throw never;
+      return <div>Committed</div>;
+    }
+    const view = document.createElement("div"),
+      root = createRoot(view);
+    cleanup = async () => {
+      await act(async () => root.unmount());
+    };
+    const render = (message: object, suspend: boolean) =>
+      root.render(
+        <Suspense fallback={<div>Loading</div>}>
+          <Message message={message} suspend={suspend} />
+        </Suspense>,
+      );
+    await act(async () => render({}, false));
+    const retained = committed;
+    await act(async () => startTransition(() => render({}, true)));
+    expect(view.textContent).toBe("Committed");
+    retained.menu.onMenuAction("copy");
+    expect(retained.clipboard).toHaveBeenCalledOnce();
+    await act(async () => render({}, false));
+    retained.menu.onMenuAction("copy");
+    expect(retained.clipboard).toHaveBeenCalledOnce();
+    committed.menu.onMenuAction("copy");
+    expect(committed.clipboard).toHaveBeenCalledOnce();
+  });
   it.each(["current", "account-ABA", "message-version", "route-blur", "background"])(
     "rechecks %s at the final native reaction callback",
     (kind) => {

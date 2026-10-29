@@ -4,7 +4,7 @@ import {
   speechLocaleTag as sharedSpeechLocaleTag,
   transcriptionLanguageHint,
 } from "@rakazo/core";
-import { getActiveUiLocale } from "./i18n.js";
+import { getUiLocalePreference } from "./i18n.js";
 import type { RpcRecoveryScope } from "./rpc.js";
 import {
   captureRpcRecoveryScope,
@@ -110,11 +110,16 @@ const RESTART_GIVE_UP_ERROR =
 export const speechLocaleTag = sharedSpeechLocaleTag;
 
 export function recognitionLanguage(): string {
-  return recognitionLanguageForUi(getActiveUiLocale(), navigator.language);
+  return recognitionLanguageForUi(getUiLocalePreference() ?? "", navigator.language);
 }
 
 export function transcriptionLanguage(): string | undefined {
-  return transcriptionLanguageHint(getActiveUiLocale());
+  const preference = getUiLocalePreference();
+  if (preference !== undefined) return transcriptionLanguageHint(preference);
+  const browser = navigator.language || "";
+  return (
+    transcriptionLanguageHint(browser) ?? transcriptionLanguageHint(browser.split("-")[0] ?? "")
+  );
 }
 
 function normalizedTranscript(text: string): string {

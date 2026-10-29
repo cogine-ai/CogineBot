@@ -1,22 +1,30 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { formatFileSize } from "./format-file-size.js";
 
-/** Hide only a duplicate standalone question when its actual card can render. */
+/** Hide at most one exact standalone question per renderable card. */
 export function messageBlocksForQuestionCards(
   blocks: readonly MessageBlock[],
   canRenderChoice: boolean,
 ): readonly MessageBlock[] {
-  const questions = new Set(
-    blocks.flatMap((block) =>
+  const questions = new Map<string, number>();
+  for (const block of blocks) {
+    const question =
       block.kind === "choice" && canRenderChoice && block.answerId !== "_dismissed"
-        ? [block.question.trim()]
+        ? block.question.trim()
         : block.kind === "ask"
-          ? [block.text.trim()]
-          : [],
-    ),
-  );
+          ? block.text.trim()
+          : undefined;
+    if (question !== undefined) questions.set(question, (questions.get(question) ?? 0) + 1);
+  }
   if (questions.size === 0) return blocks;
-  return blocks.filter((block) => block.kind !== "text" || !questions.has(block.text.trim()));
+  return blocks.filter((block) => {
+    if (block.kind !== "text") return true;
+    const question = block.text.trim(),
+      remaining = questions.get(question) ?? 0;
+    if (remaining === 0) return true;
+    questions.set(question, remaining - 1);
+    return false;
+  });
 }
 
 export type AttachmentIdentity = { id: string; name: string; size?: number };

@@ -13,6 +13,19 @@ const choice: MessageBlock = {
 };
 
 describe("visible choice question projection", () => {
+  it("pairs one card with at most one exact narration and retains later identical prose", () => {
+    const before: MessageBlock = { kind: "text", text: "  Pick one.  " };
+    const after: MessageBlock = { kind: "text", text: "Pick one." };
+    const blocks = Object.freeze([before, choice, after]);
+    expect(messageBlocksForQuestionCards(blocks, true)).toEqual([choice, after]);
+    expect(blocks).toEqual([before, choice, after]);
+  });
+  it("pairs repeated cards separately without removing excess prose", () => {
+    const text: MessageBlock = { kind: "text", text: "Pick one." };
+    const blocks = [text, choice, text, choice, text];
+    expect(messageBlocksForQuestionCards(blocks, true)).toEqual([choice, choice, text]);
+    expect(messageBlocksForQuestionCards(blocks, false)).toBe(blocks);
+  });
   it("removes just the duplicate standalone question without changing saved blocks", () => {
     const blocks: MessageBlock[] = [
       { kind: "text", text: "Before." },
@@ -29,6 +42,29 @@ describe("visible choice question projection", () => {
     expect(
       messageBlocksForQuestionCards([blocks[0]!, { ...choice, answerId: "_dismissed" }], true),
     ).toEqual([blocks[0], { ...choice, answerId: "_dismissed" }]);
+  });
+  it("does not let a dismissed or unrenderable card consume additional narration", () => {
+    const text: MessageBlock = { kind: "text", text: "Pick one." };
+    const dismissed = { ...choice, answerId: "_dismissed" };
+    expect(messageBlocksForQuestionCards([text, choice, text, dismissed], true)).toEqual([
+      choice,
+      text,
+      dismissed,
+    ]);
+    expect(messageBlocksForQuestionCards([text, dismissed, text], true)).toEqual([
+      text,
+      dismissed,
+      text,
+    ]);
+  });
+  it("pairs approval narration once while retaining a repeated later sentence", () => {
+    const approval: MessageBlock = {
+      kind: "ask",
+      text: "Approve?",
+      actions: [{ id: "yes", label: "Yes" }],
+    };
+    const text: MessageBlock = { kind: "text", text: "Approve?" };
+    expect(messageBlocksForQuestionCards([text, approval, text], false)).toEqual([approval, text]);
   });
   it("preserves an approval card and removes only its duplicate narration", () => {
     const approval: MessageBlock = {

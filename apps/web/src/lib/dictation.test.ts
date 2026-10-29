@@ -13,6 +13,7 @@ import { selectSpace, subscribeSubscriptionRequired, synchronizeRpcSession } fro
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -45,6 +46,35 @@ function stubRecorderFallback(fetchMock: ReturnType<typeof vi.fn>) {
 }
 
 describe("Dictation recorder fallback", () => {
+  it.each([
+    [null, "zh-TW", undefined],
+    [null, "it-IT", undefined],
+    [null, "en-GB", "en"],
+    [null, "fr-CA", "fr"],
+    ["en", "zh-TW", "en"],
+    ["zh-CN", "en-GB", "zh"],
+  ])(
+    "sends only the known language hint for preference %s / browser %s",
+    async (preference, language, hint) => {
+      const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+        Response.json({ text: "Transcript" }),
+      );
+      stubRecorderFallback(fetchMock);
+      vi.stubGlobal("localStorage", {
+        getItem: (key: string) => (key === "rakazo.uiLocale" ? preference : null),
+      });
+      vi.stubGlobal("navigator", { ...navigator, language });
+      const dictation = new Dictation();
+      const onFinal = vi.fn();
+      await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+      dictation.submitHold();
+      await vi.waitFor(() => expect(onFinal).toHaveBeenCalledWith("Transcript"));
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const body = JSON.parse(String(init.body));
+      if (hint === undefined) expect(body).not.toHaveProperty("language");
+      else expect(body.language).toBe(hint);
+    },
+  );
   it("stops tracks if hold-to-talk is cancelled while the mic prompt is open", async () => {
     const track = { stop: vi.fn() };
     let grant!: (stream: { getTracks: () => Array<{ stop: () => void }> }) => void;
@@ -779,6 +809,18 @@ describe("dictation engine choice", () => {
 });
 
 describe("Dictation web speech", () => {
+  it.each(["zh-TW", "en-GB", "it-IT", "fr-CA"])(
+    "keeps the browser's exact %s recognizer tag without an explicit UI preference",
+    async (language) => {
+      vi.stubGlobal("localStorage", { getItem: () => null });
+      vi.stubGlobal("navigator", { language });
+      const value = new Dictation();
+      await value.listen({ mode: "endpoint", onFinal: () => undefined });
+      expect(instances[0]?.lang).toBe(language);
+      value.stop("cancel");
+    },
+  );
+
   it.each([
     ["en", "en-US"],
     ["zh-CN", "zh-CN"],
