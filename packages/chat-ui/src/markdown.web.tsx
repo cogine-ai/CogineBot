@@ -1,3 +1,4 @@
+import { toText } from "hast-util-to-text";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import {
   createContext,
@@ -65,6 +66,83 @@ function preserveSkippedTableText() {
     };
     walk(tree);
   };
+}
+
+const markdownOptions = {
+  remarkPlugins: [remarkGfm],
+  rehypePlugins: [preserveSkippedTableText],
+  skipHtml: true,
+  // Images own their source policy; links receive the same safe destination as the UI.
+  urlTransform: (url: string, key: string) =>
+    key === "src" ? url : (sanitizeMarkdownUrl(url, true) ?? ""),
+};
+
+/** Read this renderer's content without mounting components or loading remote resources. */
+export function visibleWebTextFromMarkdown(source: string): string {
+  let tree: Parameters<typeof toText>[0] | undefined;
+  function capture() {
+    return (root: Parameters<typeof toText>[0]) => {
+      tree = root;
+    };
+  }
+  // Markdown is synchronous. Its post-processing mutates this same tree with skipHtml and
+  // urlTransform after rehype plugins run; read it only after the call has returned.
+  ReactMarkdown({
+    ...markdownOptions,
+    children: source,
+    rehypePlugins: [...markdownOptions.rehypePlugins, capture],
+  });
+  if (!tree) return "";
+  function project(node: MarkdownHast, enclosingLink: EnclosingLink = false): MarkdownHast {
+    if (node.tagName === "img") {
+      const src = hastString(node.properties?.src) ?? "";
+      const alt = hastString(node.properties?.alt) ?? "";
+      const remote = remoteMarkdownImage(src);
+      const text = inlineMarkdownImageSrc(src)
+        ? alt
+        : remote && enclosingLink === false
+          ? alt.trim()
+            ? alt
+            : remote.host
+          : alt || remote?.host || src;
+      return { type: "text", value: text };
+    }
+    if (node.tagName === "a") {
+      const href = hastString(node.properties?.href);
+      const image = href ? soleRemoteImage(node) : undefined;
+      if (image) {
+        return {
+          type: "text",
+          value: [image.alt?.trim() ? image.alt : image.host, linkHost(href ?? "")].join(" "),
+        };
+      }
+      const text = hastText(node);
+      if (href && linkFaviconOrigin(href) && !hastHasImage(node) && text !== undefined)
+        return { type: "text", value: linkLabel(text, href) };
+      return {
+        ...node,
+        children: node.children?.map((child) => project(child, href ? "open" : "rejected")),
+      };
+    }
+    if (node.tagName === "ol") {
+      const start = Number(node.properties?.start ?? 1);
+      let index = 0;
+      return {
+        ...node,
+        children: node.children?.map((child) => {
+          const item = project(child, enclosingLink);
+          if (child.tagName !== "li") return item;
+          const number = (Number.isFinite(start) ? start : 1) + index++;
+          return {
+            ...item,
+            children: [{ type: "text", value: `${number}. ` }, ...(item.children ?? [])],
+          };
+        }),
+      };
+    }
+    return { ...node, children: node.children?.map((child) => project(child, enclosingLink)) };
+  }
+  return toText(project(tree) as Parameters<typeof toText>[0]);
 }
 
 function CopyButton({ read, label }: { read: () => string; label: string }) {
@@ -592,16 +670,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
         <LinkFaviconsPausedContext.Provider value={streaming}>
           <StreamingSourceContext.Provider value={streaming ? children : undefined}>
             <MarkdownTableSourceContext.Provider value={source}>
-              <ReactMarkdown
-                components={components}
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[preserveSkippedTableText]}
-                skipHtml
-                // MarkdownImage decides what an image source may do, so it receives the source as written.
-                urlTransform={(url, key) =>
-                  key === "src" ? url : (sanitizeMarkdownUrl(url, true) ?? "")
-                }
-              >
+              <ReactMarkdown {...markdownOptions} components={components}>
                 {source}
               </ReactMarkdown>
             </MarkdownTableSourceContext.Provider>

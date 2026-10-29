@@ -2,6 +2,7 @@ import {
   replyAnnouncementsVisible,
   subscribeReplyAnnouncementVisibility,
 } from "@rakazo/chat-ui/announcement-visibility";
+import { visibleWebTextFromMarkdown } from "@rakazo/chat-ui/web";
 import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { ReplyAnnouncements } from "@rakazo/core";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -18,7 +19,7 @@ export function useReplyAnnouncements(
     replyAnnouncementsVisible,
     replyAnnouncementsVisible,
   );
-  const observer = useRef(new ReplyAnnouncements());
+  const observer = useRef(new ReplyAnnouncements(visibleWebTextFromMarkdown));
   const [revision, setRevision] = useState(0);
   const currentScope = useRef(scope);
   currentScope.current = scope;

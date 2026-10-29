@@ -5,12 +5,17 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import webAnnouncementCases from "../../testkit/src/web-reply-announcement-fixtures.json" with {
+  type: "json",
+};
+import { markRemoteImageLoaded } from "./markdown";
 import type { LinkFavicons } from "./markdown.web";
 import {
   ChatMarkdown,
   LinkFaviconsContext,
   LinkifiedText,
   RemoteImagesContext,
+  visibleWebTextFromMarkdown,
 } from "./markdown.web";
 
 describe("web markdown remote images", () => {
@@ -599,5 +604,47 @@ describe("web skipped HTML text", () => {
     const container = document.createElement("div");
     container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
     expect(container.textContent).toBe("");
+  });
+});
+
+describe("web reply content projection", () => {
+  it.each(webAnnouncementCases)(
+    "projects actual renderer labels for $name",
+    ({ source, spoken, projected }) => {
+      expect(visibleWebTextFromMarkdown(source)).toBe(projected ?? spoken);
+    },
+  );
+  it.each(
+    webAnnouncementCases.filter(
+      (row) =>
+        !row.name.includes("table") && !row.name.includes("code") && !row.name.includes("ordered"),
+    ),
+  )("keeps the visible image identity for $name", ({ source, loadRemoteImages, spoken }) => {
+    const html = renderToStaticMarkup(
+      <RemoteImagesContext.Provider value={loadRemoteImages ?? false}>
+        <ChatMarkdown>{source}</ChatMarkdown>
+      </RemoteImagesContext.Provider>,
+    );
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    for (const image of container.querySelectorAll("img"))
+      image.replaceWith(document.createTextNode(image.alt));
+    // A stable label does not include the optional remote-loading button's extra host chrome.
+    const visible = container.textContent ?? "";
+    for (const word of spoken.trim().split(/\s+/u).filter(Boolean)) {
+      if (loadRemoteImages && (!visible.trim() || word === "target.example.test")) continue; // Empty loaded alt retains the stable source host.
+      expect(visible).toContain(word);
+    }
+  });
+  it("keeps image identity independent of loading choices without fetching anything", () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const src = "https://cached-projection.example.test/p.png";
+    const source = `![chart](${src})`;
+    expect(visibleWebTextFromMarkdown(source)).toBe("chart");
+    markRemoteImageLoaded(src);
+    expect(visibleWebTextFromMarkdown(source)).toBe("chart");
+    expect(fetch).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

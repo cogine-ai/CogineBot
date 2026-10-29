@@ -1,0 +1,293 @@
+[
+  {
+    "name": "remote named",
+    "source": "![chart](https://images.example.test/plain.png)",
+    "loadRemoteImages": false,
+    "spoken": "chart"
+  },
+  {
+    "name": "remote empty",
+    "source": "![](https://images.example.test/empty.png)",
+    "loadRemoteImages": false,
+    "spoken": "images.example.test"
+  },
+  {
+    "name": "remote white",
+    "source": "![   ](https://images.example.test/white.png)",
+    "loadRemoteImages": false,
+    "spoken": "images.example.test"
+  },
+  {
+    "name": "remote padded",
+    "source": "![  chart  ](https://images.example.test/padded.png)",
+    "loadRemoteImages": false,
+    "spoken": "chart"
+  },
+  {
+    "name": "remote Markdown-looking alt",
+    "source": "![**chart**](https://images.example.test/bold.png)",
+    "loadRemoteImages": false,
+    "spoken": "chart"
+  },
+  {
+    "name": "autoload named",
+    "source": "![chart](https://images.example.test/auto-named.png)",
+    "loadRemoteImages": true,
+    "spoken": "chart"
+  },
+  {
+    "name": "autoload empty",
+    "source": "![](https://images.example.test/auto-empty.png)",
+    "loadRemoteImages": true,
+    "spoken": "images.example.test"
+  },
+  {
+    "name": "linked remote named",
+    "source": "[![chart](https://images.example.test/linked.png)](https://target.example.test/full?hidden=yes)",
+    "loadRemoteImages": false,
+    "spoken": "chart target.example.test",
+    "nativeSpoken": "chart target.example.test"
+  },
+  {
+    "name": "linked remote empty",
+    "source": "[![](https://images.example.test/linked-empty.png)](https://target.example.test/full)",
+    "loadRemoteImages": false,
+    "spoken": "images.example.test target.example.test",
+    "nativeSpoken": "images.example.test target.example.test"
+  },
+  {
+    "name": "linked remote white",
+    "source": "[![   ](https://images.example.test/linked-white.png)](https://target.example.test/full)",
+    "loadRemoteImages": false,
+    "spoken": "images.example.test target.example.test",
+    "nativeSpoken": "images.example.test target.example.test"
+  },
+  {
+    "name": "linked remote loaded",
+    "source": "[![chart](https://images.example.test/linked-loaded.png)](https://target.example.test/full)",
+    "loadRemoteImages": true,
+    "spoken": "chart target.example.test",
+    "nativeSpoken": "chart target.example.test"
+  },
+  {
+    "name": "mixed image link",
+    "source": "[Text ![chart](https://images.example.test/mixed.png)](https://target.example.test/hidden)",
+    "loadRemoteImages": false,
+    "spoken": "Text chart"
+  },
+  {
+    "name": "mixed empty image link",
+    "source": "[Text ![](https://images.example.test/mixed-empty.png)](https://target.example.test/hidden)",
+    "loadRemoteImages": false,
+    "spoken": "Text images.example.test"
+  },
+  {
+    "name": "rejected link",
+    "source": "[![chart](https://images.example.test/rejected.png)](javascript:alert(1))",
+    "loadRemoteImages": true,
+    "spoken": "chart"
+  },
+  {
+    "name": "rejected empty link",
+    "source": "[![](https://images.example.test/rejected-empty.png)](javascript:alert(1))",
+    "loadRemoteImages": true,
+    "spoken": "images.example.test"
+  },
+  {
+    "name": "rejected white link",
+    "source": "[![   ](https://images.example.test/rejected-white.png)](javascript:alert(1))",
+    "loadRemoteImages": true,
+    "spoken": "",
+    "projected": " "
+  },
+  {
+    "name": "local named",
+    "source": "![chart](local-image.png)",
+    "loadRemoteImages": false,
+    "spoken": "chart"
+  },
+  {
+    "name": "local empty",
+    "source": "![](local-image.png)",
+    "loadRemoteImages": false,
+    "spoken": "local-image.png"
+  },
+  {
+    "name": "local white",
+    "source": "![   ](local-image.png)",
+    "loadRemoteImages": false,
+    "spoken": ""
+  },
+  {
+    "name": "data named",
+    "source": "![chart](data:image/png;base64,AAAA)",
+    "loadRemoteImages": false,
+    "spoken": "chart"
+  },
+  {
+    "name": "data empty",
+    "source": "![](data:image/png;base64,AAAA)",
+    "loadRemoteImages": false,
+    "spoken": ""
+  },
+  {
+    "name": "data white",
+    "source": "![   ](data:image/png;base64,AAAA)",
+    "loadRemoteImages": false,
+    "spoken": ""
+  },
+  {
+    "name": "rejected source named",
+    "source": "![chart](javascript:alert(1))",
+    "loadRemoteImages": false,
+    "spoken": "chart"
+  },
+  {
+    "name": "rejected source empty",
+    "source": "![](javascript:alert(1))",
+    "loadRemoteImages": false,
+    "spoken": "javascript:alert(1)"
+  },
+  {
+    "name": "HTML block MD image hidden",
+    "source": "<div>![chart](https://images.example.test/inside.png)</div>",
+    "loadRemoteImages": false,
+    "spoken": ""
+  },
+  {
+    "name": "HTML raw img hidden",
+    "source": "<img src=x alt=chart>",
+    "loadRemoteImages": false,
+    "spoken": ""
+  },
+  {
+    "name": "HTML comment hidden",
+    "source": "<!-- ![chart](https://images.example.test/inside.png) -->",
+    "loadRemoteImages": false,
+    "spoken": ""
+  },
+  {
+    "name": "inline HTML MDimage",
+    "source": "Before <span>![chart](https://images.example.test/inline.png)</span> after",
+    "loadRemoteImages": false,
+    "spoken": "Before chart after"
+  },
+  {
+    "name": "table MDimage",
+    "source": "| A | B |\n|---|---|\n| ![chart](https://images.example.test/table.png) | X |",
+    "loadRemoteImages": false,
+    "spoken": "A\t B chart\t X"
+  },
+  {
+    "name": "table rawHTML salvage",
+    "source": "| A | B |\n|---|---|\n| one<br>two | <img src=x alt=chart> |",
+    "loadRemoteImages": false,
+    "spoken": "A\t B one two\t chart"
+  },
+  {
+    "name": "code image literal",
+    "source": "```md\n![chart](https://images.example.test/code.png)\n```",
+    "loadRemoteImages": false,
+    "spoken": "![chart](https://images.example.test/code.png)\n"
+  },
+  {
+    "name": "inline code image",
+    "source": "`![chart](https://images.example.test/inline-code.png)`",
+    "loadRemoteImages": false,
+    "spoken": "![chart](https://images.example.test/inline-code.png)"
+  },
+  {
+    "name": "named hidden link",
+    "source": "[report](https://target.example.test/hidden?secret=value)",
+    "loadRemoteImages": false,
+    "spoken": "report"
+  },
+  {
+    "name": "bare URL label",
+    "source": "<https://www.example.test/visible?secret=value#fragment>",
+    "loadRemoteImages": false,
+    "spoken": "example.test/visible"
+  },
+  {
+    "name": "long bare label",
+    "source": "<https://example.test/long-path-long-path-long-path-long-path-long-path-long-path-long-path-long-path-long-path-long-path-long-path-long-path->",
+    "loadRemoteImages": false,
+    "spoken": "example.test/long-path-long-path-long-p…"
+  },
+  {
+    "name": "strong link label",
+    "source": "[**Open**](https://target.example.test/hidden)",
+    "loadRemoteImages": false,
+    "spoken": "Open"
+  },
+  {
+    "name": "remote NBSP alt",
+    "source": "![ ](https://images.example.test/nbsp.png)",
+    "spoken": "images.example.test"
+  },
+  {
+    "name": "remote tab alt",
+    "source": "![\t](https://images.example.test/tab.png)",
+    "spoken": "images.example.test"
+  },
+  {
+    "name": "unsafe named link",
+    "source": "[report](javascript:alert(1))",
+    "spoken": "report"
+  },
+  {
+    "name": "empty table cell preserved",
+    "source": "| A | B |\n|---|---|\n| | X |",
+    "spoken": "A\t B \t X"
+  },
+  {
+    "name": "image in linked emphasis",
+    "source": "[**Go** ![chart](https://images.example.test/mixed-strong.png)](https://target.example.test/hidden)",
+    "spoken": "Go chart"
+  },
+  {
+    "name": "linked inline data image",
+    "source": "[![chart](data:image/png;base64,AAAA)](https://target.example.test/hidden)",
+    "spoken": "chart"
+  },
+  {
+    "name": "linked local fallback",
+    "source": "[![](local-image.png)](https://target.example.test/hidden)",
+    "spoken": "local-image.png"
+  },
+  {
+    "name": "remote image in code with query",
+    "source": "`![chart](https://images.example.test/p?secret=literal)`",
+    "spoken": "![chart](https://images.example.test/p?secret=literal)"
+  },
+  {
+    "name": "ordered decimal starts at one",
+    "source": "1. First\n2. Second",
+    "spoken": "1. First\n2. Second",
+    "nativeSpoken": "1. First\n2. Second"
+  },
+  {
+    "name": "ordered start retained",
+    "source": "7. First\n8. Second",
+    "spoken": "7. First\n8. Second",
+    "nativeSpoken": "7. First\n8. Second"
+  },
+  {
+    "name": "ordered parenthesis native marker",
+    "source": "3) First\n4) Second",
+    "spoken": "3. First\n4. Second",
+    "nativeSpoken": "3) First\n4) Second"
+  },
+  {
+    "name": "ordered in unordered list",
+    "source": "- Parent\n  1. One\n  2. Two",
+    "spoken": "Parent\n1. One\n2. Two",
+    "nativeSpoken": "Parent\n1. One\n2. Two"
+  },
+  {
+    "name": "unordered in ordered list",
+    "source": "4. Parent\n   - Child\n5. Next",
+    "spoken": "4. Parent\nChild\n5. Next",
+    "nativeSpoken": "4. Parent\nChild\n5. Next"
+  }
+]

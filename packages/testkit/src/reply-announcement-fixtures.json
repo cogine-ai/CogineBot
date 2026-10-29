@@ -17,7 +17,9 @@
         "text": "1. **One**\n2. [Two](https://example.test/private)\n3. Run `x < y && z > 0`"
       }
     ],
-    "spoken": "One\nTwo\nRun x < y && z > 0"
+    "spoken": "One\nTwo\nRun x < y && z > 0",
+    "webSpoken": "1. One\n2. Two\n3. Run x < y && z > 0",
+    "nativeSpoken": "1. One\n2. Two\n3. Run x < y && z > 0"
   },
   {
     "name": "fenced code and Unicode",
@@ -152,7 +154,8 @@
       }
     ],
     "spoken": "",
-    "nativeSpoken": "chart"
+    "nativeSpoken": "chart",
+    "webSpoken": "chart"
   },
   {
     "name": "canonical table whitespace",
@@ -184,7 +187,8 @@
       }
     ],
     "spoken": "Open https://example.test/visible now",
-    "nativeSpoken": "Open example.test/visible now"
+    "nativeSpoken": "Open example.test/visible now",
+    "webSpoken": "Open example.test/visible now"
   },
   {
     "name": "HTML body still parses nested Markdown and hidden link destinations on native",
@@ -286,7 +290,8 @@
       }
     ],
     "spoken": "",
-    "nativeSpoken": "example.test"
+    "nativeSpoken": "example.test",
+    "webSpoken": "example.test"
   },
   {
     "name": "native custom autolink preserves its visible label",
@@ -318,7 +323,8 @@
       }
     ],
     "spoken": "",
-    "nativeSpoken": "whitespace.example.test"
+    "nativeSpoken": "whitespace.example.test",
+    "webSpoken": "whitespace.example.test"
   },
   {
     "name": "literal HTML with whitespace-alt image retains visible host",
@@ -340,7 +346,8 @@
       }
     ],
     "spoken": "",
-    "nativeSpoken": "  chart  "
+    "nativeSpoken": "  chart  ",
+    "webSpoken": "chart"
   },
   {
     "name": "inline data image whitespace alt does not expose its source",
@@ -373,7 +380,8 @@
       }
     ],
     "spoken": "",
-    "nativeSpoken": "whitespace.example.test"
+    "nativeSpoken": "whitespace.example.test",
+    "webSpoken": "whitespace.example.test"
   },
   {
     "name": "native remote tab-only alt retains host",
@@ -384,6 +392,7 @@
       }
     ],
     "spoken": "",
-    "nativeSpoken": "whitespace.example.test"
+    "nativeSpoken": "whitespace.example.test",
+    "webSpoken": "whitespace.example.test"
   }
 ]

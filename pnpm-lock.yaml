@@ -723,6 +723,9 @@ importers:
       '@ronradtke/react-native-markdown-display':
         specifier: 9.0.3
         version: 9.0.3(@expo/config-plugins@57.0.10(typescript@7.0.2))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3)
+      hast-util-to-text:
+        specifier: 4.0.2
+        version: 4.0.2
       linkify-it:
         specifier: 5.0.2
         version: 5.0.2

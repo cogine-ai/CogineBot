@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
+
 import type { MessageBlock } from "@rakazo/contracts";
 import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import replyAnnouncementCases from "../../../packages/testkit/src/reply-announcement-fixtures.json" with {
+  type: "json",
+};
+import webAnnouncementCases from "../../../packages/testkit/src/web-reply-announcement-fixtures.json" with {
   type: "json",
 };
 import { useReplyAnnouncements } from "./use-reply-announcements";
@@ -97,6 +101,17 @@ describe("native completed reply announcements", () => {
       const expected = nativeSpoken ?? spoken;
       if (expected) expect(screen.announce).toHaveBeenCalledExactlyOnceWith(expected);
       else expect(screen.announce).not.toHaveBeenCalled();
+    },
+  );
+  it.each(webAnnouncementCases.filter((row) => row.nativeSpoken !== undefined))(
+    "publishes stable labels and ordered markers for $name",
+    async ({ source, nativeSpoken }) => {
+      const render = await setup();
+      const blocks: MessageBlock[] = [{ kind: "text", text: source }];
+      await render("running");
+      await render("completed", "r", "scope", blocks);
+      await render("completed", "r", "scope", blocks);
+      expect(screen.announce).toHaveBeenCalledExactlyOnceWith(nativeSpoken);
     },
   );
   it.each(["stop", "hidden"])("keeps a literal HTML result silent after %s", async (reason) => {

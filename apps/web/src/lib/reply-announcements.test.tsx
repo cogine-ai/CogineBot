@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { RemoteImagesContext } from "@rakazo/chat-ui/web";
 import type { MessageBlock } from "@rakazo/contracts";
 import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import { act } from "react";
@@ -7,12 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import replyAnnouncementCases from "../../../../packages/testkit/src/reply-announcement-fixtures.json" with {
   type: "json",
 };
+import webAnnouncementCases from "../../../../packages/testkit/src/web-reply-announcement-fixtures.json" with {
+  type: "json",
+};
 import { useReplyAnnouncements } from "./use-reply-announcements";
 
 const REPLY_ANNOUNCEMENT_CASES = replyAnnouncementCases as {
   name: string;
   blocks: MessageBlock[];
   spoken: string;
+  webSpoken?: string;
 }[];
 
 let stop = () => {};
@@ -68,7 +73,13 @@ async function setup() {
   };
   const render = async (
     status: string,
-    options: { scope?: string; run?: string; hidden?: boolean; blocks?: MessageBlock[] } = {},
+    options: {
+      scope?: string;
+      run?: string;
+      hidden?: boolean;
+      blocks?: MessageBlock[];
+      loadRemoteImages?: boolean;
+    } = {},
   ) => {
     if (status === "completed")
       await act(async () =>
@@ -81,11 +92,13 @@ async function setup() {
       );
     await act(async () =>
       root.render(
-        <Screen
-          scope={options.scope ?? "scope"}
-          snapshot={snapshot(status, options.run, options.blocks)}
-          hidden={options.hidden}
-        />,
+        <RemoteImagesContext.Provider value={options.loadRemoteImages ?? false}>
+          <Screen
+            scope={options.scope ?? "scope"}
+            snapshot={snapshot(status, options.run, options.blocks)}
+            hidden={options.hidden}
+          />
+        </RemoteImagesContext.Provider>,
       ),
     );
   };
@@ -96,15 +109,54 @@ async function setup() {
 }
 
 describe("rendered reply live region", () => {
-  it.each(REPLY_ANNOUNCEMENT_CASES)("publishes visible $name", async ({ blocks, spoken }) => {
+  it.each(REPLY_ANNOUNCEMENT_CASES)(
+    "publishes visible $name",
+    async ({ blocks, spoken, webSpoken }) => {
+      const { view, render, flush } = await setup();
+      await render("running");
+      await render("completed", { blocks });
+      await flush();
+      expect(view.querySelector('[role="status"]')?.textContent).toBe(webSpoken ?? spoken);
+      await render("completed", { blocks });
+      await flush();
+      expect(view.querySelector('[role="status"]')?.textContent).toBe(webSpoken ?? spoken);
+    },
+  );
+  it.each(webAnnouncementCases)(
+    "publishes renderer-owned $name",
+    async ({ source, loadRemoteImages, spoken }) => {
+      const { view, render, flush } = await setup();
+      await render("running", { loadRemoteImages });
+      await render("completed", { loadRemoteImages, blocks: [{ kind: "text", text: source }] });
+      await flush();
+      expect(view.textContent).toBe(spoken);
+      await render("completed", {
+        loadRemoteImages,
+        blocks: [{ kind: "text", text: "Late edit" }],
+      });
+      await flush();
+      expect(view.textContent).toBe(spoken);
+    },
+  );
+  it("keeps image identity and Stop stable when image loading changes", async () => {
     const { view, render, flush } = await setup();
+    const blocks: MessageBlock[] = [
+      { kind: "text", text: "![chart](https://setting.example.test/p.png)" },
+    ];
     await render("running");
-    await render("completed", { blocks });
+    await render("running", { loadRemoteImages: true });
+    await render("completed", { blocks, loadRemoteImages: true });
     await flush();
-    expect(view.querySelector('[role="status"]')?.textContent).toBe(spoken);
-    await render("completed", { blocks });
+    expect(view.textContent).toBe("chart");
+    await render("completed", { blocks, loadRemoteImages: false });
     await flush();
-    expect(view.querySelector('[role="status"]')?.textContent).toBe(spoken);
+    expect(view.textContent).toBe("chart");
+    await render("running", { run: "stopped" });
+    await act(async () => stop());
+    await render("running", { run: "stopped", loadRemoteImages: true });
+    await render("completed", { run: "stopped", blocks, loadRemoteImages: true });
+    await flush();
+    expect(view.textContent).toBe("");
   });
   it("does not publish a late edit after consuming a formatting-only completion", async () => {
     const { view, render, flush } = await setup();

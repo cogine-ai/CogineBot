@@ -3,6 +3,9 @@
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import webAnnouncementCases from "../../testkit/src/web-reply-announcement-fixtures.json" with {
+  type: "json",
+};
 
 const alert = vi.hoisted(() => vi.fn());
 
@@ -1322,6 +1325,20 @@ describe("native literal HTML text", () => {
       container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
       expect(container.textContent?.replace(/[\u2060\u2068\u2069]/g, "")).toBe(expected);
       expect(container.textContent).not.toContain("https://example.test/hidden");
+    },
+  );
+});
+
+describe("native stable image and ordered reply content", () => {
+  it.each(webAnnouncementCases.filter((row) => row.nativeSpoken !== undefined))(
+    "projects actual markers and linked identity for $name",
+    ({ source, nativeSpoken }) => {
+      expect(visibleNativeTextFromMarkdown(source)).toBe(nativeSpoken);
+      const container = document.createElement("div");
+      container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+      const actual = container.textContent?.replace(/[\u2060\u2068\u2069]/g, "") ?? "";
+      for (const marker of nativeSpoken?.match(/\d+[.)]/g) ?? []) expect(actual).toContain(marker);
+      if (source.startsWith("[!")) expect(actual).toContain("target.example.test");
     },
   );
 });
