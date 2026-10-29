@@ -6359,3 +6359,23 @@ msgstr "स्पेस बदलें"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "लॉग आउट नहीं हो सका। फिर से कोशिश करें।"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "{name} को ले जाया जा रहा है"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "{name} को {targetName} पर ले जाएँ"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "{name} को ले जाया गया"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "{name} को नहीं ले जाया जा सका"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "ले जाना रद्द किया गया"

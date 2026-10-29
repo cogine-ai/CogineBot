@@ -9,10 +9,14 @@ import {
   webSpeechAvailable,
   webSpeechNeedsServerFallback,
 } from "./dictation.js";
+import { bootstrapI18n, getActiveUiLocale, setCatalogLoadersForTests } from "./i18n.js";
 import { selectSpace, subscribeSubscriptionRequired, synchronizeRpcSession } from "./rpc.js";
+import { UI_LOCALES } from "./ui-locale.js";
 
 afterEach(() => {
+  setCatalogLoadersForTests(null);
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -44,7 +48,93 @@ function stubRecorderFallback(fetchMock: ReturnType<typeof vi.fn>) {
   );
 }
 
+const speechPreferenceCases = [
+  [null, "zh-TW", undefined, "zh-TW"],
+  [null, "it-IT", undefined, "it-IT"],
+  [null, "en-GB", "en", "en-GB"],
+  [null, "fr-CA", "fr", "fr-CA"],
+  ["en", "zh-TW", "en", "en-US"],
+  ["zh-CN", "en-GB", "zh", "zh-CN"],
+  ["it-IT", "it-IT", undefined, "it-IT"],
+  ["it-IT", "en-GB", "en", "en-GB"],
+  ["unknown", "fr-CA", "fr", "fr-CA"],
+  ["", "de-CH", "de", "de-CH"],
+  ["   ", "zh-TW", undefined, "zh-TW"],
+  ["enochian", "zh-TW", undefined, "zh-TW"],
+  ["zh-TW", "zh-TW", undefined, "zh-TW"],
+  ["ZH_hant_HK", "it-IT", undefined, "it-IT"],
+  [" EN_gb ", "zh-TW", "en", "en-US"],
+  ["zh_Hans_CN", "it-IT", "zh", "zh-CN"],
+  ["DE_ch", "it-IT", "de", "de-DE"],
+  ["ES_ar", "it-IT", "es", "es-ES"],
+  ["pt_PT", "it-IT", "pt", "pt-BR"],
+] as const;
+
+function stubCatalogs() {
+  vi.stubGlobal("document", { documentElement: {} });
+  setCatalogLoadersForTests(
+    Object.fromEntries(
+      UI_LOCALES.map((locale) => [locale, async () => ({ messages: {} })]),
+    ) as NonNullable<Parameters<typeof setCatalogLoadersForTests>[0]>,
+  );
+}
+
 describe("Dictation recorder fallback", () => {
+  it.each(speechPreferenceCases)(
+    "sends only the known language hint for preference %s / browser %s",
+    async (preference, language, hint) => {
+      const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+        Response.json({ text: "Transcript" }),
+      );
+      stubRecorderFallback(fetchMock);
+      vi.stubGlobal("localStorage", {
+        getItem: (key: string) => (key === "rakazo.uiLocale" ? preference : null),
+      });
+      vi.stubGlobal("navigator", { ...navigator, language });
+      stubCatalogs();
+      await bootstrapI18n();
+      if (preference === "it-IT") expect(getActiveUiLocale()).toBe("en");
+      const dictation = new Dictation();
+      const onFinal = vi.fn();
+      await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+      dictation.submitHold();
+      await vi.waitFor(() => expect(onFinal).toHaveBeenCalledWith("Transcript"));
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const body = JSON.parse(String(init.body));
+      if (hint === undefined) expect(body).not.toHaveProperty("language");
+      else expect(body.language).toBe(hint);
+    },
+  );
+  it.each(["it-IT", "zh-TW", "en"])(
+    "keeps Electron transcription provenance for stored %s",
+    async (preference) => {
+      const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+        Response.json({ text: "Transcript" }),
+      );
+      stubRecorderFallback(fetchMock);
+      const recognition = vi.fn();
+      vi.stubGlobal("window", {
+        SpeechRecognition: recognition,
+        rakazoDesktop: { platform: "darwin" },
+      });
+      vi.stubGlobal("localStorage", {
+        getItem: (key: string) => (key === "rakazo.uiLocale" ? preference : null),
+      });
+      vi.stubGlobal("navigator", { ...navigator, language: "it-IT" });
+      stubCatalogs();
+      await bootstrapI18n();
+      const dictation = new Dictation();
+      const onFinal = vi.fn();
+      await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+      dictation.submitHold();
+      await vi.waitFor(() => expect(onFinal).toHaveBeenCalledWith("Transcript"));
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      if (preference === "en") expect(body.language).toBe("en");
+      else expect(body).not.toHaveProperty("language");
+      expect(recognition).not.toHaveBeenCalled();
+    },
+  );
+
   it("stops tracks if hold-to-talk is cancelled while the mic prompt is open", async () => {
     const track = { stop: vi.fn() };
     let grant!: (stream: { getTracks: () => Array<{ stop: () => void }> }) => void;
@@ -779,6 +869,50 @@ describe("dictation engine choice", () => {
 });
 
 describe("Dictation web speech", () => {
+  it.each(speechPreferenceCases)(
+    "keeps recognizer provenance for preference %s / browser %s",
+    async (preference, language, _hint, expected) => {
+      vi.stubGlobal("localStorage", {
+        getItem: (key: string) => (key === "rakazo.uiLocale" ? preference : null),
+      });
+      vi.stubGlobal("navigator", { language });
+      stubCatalogs();
+      await bootstrapI18n();
+      if (preference === "it-IT") expect(getActiveUiLocale()).toBe("en");
+      const value = new Dictation();
+      await value.listen({ mode: "endpoint", onFinal: () => undefined });
+      expect(instances[0]?.lang).toBe(expected);
+      value.stop("cancel");
+    },
+  );
+
+  it.each(["zh-TW", "en-GB", "it-IT", "fr-CA"])(
+    "keeps the browser's exact %s recognizer tag without an explicit UI preference",
+    async (language) => {
+      vi.stubGlobal("localStorage", { getItem: () => null });
+      vi.stubGlobal("navigator", { language });
+      const value = new Dictation();
+      await value.listen({ mode: "endpoint", onFinal: () => undefined });
+      expect(instances[0]?.lang).toBe(language);
+      value.stop("cancel");
+    },
+  );
+
+  it.each([
+    ["en", "en-US"],
+    ["zh-CN", "zh-CN"],
+    ["pt-BR", "pt-BR"],
+  ])("starts the actual recognizer in explicitly selected %s", async (locale, expected) => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => (key === "rakazo.uiLocale" ? locale : null),
+    });
+    vi.stubGlobal("navigator", { language: "it-IT" });
+    const value = new Dictation();
+    await value.listen({ mode: "endpoint", onFinal: () => undefined });
+    expect(instances[0]?.lang).toBe(expected);
+    value.stop("cancel");
+  });
+
   class FakeRecognition {
     continuous = false;
     interimResults = false;

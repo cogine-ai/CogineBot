@@ -352,6 +352,16 @@ async function loadExpoSpeech(): Promise<typeof ExpoSpeech> {
   return Speech as typeof ExpoSpeech;
 }
 
+/** The OS default voice remains usable even when its enumerated voice list is empty. */
+export async function deviceSpeechAvailable(): Promise<boolean> {
+  try {
+    await loadExpoSpeech();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function speakOneUtterance(Speech: typeof ExpoSpeech, text: string, voice?: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     // Only offline voices are assigned; without one, use the engine default.

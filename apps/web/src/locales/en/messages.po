@@ -6359,3 +6359,23 @@ msgstr "Switch Space"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "Could not log out. Try again."
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "Moving {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "Move {name} to {targetName}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "Moved {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "Could not move {name}"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "Move cancelled"

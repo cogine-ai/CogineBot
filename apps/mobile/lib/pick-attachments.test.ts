@@ -46,9 +46,9 @@ describe("filterPickedAttachments", () => {
       contentBase64: "aGVsbG8=",
     };
     const result = filterPickedAttachments(0, [candidate, candidate]);
-    expect(result.attachments.map((attachment) => attachment.id)).toEqual([
-      "notes.txt-12-0",
-      "notes.txt-12-1",
-    ]);
+    expect(new Set(result.attachments.map((attachment) => attachment.id)).size).toBe(2);
+    const replacement = filterPickedAttachments(1, [candidate]).attachments[0]!;
+    expect(replacement.id).not.toBe(result.attachments[1]!.id);
+    expect(replacement).toMatchObject({ name: "notes.txt", size: 12 });
   });
 });

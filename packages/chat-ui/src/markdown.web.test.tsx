@@ -5,12 +5,17 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import webAnnouncementCases from "../../testkit/src/web-reply-announcement-fixtures.json" with {
+  type: "json",
+};
+import { markRemoteImageLoaded } from "./markdown";
 import type { LinkFavicons } from "./markdown.web";
 import {
   ChatMarkdown,
   LinkFaviconsContext,
   LinkifiedText,
   RemoteImagesContext,
+  visibleWebTextFromMarkdown,
 } from "./markdown.web";
 
 describe("web markdown remote images", () => {
@@ -465,6 +470,35 @@ async function render(node: ReactNode) {
 }
 
 describe("web external link confirmation", () => {
+  it("restores keyboard focus to the exact activating link after cancellation or Escape", async () => {
+    const view = await render(
+      <ChatMarkdown>
+        {"[First](https://example.test/same) [Second](https://example.test/same)"}
+      </ChatMarkdown>,
+    );
+    const links = [...view.container.querySelectorAll("a")];
+    const trigger = links[1]!;
+    trigger.focus();
+    await act(async () => {
+      trigger.click();
+    });
+    await act(async () => {
+      buttonNamed(document, "Cancel")?.click();
+    });
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => {
+      trigger.click();
+    });
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(document.querySelector("[role='alertdialog']")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    await view.cleanup();
+  });
+
   it("asks before an external bot link and opens it only after confirmation", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const view = await render(
@@ -558,5 +592,75 @@ describe("web external link confirmation", () => {
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
     await view.cleanup();
+  });
+});
+
+describe("web skipped HTML text", () => {
+  it.each([
+    "<div>Visible text</div>",
+    "<!-- Visible comment -->",
+    "<div>**Important** [report](https://example.test/hidden)</div>",
+  ])("keeps raw HTML skipped: %s", (source) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+    expect(container.textContent).toBe("");
+  });
+});
+
+describe("web reply content projection", () => {
+  it.each(webAnnouncementCases)(
+    "projects actual renderer labels for $name",
+    ({ source, spoken, projected }) => {
+      expect(visibleWebTextFromMarkdown(source)).toBe(projected ?? spoken);
+    },
+  );
+  it.each(
+    webAnnouncementCases.filter(
+      (row) =>
+        !row.name.includes("table") &&
+        !row.name.includes("code") &&
+        !row.name.includes("ordered") &&
+        !row.name.includes("task"),
+    ),
+  )("keeps the visible image identity for $name", ({ source, loadRemoteImages, spoken }) => {
+    const html = renderToStaticMarkup(
+      <RemoteImagesContext.Provider value={loadRemoteImages ?? false}>
+        <ChatMarkdown>{source}</ChatMarkdown>
+      </RemoteImagesContext.Provider>,
+    );
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    for (const image of container.querySelectorAll("img"))
+      image.replaceWith(document.createTextNode(image.alt));
+    // A stable label does not include the optional remote-loading button's extra host chrome.
+    const visible = container.textContent ?? "";
+    for (const word of spoken.trim().split(/\s+/u).filter(Boolean)) {
+      if (loadRemoteImages && (!visible.trim() || word === "target.example.test")) continue; // Empty loaded alt retains the stable source host.
+      expect(visible).toContain(word);
+    }
+  });
+  it("reads actual GFM checkbox states without enabling raw HTML inputs", () => {
+    const source = "3. Plain\n4. [x] Done\n5. [ ] Pending";
+    const container = document.createElement("div");
+    container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+    expect(container.querySelector("ol")?.classList.contains("contains-task-list")).toBe(true);
+    expect(
+      [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].map(
+        (input) => input.checked,
+      ),
+    ).toEqual([true, false]);
+    expect(visibleWebTextFromMarkdown(source)).toBe("Plain\n[x] Done\n[ ] Pending");
+    expect(visibleWebTextFromMarkdown('<input type="checkbox" checked>')).toBe("");
+  });
+  it("keeps image identity independent of loading choices without fetching anything", () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const src = "https://cached-projection.example.test/p.png";
+    const source = `![chart](${src})`;
+    expect(visibleWebTextFromMarkdown(source)).toBe("chart");
+    markRemoteImageLoaded(src);
+    expect(visibleWebTextFromMarkdown(source)).toBe("chart");
+    expect(fetch).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

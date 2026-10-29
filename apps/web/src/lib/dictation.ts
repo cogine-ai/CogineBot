@@ -1,5 +1,10 @@
-import { readBoundedResponseBytes } from "@rakazo/core";
-import { getActiveUiLocale } from "./i18n.js";
+import {
+  readBoundedResponseBytes,
+  recognitionLanguage as recognitionLanguageForUi,
+  speechLocaleTag as sharedSpeechLocaleTag,
+  transcriptionLanguageHint,
+} from "@rakazo/core";
+import { getUiLocalePreference } from "./i18n.js";
 import type { RpcRecoveryScope } from "./rpc.js";
 import {
   captureRpcRecoveryScope,
@@ -8,7 +13,6 @@ import {
   selectedSpaceId,
   withSpaceHeaders,
 } from "./rpc.js";
-import type { UiLocale } from "./ui-locale.js";
 import { errorText } from "./user-error.js";
 
 export type DictationMode = "hold" | "endpoint";
@@ -103,32 +107,19 @@ const RESTART_GIVE_UP_AFTER = 4;
 const RESTART_GIVE_UP_ERROR =
   "The browser keeps dropping the microphone. Start dictation again to retry.";
 
-/** Web Speech wants a BCP-47 tag; the app's UI locale is a short code. */
-const SPEECH_LOCALE_TAGS: Record<UiLocale, string> = {
-  en: "en-US",
-  de: "de-DE",
-  es: "es-ES",
-  fr: "fr-FR",
-  hi: "hi-IN",
-  ko: "ko-KR",
-  "pt-BR": "pt-BR",
-  ru: "ru-RU",
-  tr: "tr-TR",
-  "zh-CN": "zh-CN",
-};
+export const speechLocaleTag = sharedSpeechLocaleTag;
 
-/** The tag the recognizer needs for a UI locale, when we know one. */
-export function speechLocaleTag(locale: UiLocale): string | undefined {
-  return SPEECH_LOCALE_TAGS[locale];
+export function recognitionLanguage(): string {
+  return recognitionLanguageForUi(getUiLocalePreference() ?? "", navigator.language);
 }
 
-/**
- * Language hint for server transcription: the primary subtag of the app's own locale
- * (`es`, `pt`, `zh`). Undefined leaves detection to the provider.
- */
 export function transcriptionLanguage(): string | undefined {
-  const tag = speechLocaleTag(getActiveUiLocale());
-  return tag ? tag.split("-")[0]?.toLowerCase() : undefined;
+  const preference = getUiLocalePreference();
+  if (preference !== undefined) return transcriptionLanguageHint(preference);
+  const browser = navigator.language || "";
+  return (
+    transcriptionLanguageHint(browser) ?? transcriptionLanguageHint(browser.split("-")[0] ?? "")
+  );
 }
 
 function normalizedTranscript(text: string): string {
@@ -302,7 +293,7 @@ export class Dictation {
     let live = true;
     rec.continuous = true;
     rec.interimResults = true;
-    rec.lang = navigator.language || "en-US";
+    rec.lang = recognitionLanguage();
     // Chrome numbers results per session, so a restart starts over: keep the earlier text.
     let carried = "";
     let sessionStartedAt = Date.now();

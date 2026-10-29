@@ -59,3 +59,30 @@ describe("native message action sheet", () => {
     expect(actions.every((action) => action.onPress.mock.calls.length === 1)).toBe(true);
   });
 });
+
+it.each(["ios", "android"])(
+  "rejects a retained native callback and More page after %s ownership ends",
+  (platform) => {
+    Platform.OS = platform as typeof Platform.OS;
+    let current = true;
+    const actions = ["Reply", "React", "Speak", "Copy"].map((text) => ({ text, onPress: vi.fn() }));
+    presentMessageActionSheet({
+      actions,
+      cancel: "Cancel",
+      more: "More",
+      colorScheme: "light",
+      isCurrent: () => current,
+    });
+    current = false;
+    if (platform === "ios")
+      vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.lastCall![1](1);
+    else {
+      const buttons = vi.mocked(Alert.alert).mock.lastCall![2]!;
+      const pages = vi.mocked(Alert.alert).mock.calls.length;
+      buttons[0]!.onPress?.();
+      buttons[2]!.onPress?.();
+      expect(vi.mocked(Alert.alert).mock.calls).toHaveLength(pages);
+    }
+    expect(actions.every((action) => action.onPress.mock.calls.length === 0)).toBe(true);
+  },
+);

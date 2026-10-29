@@ -9,10 +9,13 @@ export type PickedAttachment = {
   name: string;
   mimeType: AttachmentMimeType;
   contentBase64: string;
+  size?: number;
   previewUri?: string;
 };
 
 export type PickSkip = { name: string; reason: string };
+
+let attachmentSequence = 0;
 
 export function filterPickedAttachments(
   existingCount: number,
@@ -40,10 +43,13 @@ export function filterPickedAttachments(
       continue;
     }
     attachments.push({
-      id: `${candidate.name}-${candidate.size}-${existingCount + attachments.length}`,
+      id:
+        globalThis.crypto?.randomUUID?.() ??
+        `attachment-${Date.now().toString(36)}-${++attachmentSequence}`,
       name: candidate.name,
       mimeType: candidate.mimeType as AttachmentMimeType,
       contentBase64: candidate.contentBase64,
+      size: candidate.size,
       previewUri: candidate.previewUri,
     });
   }

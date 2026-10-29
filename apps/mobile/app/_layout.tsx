@@ -20,6 +20,7 @@ import { CallCard } from "../components/CallCard";
 import { ComputerUpdateProgress } from "../components/computer-update-progress";
 import { floatingHeaderOptions, glassHeaderOptions } from "../components/glass-title";
 import { MermaidDiagram } from "../components/mermaid-diagram";
+import { MessageMenuHost } from "../components/message-action-menu";
 import { NativeSymbol } from "../components/native-symbol";
 import { VoicePlayerBar } from "../components/voice-player-bar";
 import {
@@ -270,6 +271,8 @@ export default function Layout() {
               <ComputerUpdateProgress />
               <CallCard />
               <BillingRecovery />
+
+              <MessageMenuHost />
             </ThemeProvider>
           </ChatContentProviders>
         ) : (

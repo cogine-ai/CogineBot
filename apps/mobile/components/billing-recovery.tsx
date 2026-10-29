@@ -1,8 +1,9 @@
+import { coverReplyAnnouncements } from "@rakazo/chat-ui/announcement-visibility";
 import type { BillingStatus, Me, SpaceNavigation } from "@rakazo/contracts";
 import type { AccessRecoveryState } from "@rakazo/core";
 import { accessRecoveryState } from "@rakazo/core";
 import { usePathname } from "expo-router";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AppState, Linking, Modal, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -299,9 +300,11 @@ function ScopedBillingRecovery({ enabled }: { enabled: boolean }) {
         ? t("This Space is unavailable")
         : t("Subscription required");
 
+  const visible = enabled && view.denied && !dismissed;
+  useLayoutEffect(() => (visible ? coverReplyAnnouncements() : undefined), [visible]);
   return (
     <Modal
-      visible={enabled && view.denied && !dismissed}
+      visible={visible}
       animationType="slide"
       presentationStyle="pageSheet"
       onRequestClose={dismiss}

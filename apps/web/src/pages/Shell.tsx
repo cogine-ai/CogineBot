@@ -31,8 +31,9 @@ import {
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
-import type { BotCreationReceipt } from "@rakazo/core";
+import type { AnnouncementEvent, BotCreationReceipt } from "@rakazo/core";
 import {
+  attachmentLabels,
   buildComposerMentionOptions,
   type ComposerMention,
   clampMentionHighlightIndex,
@@ -50,6 +51,8 @@ import {
   isToolActivityBlock,
   latestAnswerableAskMessageId,
   mentionChipKey,
+  messageAttachmentLabels,
+  messageBlocksForQuestionCards,
   nestRosterByParent,
   parseModelOptionKey,
   plainTextFromMarkdown,
@@ -282,6 +285,8 @@ import { speaker } from "../lib/tts";
 import { useAccountTimezone } from "../lib/use-account-timezone";
 import { useBotCreation, useBotCreationEditor } from "../lib/use-bot-creation";
 import { useComposerDraft } from "../lib/use-composer-draft";
+import { useReplyAnnouncements } from "../lib/use-reply-announcements";
+import { useSidebarAnnouncements } from "../lib/use-sidebar-announcements";
 import { errorText } from "../lib/user-error";
 import { ActivityList } from "./ActivityList";
 import type { ContextMenuPosition } from "./BotContextMenu";
@@ -446,6 +451,7 @@ export function ShellPage() {
   botsRef.current = bots;
   const botOrderEpochRef = useRef(0);
   const pendingBotOrderRef = useRef<string[] | null>(null);
+  const pendingBotOrderAnnouncement = useRef<((success: boolean) => void) | null>(null);
   const savingBotOrderRef = useRef(false);
   const [botOrderStatus, setBotOrderStatus] = useState<"saving" | "unconfirmed" | null>(null);
   const [botSections, setBotSections] = useState<BotSection[]>([]);
@@ -545,6 +551,7 @@ export function ShellPage() {
   // A very fast run can finish over SSE while its threads.send response is still
   // returning. Do not let that late receipt resurrect terminal work as queued.
   const terminalRunReceipts = useRef(new Set<string>());
+  const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
   // Last-known computer/screen per bot, so switching back to an already-seen
   // bot paints its computer pane instantly instead of blanking it while the
   // thread + screen RPCs round-trip again (see refreshThread / refreshComputerScreen).
@@ -979,6 +986,9 @@ export function ShellPage() {
   const settingsSpace = spaces.find((entry) => entry.id === settingsTargetId) ?? null;
   const settingsOwnerKey = JSON.stringify([userId, session.data?.session.id]);
   const settingsOwner = useMemo(() => ({ key: settingsOwnerKey }), [settingsOwnerKey]);
+  const sidebarAnnouncements = useSidebarAnnouncements(
+    JSON.stringify([settingsOwnerKey, bootstrapMe?.spaceId, currentSpaceSelectionGeneration()]),
+  );
   const creationSpaceId = userId && bootstrapMe?.userId === userId ? bootstrapMe.spaceId : null;
   const creationScope = useBotCreation({
     ownerKey: creationSpaceId ? settingsOwnerKey : null,
@@ -2064,6 +2074,7 @@ export function ShellPage() {
       applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
+        replyEventObserver.current(event);
         const currentBot = botsRef.current.find((bot) => bot.id === active.id);
         notifyBrowserForEvent(
           event,
@@ -2180,6 +2191,7 @@ export function ShellPage() {
       applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
+        replyEventObserver.current(event);
         if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
           clearHistoryWindow();
@@ -2317,10 +2329,14 @@ export function ShellPage() {
         setBotOrderStatus("saving");
         const botIds = pendingBotOrderRef.current;
         pendingBotOrderRef.current = null;
+        const settleAnnouncement = pendingBotOrderAnnouncement.current;
+        pendingBotOrderAnnouncement.current = null;
         try {
           await rpc.bots.reorder({ botIds });
+          settleAnnouncement?.(true);
           if (pendingBotOrderRef.current === null) setBotOrderStatus(null);
         } catch {
+          settleAnnouncement?.(false);
           // Preserve newer user intent; otherwise read the authoritative order.
           if (pendingBotOrderRef.current === null) {
             setBotOrderStatus("unconfirmed");
@@ -2351,10 +2367,19 @@ export function ShellPage() {
       botOrderEpochRef.current += 1;
       botsRef.current = next;
       setBots(next);
+      sidebarAnnouncements.start(current.find((bot) => bot.id === sourceId)?.name ?? sourceId);
+      sidebarAnnouncements.target(current.find((bot) => bot.id === targetId)?.name ?? targetId);
+      pendingBotOrderAnnouncement.current = sidebarAnnouncements.accept();
       pendingBotOrderRef.current = next.map((bot) => bot.id);
       void flushBotOrder();
     },
-    [bootstrapMe, flushBotOrder],
+    [
+      bootstrapMe,
+      flushBotOrder,
+      sidebarAnnouncements.start,
+      sidebarAnnouncements.target,
+      sidebarAnnouncements.accept,
+    ],
   );
   const toggleSidebarSection = useCallback(
     (key: string) => {
@@ -2453,10 +2478,11 @@ export function ShellPage() {
     });
   };
   const moveChatToSection = async (item: SidebarChatTarget, sectionId: string | null) => {
-    if (item.chat.sectionId === sectionId && !item.chat.pinned) return;
+    if (item.chat.sectionId === sectionId && !item.chat.pinned) return false;
     await saveChatOrganization(item, { sectionId, pinned: false });
     expandSection(item.chat.spaceId, sectionId);
     setSidebarNotice(item.chat.pinned ? t`Moved and unpinned` : null);
+    return true;
   };
   const renameSection = async (
     section: BotSection,
@@ -2498,14 +2524,15 @@ export function ShellPage() {
     });
   };
   const reorderSection = async (sourceId: string, targetId: string, spaceId: string) => {
-    if (sourceId === targetId) return;
+    if (sourceId === targetId) return false;
     const ids = sectionsForSpace(spaceId).map((section) => section.id);
     const from = ids.indexOf(sourceId),
       to = ids.indexOf(targetId);
-    if (from < 0 || to < 0) return;
+    if (from < 0 || to < 0) return false;
     ids.splice(from, 1);
     ids.splice(to, 0, sourceId);
     await saveSectionOrder(spaceId, ids);
+    return true;
   };
   const stepSection = async (id: string, spaceId: string, direction: number) => {
     const ids = sectionsForSpace(spaceId).map((section) => section.id);
@@ -2924,6 +2951,26 @@ export function ShellPage() {
       : snapshot?.botId === active?.id
         ? snapshot
         : null;
+  const [replyAnnouncement, stopReplyAnnouncements, observeReplyEvent] = useReplyAnnouncements(
+    JSON.stringify([
+      settingsOwnerKey,
+      bootstrapMe?.spaceId,
+      currentSpaceSelectionGeneration(),
+      activeSnapshot?.threadId,
+    ]),
+    activeSnapshot,
+    Boolean(peerConversation) ||
+      Boolean(call && call.botId === active?.id) ||
+      mobileSidebarOpen ||
+      bootstrapLoad.pending ||
+      Boolean(bootstrapLoad.error),
+  );
+  useLayoutEffect(() => {
+    replyEventObserver.current = observeReplyEvent;
+    return () => {
+      replyEventObserver.current = () => {};
+    };
+  }, [observeReplyEvent]);
   useLayoutEffect(() => {
     const sessionId = session.data?.session.id;
     const targetId = groupId ?? botId;
@@ -3568,6 +3615,7 @@ export function ShellPage() {
   );
   const stopRun = useCallback(async () => {
     if (sending) return;
+    stopReplyAnnouncements();
     invalidateComputerBoot();
     sendingRef.current = true;
     setSending(true);
@@ -3620,7 +3668,7 @@ export function ShellPage() {
       sendingRef.current = false;
       setSending(false);
     }
-  }, [sending, t]);
+  }, [stopReplyAnnouncements, sending, t]);
   const stopTeaching = useCallback(async () => {
     const id = activeBotId.current;
     if (!id || teachBusy) return;
@@ -4417,6 +4465,15 @@ export function ShellPage() {
           </div>
         ) : null}
         <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+          data-testid="sidebar-announcement"
+        >
+          {sidebarAnnouncements.text}
+        </div>
+        <div
           className={`app-drag flex h-16 shrink-0 items-center ${compactSidebar ? "justify-center px-2" : "justify-between px-5"}`}
         >
           {!compactSidebar ? (
@@ -4728,6 +4785,7 @@ export function ShellPage() {
                       ) {
                         event.preventDefault();
                         event.dataTransfer.dropEffect = "move";
+                        sidebarAnnouncements.target(displayTitle ?? t`Unassigned`);
                       }
                     }}
                     onDrop={(event) => {
@@ -4737,19 +4795,27 @@ export function ShellPage() {
                         draggedSection.spaceId === group.spaceId
                       ) {
                         event.preventDefault();
-                        void reorderSection(
-                          draggedSection.id,
-                          group.sectionId,
-                          group.spaceId,
-                        ).catch(reportSidebarError);
+                        const settle = sidebarAnnouncements.accept();
+                        void reorderSection(draggedSection.id, group.sectionId, group.spaceId).then(
+                          (moved) => settle(moved ? true : "cancelled"),
+                          (error) => {
+                            settle(false);
+                            reportSidebarError(error);
+                          },
+                        );
                       } else if (
                         draggedChat &&
                         draggedChat.chat.spaceId === group.spaceId &&
                         group.kind !== "pinned"
                       ) {
                         event.preventDefault();
-                        void moveChatToSection(draggedChat, group.sectionId).catch(
-                          reportSidebarError,
+                        const settle = sidebarAnnouncements.accept();
+                        void moveChatToSection(draggedChat, group.sectionId).then(
+                          (moved) => settle(moved ? true : "cancelled"),
+                          (error) => {
+                            settle(false);
+                            reportSidebarError(error);
+                          },
                         );
                       }
                       setDraggedChat(null);
@@ -4844,6 +4910,7 @@ export function ShellPage() {
                             onDragStart={(event) => {
                               if (!group.sectionId) return;
                               event.stopPropagation();
+                              sidebarAnnouncements.start(displayTitle);
                               setDraggedSection({ id: group.sectionId, spaceId: group.spaceId });
                               event.dataTransfer.effectAllowed = "move";
                               event.dataTransfer.setData(
@@ -4851,7 +4918,10 @@ export function ShellPage() {
                                 group.sectionId,
                               );
                             }}
-                            onDragEnd={() => setDraggedSection(null)}
+                            onDragEnd={() => {
+                              sidebarAnnouncements.end();
+                              setDraggedSection(null);
+                            }}
                             onToggle={() => {
                               if (collapsible) toggleSidebarSection(group.collapseKey);
                             }}
@@ -4959,6 +5029,7 @@ export function ShellPage() {
                                   item.kind === "bot" ? "Alt+ArrowUp Alt+ArrowDown" : undefined
                                 }
                                 onDragStart={(event) => {
+                                  sidebarAnnouncements.start(item.chat.name);
                                   setDraggedChat(item);
                                   if (item.kind === "bot") setDraggedBotId(item.chat.id);
                                   event.dataTransfer.effectAllowed = "move";
@@ -4972,7 +5043,9 @@ export function ShellPage() {
                                     rosterParent.get(draggedBotId) === parentId
                                   ) {
                                     event.preventDefault();
+                                    event.stopPropagation();
                                     event.dataTransfer.dropEffect = "move";
+                                    sidebarAnnouncements.target(item.chat.name);
                                   }
                                 }}
                                 onDrop={(event) => {
@@ -4989,6 +5062,7 @@ export function ShellPage() {
                                   setDraggedChat(null);
                                 }}
                                 onDragEnd={() => {
+                                  sidebarAnnouncements.end();
                                   setDraggedBotId(null);
                                   setDraggedChat(null);
                                 }}
@@ -5384,6 +5458,15 @@ export function ShellPage() {
         inert={mobileSidebarOpen}
         className="@container/conversation relative isolate flex min-w-0 flex-1 flex-col bg-background"
       >
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+          data-testid="reply-announcement"
+        >
+          {replyAnnouncement}
+        </div>
         {/* Inside main so the composer and its menus stay above it. */}
         {!mobileSidebarOpen ? (
           <div
@@ -6959,6 +7042,7 @@ const Transcript = memo(function Transcript({
   onOpenComputer: (botId?: string) => void;
 }) {
   const { t } = useLingui();
+  const artifactDescriptions = useMemo(() => messageAttachmentLabels(messages), [messages]);
   const [atEnd, setAtEnd] = useState(true);
   const following = useRef(true);
   const autoScrolling = useRef(false);
@@ -7287,6 +7371,7 @@ const Transcript = memo(function Transcript({
                       }
                     >
                       <MessageView
+                        artifactDescriptions={artifactDescriptions}
                         artifactTarget={artifactTarget}
                         message={message}
                         canAnswer={
@@ -7857,6 +7942,13 @@ export const Composer = memo(function Composer({
 
   const showComposerPlaceholder =
     draft.length === 0 && selectedSkill === null && selectedMentions.length === 0;
+  const attachmentDescriptions = attachmentLabels(
+    pendingAttachments.map((attachment) => ({
+      id: attachment.id,
+      name: attachment.file.name,
+      size: attachment.file.size,
+    })),
+  );
   const hasAttachmentContent = pendingAttachments.length > 0 || attachmentNotice !== null;
   const expandedLayout = composerExpanded || mentionsOverflow || hasAttachmentContent;
   const replyName = replyTarget ? (replyTargetName ?? previewMessageText(replyTarget)) : "";
@@ -8119,11 +8211,12 @@ export const Composer = memo(function Composer({
                     <AttachmentPreview
                       key={attachment.id}
                       name={attachment.file.name}
+                      description={attachmentDescriptions.get(attachment.id)}
                       mimeType={
                         inferAttachmentMimeType(attachment.file.name, attachment.file.type) ?? ""
                       }
                       previewUrl={attachment.previewUrl}
-                      removeLabel={t`Remove ${attachment.file.name}`}
+                      removeLabel={`${t`Remove ${attachment.file.name}`}${attachmentDescriptions.has(attachment.id) ? ` · ${attachmentDescriptions.get(attachment.id)}` : ""}`}
                       onRemove={() => onRemoveAttachment(attachment)}
                     />
                   ))}
@@ -8571,6 +8664,7 @@ function ComputerReleaseActions({
 }
 
 const MessageView = memo(function MessageView({
+  artifactDescriptions,
   artifactTarget,
   canAnswer,
   message,
@@ -8594,6 +8688,7 @@ const MessageView = memo(function MessageView({
   showToolActivity,
   hoverActions,
 }: {
+  artifactDescriptions: ReadonlyMap<string, string>;
   artifactTarget: ArtifactTarget;
   canAnswer: boolean;
   message: ThreadMessage;
@@ -8745,7 +8840,10 @@ const MessageView = memo(function MessageView({
     <>
       {messageContext}
       <div className="relative">
-        {message.blocks.map((block, i) => {
+        {messageBlocksForQuestionCards(
+          message.blocks,
+          Boolean("botId" in artifactTarget ? artifactTarget.botId : message.botId),
+        ).map((block, i) => {
           if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
             return (
               <StandaloneToolActivity
@@ -8946,8 +9044,13 @@ const MessageView = memo(function MessageView({
             return (
               <div
                 key={i}
-                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}
               >
+                {artifactDescriptions.has(block.artifactId) ? (
+                  <span className="max-w-full wrap-anywhere text-xs text-muted-foreground">
+                    {block.name} · {artifactDescriptions.get(block.artifactId)}
+                  </span>
+                ) : null}
                 <ArtifactImage
                   target={artifactTarget}
                   artifactId={block.artifactId}
@@ -8968,6 +9071,7 @@ const MessageView = memo(function MessageView({
                   name={block.name}
                   mimeType={block.mimeType}
                   size={block.size}
+                  description={artifactDescriptions.get(block.artifactId)}
                 />
               </div>
             );

@@ -115,6 +115,7 @@ async function harness(
   const router = { push: state.push, replace: vi.fn() };
   const navigation = { isFocused: () => state.focused };
   const scope = {
+    useMessageSpeechAvailable: () => false,
     React,
     useCallback,
     useEffect,

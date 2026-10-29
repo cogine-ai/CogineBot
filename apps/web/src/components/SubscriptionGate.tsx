@@ -1,9 +1,10 @@
 import { useLingui } from "@lingui/react/macro";
+import { coverReplyAnnouncements } from "@rakazo/chat-ui/announcement-visibility";
 import type { BillingStatus, Me } from "@rakazo/contracts";
 import { accessRecoveryState } from "@rakazo/core";
 import { Dialog, DialogContent } from "@rakazo/ui-web";
 import type { ReactNode } from "react";
-import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { fetchAuthCapabilities } from "../lib/auth-capabilities";
 import { BILLING_REQUEST_TIMEOUT_MS } from "../lib/billing";
 import { peekInitialBootstrap } from "../lib/bootstrap";
@@ -180,6 +181,8 @@ export function SubscriptionGate({
 
   const showPaywall =
     (state.kind === "paywall" || state.kind === "recovery") && !dismissed && client && isCurrent;
+  const covered = Boolean(showPaywall);
+  useLayoutEffect(() => (covered ? coverReplyAnnouncements() : undefined), [covered]);
   const dismiss = () => {
     setDismissed(true);
     setHasOpened(true);

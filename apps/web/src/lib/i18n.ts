@@ -1,6 +1,7 @@
 import { i18n } from "@lingui/core";
 import { applyUiDirection } from "./apply-ui-direction";
-import { persistUiLocale, resolveUiLocale, type UiLocale } from "./ui-locale";
+import type { UiLocale } from "./ui-locale";
+import { persistUiLocale, resolveUiLocale, resolveUiLocalePreference } from "./ui-locale";
 
 export { i18n };
 
@@ -23,17 +24,25 @@ const defaultCatalogLoaders: Record<UiLocale, CatalogLoader> = {
 
 let catalogLoaders: Record<UiLocale, CatalogLoader> = defaultCatalogLoaders;
 let activeLocale: UiLocale | null = null;
+let selectedLocale: UiLocale | undefined;
 let activationGeneration = 0;
 
 /** Test-only: replace catalog loaders (restore with `null`). */
 export function setCatalogLoadersForTests(loaders: Record<UiLocale, CatalogLoader> | null): void {
   catalogLoaders = loaders ?? defaultCatalogLoaders;
   activeLocale = null;
+  selectedLocale = undefined;
   activationGeneration = 0;
 }
 
 export function getActiveUiLocale(): UiLocale {
   return activeLocale ?? resolveUiLocale();
+}
+
+/** Speech follows an explicit UI preference; display fallback alone is not a selection. */
+export function getUiLocalePreference(): UiLocale | undefined {
+  const preference = selectedLocale ?? resolveUiLocalePreference();
+  return preference === undefined ? undefined : (activeLocale ?? preference);
 }
 
 async function loadCatalog(locale: UiLocale): Promise<CatalogMessages> {
@@ -86,13 +95,15 @@ export async function bootstrapI18n(preferred: UiLocale = resolveUiLocale()): Pr
 }
 
 export async function setUiLocale(locale: UiLocale): Promise<UiLocale> {
+  selectedLocale = locale;
   persistUiLocale(locale);
   const activation = activateUiLocale(locale);
   const generation = activationGeneration;
   const activated = await activation;
   // Only rewrite storage on fallback when this call is still the latest selection.
-  if (generation === activationGeneration && activated !== locale) {
-    persistUiLocale(activated);
+  if (generation === activationGeneration) {
+    selectedLocale = activated;
+    if (activated !== locale) persistUiLocale(activated);
   }
   return activated;
 }

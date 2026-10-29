@@ -1510,7 +1510,7 @@ export function selectableMobileMessageText(message: MobileMessage): string {
 }
 
 export function copyableMobileMessageText(message: MobileMessage): string {
-  return selectableMobileMessageText(message).trim();
+  return selectableMobileMessageText(message);
 }
 
 export function blockText(message: MobileMessage) {

@@ -5,7 +5,7 @@ import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { Code2, Download, FileText, X } from "lucide-react";
 import type { RefObject } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ArtifactTarget } from "../lib/artifact-open";
 import { downloadArtifact, downloadArtifactBytes, fetchArtifactBytes } from "../lib/artifact-open";
 import { errorText } from "../lib/user-error";
@@ -16,6 +16,7 @@ type ArtifactFileCardProps = {
   target: ArtifactTarget;
   artifactId: string;
   name: string;
+  description?: string;
   mimeType: string;
   size: number;
 };
@@ -25,6 +26,7 @@ const TEXT_MIME_TYPES = new Set(["text/markdown", "text/html"]);
 
 export function ArtifactFileCard(props: ArtifactFileCardProps) {
   const { t } = useLingui();
+  const descriptionId = useId();
   const previewable = PREVIEWABLE_MIME_TYPES.has(props.mimeType);
   const previewButton = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -51,6 +53,9 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
           <div className="truncate font-medium" title={props.name}>
             {props.name}
           </div>
+          {props.description ? (
+            <div className="mt-1 wrap-anywhere text-[13px]">{props.description}</div>
+          ) : null}
           <div className="mt-1 truncate text-muted-foreground">
             {props.mimeType} · {formatBytes(props.size)}
           </div>
@@ -68,6 +73,7 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
             ref={previewButton}
             type="button"
             aria-label={t`Preview ${props.name}`}
+            aria-describedby={props.description ? descriptionId : undefined}
             onClick={() => setPreviewOpen(true)}
             className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left hover:bg-accent"
           >
@@ -82,6 +88,11 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
               <span className="block truncate text-[14px] font-medium" title={props.name}>
                 {props.name}
               </span>
+              {props.description ? (
+                <span id={descriptionId} className="mt-0.5 block wrap-anywhere text-[13px]">
+                  {props.description}
+                </span>
+              ) : null}
               <span className="mt-0.5 block text-[13px] text-muted-foreground">
                 {formatBytes(props.size)}
               </span>
@@ -90,6 +101,7 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
           <button
             type="button"
             aria-label={t`Download ${props.name}`}
+            aria-describedby={props.description ? descriptionId : undefined}
             title={t`Download ${props.name}`}
             onClick={() => void startDownload()}
             className="grid w-14 shrink-0 place-items-center border-l border-border text-muted-foreground hover:bg-accent hover:text-foreground"

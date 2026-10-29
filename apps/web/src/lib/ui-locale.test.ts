@@ -3,6 +3,7 @@ import {
   normalizeUiLocale,
   persistUiLocale,
   resolveUiLocale,
+  resolveUiLocalePreference,
   UI_LOCALE_STORAGE_KEY,
 } from "./ui-locale";
 
@@ -140,5 +141,94 @@ describe("persistUiLocale", () => {
       },
     });
     expect(store.get(UI_LOCALE_STORAGE_KEY)).toBe("ko");
+  });
+});
+
+describe("explicit UI locale preference", () => {
+  it("distinguishes a chosen/configured English UI from browser normalization", () => {
+    expect(
+      resolveUiLocalePreference({ stored: "en", envDefault: "de", navigatorLanguage: "zh-TW" }),
+    ).toBe("en");
+    expect(
+      resolveUiLocalePreference({ stored: null, envDefault: "en", navigatorLanguage: "en-GB" }),
+    ).toBe("en");
+    expect(
+      resolveUiLocalePreference({ stored: null, envDefault: null, navigatorLanguage: "zh-TW" }),
+    ).toBeUndefined();
+    expect(
+      resolveUiLocalePreference({ stored: null, envDefault: null, navigatorLanguage: "en-GB" }),
+    ).toBeUndefined();
+    expect(resolveUiLocale({ stored: null, envDefault: null, navigatorLanguage: "zh-TW" })).toBe(
+      "en",
+    );
+  });
+});
+
+describe("configured speech preference provenance", () => {
+  const cases = [
+    [null, undefined],
+    ["", undefined],
+    ["   ", undefined],
+    ["unknown", undefined],
+    ["enochian", undefined],
+    ["it-IT", undefined],
+    ["zh-TW", undefined],
+    ["zh-Hant-HK", undefined],
+    ["en", "en"],
+    [" EN_gb ", "en"],
+    ["en-US", "en"],
+    ["DE_ch", "de"],
+    ["KO_kr", "ko"],
+    ["tr-TR", "tr"],
+    ["hi-IN", "hi"],
+    ["pt_PT", "pt-BR"],
+    ["ZH_hans_CN", "zh-CN"],
+    ["zh-SG", "zh-CN"],
+    ["ES_ar", "es"],
+    ["ru_KZ", "ru"],
+    ["FR_ca", "fr"],
+  ] as const;
+
+  it.each(cases)("classifies stored %s without changing display normalization", (raw, expected) => {
+    const options = { stored: raw, envDefault: null, navigatorLanguage: "de-CH" };
+    expect(resolveUiLocalePreference(options)).toBe(expected);
+    expect(resolveUiLocale(options)).toBe(raw ? normalizeUiLocale(raw) : "de");
+  });
+
+  it.each(cases)(
+    "classifies configured %s without changing display normalization",
+    (raw, expected) => {
+      const options = {
+        stored: null,
+        env: { VITE_DEFAULT_UI_LOCALE: raw ?? "" },
+        navigatorLanguage: "de-CH",
+      };
+      expect(resolveUiLocalePreference(options)).toBe(expected);
+      expect(resolveUiLocale(options)).toBe(raw?.trim() ? normalizeUiLocale(raw) : "de");
+      expect(resolveUiLocalePreference({ ...options, envDefault: raw })).toBe(expected);
+      expect(resolveUiLocale({ ...options, envDefault: raw })).toBe(
+        raw ? normalizeUiLocale(raw) : "de",
+      );
+    },
+  );
+
+  it("does not promote an ignored environment default past an unsupported saved value", () => {
+    const options = { stored: "it-IT", envDefault: "de", navigatorLanguage: "ko-KR" };
+    expect(resolveUiLocale(options)).toBe("en");
+    expect(resolveUiLocalePreference(options)).toBeUndefined();
+  });
+
+  it("uses the configured preference after an empty or inaccessible stored value", () => {
+    expect(resolveUiLocalePreference({ stored: "", envDefault: "EN_gb" })).toBe("en");
+    expect(
+      resolveUiLocalePreference({
+        storage: {
+          getItem() {
+            throw new Error("Unavailable");
+          },
+        },
+        envDefault: "zh_Hans_CN",
+      }),
+    ).toBe("zh-CN");
   });
 });

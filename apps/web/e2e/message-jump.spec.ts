@@ -1,3 +1,4 @@
+import type { Request } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import {
   activeBotId,
@@ -55,21 +56,31 @@ test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => 
       }
     }),
   );
+  let aroundRequest: Request | undefined;
+  const observeAround = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      aroundRequest ||
+      request.method() !== "POST" ||
+      url.origin !== new URL(page.url()).origin ||
+      url.pathname !== "/rpc/threads/messages"
+    )
+      return;
+    const input = request.postDataJSON()?.json as
+      | { botId?: string; around?: { messageId?: string } }
+      | undefined;
+    if (input?.botId === botId && input.around?.messageId === messageId) aroundRequest = request;
+  };
   try {
     // Precondition: the stream is really committing — rows keep appearing.
     const rowsBefore = await rows.count();
     await expect.poll(() => rows.count(), { timeout: 20_000 }).toBeGreaterThan(rowsBefore);
 
-    // The flood has pushed the target out of the live window.
+    // The flood has pushed the target outside the viewport.
     await expect(targetRow).not.toBeInViewport({ timeout: 20_000 });
     const sentAtPush = sent;
 
-    const aroundJump = page.waitForResponse(
-      (response) =>
-        response.url().includes("/rpc/threads/messages") &&
-        (response.request().postData() ?? "").includes('"around"'),
-      { timeout: 15_000 },
-    );
+    page.on("request", observeAround);
     await page.evaluate((id) => {
       history.pushState({}, "", `?m=${id}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -77,20 +88,26 @@ test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => 
     // The jump's finally strips this one-shot param as soon as the around-fetch
     // settles. toHaveURL only samples the current URL, so under load the first
     // poll can already miss ?m= and then retry a value that will not return.
-    // The around response is the proof the router observed the deep link.
+    // Capture before dispatch so a fast request cannot be missed. Start the
+    // observation window once the browser has executed the navigation action;
+    // queued browser commands must not consume that window. This is a functional
+    // streaming check, not a navigation-latency benchmark.
+    // Read the response from the same Request rather than racing a response event.
 
     // The jump lands mid-stream: the around-page fetch succeeds while sends
     // keep landing, and the target scrolls back into view. (The transcript
     // unfollows the tail for a jump; before that, follow commits could cancel
     // the scroll — asserting the viewport also guards that path.)
-    const aroundResponse = await aroundJump;
-    expect(aroundResponse.ok()).toBe(true);
+    await expect.poll(() => Boolean(aroundRequest), { timeout: 15_000 }).toBe(true);
+    const aroundResponse = await aroundRequest!.response();
+    expect(aroundResponse?.status()).toBe(200);
     await expect.poll(() => sent, { timeout: 10_000 }).toBeGreaterThan(sentAtPush);
     await expect(targetRow).toBeInViewport({ timeout: 20_000 });
 
     // The one-shot param is stripped so a refresh does not re-jump.
     await expect(page).not.toHaveURL(/[?&]m=/, { timeout: 20_000 });
   } finally {
+    page.off("request", observeAround);
     flooding = false;
     await flood;
     await rpc(page, "threads/stop", { botId }).catch(() => {});

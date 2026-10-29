@@ -91,6 +91,7 @@ async function main() {
       const suites = [
         "packages/testkit/src/pi-offline.postgres.test.ts",
         "packages/testkit/src/pi-lazy-computer.postgres.test.ts",
+        "packages/testkit/src/reply-announcements.postgres.test.ts",
         "packages/testkit/src/usage-accounting.postgres.test.ts",
         "packages/db/src/history-retrieval.postgres.test.ts",
         "packages/db/src/tool-result-history.postgres.test.ts",

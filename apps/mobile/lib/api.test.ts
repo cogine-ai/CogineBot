@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 vi.mock("./ai-consent", () => ({ promptAiConsent: vi.fn() }));
 
-import { isServerUnreachable, withLiveStreamingProgress } from "@rakazo/core";
+import { isServerUnreachable, ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promptAiConsent } from "./ai-consent";
@@ -4598,7 +4598,7 @@ describe("mobile clipboard text", () => {
     ).toBe("Hello\nSMS · Sender: Reply");
   });
 
-  it("keeps leading whitespace for selection while copying trims it", async () => {
+  it("keeps original boundary whitespace in both selection and copy", async () => {
     const { copyableMobileMessageText, selectableMobileMessageText } = await import("./api");
     const message: MobileMessage = {
       id: "message",
@@ -4606,7 +4606,7 @@ describe("mobile clipboard text", () => {
       blocks: [{ kind: "text", text: "    indented\nnext  " }],
     };
     expect(selectableMobileMessageText(message)).toBe("    indented\nnext  ");
-    expect(copyableMobileMessageText(message)).toBe("indented\nnext");
+    expect(copyableMobileMessageText(message)).toBe("    indented\nnext  ");
   });
 });
 
@@ -4935,6 +4935,7 @@ describe("mobile screen released-event callback", () => {
       activeGroupId: { current: undefined },
       liveSubscriptionGeneration,
       snapRef,
+      replyEventObserver: { current: vi.fn() },
       commitSnap,
       applyMobileThreadEvent,
       isRunTerminalEvent: (event: { type: string }) =>
@@ -5338,4 +5339,46 @@ describe("access recovery ownership", () => {
       );
     },
   );
+});
+
+it("announces the committed final message after the actual mobile reducer clears its Run", () => {
+  const run = { id: "run-1", status: "running" };
+  let current: MobileSnapshot | null = {
+    threadId: "thread-1",
+    cursor: 3,
+    olderCursor: null,
+    messages: [],
+    run,
+    activeRuns: [run],
+  };
+  const announcements = new ReplyAnnouncements();
+  announcements.update("scope", true, current);
+  for (const next of [
+    {
+      type: "thread.message.created",
+      threadId: "thread-1",
+      runId: "run-1",
+      seq: 4,
+      payload: {
+        messageId: "final",
+        messageSeq: 0,
+        role: "bot",
+        blocks: [{ kind: "text", text: "Committed native reply" }],
+      },
+    },
+    {
+      type: "run.completed",
+      threadId: "thread-1",
+      runId: "run-1",
+      seq: 5,
+      payload: { messageId: "final" },
+    },
+  ]) {
+    announcements.observe("scope", true, next);
+    current = applyMobileThreadEvent(current, next);
+  }
+  expect(current?.run).toBeNull();
+  expect(current?.activeRuns).toEqual([]);
+  expect(announcements.update("scope", true, current)).toEqual(["Committed native reply"]);
+  expect(announcements.update("scope", true, current)).toEqual([]);
 });

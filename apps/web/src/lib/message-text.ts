@@ -14,6 +14,5 @@ export function copyableMessageText(message: ThreadMessage): string {
       return "";
     })
     .filter(Boolean)
-    .join("\n")
-    .trim();
+    .join("\n");
 }

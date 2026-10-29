@@ -6,7 +6,8 @@
   "exports": {
     "./native": "./src/markdown.native.tsx",
     "./web": "./src/markdown.web.tsx",
-    "./mermaid": "./src/mermaid.ts"
+    "./mermaid": "./src/mermaid.ts",
+    "./announcement-visibility": "./src/announcement-visibility.ts"
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
@@ -17,6 +18,7 @@
     "@rakazo/ui-tokens": "workspace:*",
     "@rakazo/ui-web": "workspace:*",
     "@ronradtke/react-native-markdown-display": "9.0.3",
+    "hast-util-to-text": "4.0.2",
     "linkify-it": "5.0.2",
     "mermaid": "11.17.2",
     "react-markdown": "10.1.0",

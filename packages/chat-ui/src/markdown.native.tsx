@@ -10,6 +10,7 @@ import Markdown, {
   FitImage,
   renderRules as libraryRenderRules,
   MarkdownStream,
+  parser,
 } from "@ronradtke/react-native-markdown-display";
 import type { ComponentType, ReactNode } from "react";
 import { createContext, memo, useCallback, useContext, useMemo, useState } from "react";
@@ -73,6 +74,59 @@ const libraryRules = libraryRenderRules(Text);
 const markdownParser = createMarkdownIt();
 markdownParser.validateLink = keepMarkdownLinkToken;
 linkifyExplicitUrls(markdownParser);
+
+/** Read the renderer's native Markdown AST without rendering or fetching images. */
+export function visibleNativeTextFromMarkdown(source: string): string {
+  return parser(
+    source,
+    (nodes) =>
+      nodes
+        .map((node) => announcementNodeText(node))
+        .filter(Boolean)
+        .join("\n\n"),
+    markdownParser,
+  ) as string;
+}
+
+function announcementNodeText(node: ASTNode, parents: readonly ASTNode[] = []): string {
+  if (["text", "code_inline", "code_block", "fence"].includes(node.type)) return node.content;
+  if (node.type === "softbreak" || node.type === "hardbreak") return "\n";
+  if (node.type === "image") {
+    const src = node.attributes.src ?? "";
+    const alt = node.attributes.alt;
+    const remote = remoteMarkdownImage(src);
+    if (remote) return alt?.trim() ? alt : remote.host;
+    return alt || (inlineMarkdownImageSrc(src) ? "" : src);
+  }
+  if (node.type === "link" || node.type === "blocklink") {
+    const href = sanitizeMarkdownUrl(node.attributes.href ?? "");
+    const image = href ? soleRemoteImage(node) : undefined;
+    if (href && image)
+      return `${image.alt?.trim() ? image.alt : image.remote.host} ${linkHost(href)}`;
+  }
+  if (node.type === "link" && isWebsiteLink(node)) {
+    const href = sanitizeMarkdownUrl(node.attributes.href ?? "");
+    const text = astText(node);
+    if (href && text !== undefined) return linkLabel(text, href);
+  }
+  const children = node.children.map((child) => announcementNodeText(child, [node, ...parents]));
+  if (node.type === "list_item") {
+    const list = parents.find(
+      (ancestor) => ancestor.type === "bullet_list" || ancestor.type === "ordered_list",
+    );
+    if (list?.type === "ordered_list") {
+      const start = Number(list.attributes?.start);
+      const number = Number.isFinite(start) ? start + node.index : node.index + 1;
+      return `${number}${node.markup} ${children.join("\n")}`;
+    }
+  }
+  if (node.type === "tr") return children.join("\t");
+  if (["table", "thead", "tbody", "bullet_list", "ordered_list", "list_item"].includes(node.type))
+    return children.join("\n");
+  return children.join(
+    node.block && node.type !== "paragraph" && !node.type.startsWith("heading") ? "\n\n" : "",
+  );
+}
 
 // Hebrew, Arabic and the other right-to-left scripts, with their presentation forms.
 const RTL_LETTER =

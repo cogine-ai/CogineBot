@@ -6359,3 +6359,23 @@ msgstr "Alanı değiştir"
 #: src/lib/sign-out.ts
 msgid "Could not log out. Try again."
 msgstr "Çıkış yapılamadı. Tekrar deneyin."
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moving {name}"
+msgstr "{name} taşınıyor"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move {name} to {targetName}"
+msgstr "{name} öğesini {targetName} konumuna taşı"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Moved {name}"
+msgstr "{name} taşındı"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Could not move {name}"
+msgstr "{name} taşınamadı"
+
+#: src/lib/use-sidebar-announcements.ts
+msgid "Move cancelled"
+msgstr "Taşıma iptal edildi"

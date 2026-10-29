@@ -3,6 +3,9 @@
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import webAnnouncementCases from "../../testkit/src/web-reply-announcement-fixtures.json" with {
+  type: "json",
+};
 
 const alert = vi.hoisted(() => vi.fn());
 
@@ -167,6 +170,7 @@ import {
   MermaidDiagramContext,
   RemoteImagesContext,
   RemoteMarkdownImage,
+  visibleNativeTextFromMarkdown,
 } from "./markdown.native";
 import { CHAT_DIAGRAM_MAX_TEXT_SIZE } from "./mermaid";
 
@@ -1261,4 +1265,80 @@ it("shows a full long native URL and opens it only on confirmation", async () =>
   await act(async () => {
     root.unmount();
   });
+});
+
+describe("native literal HTML text", () => {
+  it.each([
+    ["![   ](https://whitespace.example.test/auto.png)", "whitespace.example.test"],
+    [
+      "<div>![   ](https://whitespace.example.test/auto.png)</div>",
+      "<div>whitespace.example.test</div>",
+    ],
+  ])(
+    "retains a remote image's displayed host when its alt is whitespace: %s",
+    (source, expected) => {
+      const container = document.createElement("div");
+      container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+      expect(container.textContent).toContain("whitespace.example.test");
+      expect(visibleNativeTextFromMarkdown(source)).toBe(expected);
+    },
+  );
+  it.each([
+    ["![  chart  ](https://whitespace.example.test/auto.png)", "  chart  "],
+    ["![   ](data:image/png;base64,aA==)", "   "],
+    ["![   ](local-image.png)", "   "],
+  ])("keeps alt whitespace and nonremote source visibility contracts: %s", (source, expected) => {
+    expect(visibleNativeTextFromMarkdown(source)).toBe(expected);
+  });
+
+  it("preserves empty table cells in the native text projection", () => {
+    expect(visibleNativeTextFromMarkdown("| A | B |\n|---|---|\n| | X |")).toBe("A\tB\n\tX");
+  });
+
+  it.each([
+    '<a href="https://example.test/visible">**Open**</a>',
+    "<div>**Important** [report](https://example.test/hidden)</div>",
+    "<!-- **note** [report](https://example.test/hidden) -->",
+    "<script>keep &amp; text</script>",
+    "Visible <b>bold</b> &amp; [report](https://example.test/hidden)",
+  ])("projects actual native rendered HTML text without a second parser: %s", (source) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+    expect(visibleNativeTextFromMarkdown(source)).toBe(
+      container.textContent?.replace(/[\u2060\u2068\u2069]/g, ""),
+    );
+    expect(visibleNativeTextFromMarkdown(source)).not.toContain("**");
+    expect(visibleNativeTextFromMarkdown(source)).not.toContain("https://example.test/hidden");
+  });
+
+  it.each([
+    ["<div>Visible text</div>", "<div>Visible text</div>"],
+    ["<!-- Visible comment -->", "<!-- Visible comment -->"],
+    [
+      "<div>**Important** [report](https://example.test/hidden)</div>",
+      "<div>Important report</div>",
+    ],
+  ])(
+    "keeps displayed HTML-looking source while rendering inner Markdown: %s",
+    (source, expected) => {
+      const container = document.createElement("div");
+      container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+      expect(container.textContent?.replace(/[\u2060\u2068\u2069]/g, "")).toBe(expected);
+      expect(container.textContent).not.toContain("https://example.test/hidden");
+    },
+  );
+});
+
+describe("native stable image and ordered reply content", () => {
+  it.each(webAnnouncementCases.filter((row) => row.nativeSpoken !== undefined))(
+    "projects actual markers and linked identity for $name",
+    ({ source, nativeSpoken }) => {
+      expect(visibleNativeTextFromMarkdown(source)).toBe(nativeSpoken);
+      const container = document.createElement("div");
+      container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+      const actual = container.textContent?.replace(/[\u2060\u2068\u2069]/g, "") ?? "";
+      for (const marker of nativeSpoken?.match(/\d+[.)]/g) ?? []) expect(actual).toContain(marker);
+      if (source.startsWith("[!")) expect(actual).toContain("target.example.test");
+    },
+  );
 });

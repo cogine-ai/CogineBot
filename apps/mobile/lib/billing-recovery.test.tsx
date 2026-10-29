@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
 import type { BillingStatus } from "@rakazo/contracts";
+import type { AnnouncementEvent, AnnouncementSnapshot } from "@rakazo/core";
 import type { ReactNode } from "react";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BillingRecovery } from "../components/billing-recovery";
+import { useReplyAnnouncements } from "./use-reply-announcements";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -16,6 +18,7 @@ const state = vi.hoisted(() => ({
   signOut: vi.fn(),
   signIn: vi.fn(),
   selectSpace: vi.fn(),
+  announce: vi.fn(),
   pathname: "/",
   scope: {
     apiBase: "https://api.example.test",
@@ -29,7 +32,7 @@ const state = vi.hoisted(() => ({
   deniedListeners: new Set<() => void>(),
   activeListeners: new Set<(value: string) => void>(),
 }));
-vi.mock("expo-router", () => ({ usePathname: () => state.pathname }));
+vi.mock("expo-router", () => ({ usePathname: () => state.pathname, useIsFocused: () => true }));
 vi.mock("./api", () => ({
   rpc: state.rpc,
   loadSessionToken: state.token,
@@ -77,7 +80,18 @@ vi.mock("./native", () => ({
   }),
 }));
 vi.mock("react-native", () => ({
+  AccessibilityInfo: { announceForAccessibility: state.announce },
+  StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 },
+  Platform: {
+    OS: "ios",
+    select: (values: Record<string, unknown>) => values.ios ?? values.default,
+  },
+  I18nManager: { isRTL: false },
+  Image: () => null,
+  Pressable: () => null,
+  Alert: {},
   AppState: {
+    currentState: "active",
     addEventListener: (_event: string, listener: (value: string) => void) => {
       state.activeListeners.add(listener);
       return { remove: () => state.activeListeners.delete(listener) };
@@ -190,6 +204,7 @@ function statusCalls() {
 }
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  state.announce.mockClear();
   state.pathname = "/";
   Object.assign(state.scope, {
     apiBase: "https://api.example.test",
@@ -768,3 +783,68 @@ describe("native access recovery", () => {
     expect(state.openURL).not.toHaveBeenCalled();
   });
 });
+
+it.each(["hidden-completion", "stop-across-cover"])(
+  "does not announce a reply covered by actual billing recovery: %s",
+  async (kind) => {
+    status = unpaid({ access: true, state: "active" });
+    let value: AnnouncementSnapshot = {
+      threadId: "covered-thread",
+      cursor: 10,
+      run: { id: "covered-run", status: "running" },
+      messages: [],
+    };
+    let controls: ReturnType<typeof useReplyAnnouncements>;
+    function Thread() {
+      controls = useReplyAnnouncements("covered-owner", value);
+      return <span>Mounted chat</span>;
+    }
+    const draw = () =>
+      root.render(
+        <>
+          <BillingRecovery />
+          <Thread />
+        </>,
+      );
+    await act(async () => draw());
+    if (kind === "stop-across-cover") await act(async () => controls[0]());
+    status = unpaid();
+    await act(async () => {
+      for (const listener of state.deniedListeners) listener();
+    });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(container.textContent).toContain("Mounted chat");
+    const complete = async (id: string, seq: number, text: string) => {
+      const event: AnnouncementEvent = {
+        type: "run.completed",
+        threadId: "covered-thread",
+        runId: id,
+        seq,
+        payload: { messageId: `message-${id}` },
+      };
+      await act(async () => {
+        controls[1](event);
+        value = {
+          ...value,
+          cursor: seq,
+          run: null,
+          messages: [
+            ...value.messages,
+            { id: `message-${id}`, role: "bot", runId: id, blocks: [{ kind: "text", text }] },
+          ],
+        };
+        draw();
+      });
+    };
+    if (kind === "hidden-completion") await complete("covered-run", 12, "Reply behind billing");
+    await act(async () => button("Back to chats").click());
+    if (kind === "stop-across-cover") await complete("covered-run", 12, "Late after Stop");
+    expect(state.announce).not.toHaveBeenCalled();
+    await act(async () => {
+      value = { ...value, run: { id: "new-run", status: "running" } };
+      draw();
+    });
+    await complete("new-run", 14, "Fresh visible reply");
+    expect(state.announce).toHaveBeenCalledExactlyOnceWith("Fresh visible reply");
+  },
+);

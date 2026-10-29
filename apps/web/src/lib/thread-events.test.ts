@@ -5,7 +5,7 @@ import type {
   ThreadMessage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { withLiveStreamingProgress } from "@rakazo/core";
+import { ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
 import {
   activeThreadRuns,
@@ -2312,4 +2312,30 @@ it("uses a complete nonempty snapshot as authoritative history after a clear", (
       }),
     ),
   ).toBe(current);
+});
+
+it("announces an actual completion reduction after it removes the primary Run", () => {
+  const run = threadRun("run-1");
+  let current: ThreadSnapshot | null = { ...snapshot([]), run, activeRuns: [run] };
+  const announcements = new ReplyAnnouncements();
+  announcements.update("scope", true, current);
+  for (const next of [
+    event({
+      type: "thread.message.created",
+      seq: 4,
+      payload: {
+        messageId: "final",
+        role: "bot",
+        blocks: [{ kind: "text", text: "Committed reply" }],
+      },
+    }),
+    event({ type: "run.completed", seq: 5, payload: { messageId: "final" } }),
+  ]) {
+    current = reduceThreadSnapshot(current, next);
+    announcements.observe("scope", true, next);
+  }
+  expect(current?.run).toBeNull();
+  expect(current?.activeRuns).toEqual([]);
+  expect(announcements.update("scope", true, current)).toEqual(["Committed reply"]);
+  expect(announcements.update("scope", true, current)).toEqual([]);
 });
