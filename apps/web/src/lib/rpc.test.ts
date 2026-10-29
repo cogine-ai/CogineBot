@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearSpaceSelection,
   createSpaceRpc,
+  currentRpcSessionGeneration,
   currentSpaceSelectionGeneration,
+  rememberImplicitRpcSpace,
   rpc,
   rpcForSpace,
   selectedSpaceId,
   selectSpace,
   subscribeSubscriptionRequired,
+  synchronizeRpcSession,
 } from "./rpc.js";
 
 afterEach(() => {
@@ -222,6 +225,116 @@ describe("subscription-denial ownership", () => {
     const stop = subscribeSubscriptionRequired(listener);
     try {
       await expect(createSpaceRpc("space-b").me()).rejects.toMatchObject({ status: 402 });
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
+  });
+});
+
+describe("account and implicit-Space recovery ownership", () => {
+  function setup(space: string | null) {
+    const stored = new Map<string, string>(space ? [["rakazo:space-id", space]] : []);
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+        removeItem: (key: string) => stored.delete(key),
+      },
+      location: { origin: "https://example.test", pathname: "/app" },
+    });
+  }
+  function denied() {
+    return Response.json(
+      {
+        json: {
+          defined: false,
+          code: "PAYMENT_REQUIRED",
+          status: 402,
+          message: "Subscription required",
+        },
+      },
+      { status: 402 },
+    );
+  }
+  it.each(["account", "session", "account-ABA"])(
+    "does not notify a replacement %s owner from an older actual request",
+    async (kind) => {
+      setup("space-shared");
+      synchronizeRpcSession("authenticated", "account-a", "session-a");
+      let resolve!: (response: Response) => void;
+      const fetch = vi.fn(
+        () =>
+          new Promise<Response>((yes) => {
+            resolve = yes;
+          }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const old = vi.fn();
+      const stopOld = subscribeSubscriptionRequired(old);
+      const request = rpc.me();
+      const failed = expect(request).rejects.toMatchObject({ status: 402 });
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      stopOld();
+      if (kind === "session") synchronizeRpcSession("authenticated", "account-a", "session-new");
+      else {
+        synchronizeRpcSession("authenticated", "account-b", "session-b");
+        if (kind === "account-ABA")
+          synchronizeRpcSession("authenticated", "account-a", "session-a");
+      }
+      const replacement = vi.fn();
+      const stop = subscribeSubscriptionRequired(replacement);
+      resolve(denied());
+      await failed;
+      expect(old).not.toHaveBeenCalled();
+      expect(replacement).not.toHaveBeenCalled();
+      stop();
+    },
+  );
+  it("recognizes the verified default Space when Shell sends its explicit id", async () => {
+    setup(null);
+    synchronizeRpcSession("authenticated", "account-default", "session-default");
+    rememberImplicitRpcSpace(
+      "space-default",
+      currentRpcSessionGeneration(),
+      currentSpaceSelectionGeneration(),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => denied()),
+    );
+    const listener = vi.fn();
+    const stop = subscribeSubscriptionRequired(listener);
+    try {
+      await expect(
+        rpc.threads.send(
+          { botId: "bot-fake", text: "hello" },
+          { context: { spaceId: "space-default" } },
+        ),
+      ).rejects.toMatchObject({ status: 402 });
+      expect(listener).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+    }
+  });
+  it("does not treat another explicit target as the default or retain its binding across accounts", async () => {
+    setup(null);
+    synchronizeRpcSession("authenticated", "account-default", "session-default");
+    rememberImplicitRpcSpace(
+      "space-default",
+      currentRpcSessionGeneration(),
+      currentSpaceSelectionGeneration(),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => denied()),
+    );
+    const listener = vi.fn();
+    const stop = subscribeSubscriptionRequired(listener);
+    try {
+      await expect(createSpaceRpc("space-other").me()).rejects.toMatchObject({ status: 402 });
+      synchronizeRpcSession("authenticated", "account-other", "session-other");
+      await expect(createSpaceRpc("space-default").me()).rejects.toMatchObject({ status: 402 });
       expect(listener).not.toHaveBeenCalled();
     } finally {
       stop();

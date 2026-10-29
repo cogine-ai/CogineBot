@@ -13,6 +13,9 @@ const capability = vi.hoisted(() => ({
   peek: vi.fn<() => Promise<unknown> | undefined>(),
   take: vi.fn<() => Promise<unknown>>(),
   pathname: "",
+  userId: "user-1",
+  sessionId: "session-1",
+  ownerSync: vi.fn(),
   navigationType: "",
 }));
 vi.mock("@lingui/react/macro", () => ({
@@ -30,7 +33,11 @@ vi.mock("./lib/bootstrap", () => ({
 }));
 vi.mock("./lib/auth", () => ({
   authClient: {
-    useSession: () => ({ isPending: false, data: { user: { id: "user-1" } }, refetch: vi.fn() }),
+    useSession: () => ({
+      isPending: false,
+      data: { user: { id: capability.userId }, session: { id: capability.sessionId } },
+      refetch: vi.fn(),
+    }),
   },
 }));
 vi.mock("./lib/remote-images-preference", () => ({
@@ -38,7 +45,11 @@ vi.mock("./lib/remote-images-preference", () => ({
   subscribeRemoteImages: () => () => {},
 }));
 vi.mock("./lib/performance", () => ({ markOnce: () => {}, markAfterPaint: () => {} }));
-vi.mock("./lib/rpc", () => ({ rpc: {} }));
+vi.mock("./lib/rpc", () => ({
+  rpc: {},
+  synchronizeRpcSession: capability.ownerSync,
+  clearSpaceSelection: vi.fn(),
+}));
 vi.mock("./components/SubscriptionGate", () => ({
   SubscriptionGate: ({ children }: { children: ReactNode }) => children,
 }));
@@ -63,6 +74,9 @@ let container: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  capability.userId = "user-1";
+  capability.sessionId = "session-1";
+  capability.ownerSync.mockClear();
   capability.enabled = undefined;
   capability.listeners.clear();
   capability.shellRendered.mockClear();
@@ -169,4 +183,30 @@ it("shows the existing refresh recovery after a capability failure and can recov
   expect(container.textContent).toBe("Board page");
   expect(capability.pathname).toBe("/app/board");
   expect(capability.take).toHaveBeenCalledTimes(2);
+});
+
+it("publishes account and exact session changes including A to B to A to the transport", async () => {
+  await renderAt("/app");
+  const render = () =>
+    root!.render(
+      <MemoryRouter initialEntries={["/app"]}>
+        <App />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+  await act(async () => {
+    capability.userId = "user-2";
+    capability.sessionId = "session-2";
+    render();
+  });
+  await act(async () => {
+    capability.userId = "user-1";
+    capability.sessionId = "session-1";
+    render();
+  });
+  expect(capability.ownerSync.mock.calls.slice(-3)).toEqual([
+    ["authenticated", "user-1", "session-1"],
+    ["authenticated", "user-2", "session-2"],
+    ["authenticated", "user-1", "session-1"],
+  ]);
 });

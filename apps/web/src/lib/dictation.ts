@@ -1,7 +1,9 @@
 import { readBoundedResponseBytes } from "@rakazo/core";
 import { getActiveUiLocale } from "./i18n.js";
+import type { RpcRecoveryScope } from "./rpc.js";
 import {
-  currentSpaceSelectionGeneration,
+  captureRpcRecoveryScope,
+  currentRpcSessionGeneration,
   noteSubscriptionRequired,
   selectedSpaceId,
   withSpaceHeaders,
@@ -186,6 +188,7 @@ export class Dictation {
   private media: MediaRecorder | null = null;
   private chunks: Blob[] = [];
   private token = 0;
+  private recoveryScope: RpcRecoveryScope | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | undefined;
   private restartTimer: ReturnType<typeof setTimeout> | undefined;
   private transcribeAbort: AbortController | null = null;
@@ -255,6 +258,7 @@ export class Dictation {
     this.stop("replace");
     const mine = this.token;
     const spaceId = selectedSpaceId();
+    this.recoveryScope = captureRpcRecoveryScope(spaceId);
     this.onFinal = opts.onFinal;
     this.set({ status: "listening", transcript: "" });
     const transcribe = Boolean(opts.transcribe);
@@ -545,7 +549,11 @@ export class Dictation {
 
   private async transcribeChunks(mine: number, spaceId: string | null) {
     if (this.token !== mine) return;
-    const selectionGeneration = currentSpaceSelectionGeneration();
+    const recoveryScope = this.recoveryScope;
+    if (!recoveryScope || recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+      this.stop();
+      return;
+    }
     const blob = new Blob(this.chunks, { type: this.chunks[0]?.type || "audio/webm" });
     this.chunks = [];
     if (!blob.size) {
@@ -567,6 +575,10 @@ export class Dictation {
     try {
       const audioBase64 = await blobToBase64(blob);
       if (this.token !== mine) return;
+      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+        this.stop();
+        return;
+      }
       const res = await withAbort(
         fetch("/api/voice/transcribe", {
           method: "POST",
@@ -585,14 +597,19 @@ export class Dictation {
         cancelResponse(res);
         return;
       }
+      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+        cancelResponse(res);
+        this.stop();
+        return;
+      }
       if (res.status === 402)
-        noteSubscriptionRequired(
-          spaceId,
-          selectionGeneration,
-          () => this.token === mine && !abort.signal.aborted,
-        );
+        noteSubscriptionRequired(recoveryScope, () => this.token === mine && !abort.signal.aborted);
       const body = await readTranscriptionBody(res, abort.signal);
       if (this.token !== mine) return;
+      if (recoveryScope.sessionGeneration !== currentRpcSessionGeneration()) {
+        this.stop();
+        return;
+      }
       if (!res.ok) {
         this.failListening(mine, body.error ?? "Could not transcribe that recording.");
         return;

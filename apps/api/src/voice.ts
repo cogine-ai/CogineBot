@@ -490,13 +490,15 @@ function voiceHttpError(c: Context, error: unknown) {
     const status =
       code === "UNAUTHORIZED"
         ? 401
-        : code === "NOT_FOUND"
-          ? 404
-          : code === "CONFLICT"
-            ? 409
-            : code === "PAYMENT_REQUIRED"
-              ? 402
-              : 400;
+        : code === "FORBIDDEN"
+          ? 403
+          : code === "NOT_FOUND"
+            ? 404
+            : code === "CONFLICT"
+              ? 409
+              : code === "PAYMENT_REQUIRED"
+                ? 402
+                : 400;
     return c.json({ error: error.message, code, data: error.data }, status);
   }
   const message = error instanceof Error ? error.message : "Voice request failed.";

@@ -9,7 +9,7 @@ import {
   webSpeechAvailable,
   webSpeechNeedsServerFallback,
 } from "./dictation.js";
-import { selectSpace, subscribeSubscriptionRequired } from "./rpc.js";
+import { selectSpace, subscribeSubscriptionRequired, synchronizeRpcSession } from "./rpc.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -1693,4 +1693,38 @@ describe("transcription payment recovery", () => {
     expect(listener).toHaveBeenCalledTimes(reselected ? 0 : 1);
     stop();
   });
+});
+
+it("does not publish an old account transcription or payment error after an account ABA", async () => {
+  const store = new Map([["rakazo:space-id", "space-a"]]);
+  const localStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, value),
+    removeItem: (key: string) => store.delete(key),
+  };
+  vi.stubGlobal("window", { localStorage });
+  synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+  let resolve!: (response: Response) => void;
+  const fetch = vi.fn(
+    () =>
+      new Promise<Response>((yes) => {
+        resolve = yes;
+      }),
+  );
+  stubRecorderFallback(fetch);
+  const listener = vi.fn();
+  const stop = subscribeSubscriptionRequired(listener);
+  const onFinal = vi.fn();
+  const dictation = new Dictation();
+  await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+  dictation.submitHold();
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+  synchronizeRpcSession("authenticated", "recording-owner-b", "recording-session-b");
+  synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+  resolve(Response.json({ error: "Subscription required" }, { status: 402 }));
+  await vi.waitFor(() => expect(dictation.state.status).toBe("idle"));
+  expect(dictation.state.error).toBeUndefined();
+  expect(onFinal).not.toHaveBeenCalled();
+  expect(listener).not.toHaveBeenCalled();
+  stop();
 });

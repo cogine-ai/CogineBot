@@ -23,6 +23,8 @@ vi.mock("../lib/rpc", () => ({
       { me: api.me, billing: { status: api.status } },
     ),
   currentSpaceSelectionGeneration: () => api.generation,
+  currentRpcSessionGeneration: () => 0,
+  rememberImplicitRpcSpace: vi.fn(),
   selectedSpaceId: () => api.space,
   subscribeSelectedSpace: (listener: () => void) => {
     api.selected.add(listener);

@@ -4,11 +4,65 @@ import type { ContractRouterClient } from "@orpc/contract";
 import type { AppContract } from "@rakazo/contracts";
 import { LOCAL_SETTINGS_PAGE, LOCAL_SETTINGS_RPC } from "@rakazo/contracts";
 import { desktopBridge } from "./desktop";
+import type { SessionGate } from "./session-gate";
 
 const SPACE_STORAGE_KEY = "rakazo:space-id";
 let spaceSelectionGeneration = 0;
 const spaceSelectionListeners = new Set<() => void>();
 const subscriptionListeners = new Set<() => void>();
+let rpcSessionOwner: string | null = null;
+let rpcSessionGeneration = 0;
+let implicitSpace: { id: string; sessionGeneration: number; selectionGeneration: number } | null =
+  null;
+
+/** Auth identity changes invalidate in-flight recovery, including A to B to A. */
+export function synchronizeRpcSession(
+  gate: SessionGate,
+  userId?: string,
+  sessionId?: string,
+): void {
+  if (gate === "loading" || gate === "unreachable") return;
+  const next =
+    gate === "authenticated" && userId ? JSON.stringify([userId, sessionId ?? null]) : null;
+  if (next === rpcSessionOwner) return;
+  rpcSessionOwner = next;
+  rpcSessionGeneration += 1;
+  implicitSpace = null;
+}
+
+export function currentRpcSessionGeneration(): number {
+  return rpcSessionGeneration;
+}
+
+export function rememberImplicitRpcSpace(
+  id: string,
+  sessionGeneration: number,
+  selectionGeneration: number,
+): void {
+  if (
+    sessionGeneration !== rpcSessionGeneration ||
+    selectionGeneration !== spaceSelectionGeneration ||
+    selectedSpaceId() !== null
+  )
+    return;
+  implicitSpace = { id, sessionGeneration, selectionGeneration };
+}
+
+export type RpcRecoveryScope = {
+  spaceId: string | null;
+  sessionGeneration: number;
+  selectionGeneration: number;
+};
+
+export function captureRpcRecoveryScope(
+  spaceId: string | null = selectedSpaceId(),
+): RpcRecoveryScope {
+  return {
+    spaceId,
+    sessionGeneration: rpcSessionGeneration,
+    selectionGeneration: spaceSelectionGeneration,
+  };
+}
 
 export function subscribeSelectedSpace(listener: () => void): () => void {
   spaceSelectionListeners.add(listener);
@@ -29,15 +83,19 @@ export function subscribeSubscriptionRequired(listener: () => void): () => void 
   };
 }
 
-export function noteSubscriptionRequired(
-  spaceId: string | null,
-  generation: number,
-  isCurrent: () => boolean,
-): void {
+export function noteSubscriptionRequired(scope: RpcRecoveryScope, isCurrent: () => boolean): void {
+  const selected = selectedSpaceId();
+  const effective =
+    selected ??
+    (implicitSpace?.sessionGeneration === rpcSessionGeneration &&
+    implicitSpace.selectionGeneration === spaceSelectionGeneration
+      ? implicitSpace.id
+      : null);
   if (
     !isCurrent() ||
-    generation !== currentSpaceSelectionGeneration() ||
-    spaceId !== selectedSpaceId()
+    scope.sessionGeneration !== rpcSessionGeneration ||
+    scope.selectionGeneration !== currentSpaceSelectionGeneration() ||
+    (scope.spaceId !== selected && scope.spaceId !== effective)
   )
     return;
   for (const listener of subscriptionListeners) {
@@ -64,7 +122,11 @@ export function currentSpaceSelectionGeneration(): number {
   return spaceSelectionGeneration;
 }
 
-type RpcClientContext = { spaceId?: string | null; isCurrent?: () => boolean };
+type RpcClientContext = {
+  spaceId?: string | null;
+  isCurrent?: () => boolean;
+  ownerGeneration?: number;
+};
 
 export function selectedSpaceId(): string | null {
   if (typeof window === "undefined") return null;
@@ -117,7 +179,11 @@ const link = new RPCLink<RpcClientContext>({
       : `${window.location.origin}${window.location.pathname === LOCAL_SETTINGS_PAGE ? LOCAL_SETTINGS_RPC : "/rpc"}`,
   fetch: async (input, init, options) => {
     const assertCurrent = () => {
-      if (options.context.isCurrent?.() === false)
+      if (
+        options.context.isCurrent?.() === false ||
+        (options.context.ownerGeneration !== undefined &&
+          options.context.ownerGeneration !== rpcSessionGeneration)
+      )
         throw new DOMException("Settings closed", "AbortError");
     };
     assertCurrent();
@@ -135,7 +201,10 @@ const link = new RPCLink<RpcClientContext>({
     }
     const spaceId =
       options.context.spaceId === undefined ? selectedSpaceId() : options.context.spaceId;
-    const selectionGeneration = currentSpaceSelectionGeneration();
+    const scope = {
+      ...captureRpcRecoveryScope(spaceId),
+      sessionGeneration: options.context.ownerGeneration ?? rpcSessionGeneration,
+    };
     const response = await fetch(request, {
       headers: withSpaceHeaders(request.headers, spaceId),
       credentials: "include",
@@ -143,8 +212,7 @@ const link = new RPCLink<RpcClientContext>({
     });
     if (response.status === 402) {
       noteSubscriptionRequired(
-        spaceId,
-        selectionGeneration,
+        scope,
         () => options.context.isCurrent?.() !== false && !options.signal?.aborted,
       );
     }
@@ -153,7 +221,16 @@ const link = new RPCLink<RpcClientContext>({
 });
 
 export type RpcClient = ContractRouterClient<AppContract, RpcClientContext>;
-export const rpc: RpcClient = createORPCClient(link);
+export const rpc: RpcClient = createORPCClient({
+  call: (path, input, options) =>
+    link.call(path, input, {
+      ...options,
+      context: {
+        ...options.context,
+        ownerGeneration: options.context.ownerGeneration ?? rpcSessionGeneration,
+      },
+    }),
+});
 
 /** Capture a request target without changing the selected conversation. */
 export function createSpaceRpc(spaceId: string | null, isCurrent?: () => boolean): RpcClient {
@@ -164,6 +241,7 @@ export function createSpaceRpc(spaceId: string | null, isCurrent?: () => boolean
         ...options,
         context: {
           ...options.context,
+          ownerGeneration: options.context.ownerGeneration ?? rpcSessionGeneration,
           spaceId: options.context.spaceId === undefined ? spaceId : options.context.spaceId,
           ...(isCurrent
             ? { isCurrent: () => isCurrent() && options.context.isCurrent?.() !== false }

@@ -9,7 +9,9 @@ import { BILLING_REQUEST_TIMEOUT_MS } from "../lib/billing";
 import { peekInitialBootstrap } from "../lib/bootstrap";
 import {
   createSpaceRpc,
+  currentRpcSessionGeneration,
   currentSpaceSelectionGeneration,
+  rememberImplicitRpcSpace,
   selectedSpaceId,
   subscribeSelectedSpace,
   subscribeSubscriptionRequired,
@@ -62,8 +64,12 @@ export function SubscriptionGate({
     let bills: boolean | undefined;
     let denied = false;
     const spaceId = selectedSpaceId();
+    const sessionGeneration = currentRpcSessionGeneration();
     const current = () =>
-      active && generation === currentSpaceSelectionGeneration() && spaceId === selectedSpaceId();
+      active &&
+      generation === currentSpaceSelectionGeneration() &&
+      sessionGeneration === currentRpcSessionGeneration() &&
+      spaceId === selectedSpaceId();
     const scoped = createSpaceRpc(spaceId, current);
     setClient(() => scoped);
     setIsCurrent(() => current);
@@ -92,7 +98,13 @@ export function SubscriptionGate({
           if (bills === undefined) {
             const capabilities = await fetchAuthCapabilities();
             if (!current()) return;
-            bills = capabilities.billing && (await me()).billingEnabled;
+            if (capabilities.billing) {
+              const identity = await me();
+              if (!current()) return;
+              if (spaceId === null && identity.userId === userId)
+                rememberImplicitRpcSpace(identity.spaceId, sessionGeneration, generation);
+              bills = identity.billingEnabled;
+            } else bills = false;
           }
           if (!current()) return;
           if (!bills) {

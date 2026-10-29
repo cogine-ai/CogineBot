@@ -129,3 +129,32 @@ describe("bound billing refresh and return", () => {
     await expect(f.service.status(actor, { refresh: true })).rejects.toBeInstanceOf(ORPCError);
   });
 });
+
+it("publishes the current owner role after refresh rather than the role captured before provider IO", async () => {
+  const f = fixture("incomplete");
+  f.provider.getCustomerSubscription.mockImplementation(async () => {
+    f.owner.mockResolvedValue({ role: "member" });
+    return null;
+  });
+  await expect(f.service.status(actor, { refresh: true })).resolves.toMatchObject({
+    canManage: false,
+  });
+});
+
+it("withholds status when Space membership is revoked during price lookup", async () => {
+  const f = fixture("incomplete");
+  f.provider.getPrice.mockImplementation(async () => {
+    f.membership.mockResolvedValue(null);
+    return { amount: 1200, currency: "usd", interval: "month", intervalCount: 1 };
+  });
+  await expect(f.service.status(actor)).rejects.toMatchObject({ status: 403 });
+});
+
+it("withholds status when membership is revoked while the seat count is read", async () => {
+  const f = fixture("incomplete");
+  f.prisma.member.count.mockImplementation(async () => {
+    f.membership.mockResolvedValue(null);
+    return 1;
+  });
+  await expect(f.service.status(actor)).rejects.toMatchObject({ status: 403 });
+});

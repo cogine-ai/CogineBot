@@ -27,7 +27,7 @@ import {
 import { synchronizeComposerSession } from "./lib/composer-session";
 import { markAfterPaint, markOnce } from "./lib/performance";
 import { getRemoteImagesEnabled, subscribeRemoteImages } from "./lib/remote-images-preference";
-import { clearSpaceSelection, rpc } from "./lib/rpc";
+import { clearSpaceSelection, rpc, synchronizeRpcSession } from "./lib/rpc";
 import {
   holdUnreachableGate,
   sessionGate,
@@ -136,6 +136,7 @@ function SessionApp() {
   if (nextHolding !== holdingUnreachable) setHoldingUnreachable(nextHolding);
 
   useLayoutEffect(() => {
+    synchronizeRpcSession(gate, session.data?.user.id, session.data?.session?.id);
     synchronizeComposerSession(gate, session.data?.user.id, session.data?.session?.id);
     if (gate === "anonymous") clearSpaceSelection();
   }, [gate, session.data?.user.id, session.data?.session?.id]);

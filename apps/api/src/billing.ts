@@ -118,7 +118,7 @@ export function createBillingService(deps: {
           hasCustomer: false,
         };
       }
-      const { organizationId, isOwner } = await organization(actor);
+      const { organizationId } = await organization(actor);
       if (options?.refresh) {
         const stored = await billingAccountForOrganization(prisma, organizationId);
         if (stored) {
@@ -139,14 +139,17 @@ export function createBillingService(deps: {
         price(),
       ]);
       const status = account?.status ?? null;
+      const seats = account?.seats ?? (await organizationSeatCount(prisma, organizationId));
+      const current = await organization(actor);
+      if (current.organizationId !== organizationId) throw new ORPCError("FORBIDDEN");
       return {
         access: hasBillingAccess(status),
-        canManage: isOwner,
+        canManage: current.isOwner,
         trialAvailable: !account?.subscribedAt,
         trialDays: TRIAL_DAYS,
         state: (status ?? "none") as BillingStatus["state"],
         price: currentPrice,
-        seats: account?.seats ?? (await organizationSeatCount(prisma, organizationId)),
+        seats,
         trialEndsAt: account?.trialEndsAt?.toISOString() ?? null,
         currentPeriodEndsAt: account?.currentPeriodEndsAt?.toISOString() ?? null,
         cancelAtPeriodEnd: account?.cancelAtPeriodEnd ?? false,

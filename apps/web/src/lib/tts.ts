@@ -1,6 +1,8 @@
 import { readBoundedResponseBytes } from "@rakazo/core";
+import type { RpcRecoveryScope } from "./rpc.js";
 import {
-  currentSpaceSelectionGeneration,
+  captureRpcRecoveryScope,
+  currentRpcSessionGeneration,
   noteSubscriptionRequired,
   rpc,
   selectedSpaceId,
@@ -90,12 +92,13 @@ export class Speaker {
     if (opts.signal?.aborted || opts.isCurrent?.() === false) return;
     this.stop();
     const mine = this.token;
+    const sessionGeneration = currentRpcSessionGeneration();
     const controller = new AbortController();
     this.request = controller;
     const owned = () => this.token === mine && !controller.signal.aborted;
     const live = () => {
       if (!owned()) return false;
-      if (opts.isCurrent?.() === false) {
+      if (sessionGeneration !== currentRpcSessionGeneration() || opts.isCurrent?.() === false) {
         this.stop();
         return false;
       }
@@ -106,6 +109,7 @@ export class Speaker {
     };
     opts.signal?.addEventListener("abort", stopOwnedSample, { once: true });
     const spaceId = opts.spaceId ?? selectedSpaceId();
+    const recoveryScope = captureRpcRecoveryScope(spaceId);
     try {
       this.set({ status: "preparing", botId: opts.botId, messageId: opts.messageId });
       let utterances: string[];
@@ -129,7 +133,7 @@ export class Speaker {
 
       type Rendered = { blob: Blob; error?: never } | { blob?: never; error: unknown };
       const render = (utterance: string): Promise<Rendered> =>
-        this.render(utterance, opts, controller.signal, spaceId).then(
+        this.render(utterance, opts, controller.signal, spaceId, recoveryScope).then(
           (blob) => ({ blob }),
           (error: unknown) => ({ error }),
         );
@@ -191,9 +195,9 @@ export class Speaker {
     opts: SpeakOptions,
     signal: AbortSignal,
     spaceId: string | null,
+    recoveryScope: RpcRecoveryScope,
   ): Promise<Blob> {
     const deadline = requestDeadline(signal, VOICE_RESPONSE_TIMEOUT_MS);
-    const selectionGeneration = currentSpaceSelectionGeneration();
     try {
       const res = await withAbort(deadline.signal, () =>
         fetch("/api/voice/speak", {
@@ -206,8 +210,7 @@ export class Speaker {
       );
       if (res.status === 402)
         noteSubscriptionRequired(
-          spaceId,
-          selectionGeneration,
+          recoveryScope,
           () => !deadline.signal.aborted && opts.isCurrent?.() !== false,
         );
       if (!res.ok) {
