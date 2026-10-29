@@ -451,7 +451,9 @@ test("native conversation card survives blocked popup and refreshes exact accoun
     .getByRole("button", { name: "Disconnect account", exact: true })
     .click();
   await expect.poll(() => revoked).toEqual([connectionId]);
-  await expect(page.getByRole("status")).toContainText("Account disconnected.");
+  await expect(
+    page.getByRole("dialog", { name: "Google Calendar", exact: true }).getByRole("status"),
+  ).toContainText("Account disconnected.");
   const listsAfterDisconnect = listCalls;
   await page.getByRole("button", { name: "Close integrations", exact: true }).click();
   await composer.fill("@Card calendar");

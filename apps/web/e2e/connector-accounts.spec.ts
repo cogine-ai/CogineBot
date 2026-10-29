@@ -66,7 +66,9 @@ test("groups sources, preserves four account states and checks pending without r
     .getByTestId("connection-account-Waiting")
     .getByRole("button", { name: "Check status", exact: true })
     .click();
-  await expect(page.getByRole("status")).toContainText("Authorization is still pending");
+  await expect(
+    page.getByRole("dialog", { name: "Gmail", exact: true }).getByRole("status"),
+  ).toContainText("Authorization is still pending");
   expect(begins).toEqual([]);
   await expect(page.getByText("Authorization record: record-Work", { exact: true })).toBeHidden();
   await page.getByText("Account details", { exact: true }).click();
@@ -159,7 +161,9 @@ test("source removal stops at the first uncertain result and preserves the remai
   expect(revoked).toEqual(["First", "Uncertain"]);
   await expect(page.getByTestId("connection-account-Remaining")).toBeVisible();
   await expect(page.getByTestId("connection-account-Expired")).toBeVisible();
-  await expect(page.getByRole("status")).toContainText("2 accounts disconnected locally");
+  await expect(
+    page.getByRole("dialog", { name: "Gmail", exact: true }).getByRole("status"),
+  ).toContainText("2 accounts disconnected locally");
   await captureScreenshot(page, testInfo, "connector-source-removal-partial");
   await page
     .getByLabel("Connection source", { exact: true })
