@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import type { Server } from "node:net";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -61,16 +62,49 @@ else:
     while True: server.accept()[0].close()
 `;
 
-async function freePort() {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("missing test port");
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return address.port;
+async function freeDesktopPorts(servers: [Server, Server] = [createServer(), createServer()]) {
+  const ports: number[] = [];
+  try {
+    for (const server of servers) {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing test port");
+      ports.push(address.port);
+    }
+    return [ports[0]!, ports[1]!] as const;
+  } finally {
+    await Promise.all(
+      servers
+        .filter((server) => server.listening)
+        .map(
+          (server) =>
+            new Promise<void>((resolve, reject) =>
+              server.close((error) => (error ? reject(error) : resolve())),
+            ),
+        ),
+    );
+  }
 }
+
+it("holds both desktop port reservations until both ports have been selected", async () => {
+  const first = createServer(),
+    second = createServer();
+  let firstHeldWhenSecondStarted = false;
+  second.once("listening", () => {
+    firstHeldWhenSecondStarted = first.listening;
+  });
+  const [debugPort, gatewayPort] = await freeDesktopPorts([first, second]);
+  expect(firstHeldWhenSecondStarted).toBe(true);
+  expect(debugPort).not.toBe(gatewayPort);
+  expect(first.listening).toBe(false);
+  expect(second.listening).toBe(false);
+});
 
 const fixtures: Array<{
   root: string;
@@ -98,14 +132,14 @@ async function fixture() {
     writeFileSync(file, `#!/bin/bash\n${body}\n`);
     chmodSync(file, 0o755);
   }
-  const debug = await freePort();
+  const [debug, gateway] = await freeDesktopPorts();
   if (debug <= 9221) throw new Error("test debugger port is outside the display range");
   const env = {
     homeDir: path.join(root, "home"),
     workspaceDir: root,
     browserProfilesDir: path.join(root, "profiles"),
     displayStart: debug - 9221,
-    portStart: await freePort(),
+    portStart: gateway,
     preservePrimaryDisplay: true,
   };
   const processEnv = {
@@ -361,7 +395,15 @@ describe.skipIf(process.platform !== "linux")("generated desktop lifecycle proce
 
   it("reserves a failed grant until matching cleanup and prevents automatic restoration", async () => {
     const f = await fixture();
-    expect(f.ensure().status).toBe(0);
+    const initial = f.ensure();
+    expect(
+      initial.status,
+      JSON.stringify({
+        debugPort: f.env.displayStart + 9221,
+        gatewayPort: f.env.portStart,
+        stderr: initial.stderr,
+      }),
+    ).toBe(0);
     writeFileSync(path.join(f.root, "fail-control"), "1");
     const failed = f.run(desktopControlCommand("a", "run:1", f.env, true, "human-a", "grant-1"));
     expect(failed.status).not.toBe(0);
