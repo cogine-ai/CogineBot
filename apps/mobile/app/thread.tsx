@@ -234,6 +234,7 @@ import type { ThreadScrollAction, ThreadScrollState } from "../lib/thread-scroll
 import { ThreadScrollBehavior } from "../lib/thread-scroll";
 import { reconcileVisibleThreadSnapshot } from "../lib/thread-snapshot";
 import { prepareUnsentSends } from "../lib/unsent-sends";
+import { useMessageSpeechAvailable } from "../lib/use-message-speech";
 import { useReplyAnnouncements } from "../lib/use-reply-announcements";
 import { errorText } from "../lib/user-error";
 import { speakQueue, speakText } from "../lib/voice";
@@ -689,6 +690,7 @@ function Thread({
     readOnly?: string;
   }>();
   const readOnly = readOnlyParam === "1";
+  const canSpeak = useMessageSpeechAvailable();
   const openBotProfile = useThreadProfileNavigation({
     scope: profileScope,
     botId,
@@ -2589,6 +2591,7 @@ function Thread({
           members={snap?.members}
           readOnly={readOnly}
           onCall={onCall}
+          canSpeak={canSpeak}
           canAnswer={!readOnly && message.id === answerableAskMessageId}
           highlighted={highlightedMessageId === message.id}
           separator={separatorIds.has(message.id)}
@@ -2622,6 +2625,7 @@ function Thread({
       rowActions,
       readOnly,
       onCall,
+      canSpeak,
       answerableAskMessageId,
       highlightedMessageId,
       separatorIds,
@@ -3338,6 +3342,7 @@ type MessageRowProps = {
   members?: MobileSnapshot["members"];
   readOnly: boolean;
   onCall: boolean;
+  canSpeak: boolean;
   canAnswer: boolean;
   highlighted: boolean;
   separator: boolean;
@@ -3365,6 +3370,7 @@ const MessageRow = memo(function MessageRow({
   members,
   readOnly,
   onCall,
+  canSpeak,
   canAnswer,
   highlighted,
   separator,
@@ -3382,7 +3388,7 @@ const MessageRow = memo(function MessageRow({
   const tokens = useMobileTokens();
   const colorScheme = useResolvedAppearance();
   const { t, locale } = useI18n();
-  const menuVersion = useMemo(() => ({}), [message, readOnly, onCall, canAnswer]);
+  const menuVersion = useMemo(() => ({}), [message, readOnly, onCall, canAnswer, canSpeak]);
   const currentMenuVersion = useRef(menuVersion);
   currentMenuVersion.current = menuVersion;
   const menuActive = useRef(true);
@@ -3433,20 +3439,27 @@ const MessageRow = memo(function MessageRow({
       quotableMessageSegments(message.role, message.blocks).length > 0;
     const includeReact = !readOnly && canReactToThreadMessage(message);
     // The call already reads replies aloud; a second voice would talk over it.
-    const includeSpeak = message.role === "bot" && !onCall && Boolean(blockText(message));
+    const includeSpeak =
+      canSpeak && message.role === "bot" && !onCall && Boolean(blockText(message));
     const includeSelect = messageText.trim().length > 0;
-    const reply = () => actions.reply(message);
-    const quote = () => actions.quote(message);
-    const speakMessage = () => actions.speak(message);
-    const select = () =>
+    const guardAction = (action: () => void) => () => {
+      if (menuIsCurrent()) action();
+    };
+    const reply = guardAction(() => actions.reply(message));
+    const quote = guardAction(() => actions.quote(message));
+    const speakMessage = guardAction(() => actions.speak(message));
+    const select = guardAction(() =>
       actions.select(
         message.role === "user" ? messageText : selectableTextFromMarkdown(messageText),
-      );
-    const copy = () => {
+      ),
+    );
+    const copy = guardAction(() => {
       const text = copyableMobileMessageText(message);
       if (text) void Clipboard.setStringAsync(text).catch(() => undefined);
+    });
+    const react = (reaction: MessageReaction) => {
+      if (menuIsCurrent()) actions.react(message, reaction);
     };
-    const react = (reaction: MessageReaction) => actions.react(message, reaction);
     const menuActions = [
       ...(!readOnly ? [{ name: "reply", text: t("Reply"), onPress: reply }] : []),
       ...(includeQuote ? [{ name: "quote", text: t("Quote"), onPress: quote }] : []),
@@ -3455,8 +3468,9 @@ const MessageRow = memo(function MessageRow({
             {
               name: "react",
               text: t("React"),
-              onPress: () =>
+              onPress: guardAction(() =>
                 presentMessageActionSheet({
+                  isCurrent: menuIsCurrent,
                   cancel: t("Cancel"),
                   more: t("More"),
                   colorScheme,
@@ -3465,6 +3479,7 @@ const MessageRow = memo(function MessageRow({
                     onPress: () => react(emoji),
                   })),
                 }),
+              ),
             },
           ]
         : []),
@@ -3491,6 +3506,7 @@ const MessageRow = memo(function MessageRow({
       },
     });
     const openSheet = (event: GestureResponderEvent) => {
+      if (!menuIsCurrent()) return;
       const owner = captureMobileScope();
       const version = menuVersion;
       closeMenu.current?.();
@@ -3580,7 +3596,7 @@ const MessageRow = memo(function MessageRow({
         },
       },
     };
-  }, [message, actions, readOnly, onCall, colorScheme, t, locale, menuVersion]);
+  }, [message, actions, readOnly, onCall, canSpeak, colorScheme, t, locale, menuVersion]);
   return (
     <View
       key={message.id}

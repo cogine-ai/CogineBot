@@ -5,6 +5,7 @@ import { Platform } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureApiRequestContext, currentApiBase, noteSubscriptionRequired, rpc } from "./api";
 import {
+  deviceSpeechAvailable,
   getVoicePlaybackState,
   MAX_VOICE_AUDIO_BYTES,
   pauseVoicePlayback,
@@ -78,6 +79,11 @@ class FakeAudio {
 }
 
 describe("mobile speech", () => {
+  it("retains OS-default speech when no individual device voices are listed", async () => {
+    vi.mocked(Speech.getAvailableVoicesAsync).mockResolvedValue([]);
+    await expect(deviceSpeechAvailable()).resolves.toBe(true);
+    expect(Speech.speak).toBeTypeOf("function");
+  });
   beforeEach(() => {
     vi.mocked(noteSubscriptionRequired).mockClear();
     vi.mocked(SecureStore.getItemAsync).mockResolvedValue(null);

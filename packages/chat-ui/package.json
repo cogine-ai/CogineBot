@@ -6,7 +6,8 @@
   "exports": {
     "./native": "./src/markdown.native.tsx",
     "./web": "./src/markdown.web.tsx",
-    "./mermaid": "./src/mermaid.ts"
+    "./mermaid": "./src/mermaid.ts",
+    "./announcement-visibility": "./src/announcement-visibility.ts"
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",

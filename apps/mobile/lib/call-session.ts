@@ -10,6 +10,7 @@ import {
   latestSpokenCallReply,
   recognitionLanguage,
   spokenMemory,
+  transcriptionLanguageHint,
 } from "@rakazo/core";
 import type { AudioRecorder } from "expo-audio";
 import { File } from "expo-file-system";
@@ -708,7 +709,11 @@ async function transcribeClip(clip: CallClip, signal: AbortSignal): Promise<stri
   const res = await fetch(`${apiBase}/api/voice/transcribe`, {
     method: "POST",
     headers: { "content-type": "application/json", origin: "coginebot://", ...headers },
-    body: JSON.stringify({ audioBase64: clip.base64, mimeType: clip.mimeType }),
+    body: JSON.stringify({
+      audioBase64: clip.base64,
+      mimeType: clip.mimeType,
+      language: transcriptionLanguageHint(getActiveUiLocale()),
+    }),
     signal,
   });
   const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string };

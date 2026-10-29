@@ -272,7 +272,7 @@ export default function Layout() {
               <CallCard />
               <BillingRecovery />
 
-<MessageMenuHost />
+              <MessageMenuHost />
             </ThemeProvider>
           </ChatContentProviders>
         ) : (

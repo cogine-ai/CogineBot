@@ -1,3 +1,4 @@
+import { replyAnnouncementsVisible } from "@rakazo/chat-ui/announcement-visibility";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** Clear before publishing so consecutive identical results are announced again. */
@@ -29,6 +30,7 @@ export function useLiveAnnouncement(scope: string) {
     (text: string) => {
       if (
         !text ||
+        !replyAnnouncementsVisible() ||
         !mounted.current ||
         currentScope.current !== scope ||
         document.visibilityState !== "visible"
@@ -42,6 +44,7 @@ export function useLiveAnnouncement(scope: string) {
         const text = pending.current.join("\n");
         pending.current = [];
         if (
+          replyAnnouncementsVisible() &&
           mounted.current &&
           currentScope.current === scope &&
           document.visibilityState === "visible"
