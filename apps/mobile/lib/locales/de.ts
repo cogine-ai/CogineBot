@@ -1,4 +1,16 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Back to chats": "Zurück zu Chats",
+  "Subscription required": "Abonnement erforderlich",
+  "Contact your organization owner": "Kontaktiere den Organisationsinhaber",
+  "Start {days}-day free trial": "{days} Tage kostenlos testen",
+  Subscribe: "Abonnieren",
+  "Manage billing": "Abrechnung verwalten",
+  "Could not refresh billing": "Abrechnung konnte nicht aktualisiert werden",
+  "Could not open billing": "Abrechnung konnte nicht geöffnet werden",
+  "Could not save the selected Space": "Der ausgewählte Space konnte nicht gespeichert werden",
+  "Switch Space": "Space wechseln",
+  "Contact your organization owner for an invitation":
+    "Bitte den Organisationsinhaber um eine Einladung",
   "Manage usage": "Nutzung verwalten",
   "Your ChatGPT plan usage limit was reached. Review your usage settings.":
     "Das Nutzungslimit deines ChatGPT-Abos wurde erreicht. Prüfe deine Nutzungseinstellungen.",

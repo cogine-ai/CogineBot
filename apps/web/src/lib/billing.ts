@@ -1,6 +1,8 @@
 import { t } from "@lingui/core/macro";
 import type { BillingStatus } from "@rakazo/contracts";
 
+export const BILLING_REQUEST_TIMEOUT_MS = 15_000;
+
 type Price = NonNullable<BillingStatus["price"]>;
 
 /** "$12 / month" from a provider price in minor units. */

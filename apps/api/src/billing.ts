@@ -4,8 +4,10 @@ import type { Actor, BillingStatus } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import {
   billingAccountForOrganization,
+  claimBillingStatusRefresh,
   createBillingAccount,
   hasBillingAccess,
+  hasFreshBillingStatus,
   organizationForMember,
   organizationSeatCount,
   ownedBillingAccounts,
@@ -15,12 +17,15 @@ import { getLogger } from "@rakazo/logging";
 
 export const TRIAL_DAYS = 7;
 const PRICE_CACHE_MS = 60 * 60 * 1000;
+export const BILLING_STATUS_RESPONSE_TIMEOUT_MS = 10_000;
 /** Stripe returns here after checkout; served by the API through the web origin. */
 export const BILLING_RETURN_PATH = "/api/v1/billing/return";
 
 /** Product-side billing: access rules, checkout, and pull-based sync from the provider. */
 export interface BillingService {
-  status(actor: Actor): Promise<BillingStatus>;
+  status(actor: Actor, options?: { refresh?: boolean }): Promise<BillingStatus>;
+  /** Admit new user work using the stored subscription, without contacting the provider. */
+  assertAccess(actor: Actor): Promise<void>;
   checkout(actor: Actor): Promise<{ url: string }>;
   portal(actor: Actor): Promise<{ url: string }>;
   /** Re-fetches the customer's subscription from the provider and overwrites the stored snapshot. */
@@ -40,7 +45,62 @@ export function createBillingService(deps: {
 }): BillingService {
   const { prisma, provider } = deps;
   const appUrl = `${deps.webOrigin}/app`;
+  const returnUrl = (actor: Actor) => {
+    const url = new URL(BILLING_RETURN_PATH, deps.webOrigin);
+    url.searchParams.set("space", actor.spaceId);
+    return url.href;
+  };
   let cachedPrice: { value: BillingPrice; expiresAt: number } | undefined;
+  const statusRefreshes = new Map<string, { promise: Promise<void>; startedAt: number }>();
+
+  const unavailable = (retryAfterSeconds: number) =>
+    new ORPCError("SERVICE_UNAVAILABLE", {
+      message: "Could not refresh billing",
+      data: { reason: "billing_unavailable", retryAfterSeconds },
+    });
+  const expectedUnavailable = (error: unknown) =>
+    error instanceof ORPCError &&
+    error.code === "SERVICE_UNAVAILABLE" &&
+    typeof error.data === "object" &&
+    error.data !== null &&
+    "reason" in error.data &&
+    error.data.reason === "billing_unavailable";
+  const reportFailure = (error: unknown): never => {
+    getLogger().error("billing status refresh failed", error);
+    throw error;
+  };
+
+  async function refreshStatus(organizationId: string): Promise<void> {
+    let pending = statusRefreshes.get(organizationId);
+    if (!pending) {
+      const promise = (async () => {
+        const claim = await claimBillingStatusRefresh(prisma, organizationId).catch(reportFailure);
+        if (claim.state === "busy") throw unavailable(claim.retryAfterSeconds);
+        if (claim.state === "claimed") await sync(claim.customerId).catch(reportFailure);
+      })().finally(() => {
+        if (statusRefreshes.get(organizationId)?.promise === promise)
+          statusRefreshes.delete(organizationId);
+      });
+      pending = { promise, startedAt: performance.now() };
+      statusRefreshes.set(organizationId, pending);
+    } else if (await hasFreshBillingStatus(prisma, organizationId)) return;
+    const remaining = BILLING_STATUS_RESPONSE_TIMEOUT_MS - (performance.now() - pending.startedAt);
+    if (remaining <= 0) throw unavailable(5);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        pending.promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(unavailable(5)), remaining);
+        }),
+      ]);
+    } catch (error) {
+      if (expectedUnavailable(error)) throw error;
+      throw unavailable(15);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function price(): Promise<BillingPrice | null> {
     if (cachedPrice && cachedPrice.expiresAt > Date.now()) return cachedPrice.value;
@@ -55,6 +115,11 @@ export function createBillingService(deps: {
   }
 
   async function organization(actor: Actor) {
+    const membership = await prisma.spaceMember.findUnique({
+      where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
+      select: { id: true },
+    });
+    if (!membership) throw new ORPCError("FORBIDDEN");
     const found = await organizationForMember(prisma, {
       spaceId: actor.spaceId,
       userId: actor.userId,
@@ -78,7 +143,19 @@ export function createBillingService(deps: {
   }
 
   return {
-    async status(actor) {
+    async assertAccess(actor) {
+      if (actor.isDeploymentOwner) return;
+      const { organizationId } = await organization(actor);
+      const account = await billingAccountForOrganization(prisma, organizationId);
+      if (!hasBillingAccess(account?.status ?? null))
+        throw new ORPCError("PAYMENT_REQUIRED", {
+          status: 402,
+          message: "Subscription required",
+          data: { reason: "subscription_required" },
+        });
+    },
+
+    async status(actor, options) {
       if (actor.isDeploymentOwner) {
         return {
           access: true,
@@ -94,20 +171,31 @@ export function createBillingService(deps: {
           hasCustomer: false,
         };
       }
-      const { organizationId, isOwner } = await organization(actor);
+      const { organizationId } = await organization(actor);
+      if (options?.refresh) {
+        const stored = await billingAccountForOrganization(prisma, organizationId);
+        if (stored) {
+          await refreshStatus(organizationId);
+        }
+        // A membership revoked while the provider answered must not publish its status.
+        await organization(actor);
+      }
       const [account, currentPrice] = await Promise.all([
         billingAccountForOrganization(prisma, organizationId),
         price(),
       ]);
       const status = account?.status ?? null;
+      const seats = account?.seats ?? (await organizationSeatCount(prisma, organizationId));
+      const current = await organization(actor);
+      if (current.organizationId !== organizationId) throw new ORPCError("FORBIDDEN");
       return {
         access: hasBillingAccess(status),
-        canManage: isOwner,
+        canManage: current.isOwner,
         trialAvailable: !account?.subscribedAt,
         trialDays: TRIAL_DAYS,
         state: (status ?? "none") as BillingStatus["state"],
         price: currentPrice,
-        seats: account?.seats ?? (await organizationSeatCount(prisma, organizationId)),
+        seats,
         trialEndsAt: account?.trialEndsAt?.toISOString() ?? null,
         currentPeriodEndsAt: account?.currentPeriodEndsAt?.toISOString() ?? null,
         cancelAtPeriodEnd: account?.cancelAtPeriodEnd ?? false,
@@ -133,20 +221,27 @@ export function createBillingService(deps: {
         });
         account = await createBillingAccount(prisma, { organizationId, customerId });
       }
-      return provider.createCheckout({
+      const result = await provider.createCheckout({
         customerId: account.customerId,
         seats: await organizationSeatCount(prisma, organizationId),
         ...(account.subscribedAt ? {} : { trialDays: TRIAL_DAYS }),
-        successUrl: `${deps.webOrigin}${BILLING_RETURN_PATH}`,
+        successUrl: returnUrl(actor),
         cancelUrl: appUrl,
       });
+      await managedOrganization(actor);
+      return result;
     },
 
     async portal(actor) {
       const { organizationId } = await managedOrganization(actor);
       const account = await billingAccountForOrganization(prisma, organizationId);
       if (!account) throw new ORPCError("NOT_FOUND", { message: "No billing account" });
-      return provider.createPortal({ customerId: account.customerId, returnUrl: appUrl });
+      const result = await provider.createPortal({
+        customerId: account.customerId,
+        returnUrl: returnUrl(actor),
+      });
+      await managedOrganization(actor);
+      return result;
     },
 
     sync,

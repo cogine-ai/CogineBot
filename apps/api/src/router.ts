@@ -902,6 +902,8 @@ export function createRouter(deps: RouterDeps) {
     actor: Actor | null;
     /** The signed-in session, so a push token ends with the session that registered it. */
     sessionId?: string;
+    /** A verified session without a Space still needs membership recovery, not sign-out. */
+    sessionAuthenticated?: boolean;
     signal?: AbortSignal;
     /** Re-runs the request's auth so a long-lived stream notices sign-out and revocation. */
     stillAuthorized?: () => Promise<boolean>;
@@ -927,9 +929,22 @@ export function createRouter(deps: RouterDeps) {
   const agentSkills = createAgentSkillsService(deps.prisma);
   const openApiImports = createOpenApiImportService(deps);
 
+  function authenticatedActor(context: {
+    actor: Actor | null;
+    sessionAuthenticated?: boolean;
+  }): Actor {
+    if (context.actor) return context.actor;
+    if (context.sessionAuthenticated)
+      throw new ORPCError("FORBIDDEN", { data: { reason: "space_forbidden" } });
+    throw new ORPCError("UNAUTHORIZED");
+  }
   const authed = os.use(async ({ context, next }) => {
-    if (!context.actor) throw new ORPCError("UNAUTHORIZED");
-    return next({ context: { ...context, actor: context.actor } });
+    return next({ context: { ...context, actor: authenticatedActor(context) } });
+  });
+
+  const newWork = authed.use(async ({ context, next }) => {
+    await deps.billing?.assertAccess(context.actor);
+    return next();
   });
 
   const boardEnabled = os
@@ -938,8 +953,7 @@ export function createRouter(deps: RouterDeps) {
       return next();
     })
     .use(async ({ context, next }) => {
-      if (!context.actor) throw new ORPCError("UNAUTHORIZED");
-      return next({ context: { ...context, actor: context.actor } });
+      return next({ context: { ...context, actor: authenticatedActor(context) } });
     });
   const ticketDeps = {
     prisma: deps.prisma,
@@ -969,8 +983,8 @@ export function createRouter(deps: RouterDeps) {
     health: os.health.handler(async () => ({ ok: true as const, version: "0.1.0" })),
     me: authed.me.handler(async ({ context }): Promise<Me> => meDto(deps, context.actor)),
     billing: {
-      status: authed.billing.status.handler(async ({ context }) =>
-        requireBilling(deps).status(context.actor),
+      status: authed.billing.status.handler(async ({ context, input }) =>
+        requireBilling(deps).status(context.actor, input),
       ),
       checkout: authed.billing.checkout.handler(async ({ context }) =>
         requireBilling(deps).checkout(context.actor),
@@ -1786,7 +1800,7 @@ export function createRouter(deps: RouterDeps) {
         if (!found) throw new IsolationError();
         return found;
       }),
-      create: authed.bots.create.handler(async ({ context, input }) => {
+      create: newWork.bots.create.handler(async ({ context, input }) => {
         let bot: Bot;
         try {
           bot = await repos.createBot(context.actor, {
@@ -1806,7 +1820,7 @@ export function createRouter(deps: RouterDeps) {
         });
         return bot;
       }),
-      duplicate: authed.bots.duplicate.handler(async ({ context, input }) => {
+      duplicate: newWork.bots.duplicate.handler(async ({ context, input }) => {
         const source = await repos.getBot(context.actor, input.botId);
         const preparedSource = await prepareExistingModelAuth(
           deps,
@@ -2467,7 +2481,7 @@ export function createRouter(deps: RouterDeps) {
           void follow.return(undefined).catch(() => {});
         }
       }),
-      send: authed.threads.send.handler(async ({ context, input }) => {
+      send: newWork.threads.send.handler(async ({ context, input }) => {
         if ((await modelSetup(deps, context.actor)).needsModel) {
           throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
         }
@@ -2541,7 +2555,7 @@ export function createRouter(deps: RouterDeps) {
         }
         return { ok: true as const };
       }),
-      followUp: authed.threads.followUp.handler(async ({ context, input }) => {
+      followUp: newWork.threads.followUp.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         if (target.kind === "bot") {
           await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, target.botId);
@@ -2754,7 +2768,7 @@ export function createRouter(deps: RouterDeps) {
         });
         return { ok: true as const };
       }),
-      answer: authed.threads.answer.handler(async ({ context, input }) => {
+      answer: newWork.threads.answer.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const answered = await deps.events.answerRunInput({
           spaceId: context.actor.spaceId,
@@ -2792,7 +2806,7 @@ export function createRouter(deps: RouterDeps) {
       status: authed.computer.status.handler(async ({ context, input }) =>
         computerStatus(deps, context.actor, input.botId),
       ),
-      boot: authed.computer.boot.handler(async ({ context, input }) => {
+      boot: newWork.computer.boot.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
         if (bot.computer.state === "running" && bot.computer.providerRef) {
@@ -2919,7 +2933,7 @@ export function createRouter(deps: RouterDeps) {
         );
         return computerStatus(deps, context.actor, input.botId);
       }),
-      recover: authed.computer.recover.handler(async ({ context, input }) => {
+      recover: newWork.computer.recover.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
         try {
@@ -2930,10 +2944,10 @@ export function createRouter(deps: RouterDeps) {
           throw error;
         }
       }),
-      reset: authed.computer.reset.handler(async ({ context, input }) =>
+      reset: newWork.computer.reset.handler(async ({ context, input }) =>
         runComputerReplace(deps, context, input.botId, "reset", "reset"),
       ),
-      update: authed.computer.update.handler(async ({ context, input }) => {
+      update: newWork.computer.update.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
         if (!computerSupportsUpdate(bot.computer.kind))
@@ -3014,7 +3028,7 @@ export function createRouter(deps: RouterDeps) {
         });
         return { ok: true as const };
       }),
-      takeover: authed.computer.takeover.handler(async ({ context, input }) => {
+      takeover: newWork.computer.takeover.handler(async ({ context, input }) => {
         let bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer?.providerRef || bot.computer.state !== "running") {
           throw new ORPCError("BAD_REQUEST", { message: "computer must be running" });
@@ -3192,7 +3206,7 @@ export function createRouter(deps: RouterDeps) {
         await releaseComputerControl(deps, context.actor, input.botId, input.reason);
         return { ok: true as const };
       }),
-      input: authed.computer.input.handler(async ({ context, input }) => {
+      input: newWork.computer.input.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         const computer = bot.computer;
         if (!computer || !hasActiveComputerControl(computer) || computer.controlBotId !== bot.id) {
@@ -3336,7 +3350,7 @@ export function createRouter(deps: RouterDeps) {
           });
         return { path: input.path, contentBase64: Buffer.from(bytes).toString("base64") };
       }),
-      uploadFile: authed.computer.uploadFile.handler(async ({ context, input }) => {
+      uploadFile: newWork.computer.uploadFile.handler(async ({ context, input }) => {
         let bot = await repos.getBot(context.actor, input.botId);
         if (await expireStaleComputerControl(deps, bot.computer)) {
           bot = await repos.getBot(context.actor, input.botId);
@@ -3387,7 +3401,7 @@ export function createRouter(deps: RouterDeps) {
           }),
         );
       }),
-      terminalUrl: authed.computer.terminalUrl.handler(async ({ context, input }) => {
+      terminalUrl: newWork.computer.terminalUrl.handler(async ({ context, input }) => {
         let bot = await repos.getBot(context.actor, input.botId);
         if (await expireStaleComputerControl(deps, bot.computer)) {
           bot = await repos.getBot(context.actor, input.botId);
@@ -3455,6 +3469,7 @@ export function createRouter(deps: RouterDeps) {
         }
         const computer = bot.computer;
         const interactive = hasActiveComputerControl(computer) && computer.controlBotId === bot.id;
+        if (interactive) await deps.billing?.assertAccess(context.actor);
         const screenContext = await computerScreenContext(
           deps.prisma,
           context.actor,
@@ -3650,6 +3665,7 @@ export function createRouter(deps: RouterDeps) {
         return listRoutinesDto(deps, context.actor, input.botId, { includeArchived: true });
       }),
       create: authed.routines.create.handler(async ({ context, input }) => {
+        if (input.active) await deps.billing?.assertAccess(context.actor);
         if (hasMixedOneShotSchedule(input.crons)) {
           throw new ORPCError("BAD_REQUEST", {
             message: "A one-time schedule can't be combined with other schedules.",
@@ -3754,8 +3770,9 @@ export function createRouter(deps: RouterDeps) {
           },
         });
         if (!existing) throw new ORPCError("NOT_FOUND");
-        const bot = await repos.getBot(context.actor, existing.botId);
         const active = input.active ?? existing.active;
+        if (active) await deps.billing?.assertAccess(context.actor);
+        const bot = await repos.getBot(context.actor, existing.botId);
         const crons = input.crons ?? existing.crons;
         const timezone = input.timezone ?? existing.timezone;
         const webhookEnabled = input.webhookEnabled ?? existing.webhookEnabled;
@@ -3975,7 +3992,7 @@ export function createRouter(deps: RouterDeps) {
         await deps.jobs.cancel(routineJobKey(existing.id));
         return { ok: true as const };
       }),
-      testRun: authed.routines.testRun.handler(async ({ context, input }) => {
+      testRun: newWork.routines.testRun.handler(async ({ context, input }) => {
         const routine = await deps.prisma.routine.findFirst({
           where: {
             id: input.routineId,
@@ -4306,7 +4323,7 @@ export function createRouter(deps: RouterDeps) {
       get: authed.skills.get.handler(async ({ context, input }) =>
         taughtSkills.get(context.actor, input.skillId),
       ),
-      start: authed.skills.start.handler(async ({ context, input }) => {
+      start: newWork.skills.start.handler(async ({ context, input }) => {
         await repos.getBot(context.actor, input.botId);
         return taughtSkills.start(context.actor, input.botId, input.goal);
       }),
@@ -4328,7 +4345,7 @@ export function createRouter(deps: RouterDeps) {
       save: authed.skills.save.handler(async ({ context, input }) =>
         taughtSkills.save(context.actor, input.skillId, input.name),
       ),
-      testRun: authed.skills.testRun.handler(async ({ context, input }) =>
+      testRun: newWork.skills.testRun.handler(async ({ context, input }) =>
         taughtSkills.testRun(context.actor, input.skillId, input.prompt),
       ),
       remove: authed.skills.remove.handler(async ({ context, input }) =>

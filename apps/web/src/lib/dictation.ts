@@ -1,6 +1,13 @@
 import { readBoundedResponseBytes } from "@rakazo/core";
 import { getActiveUiLocale } from "./i18n.js";
-import { selectedSpaceId, withSpaceHeaders } from "./rpc.js";
+import type { RpcRecoveryScope } from "./rpc.js";
+import {
+  captureRpcRecoveryScope,
+  isRpcRecoveryScopeCurrent,
+  noteSubscriptionRequired,
+  selectedSpaceId,
+  withSpaceHeaders,
+} from "./rpc.js";
 import type { UiLocale } from "./ui-locale.js";
 import { errorText } from "./user-error.js";
 
@@ -181,6 +188,7 @@ export class Dictation {
   private media: MediaRecorder | null = null;
   private chunks: Blob[] = [];
   private token = 0;
+  private recoveryScope: RpcRecoveryScope | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | undefined;
   private restartTimer: ReturnType<typeof setTimeout> | undefined;
   private transcribeAbort: AbortController | null = null;
@@ -250,6 +258,7 @@ export class Dictation {
     this.stop("replace");
     const mine = this.token;
     const spaceId = selectedSpaceId();
+    this.recoveryScope = captureRpcRecoveryScope(spaceId);
     this.onFinal = opts.onFinal;
     this.set({ status: "listening", transcript: "" });
     const transcribe = Boolean(opts.transcribe);
@@ -540,6 +549,11 @@ export class Dictation {
 
   private async transcribeChunks(mine: number, spaceId: string | null) {
     if (this.token !== mine) return;
+    const recoveryScope = this.recoveryScope;
+    if (!recoveryScope || !isRpcRecoveryScopeCurrent(recoveryScope)) {
+      this.stop();
+      return;
+    }
     const blob = new Blob(this.chunks, { type: this.chunks[0]?.type || "audio/webm" });
     this.chunks = [];
     if (!blob.size) {
@@ -561,6 +575,10 @@ export class Dictation {
     try {
       const audioBase64 = await blobToBase64(blob);
       if (this.token !== mine) return;
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
+        this.stop();
+        return;
+      }
       const res = await withAbort(
         fetch("/api/voice/transcribe", {
           method: "POST",
@@ -579,8 +597,19 @@ export class Dictation {
         cancelResponse(res);
         return;
       }
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
+        cancelResponse(res);
+        this.stop();
+        return;
+      }
+      if (res.status === 402)
+        noteSubscriptionRequired(recoveryScope, () => this.token === mine && !abort.signal.aborted);
       const body = await readTranscriptionBody(res, abort.signal);
       if (this.token !== mine) return;
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
+        this.stop();
+        return;
+      }
       if (!res.ok) {
         this.failListening(mine, body.error ?? "Could not transcribe that recording.");
         return;
@@ -593,10 +622,13 @@ export class Dictation {
         mine,
       );
     } catch (error) {
-      // User cancel bumps token in stop() before aborting, so a matching token
-      // means the deadline timer fired. Browsers may reject fetch as AbortError
-      // instead of signal.reason; surface the timeout either way.
       if (this.token !== mine) return;
+      if (!isRpcRecoveryScopeCurrent(recoveryScope)) {
+        this.stop();
+        return;
+      }
+      // User cancel bumps token before aborting. A remaining AbortError comes
+      // from the deadline; browsers may return it instead of signal.reason.
       const timedOut =
         (abort.signal.reason instanceof Error &&
           abort.signal.reason.message === "Transcription request timed out.") ||

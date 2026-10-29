@@ -227,7 +227,9 @@ export const appContract = {
   health: oc.output(z.object({ ok: z.literal(true), version: z.string() })),
   me: oc.output(MeSchema),
   billing: {
-    status: oc.output(BillingStatusSchema),
+    status: oc
+      .input(z.object({ refresh: z.boolean().optional() }).optional())
+      .output(BillingStatusSchema),
     checkout: oc.output(z.object({ url: z.string().url() })),
     portal: oc.output(z.object({ url: z.string().url() })),
   },

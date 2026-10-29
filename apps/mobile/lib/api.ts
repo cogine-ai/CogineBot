@@ -92,6 +92,16 @@ export const MAX_MOBILE_RPC_RESPONSE_BYTES = 16 * 1024 * 1024;
 /** Inbox bootstrap reads safe to replay without a Space header during auth recovery. */
 const SPACE_AUTH_RECOVERY_SAFE_PROCS = new Set(["spaces/list", "me"]);
 
+const subscriptionRequiredListeners = new Set<() => void>();
+
+/** Current-scope server denials can reopen recovery after an initially failed billing lookup. */
+export function subscribeSubscriptionRequired(listener: () => void): () => void {
+  subscriptionRequiredListeners.add(listener);
+  return () => {
+    subscriptionRequiredListeners.delete(listener);
+  };
+}
+
 let cachedApiBase: string | undefined;
 let apiBaseGeneration = 0;
 const apiBaseListeners = new Set<() => void>();
@@ -637,9 +647,37 @@ export async function authHeaders(
 
 export type ApiRequestContext = {
   sessionGeneration?: number;
+  apiGeneration?: number;
+  spaceGeneration?: number;
   apiBase: string;
   headers: Record<string, string>;
+  /** Native views can revoke a captured request before it reaches the network. */
+  isCurrent?: () => boolean;
 };
+
+/** HTTP-only consumers use the same current-scope recovery signal as RPC calls. */
+export function noteSubscriptionRequired(context: ApiRequestContext): void {
+  if (
+    context.isCurrent?.() === false ||
+    context.apiBase !== currentApiBase() ||
+    context.apiGeneration !== currentApiBaseGeneration() ||
+    context.spaceGeneration !== currentSpaceSelectionGeneration() ||
+    context.sessionGeneration !== currentSessionGeneration() ||
+    (context.headers["x-rakazo-space-id"] ?? null) !== selectedSpaceId()
+  )
+    return;
+  publishSubscriptionRequired();
+}
+
+function publishSubscriptionRequired(): void {
+  for (const listener of [...subscriptionRequiredListeners]) {
+    try {
+      listener();
+    } catch {
+      // A recovery view must not replace the original failed request.
+    }
+  }
+}
 
 /** Keeps consent prompts separate across servers and the selected Space. */
 export function aiConsentCoalesceKey(requestContext: ApiRequestContext): string {
@@ -651,13 +689,15 @@ export async function captureApiRequestContext(
 ): Promise<ApiRequestContext> {
   const generation = currentSessionGeneration();
   const apiBase = currentApiBase();
+  const apiGeneration = currentApiBaseGeneration();
+  const spaceGeneration = currentSpaceSelectionGeneration();
   const headers = await authHeaders(spaceId);
-  if (apiBase !== currentApiBase()) {
+  if (apiBase !== currentApiBase() || apiGeneration !== currentApiBaseGeneration()) {
     throw new Error(t("The server changed while starting the request"));
   }
   if (generation !== currentSessionGeneration())
     throw new Error(t("Something went wrong. Try again."));
-  return { apiBase, headers, sessionGeneration: generation };
+  return { apiBase, headers, sessionGeneration: generation, apiGeneration, spaceGeneration };
 }
 
 async function authenticateWithEmail(
@@ -808,16 +848,31 @@ export async function fetchMobileJson<T>(
   }
 }
 
-export async function signOut() {
-  await rpc("notifications/unregisterPush").catch(() => undefined);
-  const headers = await authHeaders();
+export async function signOut(): Promise<boolean> {
+  const apiBase = currentApiBase();
+  const apiGeneration = currentApiBaseGeneration();
+  const sessionGeneration = currentSessionGeneration();
+  const spaceGeneration = currentSpaceSelectionGeneration();
+  const current = (sessionOffset = 0) =>
+    apiBase === currentApiBase() &&
+    apiGeneration === currentApiBaseGeneration() &&
+    sessionGeneration + sessionOffset === currentSessionGeneration() &&
+    spaceGeneration === currentSpaceSelectionGeneration();
+  const requestContext = await captureApiRequestContext();
+  if (!current()) return false;
+  await rpc("notifications/unregisterPush", {}, { requestContext }).catch(() => undefined);
+  if (!current()) return false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
   try {
     await withAbort(
-      fetch(`${currentApiBase()}/api/auth/sign-out`, {
+      fetch(`${apiBase}/api/auth/sign-out`, {
         method: "POST",
-        headers: { "content-type": "application/json", origin: "coginebot://", ...headers },
+        headers: {
+          "content-type": "application/json",
+          origin: "coginebot://",
+          ...requestContext.headers,
+        },
         body: "{}",
         signal: controller.signal,
       }),
@@ -826,9 +881,16 @@ export async function signOut() {
   } finally {
     clearTimeout(timer);
   }
+  if (!current()) return false;
   const sessionCleared = await clearSessionToken();
+  if (!current(1)) return false;
   const spaceCleared = await clearSpace();
   if (!sessionCleared || !spaceCleared) throw new Error(t("Could not clear the local session"));
+  return (
+    apiBase === currentApiBase() &&
+    apiGeneration === currentApiBaseGeneration() &&
+    sessionGeneration + 1 === currentSessionGeneration()
+  );
 }
 
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -920,6 +982,7 @@ export async function rpc<T>(
   const requestApiGeneration = currentApiBaseGeneration();
   const requestSessionGeneration = currentSessionGeneration();
   const requestApiBase = options.requestContext?.apiBase ?? currentApiBase();
+  if (options.requestContext?.isCurrent?.() === false) throw new Error("Request canceled");
   const uses = aiDataUsesForProcedure(proc, body);
   const consentContext =
     options.requestContext ?? (uses.length ? await captureApiRequestContext() : undefined);
@@ -964,6 +1027,7 @@ export async function rpc<T>(
       consentContext.sessionGeneration !== currentSessionGeneration()
     )
       throw new Error(t("Something went wrong. Try again."));
+    if (consentContext?.isCurrent?.() === false) throw new Error("Request canceled");
     let res: Response;
     try {
       res = await fetch(`${consentContext?.apiBase ?? currentApiBase()}/rpc/${proc}`, {
@@ -1008,6 +1072,16 @@ export async function rpc<T>(
         | undefined;
       const message = errorText(typeof error?.message === "string" ? error.message : "");
       const unauthorized = res.status === 401;
+      if (
+        res.status === 402 &&
+        requestSessionGeneration === currentSessionGeneration() &&
+        requestApiBase === currentApiBase() &&
+        requestApiGeneration === currentApiBaseGeneration() &&
+        requestSpaceGeneration === spaceSelectionGeneration &&
+        (requestSpaceId ?? null) === selectedSpaceId()
+      ) {
+        publishSubscriptionRequired();
+      }
       // Without a Space header a 401 means the server no longer accepts the
       // session itself; Space recovery below probes the same way. Clearing it
       // bumps the session generation, so only the first rejection of a session

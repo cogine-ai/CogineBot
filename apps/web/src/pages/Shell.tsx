@@ -238,7 +238,9 @@ import {
 import {
   clearSpaceSelection,
   createSpaceRpc,
+  currentRpcSessionGeneration,
   currentSpaceSelectionGeneration,
+  rememberImplicitRpcSpace,
   rpc,
   selectedSpaceId,
   selectSpace,
@@ -1811,12 +1813,20 @@ export function ShellPage() {
       const requestedBotId = routeBotId.current;
       const requestedGroupId = routeGroupId.current;
       const requestedSpaceId = selectedSpaceId();
+      const requestedSessionGeneration = currentRpcSessionGeneration();
+      const requestedSelectionGeneration = currentSpaceSelectionGeneration();
       try {
         const bootstrap = await takeInitialBootstrap(requestedBotId);
         if (cancelled || selectedSpaceId() !== requestedSpaceId) return;
         if (bootstrap.me.userId !== userId) throw new Error(t`Could not load this chat.`);
         bootstrapReady = true;
         bootstrapBlocked = false;
+        if (requestedSpaceId === null)
+          rememberImplicitRpcSpace(
+            bootstrap.me.spaceId,
+            requestedSessionGeneration,
+            requestedSelectionGeneration,
+          );
         setBootstrapMe(bootstrap.me);
         setBootstrapLoad({ pending: false, error: null });
         // List refreshes and saves own newer roster data. Context can still recover.

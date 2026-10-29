@@ -6330,3 +6330,32 @@ msgstr "La limite d’utilisation de votre forfait ChatGPT est atteinte. Consult
 #: src/lib/run-error.ts
 msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
 msgstr "L’utilisation du forfait ChatGPT est indisponible. Consultez vos paramètres d’utilisation ou reconnectez ChatGPT."
+
+#: src/pages/Paywall.tsx
+msgid "Back to chats"
+msgstr "Retour aux discussions"
+
+#: src/pages/Paywall.tsx
+msgid "Contact your organization owner"
+msgstr "Contactez le propriétaire de l’organisation"
+
+#: src/pages/Paywall.tsx
+msgid "Could not refresh billing"
+msgstr "Impossible d’actualiser la facturation"
+
+#: src/pages/Paywall.tsx
+msgid "Could not load Spaces"
+msgstr "Impossible de charger les espaces"
+
+#: src/components/LoadFailureNotice.tsx
+msgid "Contact your organization owner for an invitation"
+msgstr "Demandez une invitation au propriétaire de l’organisation"
+
+#: src/pages/Paywall.tsx
+#: src/components/LoadFailureNotice.tsx
+msgid "Switch Space"
+msgstr "Changer d’espace"
+
+#: src/lib/sign-out.ts
+msgid "Could not log out. Try again."
+msgstr "Impossible de se déconnecter. Réessayez."

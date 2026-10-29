@@ -1,4 +1,15 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Back to chats": "返回聊天",
+  "Subscription required": "需要订阅",
+  "Contact your organization owner": "请联系组织所有者",
+  "Start {days}-day free trial": "开始 {days} 天免费试用",
+  Subscribe: "订阅",
+  "Manage billing": "管理账单",
+  "Could not refresh billing": "无法刷新账单状态",
+  "Could not open billing": "无法打开账单页面",
+  "Could not save the selected Space": "无法保存所选 Space",
+  "Switch Space": "切换 Space",
+  "Contact your organization owner for an invitation": "请联系组织所有者获取邀请",
   "Manage usage": "管理用量",
   "Your ChatGPT plan usage limit was reached. Review your usage settings.":
     "已达到 ChatGPT 套餐用量上限。请查看用量设置。",

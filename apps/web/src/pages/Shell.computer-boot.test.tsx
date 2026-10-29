@@ -45,6 +45,8 @@ vi.mock("../lib/rpc", () => {
     createSpaceRpc: () => client(),
     selectedSpaceId: () => boundary.space,
     currentSpaceSelectionGeneration: () => boundary.generation,
+    currentRpcSessionGeneration: () => 0,
+    rememberImplicitRpcSpace: vi.fn(),
     selectSpace: (id: string) => {
       boundary.space = id;
       boundary.generation += 1;

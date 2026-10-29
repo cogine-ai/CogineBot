@@ -6330,3 +6330,32 @@ msgstr "Your ChatGPT plan usage limit was reached. Review your usage settings."
 #: src/lib/run-error.ts
 msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
 msgstr "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
+
+#: src/pages/Paywall.tsx
+msgid "Back to chats"
+msgstr "Back to chats"
+
+#: src/pages/Paywall.tsx
+msgid "Contact your organization owner"
+msgstr "Contact your organization owner"
+
+#: src/pages/Paywall.tsx
+msgid "Could not refresh billing"
+msgstr "Could not refresh billing"
+
+#: src/pages/Paywall.tsx
+msgid "Could not load Spaces"
+msgstr "Could not load Spaces"
+
+#: src/components/LoadFailureNotice.tsx
+msgid "Contact your organization owner for an invitation"
+msgstr "Contact your organization owner for an invitation"
+
+#: src/pages/Paywall.tsx
+#: src/components/LoadFailureNotice.tsx
+msgid "Switch Space"
+msgstr "Switch Space"
+
+#: src/lib/sign-out.ts
+msgid "Could not log out. Try again."
+msgstr "Could not log out. Try again."

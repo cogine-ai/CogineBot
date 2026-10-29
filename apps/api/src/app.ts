@@ -735,7 +735,7 @@ export async function createApp(
     const actor = await actorFromMembership(
       requireMembership(prisma, session.user.id, request.headers.get("x-rakazo-space-id")),
     );
-    return actor && { actor, sessionId: session.session.id };
+    return { actor, sessionId: session.session.id };
   };
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
   app.use("/rpc/*", async (c, next) => {
@@ -749,6 +749,7 @@ export async function createApp(
       context: {
         actor,
         sessionId: session?.sessionId,
+        sessionAuthenticated: Boolean(session),
         signal: c.req.raw.signal,
         // Same user in the same space, so leaving the space also ends a stream.
         // A database failure rejects this check; only a missing membership is unauthorized.
@@ -763,18 +764,30 @@ export async function createApp(
     if (matched) return c.newResponse(response.body, response);
     await next();
   });
-  mountVoiceHttpRoutes(app, { prisma, secrets }, async (c) => {
-    const actor = await sessionActor(c.req.raw);
-    if (actor) enrichLogContext({ "user.id": actor.userId, "space.id": actor.spaceId });
-    return actor;
-  });
+  mountVoiceHttpRoutes(
+    app,
+    { prisma, secrets, assertAccess: (actor) => billing?.assertAccess(actor) ?? Promise.resolve() },
+    async (c) => {
+      const session = await requestSession(c.req.raw);
+      if (session && !session.actor)
+        throw new ORPCError("FORBIDDEN", { data: { reason: "space_forbidden" } });
+      const actor = session?.actor ?? null;
+      if (actor) enrichLogContext({ "user.id": actor.userId, "space.id": actor.spaceId });
+      return actor;
+    },
+  );
   mountWebhookHttpRoutes(app, { prisma, secrets, events, jobs });
   if (billing && billingProvider) {
     mountBillingRoutes(app, {
       billing,
       provider: billingProvider,
       webOrigin: env.webOrigin,
-      authenticate: sessionActor,
+      authenticate: (request, spaceId) => {
+        if (!spaceId) return sessionActor(request);
+        const headers = new Headers(request.headers);
+        headers.set("x-rakazo-space-id", spaceId);
+        return sessionActor(new Request(request, { headers }));
+      },
     });
   }
   // Shared with stop so a shutdown during retry delays does not restart polling.
@@ -1155,8 +1168,9 @@ function originVariants(origin: string): string[] {
 }
 
 /**
- * No membership is no actor, which the RPC layer answers as 401. A database
- * failure, including the deployment-settings lookup, must stay a server error
+ * No membership is no actor; a separately verified session lets the RPC layer
+ * distinguish membership recovery from a rejected login. A database failure,
+ * including the deployment-settings lookup, must stay a server error
  * so a blip does not look like a rejected session.
  */
 export async function actorFromMembership(membership: Promise<Actor>): Promise<Actor | null> {

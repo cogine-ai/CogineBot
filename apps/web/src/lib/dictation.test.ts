@@ -9,6 +9,7 @@ import {
   webSpeechAvailable,
   webSpeechNeedsServerFallback,
 } from "./dictation.js";
+import { selectSpace, subscribeSubscriptionRequired, synchronizeRpcSession } from "./rpc.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -149,7 +150,7 @@ describe("Dictation recorder fallback", () => {
     await vi.waitFor(() => expect(onFinal).toHaveBeenCalledWith("line one\n\nline two"));
   });
 
-  it("keeps transcription in the space where recording started", async () => {
+  it("discards a recording when its Space changes before submission", async () => {
     const store = new Map<string, string>([["rakazo:space-id", "space-support"]]);
     const localStorage = {
       getItem: (key: string) => store.get(key) ?? null,
@@ -195,15 +196,9 @@ describe("Dictation recorder fallback", () => {
     await dictation.listen({ mode: "hold", transcribe: true, onFinal });
     store.set("rakazo:space-id", "space-other");
     dictation.submitHold();
-    await vi.waitFor(() => expect(onFinal).toHaveBeenCalledWith("hello"));
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/voice/transcribe",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
-    expect(headers.get("x-rakazo-space-id")).toBe("space-support");
-    expect(headers.get("content-type")).toBe("application/json");
+    await vi.waitFor(() => expect(dictation.state.status).toBe("idle"));
+    expect(onFinal).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("sends Android to the server before the voice status has loaded", async () => {
@@ -1604,6 +1599,141 @@ describe("Dictation web speech", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ...["account", "space"].flatMap((change) => [
+      { failure: "network", prefix: "", change },
+      { failure: "network", prefix: "call me later", change },
+      { failure: "timeout", prefix: "", change },
+      { failure: "timeout", prefix: "call me later", change },
+    ]),
+  ])(
+    "discards an old $change $failure transcription failure with retained speech '$prefix'",
+    async ({ failure, prefix, change }) => {
+      vi.useFakeTimers();
+      const store = new Map([["rakazo:space-id", "space-a"]]);
+      const localStorage = {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => store.set(key, value),
+        removeItem: (key: string) => store.delete(key),
+      };
+      vi.stubGlobal("window", { SpeechRecognition: FakeRecognition, localStorage });
+      synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+      let reject!: (error: Error) => void;
+      let signal: AbortSignal | undefined;
+      const fetch = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, no) => {
+            reject = no;
+            signal = init?.signal ?? undefined;
+          }),
+      );
+      stubRecorderFallback(fetch);
+      const listener = vi.fn();
+      const unsubscribe = subscribeSubscriptionRequired(listener);
+      const onFinal = vi.fn();
+      const dictation = new Dictation();
+      try {
+        await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+        if (prefix) said(instances[0], prefix);
+        instances[0]?.onerror?.({ error: "network" });
+        await vi.waitFor(() => expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+        dictation.submitHold();
+        await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+        expect(dictation.state.status).toBe("transcribing");
+        expect(dictation.state.transcript).toBe(prefix);
+        if (change === "space") {
+          selectSpace("space-b");
+          selectSpace("space-a");
+        } else {
+          synchronizeRpcSession("authenticated", "recording-owner-b", "recording-session-b");
+          synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+        }
+
+        if (failure === "timeout") {
+          await vi.advanceTimersByTimeAsync(TRANSCRIPTION_RESPONSE_TIMEOUT_MS);
+          expect(signal?.aborted).toBe(true);
+        } else {
+          reject(new TypeError("Old account request failed"));
+          await vi.waitFor(() => expect(dictation.state.status).toBe("idle"));
+        }
+
+        expect(dictation.state).toEqual({ status: "idle", transcript: "" });
+        expect(onFinal).not.toHaveBeenCalled();
+        expect(listener).not.toHaveBeenCalled();
+      } finally {
+        dictation.stop();
+        unsubscribe();
+      }
+    },
+  );
+
+  it.each([
+    { stage: "response", reselect: false },
+    { stage: "response", reselect: true },
+    { stage: "body", reselect: false },
+    { stage: "body", reselect: true },
+  ])(
+    "drops retained speech after a Space change during $stage, ABA=$reselect",
+    async ({ stage, reselect }) => {
+      const store = new Map([["rakazo:space-id", "space-a"]]);
+      vi.stubGlobal("window", {
+        SpeechRecognition: FakeRecognition,
+        localStorage: {
+          getItem: (key: string) => store.get(key) ?? null,
+          setItem: (key: string, value: string) => store.set(key, value),
+          removeItem: (key: string) => store.delete(key),
+        },
+      });
+      let respond!: (response: Response) => void;
+      const fetch = vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            respond = resolve;
+          }),
+      );
+      stubRecorderFallback(fetch);
+      const onFinal = vi.fn();
+      const dictation = new Dictation();
+      try {
+        await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+        said(instances[0], "call me later");
+        instances[0]?.onerror?.({ error: "network" });
+        await vi.waitFor(() => expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+        dictation.submitHold();
+        await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+        let body!: ReadableStreamDefaultController<Uint8Array>;
+        const read = vi.fn();
+        if (stage === "body") {
+          respond(
+            new Response(
+              new ReadableStream<Uint8Array>(
+                {
+                  start(controller) {
+                    body = controller;
+                  },
+                  pull: read,
+                },
+                { highWaterMark: 0 },
+              ),
+            ),
+          );
+          await vi.waitFor(() => expect(read).toHaveBeenCalled());
+        }
+        selectSpace("space-b");
+        if (reselect) selectSpace("space-a");
+        if (stage === "body") {
+          body.enqueue(new TextEncoder().encode(JSON.stringify({ text: "new words" })));
+          body.close();
+        } else respond(Response.json({ text: "new words" }));
+        await vi.waitFor(() => expect(dictation.state.status).toBe("idle"));
+        expect(dictation.state.error).toBeUndefined();
+        expect(onFinal).not.toHaveBeenCalled();
+      } finally {
+        dictation.stop();
+      }
+    },
+  );
+
   it("keeps a Web Speech permission error when no server fallback applies", async () => {
     const instances: Array<{
       onerror: ((event: { error?: string }) => void) | null;
@@ -1658,4 +1788,72 @@ describe("transcriptionLanguage", () => {
     vi.stubGlobal("navigator", { language: "es-ES" });
     expect(transcriptionLanguage()).toBe("es");
   });
+});
+
+describe("transcription payment recovery", () => {
+  it.each([false, true])("preserves ownership when Space is reselected: %s", async (reselected) => {
+    const store = new Map([["rakazo:space-id", "space-a"]]);
+    const localStorage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+    };
+    vi.stubGlobal("window", { localStorage });
+    let resolve!: (response: Response) => void;
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((yes) => {
+          resolve = yes;
+        }),
+    );
+    stubRecorderFallback(fetch);
+    const listener = vi.fn();
+    const stop = subscribeSubscriptionRequired(listener);
+    const dictation = new Dictation();
+    await dictation.listen({ mode: "hold", transcribe: true, onFinal: vi.fn() });
+    dictation.submitHold();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    if (reselected) {
+      selectSpace("space-b");
+      selectSpace("space-a");
+    }
+    resolve(Response.json({ error: "Subscription required" }, { status: 402 }));
+    await vi.waitFor(() => expect(dictation.state.status).toBe("idle"));
+    expect(listener).toHaveBeenCalledTimes(reselected ? 0 : 1);
+    stop();
+  });
+});
+
+it("does not publish an old account transcription or payment error after an account ABA", async () => {
+  const store = new Map([["rakazo:space-id", "space-a"]]);
+  const localStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, value),
+    removeItem: (key: string) => store.delete(key),
+  };
+  vi.stubGlobal("window", { localStorage });
+  synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+  let resolve!: (response: Response) => void;
+  const fetch = vi.fn(
+    () =>
+      new Promise<Response>((yes) => {
+        resolve = yes;
+      }),
+  );
+  stubRecorderFallback(fetch);
+  const listener = vi.fn();
+  const stop = subscribeSubscriptionRequired(listener);
+  const onFinal = vi.fn();
+  const dictation = new Dictation();
+  await dictation.listen({ mode: "hold", transcribe: true, onFinal });
+  dictation.submitHold();
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+  synchronizeRpcSession("authenticated", "recording-owner-b", "recording-session-b");
+  synchronizeRpcSession("authenticated", "recording-owner-a", "recording-session-a");
+  resolve(Response.json({ error: "Subscription required" }, { status: 402 }));
+  await vi.waitFor(() => expect(dictation.state.status).toBe("idle"));
+  expect(dictation.state.error).toBeUndefined();
+  expect(onFinal).not.toHaveBeenCalled();
+  expect(listener).not.toHaveBeenCalled();
+  stop();
 });

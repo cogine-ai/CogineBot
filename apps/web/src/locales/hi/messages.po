@@ -6330,3 +6330,32 @@ msgstr "आपके ChatGPT प्लान की उपयोग सीमा
 #: src/lib/run-error.ts
 msgid "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT."
 msgstr "ChatGPT प्लान का उपयोग उपलब्ध नहीं है। अपनी उपयोग सेटिंग की समीक्षा करें या ChatGPT को फिर से कनेक्ट करें।"
+
+#: src/pages/Paywall.tsx
+msgid "Back to chats"
+msgstr "चैट पर वापस जाएँ"
+
+#: src/pages/Paywall.tsx
+msgid "Contact your organization owner"
+msgstr "संगठन के स्वामी से संपर्क करें"
+
+#: src/pages/Paywall.tsx
+msgid "Could not refresh billing"
+msgstr "बिलिंग रीफ़्रेश नहीं हो सकी"
+
+#: src/pages/Paywall.tsx
+msgid "Could not load Spaces"
+msgstr "स्पेस लोड नहीं हो सके"
+
+#: src/components/LoadFailureNotice.tsx
+msgid "Contact your organization owner for an invitation"
+msgstr "निमंत्रण के लिए संगठन के स्वामी से संपर्क करें"
+
+#: src/pages/Paywall.tsx
+#: src/components/LoadFailureNotice.tsx
+msgid "Switch Space"
+msgstr "स्पेस बदलें"
+
+#: src/lib/sign-out.ts
+msgid "Could not log out. Try again."
+msgstr "लॉग आउट नहीं हो सका। फिर से कोशिश करें।"

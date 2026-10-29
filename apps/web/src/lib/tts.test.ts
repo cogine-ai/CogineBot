@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { selectSpace, subscribeSubscriptionRequired, synchronizeRpcSession } from "./rpc.js";
 import { MAX_VOICE_AUDIO_BYTES, Speaker, VOICE_RESPONSE_TIMEOUT_MS } from "./tts.js";
 
 const target = vi.hoisted(() => ({ prepare: vi.fn() }));
@@ -476,4 +477,40 @@ describe("Speaker", () => {
 
     expect(speaker.state.error).toBe("Voice request timed out.");
   });
+});
+
+describe("voice payment recovery", () => {
+  it.each(["current", "reselected", "cancelled", "session", "account-ABA"] as const)(
+    "only projects the %s response when its request still owns recovery",
+    async (kind) => {
+      stubSelectedSpace("space-a");
+      synchronizeRpcSession("authenticated", "voice-owner-a", "voice-session-a");
+      const pending = deferred<Response>();
+      const fetch = vi.fn(() => pending.promise);
+      vi.stubGlobal("fetch", fetch);
+      target.prepare.mockResolvedValue({ ready: true, utterances: ["Hello"] });
+      const listener = vi.fn();
+      const stop = subscribeSubscriptionRequired(listener);
+      const speaker = new Speaker();
+      const sample = speaker.speak("Hello");
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      if (kind === "reselected") {
+        selectSpace("space-b");
+        selectSpace("space-a");
+      }
+      if (kind === "cancelled") speaker.stop();
+      if (kind === "session")
+        synchronizeRpcSession("authenticated", "voice-owner-a", "voice-session-new");
+      if (kind === "account-ABA") {
+        synchronizeRpcSession("authenticated", "voice-owner-b", "voice-session-b");
+        synchronizeRpcSession("authenticated", "voice-owner-a", "voice-session-a");
+      }
+      pending.resolve(Response.json({ error: "Subscription required" }, { status: 402 }));
+      await sample;
+      expect(listener).toHaveBeenCalledTimes(kind === "current" ? 1 : 0);
+      if (kind === "session" || kind === "account-ABA")
+        expect(speaker.state).toEqual({ status: "idle" });
+      stop();
+    },
+  );
 });

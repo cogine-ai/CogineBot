@@ -18,6 +18,7 @@ import {
   applyMobileThreadEvent,
   blockText,
   captureApiRequestContext,
+  noteSubscriptionRequired,
   rpc,
   subscribeThread,
 } from "./api";
@@ -701,7 +702,8 @@ function deleteQuietly(uri: string | null): void {
 }
 
 async function transcribeClip(clip: CallClip, signal: AbortSignal): Promise<string> {
-  const { apiBase, headers } = await captureApiRequestContext();
+  const requestContext = await captureApiRequestContext();
+  const { apiBase, headers } = requestContext;
   const res = await fetch(`${apiBase}/api/voice/transcribe`, {
     method: "POST",
     headers: { "content-type": "application/json", origin: "coginebot://", ...headers },
@@ -709,7 +711,10 @@ async function transcribeClip(clip: CallClip, signal: AbortSignal): Promise<stri
     signal,
   });
   const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
-  if (!res.ok) throw new Error(errorText(body.error ?? "", t("Could not transcribe that.")));
+  if (!res.ok) {
+    if (res.status === 402 && !signal.aborted) noteSubscriptionRequired(requestContext);
+    throw new Error(errorText(body.error ?? "", t("Could not transcribe that.")));
+  }
   return body.text ?? "";
 }
 

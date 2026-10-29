@@ -15,6 +15,7 @@ import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { BillingRecovery } from "../components/billing-recovery";
 import { CallCard } from "../components/CallCard";
 import { ComputerUpdateProgress } from "../components/computer-update-progress";
 import { floatingHeaderOptions, glassHeaderOptions } from "../components/glass-title";
@@ -268,6 +269,7 @@ export default function Layout() {
               </View>
               <ComputerUpdateProgress />
               <CallCard />
+              <BillingRecovery />
             </ThemeProvider>
           </ChatContentProviders>
         ) : (

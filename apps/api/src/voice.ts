@@ -28,6 +28,7 @@ import { readBoundedBody } from "./http-body.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 
 export interface VoiceDeps {
+  assertAccess?: (actor: Actor) => Promise<void>;
   prisma: PrismaClient;
   secrets: SecretStore;
 }
@@ -398,13 +399,27 @@ export function mountVoiceHttpRoutes(
   deps: VoiceDeps,
   authenticate: (c: Context) => Promise<Actor | null>,
 ) {
+  async function actorFor(c: Context): Promise<Actor | Response> {
+    try {
+      return (await authenticate(c)) ?? c.json({ error: "Unauthorized" }, 401);
+    } catch (error) {
+      if (
+        error instanceof ORPCError &&
+        (error.code === "UNAUTHORIZED" || error.code === "FORBIDDEN")
+      )
+        return voiceHttpError(c, error);
+      getLogger().warn("voice authentication failed", { route: c.req.path });
+      return c.json({ error: "Authentication failed." }, 500);
+    }
+  }
   app.post("/api/voice/speak", async (c) => {
-    const actor = await authenticate(c);
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await actorFor(c);
+    if (actor instanceof Response) return actor;
     const raw = await readBoundedBody(c.req.raw, MAX_SPEAK_REQUEST_BYTES);
     if (raw === null) return c.json({ error: "Request body is too large." }, 413);
     const body = parseVoiceRequestBody(raw);
     try {
+      await deps.assertAccess?.(actor);
       const clip = await synthesizeVoice(deps, actor, {
         text: String((body as { text?: unknown }).text ?? ""),
         voiceId: optionalString((body as { voiceId?: unknown }).voiceId),
@@ -429,14 +444,15 @@ export function mountVoiceHttpRoutes(
   });
 
   app.post("/api/voice/transcribe", async (c) => {
-    const actor = await authenticate(c);
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await actorFor(c);
+    if (actor instanceof Response) return actor;
     const raw = await readBoundedBody(c.req.raw, MAX_TRANSCRIBE_REQUEST_BYTES);
     if (raw === null) return c.json({ error: "Request body is too large." }, 413);
     const body = parseVoiceRequestBody(raw);
     const audioBase64 = String((body as { audioBase64?: unknown }).audioBase64 ?? "");
     const language = optionalString((body as { language?: unknown }).language);
     try {
+      await deps.assertAccess?.(actor);
       const audio = decodeAudioBase64(audioBase64);
       const result = await transcribeVoice(deps, actor, {
         audio,
@@ -485,8 +501,18 @@ function voiceHttpError(c: Context, error: unknown) {
   if (error instanceof ORPCError) {
     const code = String(error.code ?? "BAD_REQUEST");
     const status =
-      code === "UNAUTHORIZED" ? 401 : code === "NOT_FOUND" ? 404 : code === "CONFLICT" ? 409 : 400;
-    return c.json({ error: error.message }, status);
+      code === "UNAUTHORIZED"
+        ? 401
+        : code === "FORBIDDEN"
+          ? 403
+          : code === "NOT_FOUND"
+            ? 404
+            : code === "CONFLICT"
+              ? 409
+              : code === "PAYMENT_REQUIRED"
+                ? 402
+                : 400;
+    return c.json({ error: error.message, code, data: error.data }, status);
   }
   const message = error instanceof Error ? error.message : "Voice request failed.";
   // Message only: request bodies, keys and audio never reach the log.

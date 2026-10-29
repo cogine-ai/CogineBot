@@ -28,6 +28,66 @@ export function createBillingAccount(
   });
 }
 
+export const BILLING_STATUS_FRESH_MS = 2_000;
+export const BILLING_STATUS_RETRY_MS = 15_000;
+export type BillingStatusRefreshClaim =
+  | { state: "claimed"; customerId: string }
+  | { state: "fresh" | "missing" }
+  | { state: "busy"; retryAfterSeconds: number };
+
+/** Read-only: a verified return can supersede an older pull without releasing its claim. */
+export async function hasFreshBillingStatus(
+  prisma: PrismaClient,
+  organizationId: string,
+): Promise<boolean> {
+  const [row] = await prisma.$queryRaw<[{ fresh: boolean }]>(Prisma.sql`
+    SELECT EXISTS (
+      SELECT 1 FROM billing_accounts WHERE "organizationId" = ${organizationId}
+        AND "syncedAt" > (clock_timestamp() AT TIME ZONE 'UTC') - (${BILLING_STATUS_FRESH_MS}::double precision * interval '1 millisecond')
+        AND ("statusRefreshStartedAt" IS NULL OR "syncedAt" >= "statusRefreshStartedAt")
+    ) AS "fresh"
+  `);
+  return Boolean(row.fresh);
+}
+
+/** A short, non-waiting database claim; never keep its connection during provider I/O. */
+export function claimBillingStatusRefresh(
+  prisma: PrismaClient,
+  organizationId: string,
+): Promise<BillingStatusRefreshClaim> {
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw(Prisma.sql`SET LOCAL lock_timeout = '100ms'`);
+      const [clock] = await tx.$queryRaw<[{ now: Date; acquired: boolean }]>(Prisma.sql`
+      SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now",
+        pg_try_advisory_xact_lock(hashtextextended(${`billing-status:${organizationId}`}, 3)) AS "acquired"
+    `);
+      if (!clock.acquired) return { state: "busy", retryAfterSeconds: 1 };
+      const account = await tx.billingAccount.findUnique({ where: { organizationId } });
+      if (!account) return { state: "missing" };
+      const now = clock.now.getTime();
+      const synced = account.syncedAt?.getTime();
+      const started = account.statusRefreshStartedAt?.getTime();
+      const succeeded = synced !== undefined && (started === undefined || synced >= started);
+      if (succeeded && now - synced < BILLING_STATUS_FRESH_MS) return { state: "fresh" };
+      if (!succeeded && started !== undefined && now - started < BILLING_STATUS_RETRY_MS)
+        return {
+          state: "busy",
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil((BILLING_STATUS_RETRY_MS - (now - started)) / 1000),
+          ),
+        };
+      await tx.billingAccount.update({
+        where: { organizationId },
+        data: { statusRefreshStartedAt: clock.now },
+      });
+      return { state: "claimed", customerId: account.customerId };
+    },
+    { maxWait: 500, timeout: 1_500 },
+  );
+}
+
 /**
  * Loads the customer's current subscription and overwrites the stored snapshot (`null` clears
  * it). The write only lands if no sync that started later has written first, so an older read
@@ -38,9 +98,10 @@ export async function syncBillingSnapshot(
   customerId: string,
   load: () => Promise<BillingSubscriptionSnapshot | null>,
 ): Promise<boolean> {
-  // The database clock, so API instances with skewed clocks still order correctly.
+  // A UTC timestamp keeps the adapter's Date conversion independent of the session timezone.
+  // The database clock still orders API instances with skewed local clocks.
   const [{ startedAt }] = await prisma.$queryRaw<[{ startedAt: Date }]>(
-    Prisma.sql`SELECT clock_timestamp() AS "startedAt"`,
+    Prisma.sql`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "startedAt"`,
   );
   const snapshot = await load();
   const written = await prisma.billingAccount.updateMany({

@@ -18,6 +18,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
 import { ListboxSelect } from "../components/ListboxSelect";
+import { createSpaceRpc } from "../lib/rpc";
 import { SpaceRpcProvider, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
 import {
@@ -129,6 +130,10 @@ export function SettingsOverlay({
   const targetCurrent = useCallback(
     () => committedTarget.current === targetBinding,
     [targetBinding],
+  );
+  const billingClient = useMemo(
+    () => createSpaceRpc(space?.id ?? null, targetCurrent),
+    [space?.id, targetCurrent],
   );
   const handleMemoryBusy = useCallback(
     (busy: boolean) => {
@@ -351,7 +356,13 @@ export function SettingsOverlay({
                   onRecoveryDismissed={releaseComputerRecovery}
                 />
               ) : null}
-              {section === "billing" && billingEnabled ? <BillingSettingsPanel /> : null}
+              {section === "billing" && billingEnabled ? (
+                <BillingSettingsPanel
+                  key={`${ownerKey}:${space?.id}`}
+                  client={billingClient}
+                  isCurrent={targetCurrent}
+                />
+              ) : null}
               {section === "updates" ? (
                 <UpdatesSettingsPanel isDeploymentOwner={isDeploymentOwner} />
               ) : null}

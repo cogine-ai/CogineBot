@@ -282,7 +282,7 @@ test("a scoped 403 recovers through the default Space without changing chat cont
   await page.reload();
   const notice = page.getByTestId("load-failure");
   await expect(notice).toContainText("This Space is unavailable");
-  await notice.getByRole("button", { name: "Retry", exact: true }).click();
+  await notice.getByRole("button", { name: "Switch Space", exact: true }).click();
   await expect(notice).toHaveCount(0);
   await expect(page.getByTestId("composer-bar")).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBeNull();

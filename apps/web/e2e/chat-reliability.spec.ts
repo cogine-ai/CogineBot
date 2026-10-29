@@ -1094,7 +1094,7 @@ test("an explicit initialization permission error waits for user retry without a
   state.bootstrap = null;
   await page
     .getByTestId("load-failure")
-    .getByRole("button", { name: "Retry", exact: true })
+    .getByRole("button", { name: "Switch Space", exact: true })
     .click();
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
   await expect(page.getByTestId("load-failure")).toHaveCount(0);
@@ -2169,7 +2169,7 @@ test("finishing bootstrap resets an older-page load from the uninitialized scope
   await earlier.click();
   await started.promise;
   state.bootstrap = (route, data) => json(route, { ...data, thread: latest(data.thread!) });
-  await page.getByTestId("load-failure").getByRole("button", { name: "Retry" }).click();
+  await page.getByTestId("load-failure").getByRole("button", { name: "Switch Space" }).click();
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
   await expect(page.getByTestId("load-failure")).toHaveCount(0);
   await expect(earlier).toBeEnabled();
