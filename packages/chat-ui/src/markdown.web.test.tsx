@@ -617,7 +617,10 @@ describe("web reply content projection", () => {
   it.each(
     webAnnouncementCases.filter(
       (row) =>
-        !row.name.includes("table") && !row.name.includes("code") && !row.name.includes("ordered"),
+        !row.name.includes("table") &&
+        !row.name.includes("code") &&
+        !row.name.includes("ordered") &&
+        !row.name.includes("task"),
     ),
   )("keeps the visible image identity for $name", ({ source, loadRemoteImages, spoken }) => {
     const html = renderToStaticMarkup(
@@ -635,6 +638,19 @@ describe("web reply content projection", () => {
       if (loadRemoteImages && (!visible.trim() || word === "target.example.test")) continue; // Empty loaded alt retains the stable source host.
       expect(visible).toContain(word);
     }
+  });
+  it("reads actual GFM checkbox states without enabling raw HTML inputs", () => {
+    const source = "3. Plain\n4. [x] Done\n5. [ ] Pending";
+    const container = document.createElement("div");
+    container.innerHTML = renderToStaticMarkup(<ChatMarkdown>{source}</ChatMarkdown>);
+    expect(container.querySelector("ol")?.classList.contains("contains-task-list")).toBe(true);
+    expect(
+      [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].map(
+        (input) => input.checked,
+      ),
+    ).toEqual([true, false]);
+    expect(visibleWebTextFromMarkdown(source)).toBe("Plain\n[x] Done\n[ ] Pending");
+    expect(visibleWebTextFromMarkdown('<input type="checkbox" checked>')).toBe("");
   });
   it("keeps image identity independent of loading choices without fetching anything", () => {
     const fetch = vi.fn();

@@ -94,6 +94,8 @@ export function visibleWebTextFromMarkdown(source: string): string {
   });
   if (!tree) return "";
   function project(node: MarkdownHast, enclosingLink: EnclosingLink = false): MarkdownHast {
+    if (node.tagName === "input" && node.properties?.type === "checkbox")
+      return { type: "text", value: node.properties.checked ? "[x]" : "[ ]" };
     if (node.tagName === "img") {
       const src = hastString(node.properties?.src) ?? "";
       const alt = hastString(node.properties?.alt) ?? "";
@@ -124,7 +126,13 @@ export function visibleWebTextFromMarkdown(source: string): string {
         children: node.children?.map((child) => project(child, href ? "open" : "rejected")),
       };
     }
-    if (node.tagName === "ol") {
+    if (
+      node.tagName === "ol" &&
+      !(
+        Array.isArray(node.properties?.className) &&
+        node.properties.className.includes("contains-task-list")
+      )
+    ) {
       const start = Number(node.properties?.start ?? 1);
       let index = 0;
       return {

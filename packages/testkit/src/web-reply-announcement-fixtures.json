@@ -289,5 +289,35 @@
     "source": "4. Parent\n   - Child\n5. Next",
     "spoken": "4. Parent\nChild\n5. Next",
     "nativeSpoken": "4. Parent\nChild\n5. Next"
+  },
+  {
+    "name": "ordered task list hides every decimal marker",
+    "source": "3. Plain\n4. [x] Done\n5. Plain",
+    "spoken": "Plain\n[x] Done\nPlain",
+    "nativeSpoken": "3. Plain\n4. [x] Done\n5. Plain"
+  },
+  {
+    "name": "unchecked task state remains distinct",
+    "source": "- [ ] Same",
+    "spoken": "[ ] Same",
+    "nativeSpoken": "[ ] Same"
+  },
+  {
+    "name": "checked task state remains distinct",
+    "source": "- [x] Same",
+    "spoken": "[x] Same",
+    "nativeSpoken": "[x] Same"
+  },
+  {
+    "name": "ordinary ordered list inside task retains markers",
+    "source": "- [ ] Parent\n  1. One\n  2. Two",
+    "spoken": "[ ] Parent\n1. One\n2. Two",
+    "nativeSpoken": "[ ] Parent\n1. One\n2. Two"
+  },
+  {
+    "name": "task nested in ordinary ordered list preserves outer markers",
+    "source": "4. Parent\n   - [x] Child\n5. Next",
+    "spoken": "4. Parent\n[x] Child\n5. Next",
+    "nativeSpoken": "4. Parent\n[x] Child\n5. Next"
   }
 ]
