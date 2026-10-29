@@ -7,6 +7,7 @@ import {
   claimBillingStatusRefresh,
   createBillingAccount,
   hasBillingAccess,
+  hasFreshBillingStatus,
   organizationForMember,
   organizationSeatCount,
   ownedBillingAccounts,
@@ -71,7 +72,7 @@ export function createBillingService(deps: {
       });
       pending = { promise, startedAt: performance.now() };
       statusRefreshes.set(organizationId, pending);
-    }
+    } else if (await hasFreshBillingStatus(prisma, organizationId)) return;
     const remaining = BILLING_STATUS_RESPONSE_TIMEOUT_MS - (performance.now() - pending.startedAt);
     if (remaining <= 0) throw unavailable(5);
     let timer: ReturnType<typeof setTimeout> | undefined;

@@ -193,6 +193,15 @@ describe.skipIf(!enabled)("bounded recovery billing pulls (PostgreSQL)", () => {
     const f = await fixture();
     const pending = deferred<BillingSubscriptionSnapshot>();
     const current = f.service();
+    const writes: PromiseLike<unknown>[] = [];
+    const updateMany = f.prisma.billingAccount.updateMany.bind(f.prisma.billingAccount);
+    const trackWrites = vi
+      .spyOn(f.prisma.billingAccount, "updateMany")
+      .mockImplementation((args) => {
+        const write = updateMany(args);
+        writes.push(write);
+        return write;
+      });
     try {
       f.provider.getCustomerSubscription.mockReturnValueOnce(pending.promise);
       const response = current.status(f.actor, { refresh: true });
@@ -208,14 +217,18 @@ describe.skipIf(!enabled)("bounded recovery billing pulls (PostgreSQL)", () => {
       // Checkout/portal return and webhook pulls bypass recovery admission immediately.
       await f.service().syncForActor(f.actor);
       expect((await f.account()).status).toBe("active");
+      const completedWrites = writes.length;
       pending.resolve({ ...active, status: "canceled" });
-      await vi.waitFor(async () =>
-        expect(await current.status(f.actor, { refresh: true })).toMatchObject({ access: true }),
-      );
+      await vi.waitFor(() => expect(writes).toHaveLength(completedWrites + 2));
+      await Promise.all(writes);
+      await expect(current.status(f.actor, { refresh: true })).resolves.toMatchObject({
+        access: true,
+      });
       expect((await f.account()).status).toBe("active");
       expect(f.provider.getCustomerSubscription).toHaveBeenCalledTimes(2);
     } finally {
       pending.resolve(active);
+      trackWrites.mockRestore();
       await f.close();
     }
   });
@@ -240,6 +253,44 @@ describe.skipIf(!enabled)("bounded recovery billing pulls (PostgreSQL)", () => {
       });
       expect(f.provider.getCustomerSubscription).toHaveBeenCalledTimes(2);
     } finally {
+      await f.close();
+    }
+  });
+
+  it("reads a fresh forced return immediately on the same service without discarding its older pull", async () => {
+    const f = await fixture();
+    const pending = deferred<BillingSubscriptionSnapshot>();
+    const current = f.service();
+    f.provider.getCustomerSubscription.mockReturnValueOnce(pending.promise);
+    const stalled = current.status(f.actor, { refresh: true });
+    // Retain the pending response's rejection while the regression exercises the fresh path.
+    const settled = stalled.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    try {
+      await vi.waitFor(() => expect(f.provider.getCustomerSubscription).toHaveBeenCalledOnce());
+      await current.syncForActor(f.actor);
+      await expect(current.status(f.actor, { refresh: true })).resolves.toMatchObject({
+        access: true,
+      });
+      expect(f.provider.getCustomerSubscription).toHaveBeenCalledTimes(2);
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+      let returned = false;
+      const afterExpiry = current.status(f.actor, { refresh: true }).then((status) => {
+        returned = true;
+        return status;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(returned).toBe(false);
+      expect(f.provider.getCustomerSubscription).toHaveBeenCalledTimes(2);
+      pending.resolve({ ...active, status: "canceled" });
+      await expect(afterExpiry).resolves.toMatchObject({ access: true });
+      await expect(stalled).resolves.toMatchObject({ access: true });
+      expect((await f.account()).status).toBe("active");
+    } finally {
+      pending.resolve(active);
+      await settled;
       await f.close();
     }
   });

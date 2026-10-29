@@ -35,6 +35,21 @@ export type BillingStatusRefreshClaim =
   | { state: "fresh" | "missing" }
   | { state: "busy"; retryAfterSeconds: number };
 
+/** Read-only: a verified return can supersede an older pull without releasing its claim. */
+export async function hasFreshBillingStatus(
+  prisma: PrismaClient,
+  organizationId: string,
+): Promise<boolean> {
+  const [row] = await prisma.$queryRaw<[{ fresh: boolean }]>(Prisma.sql`
+    SELECT EXISTS (
+      SELECT 1 FROM billing_accounts WHERE "organizationId" = ${organizationId}
+        AND "syncedAt" > clock_timestamp() - (${BILLING_STATUS_FRESH_MS}::double precision * interval '1 millisecond')
+        AND ("statusRefreshStartedAt" IS NULL OR "syncedAt" >= "statusRefreshStartedAt")
+    ) AS "fresh"
+  `);
+  return Boolean(row.fresh);
+}
+
 /** A short, non-waiting database claim; never keep its connection during provider I/O. */
 export function claimBillingStatusRefresh(
   prisma: PrismaClient,
