@@ -60,14 +60,18 @@ test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => 
     const rowsBefore = await rows.count();
     await expect.poll(() => rows.count(), { timeout: 20_000 }).toBeGreaterThan(rowsBefore);
 
-    // The flood has pushed the target out of the live window.
+    // The flood has pushed the target outside the viewport.
     await expect(targetRow).not.toBeInViewport({ timeout: 20_000 });
     const sentAtPush = sent;
 
-    const aroundJump = page.waitForResponse(
-      (response) =>
-        response.url().includes("/rpc/threads/messages") &&
-        (response.request().postData() ?? "").includes('"around"'),
+    const aroundJump = page.waitForRequest(
+      (request) => {
+        if (new URL(request.url()).pathname !== "/rpc/threads/messages") return false;
+        const input = request.postDataJSON()?.json as
+          | { botId?: string; around?: { messageId?: string } }
+          | undefined;
+        return input?.botId === botId && input.around?.messageId === messageId;
+      },
       { timeout: 15_000 },
     );
     await page.evaluate((id) => {
@@ -77,14 +81,16 @@ test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => 
     // The jump's finally strips this one-shot param as soon as the around-fetch
     // settles. toHaveURL only samples the current URL, so under load the first
     // poll can already miss ?m= and then retry a value that will not return.
-    // The around response is the proof the router observed the deep link.
+    // The matching request proves the router observed this exact target. Read its
+    // response from the same Request rather than racing a separate response event.
 
     // The jump lands mid-stream: the around-page fetch succeeds while sends
     // keep landing, and the target scrolls back into view. (The transcript
     // unfollows the tail for a jump; before that, follow commits could cancel
     // the scroll — asserting the viewport also guards that path.)
-    const aroundResponse = await aroundJump;
-    expect(aroundResponse.ok()).toBe(true);
+    const aroundRequest = await aroundJump;
+    const aroundResponse = await aroundRequest.response();
+    expect(aroundResponse?.status()).toBe(200);
     await expect.poll(() => sent, { timeout: 10_000 }).toBeGreaterThan(sentAtPush);
     await expect(targetRow).toBeInViewport({ timeout: 20_000 });
 
