@@ -16,6 +16,7 @@ import {
   messagingChannelId,
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
+  STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
 } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
@@ -1579,7 +1580,7 @@ export async function createPendingSteeringRun(
       threadId: input.threadId,
       userId: batch[0]!.userId,
       ...(connectionIds.length ? { connectionIds } : {}),
-      prompt: "Respond to the user's steering context.",
+      prompt: STEERING_CONTINUATION_PROMPT,
       status: "queued",
     },
   });

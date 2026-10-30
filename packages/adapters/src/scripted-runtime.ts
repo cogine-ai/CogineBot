@@ -4,7 +4,7 @@ import type {
   AgentRuntime,
   AgentRuntimeEvent,
 } from "@rakazo/adapter-kit";
-import { abortableDelay, inferHandoffTargetName } from "@rakazo/core";
+import { abortableDelay, inferHandoffTargetName, STEERING_CONTINUATION_PROMPT } from "@rakazo/core";
 
 const running = new Map<string, AbortController>();
 
@@ -33,7 +33,23 @@ export class ScriptedAgentRuntime implements AgentRuntime {
       if (shouldFail(request.prompt)) {
         throw new Error("Scripted run failure");
       }
-      if (shouldHang(request.prompt)) {
+      if (signal.aborted || controller.signal.aborted) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+      const steering = (await request.claimSteering?.([])) ?? [];
+      if (signal.aborted || controller.signal.aborted) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+      // Only a steering continuation replaces its task with the messages it claims.
+      // Other turns keep their own script, with those messages as context.
+      const steeredPrompt =
+        request.prompt.includes(STEERING_CONTINUATION_PROMPT) && steering.length
+          ? steering.map((item) => item.historyText ?? item.text).join("\n")
+          : undefined;
+      const prompt = steeredPrompt ?? request.prompt;
+      if (shouldHang(prompt)) {
         // Long-running work happens on the computer, which starts it like any real run would.
         yield {
           type: "tool",
@@ -50,7 +66,10 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         yield { type: "done", text: "stopped" };
         return;
       }
-      const script = request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint);
+      const script =
+        steeredPrompt !== undefined
+          ? inferScript(steeredPrompt, request.resumeFromCheckpoint)
+          : (request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint));
       // Per-run call index so repeated tools (e.g. message_agent) get distinct
       // executionIds — delivery keys and effect replays key off this value.
       let toolCallSeq = 0;

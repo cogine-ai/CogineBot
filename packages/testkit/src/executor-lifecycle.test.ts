@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { AgentSteeringMessage } from "@rakazo/adapter-kit";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
@@ -334,6 +335,210 @@ describeIntegration("run executor lifecycle", () => {
     expect(userMessages).toHaveLength(2);
     expect(userMessages[0]!.seq).toBeLessThan(userMessages[1]!.seq);
   });
+
+  it.each([false, true])(
+    "consumes a scripted continuation batch without requeueing it (fresh: %s)",
+    async (fresh) => {
+      const seeded = await seedRun(`scripted-steering-${fresh}`, "Initial task", {
+        status: "running",
+        leaseOwner: "initial-worker",
+        leaseFence: 2,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        startedAt: new Date(),
+      });
+      const attempt = await handles.prisma.attempt.create({
+        data: { runId: seeded.run.id, fence: 2, status: "running" },
+      });
+      const events = createThreadEvents(handles.prisma);
+      const send = (text: string) =>
+        events.sendUserMessage({
+          spaceId: seeded.me.spaceId,
+          threadId: seeded.thread.id,
+          botId: seeded.bot.id,
+          userId: seeded.me.userId,
+          blocks: [{ kind: "text", text }],
+          prompt: text,
+          trigger: "follow_up",
+        });
+      for (const text of ["Use the revised data.", "Keep it concise."]) await send(text);
+      await expect(
+        events.claimSteering({
+          threadId: seeded.thread.id,
+          botId: seeded.bot.id,
+          runId: seeded.run.id,
+          leaseOwner: "initial-worker",
+          leaseFence: 1,
+          seenIds: [],
+        }),
+      ).resolves.toEqual([]);
+      expect(
+        await handles.prisma.steeringMessage.count({
+          where: { runId: seeded.run.id, claimedAt: null },
+        }),
+      ).toBe(2);
+      const finalized = await events.finalizeRun({
+        spaceId: seeded.me.spaceId,
+        threadId: seeded.thread.id,
+        botId: seeded.bot.id,
+        runId: seeded.run.id,
+        taskId: seeded.task.id,
+        attemptId: attempt.id,
+        leaseOwner: "initial-worker",
+        leaseFence: 2,
+        outcome: "completed",
+        blocks: [{ kind: "text", text: "Initial answer" }],
+      });
+      if (!finalized?.continuationRunId) throw new Error("Expected a steering continuation");
+      const continuationRunId = finalized.continuationRunId;
+      const originalBatch = await handles.prisma.steeringMessage.findMany({
+        where: { runId: continuationRunId },
+        orderBy: { message: { seq: "asc" } },
+      });
+      expect(originalBatch).toHaveLength(2);
+      const captured: Array<{ runId: string; batch: AgentSteeringMessage[] }> = [];
+      const published: string[] = [];
+      let freshMessageId: string | undefined;
+      const enqueue = handles.jobs.enqueue.bind(handles.jobs);
+      // Exercise the real finalizer and its queue publication once per invocation.
+      // This boundary keeps a regression from dispatching an unbounded chain of runs.
+      const publish = vi.spyOn(handles.jobs, "enqueue").mockImplementation(async (job) => {
+        if (job.name === "run.continue") {
+          const run = await handles.prisma.run.findUnique({ where: { id: job.payload.runId } });
+          if (run?.botId === seeded.bot.id) {
+            published.push(job.payload.runId);
+            return;
+          }
+        }
+        await enqueue(job);
+      });
+      const runRuntime = handles.runtime.run.bind(handles.runtime);
+      const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+        if (request.botId !== seeded.bot.id || !request.claimSteering)
+          return runRuntime(request, context);
+        const claimSteering = request.claimSteering;
+        return runRuntime(
+          {
+            ...request,
+            claimSteering: async (seenIds) => {
+              const batch = await claimSteering(seenIds);
+              captured.push({ runId: request.runId, batch });
+              for (const item of batch) {
+                await expect(
+                  handles.prisma.steeringMessage.findUniqueOrThrow({ where: { id: item.id } }),
+                ).resolves.toMatchObject({
+                  messageId: item.messageId,
+                  runId: request.runId,
+                  claimedAt: expect.any(Date),
+                });
+              }
+              if (fresh && request.runId === continuationRunId) {
+                freshMessageId = (await send("A fresh message after claim.")).messageId;
+              }
+              return batch;
+            },
+          },
+          context,
+        );
+      });
+      try {
+        await handles.executor.continueRun(continuationRunId, "continuation-worker");
+        const pending = await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+        });
+        expect({
+          claimedBatches: captured.length,
+          pendingMessages: pending.length,
+          published,
+        }).toEqual({
+          claimedBatches: 1,
+          pendingMessages: fresh ? 1 : 0,
+          published: fresh ? [expect.any(String)] : [],
+        });
+        expect(captured[0]).toEqual({
+          runId: continuationRunId,
+          batch: originalBatch.map((item, index) =>
+            expect.objectContaining({
+              id: item.id,
+              messageId: item.messageId,
+              historyText: index === 0 ? "Use the revised data." : "Keep it concise.",
+            }),
+          ),
+        });
+        const answer = await handles.prisma.message.findMany({
+          where: { runId: continuationRunId, role: "bot" },
+        });
+        expect(JSON.stringify(answer.map((item) => item.blocks))).toContain(
+          "Use the revised data.\\nKeep it concise.",
+        );
+        expect(JSON.stringify(answer.map((item) => item.blocks))).not.toContain(
+          "done. i handled: Respond to the user's steering context.",
+        );
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "completed" });
+        if (fresh) {
+          expect(pending).toEqual([
+            expect.objectContaining({
+              messageId: freshMessageId,
+              claimedAt: null,
+              runId: expect.any(String),
+            }),
+          ]);
+          const nextRunId = pending[0]!.runId!;
+          expect(nextRunId).not.toBe(continuationRunId);
+          expect(published).toEqual([nextRunId]);
+          await handles.executor.continueRun(nextRunId, "fresh-worker");
+          expect(captured[1]).toEqual({
+            runId: nextRunId,
+            batch: [
+              expect.objectContaining({
+                id: pending[0]!.id,
+                messageId: freshMessageId,
+                historyText: "A fresh message after claim.",
+              }),
+            ],
+          });
+          const freshAnswer = await handles.prisma.message.findMany({
+            where: { runId: nextRunId, role: "bot" },
+          });
+          expect(JSON.stringify(freshAnswer.map((item) => item.blocks))).toContain(
+            "done. i handled: A fresh message after claim.",
+          );
+          expect(published).toEqual([nextRunId]);
+        } else {
+          expect(pending).toEqual([]);
+          expect(published).toEqual([]);
+        }
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.run.count({ where: { botId: seeded.bot.id, status: "queued" } }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.run.count({
+            where: { botId: seeded.bot.id, trigger: { not: "created" } },
+          }),
+        ).toBe(fresh ? 3 : 2);
+      } finally {
+        // Cleanup follows the assertions; it cannot make a non-consuming run pass.
+        try {
+          await handles.prisma.run.updateMany({
+            where: { botId: seeded.bot.id, status: { in: ["queued", "leased", "running"] } },
+            data: {
+              status: "cancelled",
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              completedAt: new Date(),
+            },
+          });
+        } finally {
+          runtime.mockRestore();
+          publish.mockRestore();
+        }
+      }
+    },
+  );
 
   it.each([
     { claim: false, fresh: false, outcome: "failed" as const },
