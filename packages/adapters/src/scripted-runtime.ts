@@ -37,18 +37,20 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         yield { type: "done", text: "stopped" };
         return;
       }
-      const steering = (await request.claimSteering?.([])) ?? [];
+      const continuation = request.prompt.includes(STEERING_CONTINUATION_PROMPT);
+      // Ordinary scripts cannot interpret waiting messages; leave them for a continuation.
+      const steering = continuation ? ((await request.claimSteering?.([])) ?? []) : [];
       if (signal.aborted || controller.signal.aborted) {
         yield { type: "done", text: "stopped" };
         return;
       }
-      // Only a steering continuation replaces its task with the messages it claims.
-      // Other turns keep their explicit scripts unchanged.
-      const steeredPrompt =
-        request.prompt.includes(STEERING_CONTINUATION_PROMPT) && steering.length
-          ? steering.map((item) => item.historyText ?? item.text).join("\n")
-          : undefined;
+      const steeredPrompt = steering.length
+        ? steering.map((item) => item.historyText ?? item.text).join("\n")
+        : undefined;
       const prompt = steeredPrompt ?? request.prompt;
+      if (shouldFail(prompt)) {
+        throw new Error("Scripted run failure");
+      }
       if (shouldHang(prompt)) {
         // Long-running work happens on the computer, which starts it like any real run would.
         yield {

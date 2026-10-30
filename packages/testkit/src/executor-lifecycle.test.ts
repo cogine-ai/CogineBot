@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentSteeringMessage } from "@rakazo/adapter-kit";
+import type { AgentRuntimeEvent, AgentSteeringMessage } from "@rakazo/adapter-kit";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
+import * as replyContext from "../../adapters/src/reply-context.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
 process.env.WAKEUP_DRIVER = "memory";
@@ -540,6 +541,241 @@ describeIntegration("run executor lifecycle", () => {
     },
   );
 
+  it("keeps pending messages through an ordinary scripted run for one answering continuation", async () => {
+    const seeded = await seedRun("scripted-ordinary-pending", "Finish the original task.");
+    const events = createThreadEvents(handles.prisma);
+    const message = await events.sendUserMessage({
+      spaceId: seeded.me.spaceId,
+      threadId: seeded.thread.id,
+      botId: seeded.bot.id,
+      userId: seeded.me.userId,
+      blocks: [{ kind: "text", text: "Answer this follow-up separately." }],
+      prompt: "Answer this follow-up separately.",
+      trigger: "follow_up",
+    });
+    const steering = await handles.prisma.steeringMessage.findFirstOrThrow({
+      where: { botId: seeded.bot.id, messageId: message.messageId },
+    });
+    const held = holdContinuationJobs(seeded.bot.id);
+    try {
+      await handles.executor.continueRun(seeded.run.id, "ordinary-worker");
+      const pending = await handles.prisma.steeringMessage.findMany({
+        where: { botId: seeded.bot.id },
+      });
+      expect({ pending: pending.length, publications: held.published.length }).toEqual({
+        pending: 1,
+        publications: 1,
+      });
+      expect(pending).toEqual([
+        expect.objectContaining({
+          id: steering.id,
+          messageId: message.messageId,
+          runId: held.published[0],
+          claimedAt: null,
+        }),
+      ]);
+      const originalAnswer = await handles.prisma.message.findMany({
+        where: { runId: seeded.run.id, role: "bot" },
+      });
+      expect(JSON.stringify(originalAnswer.map((item) => item.blocks))).toContain(
+        "done. i handled: Finish the original task.",
+      );
+      expect(JSON.stringify(originalAnswer.map((item) => item.blocks))).not.toContain(
+        "Answer this follow-up separately.",
+      );
+      await handles.executor.continueRun(held.published[0]!, "answering-worker");
+      const followUp = await handles.prisma.message.findMany({
+        where: { runId: held.published[0], role: "bot" },
+      });
+      expect(JSON.stringify(followUp.map((item) => item.blocks))).toContain(
+        "done. i handled: Answer this follow-up separately.",
+      );
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+      expect(
+        await handles.prisma.run.count({ where: { botId: seeded.bot.id, status: "queued" } }),
+      ).toBe(0);
+      expect(
+        await handles.prisma.run.count({
+          where: { botId: seeded.bot.id, trigger: { not: "created" } },
+        }),
+      ).toBe(2);
+      expect(held.published).toHaveLength(1);
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, held.restore);
+    }
+  });
+
+  it.each([
+    { kind: "steered failure", fresh: false },
+    { kind: "steered failure", fresh: true },
+    { kind: "reply-context failure", fresh: false },
+    { kind: "reply-context failure", fresh: true },
+  ])(
+    "bounds a scripted $kind after claiming its batch (fresh: $fresh)",
+    async ({ kind, fresh }) => {
+      const input = kind === "steered failure" ? "fail this run" : "Use the queued context.";
+      const fixture = await seedSteeringContinuation(
+        `sc-${kind === "steered failure" ? "steered" : "reply"}-${fresh}`,
+        input,
+      );
+      const { seeded, events, continuationRunId, message, steering } = fixture;
+      const held = holdContinuationJobs(seeded.bot.id);
+      const recordsBefore = handles.connector.records.length;
+      const observed: AgentRuntimeEvent[] = [];
+      let claimedAtFailure = false;
+      let freshMessage: Awaited<ReturnType<typeof events.sendUserMessage>> | undefined;
+      const sendFresh = async () => {
+        freshMessage = await events.sendUserMessage({
+          spaceId: seeded.me.spaceId,
+          threadId: seeded.thread.id,
+          botId: seeded.bot.id,
+          userId: seeded.me.userId,
+          blocks: [{ kind: "text", text: "Use the fresh context." }],
+          prompt: "Use the fresh context.",
+          trigger: "follow_up",
+        });
+        expect(freshMessage.seq).toBeGreaterThan(message.seq);
+      };
+      const loadReply = replyContext.loadReplyContext;
+      const reply = vi
+        .spyOn(replyContext, "loadReplyContext")
+        .mockImplementation(async (prisma, threadId, messageId) => {
+          if (kind === "reply-context failure" && messageId === message.messageId) {
+            const row = await handles.prisma.steeringMessage.findUniqueOrThrow({
+              where: { id: steering.id },
+            });
+            if (row.runId === continuationRunId && row.claimedAt) {
+              // The real database claim has committed; fail the subsequent context read.
+              claimedAtFailure = true;
+              if (fresh) await sendFresh();
+              throw new Error("Reply context unavailable");
+            }
+          }
+          return loadReply(prisma, threadId, messageId);
+        });
+      const runRuntime = handles.runtime.run.bind(handles.runtime);
+      const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+        if (request.runId !== continuationRunId || !request.claimSteering)
+          return runRuntime(request, context);
+        const claimSteering = request.claimSteering;
+        return (async function* () {
+          for await (const event of runRuntime(
+            {
+              ...request,
+              claimSteering: async (seenIds) => {
+                const batch = await claimSteering(seenIds);
+                if (kind === "steered failure") {
+                  expect(batch).toEqual([
+                    expect.objectContaining({ id: steering.id, messageId: message.messageId }),
+                  ]);
+                  const row = await handles.prisma.steeringMessage.findUniqueOrThrow({
+                    where: { id: steering.id },
+                  });
+                  expect(row).toMatchObject({
+                    runId: continuationRunId,
+                    claimedAt: expect.any(Date),
+                  });
+                  claimedAtFailure = true;
+                  if (fresh) await sendFresh();
+                }
+                return batch;
+              },
+            },
+            context,
+          )) {
+            observed.push(event);
+            yield event;
+          }
+        })();
+      });
+      const error =
+        kind === "steered failure" ? "Scripted run failure" : "Reply context unavailable";
+      try {
+        await handles.executor.continueRun(continuationRunId, "failing-worker");
+        expect(claimedAtFailure).toBe(true);
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "failed", error });
+        await expect(
+          handles.prisma.attempt.findFirstOrThrow({ where: { runId: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "failed", error });
+        expect(observed).toEqual([]);
+        expect(
+          await handles.prisma.message.count({ where: { runId: continuationRunId, role: "bot" } }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.externalEffect.count({ where: { runId: continuationRunId } }),
+        ).toBe(0);
+        expect(handles.connector.records).toHaveLength(recordsBefore);
+        await expect(
+          handles.prisma.message.findUniqueOrThrow({ where: { id: message.messageId } }),
+        ).resolves.toMatchObject({ role: "user", blocks: [{ kind: "text", text: input }] });
+        await expect(
+          handles.prisma.steeringMessage.findUniqueOrThrow({ where: { id: steering.id } }),
+        ).resolves.toMatchObject({
+          messageId: message.messageId,
+          runId: continuationRunId,
+          claimedAt: expect.any(Date),
+        });
+        const queued = await handles.prisma.run.findMany({
+          where: { botId: seeded.bot.id, status: "queued" },
+        });
+        expect({ queued: queued.length, publications: held.published.length }).toEqual({
+          queued: fresh ? 1 : 0,
+          publications: fresh ? 1 : 0,
+        });
+        if (fresh) {
+          expect(queued[0]).toMatchObject({
+            id: held.published[0],
+            sourceMessageId: freshMessage!.messageId,
+          });
+          const pending = await handles.prisma.steeringMessage.findMany({
+            where: { botId: seeded.bot.id, claimedAt: null },
+          });
+          expect(pending).toEqual([
+            expect.objectContaining({ messageId: freshMessage!.messageId, runId: queued[0]!.id }),
+          ]);
+          await handles.executor.continueRun(queued[0]!.id, "fresh-after-failure-worker");
+          await expect(
+            handles.prisma.run.findUniqueOrThrow({ where: { id: queued[0]!.id } }),
+          ).resolves.toMatchObject({ status: "completed" });
+          const answer = await handles.prisma.message.findMany({
+            where: { runId: queued[0]!.id, role: "bot" },
+          });
+          expect(JSON.stringify(answer.map((item) => item.blocks))).toContain(
+            "done. i handled: Use the fresh context.",
+          );
+        }
+        expect(
+          await handles.prisma.steeringMessage.findMany({ where: { botId: seeded.bot.id } }),
+        ).toEqual([
+          expect.objectContaining({
+            id: steering.id,
+            runId: continuationRunId,
+            claimedAt: expect.any(Date),
+          }),
+        ]);
+        expect(
+          await handles.prisma.run.count({ where: { botId: seeded.bot.id, status: "queued" } }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.run.count({
+            where: { botId: seeded.bot.id, trigger: { not: "created" } },
+          }),
+        ).toBe(fresh ? 3 : 2);
+        expect(held.published).toHaveLength(fresh ? 1 : 0);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, () => {
+          runtime.mockRestore();
+          reply.mockRestore();
+          held.restore();
+        });
+      }
+    },
+  );
+
   it.each([
     { claim: false, fresh: false, outcome: "failed" as const },
     { claim: true, fresh: false, outcome: "failed" as const },
@@ -1065,6 +1301,79 @@ describeIntegration("run executor lifecycle", () => {
       });
     }
   });
+
+  function holdContinuationJobs(botId: string) {
+    const published: string[] = [];
+    const enqueue = handles.jobs.enqueue.bind(handles.jobs);
+    const spy = vi.spyOn(handles.jobs, "enqueue").mockImplementation(async (job) => {
+      if (job.name === "run.continue") {
+        const run = await handles.prisma.run.findUnique({ where: { id: job.payload.runId } });
+        if (run?.botId === botId) {
+          published.push(job.payload.runId);
+          return;
+        }
+      }
+      await enqueue(job);
+    });
+    return { published, restore: () => spy.mockRestore() };
+  }
+
+  async function cleanupHeldRuns(botId: string, restore: () => void) {
+    // Teardown follows all assertions and cannot turn a non-consuming run into a pass.
+    try {
+      await handles.prisma.run.updateMany({
+        where: { botId, status: { in: ["queued", "leased", "running"] } },
+        data: {
+          status: "cancelled",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          completedAt: new Date(),
+        },
+      });
+    } finally {
+      restore();
+    }
+  }
+
+  async function seedSteeringContinuation(label: string, text: string) {
+    const seeded = await seedRun(label, "Initial task", {
+      status: "running",
+      leaseOwner: "initial-worker",
+      leaseFence: 2,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      startedAt: new Date(),
+    });
+    const attempt = await handles.prisma.attempt.create({
+      data: { runId: seeded.run.id, fence: 2, status: "running" },
+    });
+    const events = createThreadEvents(handles.prisma);
+    const message = await events.sendUserMessage({
+      spaceId: seeded.me.spaceId,
+      threadId: seeded.thread.id,
+      botId: seeded.bot.id,
+      userId: seeded.me.userId,
+      blocks: [{ kind: "text", text }],
+      prompt: text,
+      trigger: "follow_up",
+    });
+    const finalized = await events.finalizeRun({
+      spaceId: seeded.me.spaceId,
+      threadId: seeded.thread.id,
+      botId: seeded.bot.id,
+      runId: seeded.run.id,
+      taskId: seeded.task.id,
+      attemptId: attempt.id,
+      leaseOwner: "initial-worker",
+      leaseFence: 2,
+      outcome: "completed",
+      blocks: [{ kind: "text", text: "Initial answer" }],
+    });
+    if (!finalized?.continuationRunId) throw new Error("Expected a steering continuation");
+    const steering = await handles.prisma.steeringMessage.findFirstOrThrow({
+      where: { botId: seeded.bot.id, messageId: message.messageId },
+    });
+    return { seeded, events, message, steering, continuationRunId: finalized.continuationRunId };
+  }
 
   async function seedRun(
     label: string,

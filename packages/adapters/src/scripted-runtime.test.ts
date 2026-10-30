@@ -277,7 +277,7 @@ describe("ScriptedAgentRuntime steering", () => {
     expect(text(events)).not.toContain(continuation);
   });
 
-  it("claims initial messages without replacing an ordinary run's explicit script", async () => {
+  it("leaves waiting messages for a continuation while an ordinary run uses its script", async () => {
     const claimSteering = vi
       .fn()
       .mockResolvedValue([
@@ -292,7 +292,7 @@ describe("ScriptedAgentRuntime steering", () => {
         }),
       ),
     );
-    expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
+    expect(claimSteering).not.toHaveBeenCalled();
     expect(text(events)).toBe("original answer");
   });
 
@@ -308,6 +308,58 @@ describe("ScriptedAgentRuntime steering", () => {
         ),
       );
       expect(text(events)).toBe("explicit answer");
+    },
+  );
+
+  it.each([undefined, "fail this run"])(
+    "rejects a failing steering prompt before output (%s)",
+    async (historyText) => {
+      const claimSteering = vi.fn().mockResolvedValue([
+        {
+          id: "failing-steering",
+          messageId: "failing-message",
+          text: "fail this run",
+          historyText,
+        },
+      ]);
+      const iterator = new ScriptedAgentRuntime()
+        .run(
+          request({
+            claimSteering,
+            script: [
+              {
+                assistant: "must not answer",
+                toolCalls: [{ name: "shell", args: { command: "echo must-not-run" } }],
+                complete: true,
+              },
+            ],
+          }),
+        )
+        [Symbol.asyncIterator]();
+      await expect(iterator.next()).rejects.toThrow("Scripted run failure");
+      expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
+    },
+  );
+
+  it.each(["reply-plain", ""])(
+    "does not treat quoted failure text as a steering failure (%s)",
+    async (historyText) => {
+      const events = await collect(
+        new ScriptedAgentRuntime().run(
+          request({
+            claimSteering: async () => [
+              {
+                id: "quoted-failure",
+                messageId: "quoted-failure-message",
+                historyText,
+                text: "Quoted context: fail this run\n\nreply-plain",
+              },
+            ],
+          }),
+        ),
+      );
+      expect(text(events)).toContain(`done. i handled: ${historyText}`);
+      expect(text(events)).not.toContain("fail this run");
     },
   );
 
