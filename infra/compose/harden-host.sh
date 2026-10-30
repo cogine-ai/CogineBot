@@ -4,6 +4,11 @@ set -Eeuo pipefail
 
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 SSH_PORT="${SSH_PORT:-22}"
+PRESERVE_EXISTING_UFW_RULES="${PRESERVE_EXISTING_UFW_RULES-0}"
+[[ "${PRESERVE_EXISTING_UFW_RULES}" == 0 || "${PRESERVE_EXISTING_UFW_RULES}" == 1 ]] || {
+  echo "PRESERVE_EXISTING_UFW_RULES must be 0 or 1" >&2
+  exit 1
+}
 [[ "${SSH_PORT}" =~ ^[0-9]{1,5}$ ]] && (( 10#${SSH_PORT} > 0 && 10#${SSH_PORT} <= 65535 )) || {
   echo "SSH_PORT must be an integer between 1 and 65535" >&2
   exit 1
@@ -11,7 +16,7 @@ SSH_PORT="${SSH_PORT:-22}"
 SSH_PORT="$((10#${SSH_PORT}))"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  exec sudo --preserve-env=DEPLOY_USER,SSH_PORT,SSH_CONNECTION bash "$0" "$@"
+  exec sudo --preserve-env=DEPLOY_USER,SSH_PORT,SSH_CONNECTION,PRESERVE_EXISTING_UFW_RULES bash "$0" "$@"
 fi
 
 [[ -n "${SSH_CONNECTION:-}" ]] || {
@@ -60,6 +65,55 @@ fi
 if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
   echo "Deploy user ${DEPLOY_USER} does not exist" >&2
   exit 1
+fi
+
+# Audit saved rules even while UFW is inactive, before any host settings change.
+# Only UFW's exact empty report proves that no registered rules were reported.
+ufw_audit_reason=""
+if command -v ufw >/dev/null 2>&1; then
+  # Validate both paths before UFW itself opens them, including FIFOs and links.
+  for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules; do
+    if [[ -L "${rules_file}" || ! -f "${rules_file}" || ! -r "${rules_file}" ]]; then
+      ufw_audit_reason="Missing, unsafe or unreadable saved UFW rules"
+      break
+    fi
+  done
+  if [[ -z "${ufw_audit_reason}" ]]; then
+    if ! existing_ufw_rules="$(LC_ALL=C ufw show added 2>&1)"; then
+      ufw_audit_reason="Unable to audit existing UFW rules"
+    elif [[ "${existing_ufw_rules}" != $'Added user rules (see \'ufw status\' for running firewall):\n(None)' ]]; then
+      ufw_audit_reason="Existing UFW rules or unrecognized UFW audit output"
+    fi
+    # UFW omits saved IPv6 rules from its report when IPV6 is disabled.
+    for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules; do
+      if LC_ALL=C grep -q '^### tuple ###' "${rules_file}"; then
+        ufw_audit_reason="Existing saved UFW rules"
+        break
+      elif [[ "$?" -ne 1 ]]; then
+        ufw_audit_reason="Unable to read saved UFW rules"
+        break
+      fi
+    done
+  fi
+else
+  # A removed package may leave rules behind; installation must not bypass them.
+  for config_path in /etc/ufw /etc/default/ufw /lib/ufw/user.rules /lib/ufw/user6.rules /var/lib/ufw; do
+    if [[ -e "${config_path}" || -L "${config_path}" ]]; then
+      ufw_audit_reason="Cannot audit retained UFW configuration without ufw"
+      break
+    fi
+  done
+fi
+if [[ -n "${ufw_audit_reason}" && "${PRESERVE_EXISTING_UFW_RULES}" == 0 ]]; then
+  echo "${ufw_audit_reason}; host hardening stopped before changing host configuration." >&2
+  echo "Review all saved UFW rules, then set PRESERVE_EXISTING_UFW_RULES=1 only to explicitly preserve every existing rule." >&2
+  exit 1
+fi
+if [[ "${PRESERVE_EXISTING_UFW_RULES}" == 1 ]]; then
+  if [[ -n "${ufw_audit_reason}" ]]; then
+    echo "${ufw_audit_reason}; proceeding with explicit preservation acknowledgment." >&2
+  fi
+  echo "PRESERVE_EXISTING_UFW_RULES=1: preserving all existing UFW rules as operator-approved exceptions, including public allows. Default deny and the SSH limit do not override earlier allows." >&2
 fi
 
 export DEBIAN_FRONTEND=noninteractive

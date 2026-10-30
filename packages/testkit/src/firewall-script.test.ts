@@ -21,8 +21,12 @@ const source = readFileSync(
   "utf8",
 );
 const token = "12345678-1234-4234-8234-123456789abc";
+const firstBoot = "00000000-0000-4000-8000-000000000001";
+const nextBoot = "00000000-0000-4000-8000-000000000002";
+const bootUnit = "rakazo-firewall-recovery.service";
 const firstConnection = "192.0.2.10 12345 192.0.2.20 22";
 const secondConnection = "192.0.2.10 12346 192.0.2.20 22";
+const emptyUfwAdded = "Added user rules (see 'ufw status' for running firewall):\n(None)";
 
 function signalGroup(pid: number, signal: NodeJS.Signals) {
   try {
@@ -64,7 +68,14 @@ function fixture() {
   const log = path.join(root, "calls.jsonl");
   const faults = path.join(root, "faults.json");
   const manager = path.join(root, "manager.json");
-  for (const directory of [base, etc, path.join(etc, "ufw"), path.join(etc, "default"), bin]) {
+  for (const directory of [
+    base,
+    etc,
+    path.join(etc, "ufw"),
+    path.join(etc, "default"),
+    path.join(etc, "systemd", "system"),
+    bin,
+  ]) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
   }
   write(path.join(etc, "ufw", "user.rules"), "original rules\n");
@@ -104,6 +115,9 @@ if(name==='stat'){
  for(const f of args.slice(0,2)){const found=visit(f);if(found){console.log(found);break;}}
 }else if(name==='cat'){
  if(args[0]==='/proc/sys/kernel/random/uuid')console.log(fault.uuid||'${token}');
+ else if(args[0]==='/proc/sys/kernel/random/boot_id'){
+  if(bad('bootReadFail'))process.exit(1);console.log(fault.bootId??'${firstBoot}');
+ }
  else if(args[0]==='/proc/self/mountinfo'){
   if(bad('mountReadFail'))process.exit(1);
   if(fault.mountInfo!==undefined)process.stdout.write(fault.mountInfo);
@@ -127,13 +141,30 @@ if(name==='stat'){
 }else if(name==='rm'){
  for(const file of args.filter(a=>!a.startsWith('-'))){const match=fault.rmTarget&&file.endsWith('/'+fault.rmTarget);if(match&&bad('rmBefore'))process.exit(1);fs.rmSync(file,{force:true});if(match&&bad('rmAfter'))process.exit(1);}
 }else if(name==='ufw'){
- if(args[0]==='status')console.log(fault.ufwStatus||'Status: active');else if(bad('ufwFail'))process.exit(1);
+ if(args[0]==='show'&&args[1]==='added'){
+  if(bad('showAddedFail')||process.env.LC_ALL!=='C')process.exit(1);
+  console.log(fault.ufwAdded??${JSON.stringify(emptyUfwAdded)});
+ }else if(args[0]==='status')console.log(fault.ufwStatus||'Status: active');else if(bad('ufwFail'))process.exit(1);
+}else if(name==='grep'){
+ if(bad('ruleReadFail'))process.exit(2);
+ const r=cp.spawnSync('/usr/bin/grep',args,{stdio:'inherit'});process.exit(r.status??2);
 }else if(name==='systemd-run'){
  const unit=args.find(a=>a.startsWith('--unit=')).slice(7);if(bad('scheduleBefore'))process.exit(1);
  const s=state();s[unit+'.timer']=fault.timerState||'active';save(s);if(bad('scheduleAfter'))process.exit(1);
 }else if(name==='systemctl'){
- const s=state();if(args[0]==='show')console.log(s[args[1]]||'inactive');
- else if(args[0]==='stop'){if(bad('stopBefore'))process.exit(1);s[args[1]]='inactive';save(s);if(bad('stopAfter'))process.exit(1);}
+ const s=state(),unit=path.join(process.env.FW_ETC,'systemd/system','${bootUnit}'),wants=path.join(path.dirname(unit),'multi-user.target.wants','${bootUnit}');
+ if(args[0]==='daemon-reload'){if(bad('reloadFail'))process.exit(1);}
+ else if(args[0]==='enable'&&args[1]==='${bootUnit}'){
+  if(bad('enableBefore'))process.exit(1);fs.mkdirSync(path.dirname(wants),{recursive:true,mode:0o755});
+  if(!fs.existsSync(wants))fs.symlinkSync(unit,wants);if(bad('enableAfter'))process.exit(1);
+ }else if(args[0]==='show'){
+  if(bad('showFail'))process.exit(1);
+  const prop=args.find(a=>a.startsWith('--property=')).slice(11);
+  if(args[1]==='${bootUnit}')console.log(({LoadState:fault.bootLoadState??'loaded',FragmentPath:fault.bootFragment??unit,DropInPaths:fault.bootDropIns??'',UnitFileState:fault.bootUnitState??(fs.existsSync(wants)?'enabled':'disabled')})[prop]??'');
+  else console.log(prop==='LoadState'?(Object.hasOwn(s,args[1])?'loaded':'not-found'):(s[args[1]]||'inactive'));
+ }else if(args[0]==='stop'){if(bad('stopBefore')||!Object.hasOwn(s,args[1]))process.exit(1);s[args[1]]='inactive';save(s);if(bad('stopAfter'))process.exit(1);}
+}else if(name==='sync'){
+ if(bad('syncFail')||(fault.syncTarget&&args.includes(fault.syncTarget)))process.exit(1);
 }else if(name==='install'){
  const mode=parseInt(args[args.indexOf('-m')+1],8);if(args.includes('-d'))fs.mkdirSync(args.at(-1),{recursive:true,mode});else{fs.copyFileSync(args.at(-2),args.at(-1));fs.chmodSync(args.at(-1),mode);}
 }else if(['id','apt-get','sshd','sysctl','augenrules'].includes(name)){
@@ -148,8 +179,10 @@ if(name==='stat'){
     "mv",
     "rm",
     "ufw",
+    "grep",
     "systemd-run",
     "systemctl",
+    "sync",
     "logger",
     "install",
     "id",
@@ -198,6 +231,10 @@ os.execvp(sys.argv[3],sys.argv[3:])
     script,
     env,
     faults: (value: Record<string, unknown>) => write(faults, JSON.stringify(value)),
+    reboot: (value: Record<string, unknown> = {}) => {
+      write(manager, "{}");
+      write(faults, JSON.stringify({ bootId: nextBoot, ...value }));
+    },
     calls: () =>
       existsSync(log)
         ? readFileSync(log, "utf8")
@@ -258,6 +295,7 @@ os.execvp(sys.argv[3],sys.argv[3:])
 
 function hardenFixture() {
   const f = fixture();
+  write(path.join(f.etc, "ufw", "user6.rules"), "");
   const target = path.join(f.bin, "rakazo-firewall-change");
   write(
     path.join(f.bin, "firewall-change.sh"),
@@ -293,6 +331,30 @@ function hardenFixture() {
   };
 }
 
+function expectNoHardeningWrites(f: ReturnType<typeof hardenFixture>) {
+  expect(
+    f
+      .calls()
+      .filter(
+        (call) =>
+          [
+            "apt-get",
+            "install",
+            "sshd",
+            "sysctl",
+            "augenrules",
+            "systemd-run",
+            "systemctl",
+          ].includes(call[0] as string) ||
+          (call[0] === "ufw" && !(call[1] === "show" && call[2] === "added")),
+      ),
+  ).toEqual([]);
+  expect(existsSync(path.join(f.etc, "ssh"))).toBe(false);
+  expect(existsSync(path.join(f.etc, "sysctl.d", "99-rakazo-hardening.conf"))).toBe(false);
+  expect(existsSync(path.join(f.etc, "apt", "apt.conf.d", "20auto-upgrades"))).toBe(false);
+  expect(f.pending()).toBe(false);
+}
+
 describe("firewall change rollback", () => {
   it("arms a generation-specific timer before executing the bounded command", () => {
     const f = fixture();
@@ -305,6 +367,242 @@ describe("firewall change rollback", () => {
     expect(schedule).toContain("--on-active=180s");
     expect(schedule).toContain(f.script);
     expect(schedule?.slice(-2)).toEqual(["rollback", token]);
+  });
+
+  it("persistently enables and flushes protected boot recovery before firewall edits", () => {
+    const f = fixture();
+    const result = f.run(["apply", "ufw", "default", "deny", "incoming"]);
+    expect(result.status, result.stderr).toBe(0);
+    const unit = path.join(f.etc, "systemd", "system", bootUnit);
+    expect(readFileSync(unit, "utf8")).toContain(`ExecStart=${f.script} recover\n`);
+    expect(readFileSync(unit, "utf8")).toContain("After=ufw.service\n");
+    expect(readFileSync(unit, "utf8")).toContain("WantedBy=multi-user.target\n");
+    expect(f.read("boot")).toBe(firstBoot);
+    const calls = f.calls();
+    const enable = calls.findIndex((call) => call[0] === "systemctl" && call[1] === "enable");
+    const flush = calls.findIndex((call) => call[0] === "sync");
+    const edit = calls.findIndex((call) => call[0] === "ufw" && call[1] === "default");
+    expect(enable).toBeGreaterThan(-1);
+    expect(flush).toBeGreaterThan(enable);
+    expect(edit).toBeGreaterThan(flush);
+    expect(calls[enable]).not.toContain("--runtime");
+    expect(calls[enable]).not.toContain("--now");
+  });
+
+  it.each([
+    { reloadFail: true },
+    { enableBefore: true },
+    { enableAfter: true },
+    { showFail: true },
+    { bootLoadState: "masked" },
+    { bootFragment: "/run/systemd/transient/other.service" },
+    { bootDropIns: "/run/systemd/system/service.d/override.conf" },
+    { bootUnitState: "enabled-runtime" },
+    { syncFail: true },
+    { bootReadFail: true },
+    { bootId: "invalid" },
+  ])("refuses mutation when durable boot recovery is unverified %j", (fault) => {
+    const f = fixture();
+    f.faults(fault);
+    const marker = path.join(f.root, "changed");
+    expect(f.run(["apply", "/usr/bin/touch", marker]).status).not.toBe(0);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.each(["different", "symlink", "hardlink", "writable", "owner", "directory"])(
+    "rejects an unsafe or different installed boot unit %s without replacing it",
+    (kind) => {
+      const f = fixture();
+      const unit = path.join(f.etc, "systemd", "system", bootUnit);
+      if (kind === "directory") mkdirSync(unit);
+      else if (kind === "symlink") symlinkSync(path.join(f.etc, "default", "ufw"), unit);
+      else if (kind === "hardlink") linkSync(path.join(f.etc, "default", "ufw"), unit);
+      else write(unit, "existing unit\n", kind === "writable" ? 0o666 : 0o600);
+      if (kind === "owner") f.faults({ owner: unit });
+      expect(f.run(["apply", "ufw", "default", "deny", "incoming"]).status).not.toBe(0);
+      expect(f.pending()).toBe(false);
+      expect(f.calls().some((call) => call[0] === "systemctl")).toBe(false);
+      expect(f.calls().some((call) => call[0] === "ufw")).toBe(false);
+      if (kind === "different") expect(readFileSync(unit, "utf8")).toBe("existing unit\n");
+    },
+  );
+
+  it.each(["directory-link", "writable-directory", "wrong-link", "regular-link", "owner"])(
+    "rejects unsafe boot enablement %s before manager or firewall commands",
+    (kind) => {
+      const f = fixture();
+      const wants = path.join(f.etc, "systemd", "system", "multi-user.target.wants");
+      const link = path.join(wants, bootUnit);
+      if (kind === "directory-link") symlinkSync(f.bin, wants);
+      else {
+        mkdirSync(wants, { mode: kind === "writable-directory" ? 0o777 : 0o755 });
+        if (kind === "writable-directory") chmodSync(wants, 0o777);
+        if (kind === "wrong-link") symlinkSync(path.join(f.etc, "default", "ufw"), link);
+        if (kind === "regular-link") write(link, "unexpected\n");
+        if (kind === "owner") {
+          symlinkSync(path.join(f.etc, "systemd", "system", bootUnit), link);
+          f.faults({ owner: link });
+        }
+      }
+      expect(f.apply().status).not.toBe(0);
+      expect(f.pending()).toBe(false);
+      expect(f.calls().some((call) => call[0] === "systemctl")).toBe(false);
+    },
+  );
+
+  it.each(["Status: active", "Status: inactive"])(
+    "restores persisted unconfirmed state after manager reset with prior %s",
+    (ufwStatus) => {
+      const f = fixture();
+      f.faults({ ufwStatus });
+      expect(f.apply().status).toBe(0);
+      write(path.join(f.etc, "ufw", "user.rules"), "changed rules\n");
+      write(path.join(f.etc, "ufw", "added.rules"), "unconfirmed\n");
+      write(path.join(f.etc, "default", "ufw"), "changed defaults\n");
+      f.reboot();
+      expect(f.timer()).toBeUndefined();
+      const result = f.run(["recover"], { SSH_CONNECTION: "" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("original rules\n");
+      expect(readFileSync(path.join(f.etc, "default", "ufw"), "utf8")).toBe("ENABLED=yes\n");
+      expect(existsSync(path.join(f.etc, "ufw", "added.rules"))).toBe(false);
+      expect(f.calls()).toContainEqual([
+        "ufw",
+        "--force",
+        ufwStatus.endsWith("inactive") ? "disable" : "enable",
+      ]);
+      expect(f.pending()).toBe(false);
+    },
+  );
+
+  it("does nothing at boot without a pending token", () => {
+    const f = fixture();
+    const result = f.run(["recover"], { SSH_CONNECTION: "" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(f.calls().some((call) => ["ufw", "systemctl", "tar"].includes(call[0] as string))).toBe(
+      false,
+    );
+  });
+
+  it("leaves a current-boot change to its generation timer", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    write(path.join(f.etc, "ufw", "user.rules"), "current boot\n");
+    expect(f.run(["recover"], { SSH_CONNECTION: "" }).status).toBe(0);
+    expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("current boot\n");
+    expect(f.pending()).toBe(true);
+    expect(f.timer()).toBe("active");
+  });
+
+  it.each([
+    "missing-boot",
+    "invalid-boot",
+    "invalid-token",
+    "linked-token",
+    "foreign-boot",
+    "invalid-current-boot",
+  ])("rejects untrusted persisted recovery metadata %s after manager reset", (kind) => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    f.reboot(kind === "invalid-current-boot" ? { bootId: "invalid" } : {});
+    if (kind === "missing-boot") rmSync(path.join(f.state, "boot"));
+    if (kind === "invalid-boot") write(path.join(f.state, "boot"), "invalid\n");
+    if (kind === "invalid-token") write(path.join(f.state, "token"), "invalid\n");
+    if (kind === "linked-token") {
+      rmSync(path.join(f.state, "token"));
+      symlinkSync(path.join(f.etc, "default", "ufw"), path.join(f.state, "token"));
+    }
+    if (kind === "foreign-boot") f.reboot({ owner: path.join(f.state, "boot") });
+    const result = f.run(["recover"], { SSH_CONNECTION: "" });
+    expect(result.status).not.toBe(0);
+    expect(f.pending()).toBe(true);
+    expect(f.calls().some((call) => call[0] === "tar" && call.includes("-xpf"))).toBe(false);
+  });
+
+  it("keeps a committed change after reboot when timer cleanup was incomplete", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    write(path.join(f.etc, "ufw", "user.rules"), "accepted\n");
+    f.faults({ stopBefore: true });
+    expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
+    f.reboot();
+    expect(f.run(["recover"], { SSH_CONNECTION: "" }).status).toBe(0);
+    expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("accepted\n");
+    expect(f.pending()).toBe(true);
+  });
+
+  it("retires a committed token after reboot removed its timer and admits the next apply", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    f.faults({ stopBefore: true });
+    expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
+    expect(f.pending()).toBe(true);
+    f.reboot();
+    expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
+    expect(f.pending()).toBe(false);
+    f.faults({ bootId: nextBoot, uuid: "12345678-1234-4234-8234-123456789abd" });
+    expect(f.apply().status).toBe(0);
+    expect(f.read("token")).toBe("12345678-1234-4234-8234-123456789abd");
+  });
+
+  it.each(["loaded-timer", "failed-readback"])(
+    "keeps confirmed cleanup pending when timer absence is unverified: %s",
+    (kind) => {
+      const f = fixture();
+      expect(f.apply().status).toBe(0);
+      if (kind === "loaded-timer") f.faults({ stopBefore: true });
+      else f.reboot({ showFail: true });
+      const result = f.run(["confirm", token], { SSH_CONNECTION: secondConnection });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain("timer cleanup is incomplete");
+      expect(f.pending()).toBe(true);
+      expect(f.apply().status).not.toBe(0);
+    },
+  );
+
+  it("reports committed confirmation and keeps cleanup pending when its flush fails", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    f.faults({ syncFail: true });
+    const result = f.run(["confirm", token], { SSH_CONNECTION: secondConnection });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("confirmation committed but durability is unverified");
+    expect(f.read("confirmed")).toBe(token);
+    expect(f.pending()).toBe(true);
+    expect(f.timer()).toBe("active");
+    f.faults({});
+    expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
+    expect(f.pending()).toBe(false);
+  });
+
+  it("retains pending state when restored configuration cannot be flushed", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    write(path.join(f.etc, "ufw", "user.rules"), "unconfirmed\n");
+    f.reboot({ syncTarget: path.join(f.etc, "ufw") });
+    const result = f.run(["recover"], { SSH_CONNECTION: "" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "Firewall restored but durability is unverified; pending state retained",
+    );
+    expect(f.pending()).toBe(true);
+    f.reboot();
+    expect(f.run(["recover"], { SSH_CONNECTION: "" }).status).toBe(0);
+    expect(f.pending()).toBe(false);
+  });
+
+  it("reports token retirement accurately when its final flush fails and retries at boot", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    f.reboot({ syncTarget: f.state });
+    const result = f.run(["recover"], { SSH_CONNECTION: "" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "Firewall restored and pending token retired; state durability is unverified",
+    );
+    expect(f.pending()).toBe(false);
+    f.reboot();
+    expect(f.run(["recover"], { SSH_CONNECTION: "" }).status).toBe(0);
   });
 
   it.each([
@@ -561,9 +859,159 @@ describe("firewall change rollback", () => {
     },
   );
 
+  it.each(["", "2", "true", " 1", "01"])(
+    "rejects an invalid existing-rule acknowledgment %j before host commands",
+    (PRESERVE_EXISTING_UFW_RULES) => {
+      const f = hardenFixture();
+      expect(f.runHarden({ PRESERVE_EXISTING_UFW_RULES }).status).not.toBe(0);
+      expect(f.calls()).toEqual([]);
+    },
+  );
+
+  it("admits UFW's exact no-rules report before installing packages or changing host settings", () => {
+    const f = hardenFixture();
+    const result = f.runHarden();
+    expect(result.status, result.stderr).toBe(0);
+    const calls = f.calls();
+    const audit = calls.findIndex((call) => call[0] === "ufw" && call[1] === "show");
+    const packages = calls.findIndex((call) => call[0] === "apt-get");
+    expect(audit).toBeGreaterThan(-1);
+    expect(packages).toBeGreaterThan(audit);
+    expect(f.pending()).toBe(true);
+  });
+
+  const savedRuleCases = ["Status: active", "Status: inactive"].flatMap((ufwStatus) =>
+    [
+      "allow 22/tcp",
+      "allow 5432/tcp",
+      "allow from 10.0.0.0/8 to any port 5432 proto tcp",
+      "limit 22/tcp comment 'Rate-limited SSH'",
+    ].map((rule) => ({ ufwStatus, rule })),
+  );
+  it.each(savedRuleCases)(
+    "rejects all existing rules before host writes without acknowledgment %j",
+    ({ ufwStatus, rule }) => {
+      const f = hardenFixture();
+      const rules = path.join(f.etc, "ufw", "user.rules");
+      const saved = readFileSync(rules, "utf8");
+      f.faults({ ufwStatus, ufwAdded: `${emptyUfwAdded.split("\n")[0]}\nufw ${rule}` });
+      const result = f.runHarden();
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("PRESERVE_EXISTING_UFW_RULES=1");
+      expect(readFileSync(rules, "utf8")).toBe(saved);
+      expectNoHardeningWrites(f);
+    },
+  );
+
+  it.each(savedRuleCases)(
+    "preserves explicitly acknowledged existing rules and uses the armed guard %j",
+    ({ ufwStatus, rule }) => {
+      const f = hardenFixture();
+      const rules = path.join(f.etc, "ufw", "user.rules");
+      const saved = readFileSync(rules, "utf8");
+      f.faults({ ufwStatus, ufwAdded: `${emptyUfwAdded.split("\n")[0]}\nufw ${rule}` });
+      const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain("including public allows");
+      expect(result.stderr).toContain("do not override earlier allows");
+      expect(readFileSync(rules, "utf8")).toBe(saved);
+      const calls = f.calls();
+      const scheduled = calls.findIndex((call) => call[0] === "systemd-run");
+      const edit = calls.findIndex((call) => call[0] === "ufw" && call[1] === "default");
+      expect(scheduled).toBeGreaterThan(-1);
+      expect(edit).toBeGreaterThan(scheduled);
+      expect(
+        calls.some(
+          (call) =>
+            call[0] === "ufw" &&
+            call.some((arg) => ["reset", "delete", "insert", "prepend"].includes(arg)),
+        ),
+      ).toBe(false);
+      expect(f.pending()).toBe(true);
+    },
+  );
+
+  it.each([
+    "",
+    emptyUfwAdded.split("\n")[0],
+    "(None)",
+    "Status: inactive",
+    `${emptyUfwAdded}\nufw allow 22/tcp`,
+  ])("rejects empty or unrecognized saved-rule audit output %j before host writes", (ufwAdded) => {
+    const f = hardenFixture();
+    f.faults({ ufwAdded });
+    expect(f.runHarden().status).not.toBe(0);
+    expectNoHardeningWrites(f);
+  });
+
+  it.each([{ showAddedFail: true }, { ruleReadFail: true }])(
+    "rejects a failed saved-rule audit before host writes %j",
+    (fault) => {
+      const f = hardenFixture();
+      f.faults(fault);
+      expect(f.runHarden().status).not.toBe(0);
+      expectNoHardeningWrites(f);
+    },
+  );
+
+  it.each(["user.rules", "user6.rules"])(
+    "rejects saved tuples omitted by the report, including disabled IPv6 rules in %s",
+    (file) => {
+      const f = hardenFixture();
+      const rules = path.join(f.etc, "ufw", file);
+      const network = file === "user.rules" ? "0.0.0.0/0" : "::/0";
+      const saved = `### tuple ### allow tcp 5432 ${network} any ${network} in\n`;
+      write(rules, saved);
+      f.faults({ ufwStatus: "Status: inactive", ufwAdded: emptyUfwAdded });
+      expect(f.runHarden().status).not.toBe(0);
+      expectNoHardeningWrites(f);
+      expect(readFileSync(rules, "utf8")).toBe(saved);
+      const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(rules, "utf8")).toBe(saved);
+      expect(f.pending()).toBe(true);
+    },
+  );
+
+  it.each(["missing", "symlink", "directory", "fifo"])(
+    "rejects a %s saved IPv6 rule file before trying to read it",
+    (kind) => {
+      const f = hardenFixture();
+      const file = path.join(f.etc, "ufw", "user6.rules");
+      rmSync(file);
+      if (kind === "symlink") symlinkSync(path.join(f.etc, "default", "ufw"), file);
+      else if (kind === "directory") mkdirSync(file);
+      else if (kind === "fifo") execFileSync("mkfifo", [file]);
+      expect(f.runHarden().status).not.toBe(0);
+      expectNoHardeningWrites(f);
+      expect(f.calls().some((call) => call[0] === "grep" && call.includes(file))).toBe(false);
+      expect(f.calls().some((call) => call[0] === "ufw" && call[1] === "show")).toBe(false);
+    },
+  );
+
+  it("rejects retained UFW configuration when its CLI is missing before installing packages", () => {
+    const f = hardenFixture();
+    rmSync(path.join(f.bin, "ufw"));
+    const result = f.runHarden();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Cannot audit retained UFW configuration without ufw");
+    expectNoHardeningWrites(f);
+  });
+
+  it("reports an unknown audit when the operator explicitly acknowledges preserving every rule", () => {
+    const f = hardenFixture();
+    f.faults({ showAddedFail: true });
+    const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("Unable to audit existing UFW rules");
+    expect(result.stderr).toContain("including public allows");
+    expect(f.pending()).toBe(true);
+  });
+
   it("routes hardening firewall edits through the armed guard without resetting private rules", () => {
     const f = hardenFixture();
-    const result = f.runHarden({ SSH_PORT: "2222" });
+    f.faults({ ufwAdded: `${emptyUfwAdded.split("\n")[0]}\nufw allow from 10.0.0.0/8` });
+    const result = f.runHarden({ SSH_PORT: "2222", PRESERVE_EXISTING_UFW_RULES: "1" });
     expect(result.status, result.stderr).toBe(0);
     const calls = f.calls();
     const scheduled = calls.findIndex((call) => call[0] === "systemd-run");
@@ -600,8 +1048,14 @@ describe("firewall change rollback", () => {
     const target = path.join(f.bin, "rakazo-firewall-change");
     expect(f.runHarden().status).toBe(0);
     expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
-    f.faults({ uuid: "12345678-1234-4234-8234-123456789abd" });
-    const result = f.runHarden();
+    f.faults({
+      uuid: "12345678-1234-4234-8234-123456789abd",
+      ufwAdded: `${emptyUfwAdded.split("\n")[0]}\nufw limit 22/tcp comment 'Rate-limited SSH'`,
+    });
+    const packagesBefore = f.calls().filter((call) => call[0] === "apt-get").length;
+    expect(f.runHarden().status).not.toBe(0);
+    expect(f.calls().filter((call) => call[0] === "apt-get")).toHaveLength(packagesBefore);
+    const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
     expect(result.status, result.stderr).toBe(0);
     expect(
       f.calls().filter((call) => call[0] === "install" && call.at(-1) === target),
@@ -736,6 +1190,51 @@ describe("firewall change rollback", () => {
     expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("accepted\n");
     expect(f.read("confirmed")).toBe(token);
     expect(f.pending()).toBe(true);
+  });
+
+  it("rechecks confirmation under the shared lock when boot recovery was already queued", async () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    write(path.join(f.etc, "ufw", "user.rules"), "accepted\n");
+    f.reboot();
+    const waiting = path.join(f.root, "boot-waiting"),
+      release = path.join(f.root, "boot-release");
+    const callback = f.start(["recover"], {
+      SSH_CONNECTION: "",
+      FW_FLOCK_WAITING: waiting,
+      FW_FLOCK_RELEASE: release,
+    });
+    await waitForFile(waiting);
+    expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
+    expect(f.read("confirmed")).toBe(token);
+    write(release, "release");
+    const result = await callback.done;
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("accepted\n");
+    expect(f.calls().some((call) => call[0] === "tar" && call.includes("-xpf"))).toBe(false);
+  });
+
+  it("does not let queued boot recovery restore a newer current-boot generation", async () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    const waiting = path.join(f.root, "boot-waiting"),
+      release = path.join(f.root, "boot-release");
+    const callback = f.start(["recover"], {
+      FW_FLOCK_WAITING: waiting,
+      FW_FLOCK_RELEASE: release,
+    });
+    await waitForFile(waiting);
+    expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
+    const next = "12345678-1234-4234-8234-123456789abd";
+    f.faults({ uuid: next });
+    expect(f.apply().status).toBe(0);
+    write(path.join(f.etc, "ufw", "user.rules"), "new generation\n");
+    write(release, "release");
+    const result = await callback.done;
+    expect(result.status, result.stderr).toBe(0);
+    expect(f.read("token")).toBe(next);
+    expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("new generation\n");
+    expect(f.calls().some((call) => call[0] === "tar" && call.includes("-xpf"))).toBe(false);
   });
 
   it("preserves the pending timer when the apply process group is interrupted", async () => {

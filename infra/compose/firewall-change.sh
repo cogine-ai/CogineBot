@@ -11,6 +11,8 @@ STATE="${BASE}/firewall-change"
 ETC=/etc
 SELF=/usr/local/sbin/rakazo-firewall-change
 BIN=/usr/local/sbin
+BOOT_UNIT=rakazo-firewall-recovery.service
+UNIT_DIR="${ETC}/systemd/system"
 
 secure_directory() {
   local details owner mode
@@ -111,12 +113,66 @@ publish() {
   fi
 }
 
+boot_id() {
+  local value
+  value="$(cat /proc/sys/kernel/random/boot_id)" || fail "Cannot read the current boot identity"
+  valid_token "${value}" || fail "Invalid current boot identity"
+  printf '%s\n' "${value}"
+}
+
+timer_is_absent() {
+  local load_state
+  load_state="$(systemctl show "$1" --property=LoadState --value 9>&-)" || return 1
+  [[ "${load_state}" == not-found ]]
+}
+
+check_boot_link() {
+  local link="${UNIT_DIR}/multi-user.target.wants/${BOOT_UNIT}"
+  [[ -L "${link}" && "$(stat -c '%u' -- "${link}")" == 0 && "$(readlink -- "${link}")" == "${UNIT_DIR}/${BOOT_UNIT}" ]] || fail "Unsafe firewall boot recovery enablement"
+}
+
+arm_boot_recovery() {
+  local definition file="${UNIT_DIR}/${BOOT_UNIT}" wants="${UNIT_DIR}/multi-user.target.wants" property expected actual
+  secure_directory "${ETC}"
+  secure_directory "${ETC}/systemd"
+  secure_directory "${UNIT_DIR}"
+  if [[ -e "${wants}" || -L "${wants}" ]]; then
+    secure_directory "${wants}"
+    if [[ -e "${wants}/${BOOT_UNIT}" || -L "${wants}/${BOOT_UNIT}" ]]; then check_boot_link; fi
+  fi
+  definition="$(printf '%s\n' \
+    '[Unit]' 'Description=Recover an unconfirmed firewall change after reboot' \
+    'After=ufw.service' "RequiresMountsFor=${STATE} ${ETC}/ufw ${ETC}/default/ufw ${SELF}" \
+    '' '[Service]' 'Type=oneshot' "ExecStart=${SELF} recover" \
+    '' '[Install]' 'WantedBy=multi-user.target')"
+  if [[ ! -e "${file}" && ! -L "${file}" ]]; then
+    (set -C; printf '%s\n' "${definition}" >"${file}")
+  fi
+  secure_file "${file}"
+  cmp -s -- "${file}" <(printf '%s\n' "${definition}") || fail "Existing firewall boot recovery unit differs; finish pending recovery and upgrade it manually"
+  systemctl daemon-reload 9>&- || fail "Could not reload firewall boot recovery; firewall was not changed"
+  systemctl enable "${BOOT_UNIT}" 9>&- || fail "Could not enable firewall boot recovery; firewall was not changed"
+  secure_directory "${wants}"
+  check_boot_link
+  for property in LoadState FragmentPath DropInPaths UnitFileState; do
+    case "${property}" in
+      LoadState) expected=loaded ;;
+      FragmentPath) expected="${file}" ;;
+      DropInPaths) expected='' ;;
+      UnitFileState) expected=enabled ;;
+    esac
+    actual="$(systemctl show "${BOOT_UNIT}" --property="${property}" --value 9>&-)" || fail "Cannot verify firewall boot recovery"
+    [[ "${actual}" == "${expected}" ]] || fail "Firewall boot recovery is not the protected persistent unit"
+  done
+}
+
 action="${1:-}"; shift || true
 case "${action}" in
   apply) (($# > 0)) || fail "Usage: firewall-change apply COMMAND [ARGS...]"; require_connection ;;
   confirm) (($# == 1)) && valid_token "$1" || fail "Usage: firewall-change confirm TOKEN"; require_connection ;;
   rollback) (($# == 1)) && valid_token "$1" || fail "Usage: firewall-change rollback TOKEN" ;;
-  *) fail "Usage: firewall-change {apply COMMAND...|confirm TOKEN|rollback TOKEN}" ;;
+  recover) (($# == 0)) || fail "Usage: firewall-change recover" ;;
+  *) fail "Usage: firewall-change {apply COMMAND...|confirm TOKEN|rollback TOKEN|recover}" ;;
 esac
 
 for directory in /var /var/lib; do secure_directory "${directory}"; done
@@ -128,10 +184,30 @@ secure_directory "${STATE}"
 if [[ ! -e "${STATE}/lock" && ! -L "${STATE}/lock" ]]; then (set -C; : >"${STATE}/lock"); fi
 secure_file "${STATE}/lock"
 exec 9<>"${STATE}/lock"
-if [[ "${action}" == rollback ]]; then flock 9; else flock -n 9 || fail "Another firewall operation is running"; fi
-for name in token token.pending connection connection.pending enabled enabled.pending before.tar before.tar.pending confirmed confirmed.pending; do
+if [[ "${action}" == rollback || "${action}" == recover ]]; then flock 9; else flock -n 9 || fail "Another firewall operation is running"; fi
+for name in token token.pending connection connection.pending enabled enabled.pending boot boot.pending before.tar before.tar.pending confirmed confirmed.pending; do
   if [[ -e "${STATE}/${name}" || -L "${STATE}/${name}" ]]; then secure_file "${STATE}/${name}"; fi
 done
+
+if [[ "${action}" == recover ]]; then
+  if [[ ! -e "${STATE}/token" ]]; then
+    sync -f "${STATE}" || fail "No pending firewall change; state durability is unverified; retry recover"
+    echo "No pending firewall change"
+    exit 0
+  fi
+  # Read the token only after protected-state validation and acquiring the lock.
+  token="$(cat "${STATE}/token")"
+  valid_token "${token}" || fail "Invalid pending firewall token"
+  secure_file "${STATE}/boot"
+  saved_boot="$(cat "${STATE}/boot")"
+  valid_token "${saved_boot}" || fail "Invalid saved boot identity"
+  current_boot="$(boot_id)"
+  if [[ "${saved_boot}" == "${current_boot}" ]]; then
+    echo "Current-boot firewall change remains protected by its rollback timer"
+    exit 0
+  fi
+  set -- "${token}"
+fi
 
 case "${action}" in
   apply)
@@ -144,6 +220,8 @@ case "${action}" in
     check_mounts
     require_space "${ETC}/ufw"
     require_space "${STATE}"
+    current_boot="$(boot_id)"
+    arm_boot_recovery
     token="$(cat /proc/sys/kernel/random/uuid)"
     valid_token "${token}" || fail "Could not generate a firewall confirmation token"
     tar -cpf "${STATE}/before.tar.pending" -C "${ETC}" ufw default/ufw
@@ -157,6 +235,7 @@ case "${action}" in
     esac
     publish enabled "${enabled}"
     publish connection "${SSH_CONNECTION}"
+    publish boot "${current_boot}"
     rm -f -- "${STATE}/confirmed" "${STATE}/confirmed.pending"
     publish token "${token}"
     unit="rakazo-firewall-rollback-${token}"
@@ -165,15 +244,20 @@ case "${action}" in
       fail "Could not confirm rollback scheduling; firewall was not changed; pending snapshot retained"
     fi
     [[ "$(systemctl show "${unit}.timer" --property=ActiveState --value 9>&-)" == active ]] || fail "Rollback timer is not active; firewall was not changed; pending snapshot retained"
+    sync -f "${STATE}" "${UNIT_DIR}" "${UNIT_DIR}/${BOOT_UNIT}" "${UNIT_DIR}/multi-user.target.wants" "${SELF}" || fail "Could not flush firewall recovery; firewall was not changed; pending snapshot retained"
     echo "Rollback armed. After verifying a NEW SSH connection, run:"
     echo "sudo --preserve-env=SSH_CONNECTION ${SELF} confirm ${token}"
     # Children, including long-lived command descendants, must not retain this lock.
     timeout --kill-after=5s 120s "$@" 9>&-
     ;;
-  confirm|rollback)
+  confirm|rollback|recover)
     if [[ "${action}" == confirm && ! -e "${STATE}/token" && -f "${STATE}/confirmed" && "$(cat "${STATE}/confirmed")" == "$1" ]]; then
       secure_file "${STATE}/connection"
       [[ "${SSH_CONNECTION}" != "$(cat "${STATE}/connection")" ]] || fail "Confirm from a fresh SSH connection, preserving SSH_CONNECTION through sudo"
+      if ! sync -f "${STATE}"; then
+        echo "Firewall confirmation committed and pending token retired; state durability is unverified; retry confirm with the same token" >&2
+        exit 0
+      fi
       echo "Firewall confirmation already committed and pending token retired"
       exit 0
     fi
@@ -189,12 +273,20 @@ case "${action}" in
       [[ "${SSH_CONNECTION}" != "$(cat "${STATE}/connection")" ]] || fail "Confirm from a fresh SSH connection, preserving SSH_CONNECTION through sudo"
       # This is the confirmation commit point. A queued callback rechecks it under the lock.
       if [[ ! -f "${STATE}/confirmed" ]]; then publish confirmed "${token}"; fi
-      if ! systemctl stop "${unit}.timer" 9>&-; then
+      if ! sync -f "${STATE}"; then
+        echo "Firewall confirmation committed but durability is unverified; pending state retained and timer cleanup not attempted; retry confirm with the same token" >&2
+        exit 0
+      fi
+      if ! systemctl stop "${unit}.timer" 9>&- && ! timer_is_absent "${unit}.timer"; then
         echo "Firewall confirmation committed; timer cleanup is incomplete; retry confirm with the same token" >&2
         exit 0
       fi
       if ! rm -f -- "${STATE}/token"; then
         echo "Firewall confirmation committed; state cleanup is incomplete; retry confirm with the same token" >&2
+        exit 0
+      fi
+      if ! sync -f "${STATE}"; then
+        echo "Firewall confirmation committed and pending token retired; state durability is unverified; retry confirm with the same token" >&2
         exit 0
       fi
     else
@@ -212,11 +304,15 @@ case "${action}" in
       # without deleting any sibling of default/ufw or following directory symlinks.
       tar --recursive-unlink -xpf "${STATE}/before.tar" -C "${ETC}"
       if [[ "$(cat "${STATE}/enabled")" == 1 ]]; then ufw --force enable; else ufw --force disable; fi
+      sync -f "${ETC}/ufw" "${ETC}/default" || fail "Firewall restored but durability is unverified; pending state retained"
       if ! systemctl stop "${unit}.timer" 9>&-; then
-        [[ "$(systemctl show "${unit}.timer" --property=ActiveState --value 9>&-)" == inactive ]] || fail "Rollback completed but timer cleanup failed; pending state retained"
+        if [[ "${action}" != recover ]] || ! timer_is_absent "${unit}.timer"; then
+          [[ "$(systemctl show "${unit}.timer" --property=ActiveState --value 9>&-)" == inactive ]] || fail "Rollback completed but timer cleanup failed; pending state retained"
+        fi
       fi
       logger -p authpriv.warning -t rakazo-firewall-change "Restored firewall after an unconfirmed change"
       rm -f -- "${STATE}/token"
+      sync -f "${STATE}" || fail "Firewall restored and pending token retired; state durability is unverified; retry recover"
     fi
     echo "Firewall change ${action} completed"
     ;;
