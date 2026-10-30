@@ -653,10 +653,16 @@ invalid state record, or mismatch with the recorded project/daemon identity. If 
 before publishing its ownership record, inspect the deployment state and Docker resources before
 retrying; the script does not adopt or delete an unverified cache volume automatically.
 
-A failed rollout restores the previous Git revision and starts the retained exact service images
-with building and pulling disabled. If a complete prior image set is unavailable, including on a
+A failed rollout restores the pre-attempt Git revision and observed exact service images with
+building and pulling disabled. If a complete prior image set is unavailable, including on a
 first installation, rollback is reported as unavailable rather than rebuilding a replacement.
 Successful deployment requires both health checks and publication of the healthy image generation.
+A new successful generation retains the last published healthy service map as its predecessor,
+even if an interrupted attempt left other containers running at startup. Repairing the same Git
+revision with the same service-image map keeps the existing predecessor. Without a prior healthy
+receipt, the first managed deployment keeps the observed pre-deploy images as an unverified
+rollback fallback.
+
 The first managed run builds and checks the deployment even when the older
 `.last-deployed-revision` file already matches Git; that file alone does not establish image identity.
 Later runs skip the rollout only when the generation, revision marker, actual images and both health

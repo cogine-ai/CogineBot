@@ -288,7 +288,8 @@ if (args[0] === 'compose') {
  if (op==='build') {
   if (!(tail.length===0 || (tail.length===2 && tail[0]==='--builder' && state.builders[tail[1]]))) fail('unsupported build shape',2);
   if (process.env.FAIL_BUILD) { state.failedBuild=true; fail('build failed'); }
-  const imageId='sha256:'+crypto.createHash('sha256').update(revision).digest('hex');
+  const imageId=process.env.BUILD_IMAGE_ID || 'sha256:'+crypto.createHash('sha256').update(revision).digest('hex');
+  if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) fail('invalid fixture build identity',2);
   const refs=[...new Set(Object.values(config.services).filter(x=>x.build).map(x=>x.image))];
   for (const old of Object.values(state.images)) old.RepoTags=old.RepoTags.filter(ref=>!refs.includes(ref));
   const existing=state.images[imageId];
@@ -1440,6 +1441,139 @@ describe("production deploy exact rollback and owned image history", () => {
     expect(result.status).not.toBe(0);
     expect(deploy.state().removed).toEqual([]);
     expect(deploy.events().some((x) => x.startsWith("git fetch"))).toBe(false);
+  });
+});
+
+describe("production deploy authenticated image generations", () => {
+  function healthyHistory() {
+    const deploy = fixture();
+    prime(deploy);
+    deploy.next("healthy generation");
+    const result = deploy.run();
+    expect(result.status, result.stderr).toBe(0);
+    const healthy = deploy.record().healthy!;
+    expect(healthy.previous).not.toEqual(healthy.services);
+    deploy.clearLogs();
+    return { deploy, healthy };
+  }
+  function interruptedLive(kind: "complete" | "mixed") {
+    const { deploy, healthy } = healthyHistory();
+    const id = `sha256:${"b".repeat(64)}`;
+    const ref = `${healthy.services.find((x) => x.service === "api")!.ref.split(":")[0]}:${id.slice(7)}`;
+    deploy.update((state) => {
+      for (const image of Object.values(state.images))
+        image.RepoTags = image.RepoTags.filter((tag) => tag !== "example/app:local");
+      state.images[id] = {
+        Id: id,
+        RepoTags: ["example/app:local", ref],
+        RepoDigests: [],
+        Config: { Labels: {} },
+      };
+      for (const container of Object.values(state.containers)) {
+        const service = container.Config.Labels["com.docker.compose.service"];
+        if (service === "api" || (kind === "complete" && service === "web")) {
+          container.Image = id;
+          container.Config.Image = ref;
+        }
+      }
+    });
+    const record = deploy.record();
+    record.images.push({ ref, id });
+    write(deploy.recordPath, JSON.stringify(record));
+    expect(deploy.record().healthy).toEqual(healthy);
+    expect(deploy.state().images[id]!.RepoTags).toContain(ref);
+    const observed = Object.fromEntries(
+      Object.values(deploy.state().containers)
+        .filter((c) => c.Config.Labels["com.docker.compose.project"] === deploy.project)
+        .map((c) => [c.Config.Labels["com.docker.compose.service"], c.Image]),
+    );
+    expect(observed.api).toBe(id);
+    expect(observed.web).toBe(
+      kind === "complete" ? id : healthy.services.find((x) => x.service === "web")!.id,
+    );
+    return { deploy, healthy, observed };
+  }
+  function expectHealthyImagesPresent(deploy: ReturnType<typeof fixture>, images: ServiceImage[]) {
+    const state = deploy.state();
+    for (const image of images) {
+      expect(state.images[image.id]?.RepoTags).toContain(image.ref);
+      expect(deploy.record().images).toContainEqual({ ref: image.ref, id: image.id });
+      expect(state.removed).not.toContain(image.ref);
+    }
+  }
+  it("uses the authenticated predecessor after an uncommitted mixed live generation", () => {
+    const { deploy, healthy } = interruptedLive("mixed");
+    const target = deploy.next("next after interrupted generation");
+    const result = deploy.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(deploy.record().healthy?.revision).toBe(target);
+    expect(deploy.record().healthy?.previous).toEqual(healthy.services);
+    expectHealthyImagesPresent(deploy, healthy.services);
+    assertNoUnsafeCleanup(deploy);
+  });
+  it("keeps authenticated predecessor references through the next GC after uncommitted live state", () => {
+    const { deploy, healthy } = interruptedLive("complete");
+    deploy.next("next after mixed interrupted generation");
+    const result = deploy.run();
+    expect(result.status, result.stderr).toBe(0);
+    deploy.clearLogs();
+    const retried = deploy.run();
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(retried.stdout).toContain("already at");
+    expectHealthyImagesPresent(deploy, healthy.services);
+    expect(deploy.record().healthy?.previous).toEqual(healthy.services);
+    assertNoUnsafeCleanup(deploy);
+  });
+  it("keeps the earlier predecessor when repairing the same authenticated generation", () => {
+    const { deploy, healthy } = interruptedLive("mixed");
+    rmSync(path.join(deploy.checkout, ".last-deployed-revision"));
+    const result = deploy.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).not.toContain("already at");
+    expect(deploy.record().healthy).toEqual(healthy);
+    expectHealthyImagesPresent(deploy, healthy.previous);
+  });
+  it("rotates the predecessor when the revision matches but rebuilt image identities change", () => {
+    const { deploy, healthy } = healthyHistory();
+    rmSync(path.join(deploy.checkout, ".last-deployed-revision"));
+    const imageId = `sha256:${"b".repeat(64)}`;
+    const result = deploy.run({ BUILD_IMAGE_ID: imageId });
+    expect(result.status, result.stderr).toBe(0);
+    expect(deploy.record().healthy?.revision).toBe(healthy.revision);
+    expect(deploy.record().healthy?.services.find((x) => x.service === "api")?.id).toBe(imageId);
+    expect(deploy.record().healthy?.previous).toEqual(healthy.services);
+  });
+  it("rotates the predecessor when image identities match but the revision changes", () => {
+    const { deploy, healthy } = healthyHistory();
+    const target = deploy.next("same images at another revision");
+    const imageId = healthy.services.find((x) => x.service === "api")!.id;
+    const result = deploy.run({ BUILD_IMAGE_ID: imageId });
+    expect(result.status, result.stderr).toBe(0);
+    expect(deploy.record().healthy?.revision).toBe(target);
+    expect(deploy.record().healthy?.services).toEqual(healthy.services);
+    expect(deploy.record().healthy?.previous).toEqual(healthy.services);
+  });
+  it("keeps authenticated history and restores observed mixed images after publication failure", () => {
+    const { deploy, healthy, observed } = interruptedLive("mixed");
+    deploy.next("unpublished next generation");
+    const result = deploy.run({ FAIL_HEALTHY_PUBLISH: "1" });
+    expect(result.status).not.toBe(0);
+    expect(deploy.record().healthy).toEqual(healthy);
+    expect(deploy.head()).toBe(healthy.revision);
+    expect(deploy.deployed()).toBe(healthy.revision);
+    for (const container of Object.values(deploy.state().containers)) {
+      const service = container.Config.Labels["com.docker.compose.service"];
+      if (service && Object.hasOwn(observed, service))
+        expect(container.Image).toBe(observed[service]);
+    }
+    expectHealthyImagesPresent(deploy, [...healthy.services, ...healthy.previous]);
+    expect(
+      deploy
+        .composeArguments("up")
+        .at(-1)
+        ?.some((arg) => arg.endsWith("/rollback.json")),
+    ).toBe(true);
+    assertNoUnsafeCleanup(deploy);
   });
 });
 

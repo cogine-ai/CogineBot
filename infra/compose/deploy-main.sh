@@ -542,8 +542,12 @@ for _ in {1..30}; do
     jq -e --argjson actual "${current_services}" '. == $actual' <<<"${expected_services}" >/dev/null ||
       fail "Deployment service images differ from the protected target images"
     while IFS= read -r id; do [[ -z "${id}" ]] || record_image "${id}"; done < <(jq -r 'map(.id)|unique[]' <<<"${current_services}")
-    next="$(jq -c --arg revision "${target_revision}" --argjson services "${current_services}" --argjson previous "${before_services}" \
-      '.healthy = {revision:$revision,services:$services,previous:$previous}' <<<"${state}")"
+    # Preserve the accepted predecessor; repairing the same generation must keep its earlier fallback.
+    next="$(jq -c --arg revision "${target_revision}" --argjson services "${current_services}" --argjson observed "${before_services}" \
+      '.healthy = {revision:$revision,services:$services,previous:(
+        if .healthy == null then $observed
+        elif .healthy.revision == $revision and ((.healthy.services|sort_by(.service)) == ($services|sort_by(.service)))
+        then .healthy.previous else .healthy.services end)}' <<<"${state}")"
     # Publish compatibility evidence first. Only the final atomic state publication is authoritative.
     legacy_tmp="$(mktemp "${state_dir}/.revision.XXXXXX")"; temporary_files+=("${legacy_tmp}")
     chmod 600 "${legacy_tmp}"; printf '%s\n' "${target_revision}" >"${legacy_tmp}"
