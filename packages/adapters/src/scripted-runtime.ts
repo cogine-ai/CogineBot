@@ -29,6 +29,7 @@ export class ScriptedAgentRuntime implements AgentRuntime {
     const controller = new AbortController();
     running.set(request.runId, controller);
     const signal = context?.signal ?? controller.signal;
+    const isAborted = () => signal.aborted || controller.signal.aborted;
     try {
       if (shouldFail(request.prompt)) {
         throw new Error("Scripted run failure");
@@ -70,7 +71,13 @@ export class ScriptedAgentRuntime implements AgentRuntime {
       }
       const script =
         steeredPrompt !== undefined
-          ? inferScript(steeredPrompt, request.resumeFromCheckpoint)
+          ? steering
+              .flatMap((item) =>
+                inferScript(item.historyText ?? item.text, request.resumeFromCheckpoint),
+              )
+              .map((turn, index, turns) =>
+                turn.complete && index < turns.length - 1 ? { ...turn, complete: false } : turn,
+              )
           : (request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint));
       request.onScriptResolved?.(script);
       // Per-run call index so repeated tools (e.g. message_agent) get distinct
@@ -83,9 +90,17 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         }
         if (turn.assistant) {
           yield { type: "progress", text: "working…", activity: true };
+          if (isAborted()) {
+            yield { type: "done", text: "stopped" };
+            return;
+          }
           yield { type: "text", text: turn.assistant };
         }
         for (const call of turn.toolCalls ?? []) {
+          if (isAborted()) {
+            yield { type: "done", text: "stopped" };
+            return;
+          }
           const executionId = `${request.runId}:${call.name}:${toolCallSeq++}`;
           if (call.name === "run_subagent") {
             const agentId = `${request.runId}:subagent`;
@@ -99,12 +114,20 @@ export class ScriptedAgentRuntime implements AgentRuntime {
               status: "running",
               progress: "working…",
             };
+            if (isAborted()) {
+              yield { type: "done", text: "stopped" };
+              return;
+            }
             yield {
               type: "tool",
               name: call.name,
               args: call.args,
               executionId,
             };
+            if (isAborted()) {
+              yield { type: "done", text: "stopped" };
+              return;
+            }
             yield {
               type: "subagent",
               agentId,
@@ -121,6 +144,10 @@ export class ScriptedAgentRuntime implements AgentRuntime {
             args: call.args,
             executionId,
           };
+        }
+        if (isAborted()) {
+          yield { type: "done", text: "stopped" };
+          return;
         }
         if (turn.ask) {
           yield {
@@ -145,12 +172,22 @@ export class ScriptedAgentRuntime implements AgentRuntime {
             provider: "scripted",
             model: "scripted",
           };
+          if (isAborted()) {
+            yield { type: "done", text: "stopped" };
+            return;
+          }
           yield { type: "done", text: turn.assistant };
+          if (!isAborted()) request.onScriptCompleted?.();
           return;
         }
       }
       yield { type: "text", text: "done." };
+      if (isAborted()) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
       yield { type: "done", text: "done." };
+      if (!isAborted()) request.onScriptCompleted?.();
     } finally {
       controller.abort();
       running.delete(request.runId);

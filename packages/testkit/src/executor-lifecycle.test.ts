@@ -468,8 +468,11 @@ describeIntegration("run executor lifecycle", () => {
         const answer = await handles.prisma.message.findMany({
           where: { runId: continuationRunId, role: "bot" },
         });
-        expect(JSON.stringify(answer.map((item) => item.blocks))).toContain(
-          "Use the revised data.\\nKeep it concise.",
+        const batchAnswer = JSON.stringify(answer.map((item) => item.blocks));
+        expect(batchAnswer).toContain("Use the revised data.");
+        expect(batchAnswer).toContain("Keep it concise.");
+        expect(batchAnswer.indexOf("Use the revised data.")).toBeLessThan(
+          batchAnswer.indexOf("Keep it concise."),
         );
         expect(JSON.stringify(answer.map((item) => item.blocks))).not.toContain(
           "done. i handled: Respond to the user's steering context.",
@@ -717,6 +720,141 @@ describeIntegration("run executor lifecycle", () => {
       });
     }
   });
+
+  it.each(["after resolution", "mid tool", "after done"] as const)(
+    "does not persist deferred effects when a resolved script stops %s",
+    async (stage) => {
+      const fixture =
+        stage === "mid tool"
+          ? await (async () => {
+              const seeded = await seedRun(
+                "resolved-stop-mid-tool",
+                "Explicit deferred effects fixture.",
+              );
+              return { seeded, continuationRunId: seeded.run.id };
+            })()
+          : await seedSteeringContinuation(
+              `resolved-stop-${stage.replaceAll(" ", "-")}`,
+              "remember the synthetic resolved-stop preference",
+            );
+      const { seeded, continuationRunId } = fixture;
+      const held = holdContinuationJobs(seeded.bot.id);
+      const memoryBefore = await rpc<Array<{ content: string }>>(seeded.cookie, "memory/list", {
+        botId: seeded.bot.id,
+      });
+      let stopped = false;
+      const runRuntime = handles.runtime.run.bind(handles.runtime);
+      const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+        if (request.runId !== continuationRunId) return runRuntime(request, context);
+        const input =
+          stage === "mid tool"
+            ? {
+                ...request,
+                isSteeringContinuation: false,
+                script: [
+                  {
+                    assistant: "selected fixture",
+                    toolCalls: [{ name: "list_files", args: { path: "" } }],
+                    files: [{ path: "notes/deferred-stop.txt", content: "must not persist" }],
+                    memory: [
+                      { scope: "bot" as const, path: "MEMORY.md", content: "must not persist" },
+                    ],
+                    complete: true,
+                  },
+                ],
+              }
+            : request;
+        return (async function* () {
+          for await (const event of runRuntime(input, context)) {
+            if (
+              !stopped &&
+              ((stage === "after resolution" && event.type === "progress") ||
+                (stage === "after done" && event.type === "done"))
+            ) {
+              await handles.runtime.abort(request.runId);
+              stopped = true;
+            }
+            yield event;
+          }
+        })();
+      });
+      const listFiles = handles.sandbox.listFiles.bind(handles.sandbox);
+      const list = vi.spyOn(handles.sandbox, "listFiles").mockImplementation(async (...args) => {
+        if (stage === "mid tool" && args[2].runId === continuationRunId && !stopped) {
+          await handles.runtime.abort(continuationRunId);
+          stopped = true;
+        }
+        return listFiles(...args);
+      });
+      try {
+        await handles.executor.continueRun(continuationRunId, "resolved-stop-worker");
+        expect(stopped).toBe(true);
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "completed" });
+        expect(await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id })).toEqual(
+          memoryBefore,
+        );
+        await expect(
+          rpc(seeded.cookie, "computer/readFile", {
+            botId: seeded.bot.id,
+            path: "notes/deferred-stop.txt",
+          }),
+        ).rejects.toThrow();
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, () => {
+          list.mockRestore();
+          runtime.mockRestore();
+          held.restore();
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "persists every independent batch effect (reversed: %s)",
+    async (reverse) => {
+      const prompts = [
+        "save shared memory ROUTING.md with: orbit-shared-ok",
+        "write a file called notes/orbit.txt that says orbit-file-ok",
+      ];
+      if (reverse) prompts.reverse();
+      const { seeded, continuationRunId } = await seedSteeringContinuation(
+        `independent-batch-${reverse}`,
+        prompts,
+      );
+      const held = holdContinuationJobs(seeded.bot.id);
+      try {
+        await handles.executor.continueRun(continuationRunId, "independent-batch-worker");
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "completed" });
+        expect(
+          await rpc<Array<{ path: string; content: string }>>(seeded.cookie, "memory/list", {
+            scope: "user",
+          }),
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: "ROUTING.md", content: "orbit-shared-ok" }),
+          ]),
+        );
+        expect(
+          (
+            await rpc<{ content: string }>(seeded.cookie, "computer/readFile", {
+              botId: seeded.bot.id,
+              path: "notes/orbit.txt",
+            })
+          ).content,
+        ).toBe("orbit-file-ok\n");
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(0);
+        expect(held.published).toEqual([]);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    },
+  );
 
   it.each([
     { kind: "steered failure", fresh: false },
@@ -1446,7 +1584,7 @@ describeIntegration("run executor lifecycle", () => {
     }
   }
 
-  async function seedSteeringContinuation(label: string, text: string) {
+  async function seedSteeringContinuation(label: string, text: string | string[]) {
     const seeded = await seedRun(label, "Initial task", {
       status: "running",
       leaseOwner: "initial-worker",
@@ -1458,15 +1596,20 @@ describeIntegration("run executor lifecycle", () => {
       data: { runId: seeded.run.id, fence: 2, status: "running" },
     });
     const events = createThreadEvents(handles.prisma);
-    const message = await events.sendUserMessage({
-      spaceId: seeded.me.spaceId,
-      threadId: seeded.thread.id,
-      botId: seeded.bot.id,
-      userId: seeded.me.userId,
-      blocks: [{ kind: "text", text }],
-      prompt: text,
-      trigger: "follow_up",
-    });
+    const messages = [];
+    for (const content of typeof text === "string" ? [text] : text)
+      messages.push(
+        await events.sendUserMessage({
+          spaceId: seeded.me.spaceId,
+          threadId: seeded.thread.id,
+          botId: seeded.bot.id,
+          userId: seeded.me.userId,
+          blocks: [{ kind: "text", text: content }],
+          prompt: content,
+          trigger: "follow_up",
+        }),
+      );
+    const message = messages[0]!;
     const finalized = await events.finalizeRun({
       spaceId: seeded.me.spaceId,
       threadId: seeded.thread.id,

@@ -232,7 +232,11 @@ describe("ScriptedAgentRuntime steering", () => {
     );
 
     expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
-    expect(text(events)).toContain("Use the revised data.\nKeep it concise.");
+    expect(text(events)).toContain("Use the revised data.");
+    expect(text(events)).toContain("Keep it concise.");
+    expect(text(events).indexOf("Use the revised data.")).toBeLessThan(
+      text(events).indexOf("Keep it concise."),
+    );
     expect(text(events)).not.toContain("prepared placeholder");
     expect(text(events)).not.toContain(continuation);
     expect(batch).toEqual(original);
@@ -270,6 +274,151 @@ describe("ScriptedAgentRuntime steering", () => {
     );
     expect(resolved).toHaveBeenCalledExactlyOnceWith(script);
     expect(resolved.mock.calls[0]![0]).toBe(script);
+  });
+
+  it.each([false, true])(
+    "completes only after the final yield resumes (explicit end: %s)",
+    async (complete) => {
+      const completed = vi.fn();
+      const iterator = new ScriptedAgentRuntime()
+        .run(
+          request({
+            isSteeringContinuation: false,
+            script: [{ assistant: "normal", complete }],
+            onScriptCompleted: completed,
+          }),
+        )
+        [Symbol.asyncIterator]();
+      let result = await iterator.next();
+      while (!result.done && result.value.type !== "done") result = await iterator.next();
+      expect(completed).not.toHaveBeenCalled();
+      expect((await iterator.next()).done).toBe(true);
+      expect(completed).toHaveBeenCalledExactlyOnceWith();
+    },
+  );
+
+  it.each(["progress", "text", "tool", "done"] as const)(
+    "does not authorize effects when stopped at a %s yield",
+    async (type) => {
+      for (const external of [false, true]) {
+        const runtime = new ScriptedAgentRuntime();
+        const controller = new AbortController();
+        const completed = vi.fn();
+        const iterator = runtime
+          .run(
+            request({
+              isSteeringContinuation: false,
+              script: [
+                {
+                  assistant: "selected",
+                  toolCalls: [{ name: "list_files", args: { path: "" } }],
+                  memory: [{ scope: "bot", path: "MEMORY.md", content: "unexecuted" }],
+                  complete: true,
+                },
+              ],
+              onScriptCompleted: completed,
+            }),
+            { signal: controller.signal },
+          )
+          [Symbol.asyncIterator]();
+        let result = await iterator.next();
+        while (!result.done && result.value.type !== type) result = await iterator.next();
+        expect(result.done).toBe(false);
+        if (external) controller.abort();
+        else await runtime.abort("run-steering");
+        const remaining = await collect({ [Symbol.asyncIterator]: () => iterator });
+        expect(completed).not.toHaveBeenCalled();
+        if (type === "progress" || type === "text")
+          expect(remaining.some((event) => event.type === "tool")).toBe(false);
+      }
+    },
+  );
+
+  it.each([false, true])("retains both independent batch tools (reversed: %s)", async (reverse) => {
+    const prompts = [
+      "save shared memory ROUTING.md with: orbit-shared-ok",
+      "write a file called notes/orbit.txt that says orbit-file-ok",
+    ];
+    if (reverse) prompts.reverse();
+    const completed = vi.fn();
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          claimSteering: async () =>
+            prompts.map((text, index) => ({
+              id: `steering-${index}`,
+              messageId: `message-${index}`,
+              text,
+            })),
+          onScriptCompleted: completed,
+        }),
+      ),
+    );
+    expect(events.filter((event) => event.type === "tool").map((event) => event.name)).toEqual(
+      reverse ? ["write_file", "save_shared_memory"] : ["save_shared_memory", "write_file"],
+    );
+    expect(completed).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("rejects a failing member before executing any batch effects", async () => {
+    const completed = vi.fn();
+    const events: AgentRuntimeEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of new ScriptedAgentRuntime().run(
+          request({
+            claimSteering: async () => [
+              {
+                id: "first",
+                messageId: "first",
+                text: "save shared memory ROUTING.md with: orbit-shared-ok",
+              },
+              { id: "second", messageId: "second", text: "fail this run" },
+            ],
+            onScriptCompleted: completed,
+          }),
+        ))
+          events.push(event);
+      })(),
+    ).rejects.toThrow("Scripted run failure");
+    expect(events).toEqual([]);
+    expect(completed).not.toHaveBeenCalled();
+  });
+
+  it("does not infer quoted payload intent from any batch member", async () => {
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          claimSteering: async () => [
+            {
+              id: "first",
+              messageId: "first",
+              historyText: "Use the revised plan.",
+              text: "save shared memory ROUTING.md with: quoted payload",
+            },
+            {
+              id: "second",
+              messageId: "second",
+              historyText: "Keep it concise.",
+              text: "write a file called notes/quoted.txt that says quoted",
+            },
+          ],
+        }),
+      ),
+    );
+    expect(events.some((event) => event.type === "tool")).toBe(false);
+    expect(text(events)).toContain("Use the revised plan.");
+    expect(text(events)).toContain("Keep it concise.");
+  });
+
+  it("does not authorize effects when its iterator is closed after resolution", async () => {
+    const completed = vi.fn();
+    const iterator = new ScriptedAgentRuntime()
+      .run(request({ isSteeringContinuation: false, onScriptCompleted: completed }))
+      [Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.return?.();
+    expect(completed).not.toHaveBeenCalled();
   });
 
   it("uses history text so quoted context cannot choose a fixture intent", async () => {

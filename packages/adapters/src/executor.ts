@@ -4209,6 +4209,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let progressRedactor = createStreamingRedactor(runSecrets);
         const script = scripted ? inferScript(task.prompt, takeoverResume?.checkpoint) : undefined;
         let resolvedEffectScript: ScriptedTurn[] | undefined;
+        let scriptCompleted = false;
         const flushProgress = async () => {
           if (scripted || !pendingProgress || isBackgroundRunTrigger(run.trigger)) return;
           await deps.events.append({
@@ -7022,6 +7023,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ? {
                     onScriptResolved: (resolved: ScriptedTurn[]) => {
                       resolvedEffectScript = resolved;
+                      scriptCompleted = false;
+                    },
+                    onScriptCompleted: () => {
+                      scriptCompleted = true;
                     },
                   }
                 : {}),
@@ -7466,7 +7471,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           pendingProgress += progressRedactor.finish();
           await flushProgress();
 
-          for (const turn of resolvedEffectScript ?? []) {
+          for (const turn of (scriptCompleted ? resolvedEffectScript : undefined) ?? []) {
             for (const file of turn.files ?? []) {
               workspaceCheckpoint.markDirty();
               await deps.sandbox.writeFile(

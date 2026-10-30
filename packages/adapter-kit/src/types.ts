@@ -530,6 +530,8 @@ export interface AgentRunRequest {
   script?: ScriptedTurn[];
   /** Scripted runtimes report their selected script before emitting its events and effects. */
   onScriptResolved?: (script: ScriptedTurn[]) => void;
+  /** Authorize deferred scripted effects only after normal, uninterrupted iteration completes. */
+  onScriptCompleted?: () => void;
   /**
    * FYI bot-message wakes and scheduled routines may finish with no text.
    * When set, skip synthetic empty-turn fallbacks (including after tools).
