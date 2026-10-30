@@ -614,6 +614,56 @@ describeIntegration("run executor lifecycle", () => {
   );
 
   it.each([
+    { kind: "memory", prompt: "remember the synthetic orbit preference" },
+    { kind: "file", prompt: "Use the revised synthetic orbit plan." },
+  ])("persists the claimed steering script's $kind effects", async ({ kind, prompt }) => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation(
+      `scripted-effects-${kind}`,
+      prompt,
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    try {
+      await handles.executor.continueRun(continuationRunId, "effects-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      const answer = await handles.prisma.message.findMany({
+        where: { runId: continuationRunId, role: "bot" },
+      });
+      const memories = await rpc<Array<{ content: string }>>(seeded.cookie, "memory/list", {
+        botId: seeded.bot.id,
+      });
+      if (kind === "memory") {
+        expect(JSON.stringify(answer.map((item) => item.blocks))).toContain(
+          "noted — i will keep that in memory.",
+        );
+        expect(memories.some((item) => item.content === `# Memory\n\n- ${prompt}\n`)).toBe(true);
+        await expect(
+          rpc(seeded.cookie, "computer/readFile", {
+            botId: seeded.bot.id,
+            path: "notes/last-task.md",
+          }),
+        ).rejects.toThrow();
+      } else {
+        expect(JSON.stringify(answer.map((item) => item.blocks))).toContain(prompt);
+        const file = await rpc<{ content: string }>(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/last-task.md",
+        });
+        expect(file.content).toBe(`# Task\n\n${prompt}\n`);
+        expect(file.content).not.toContain("Respond to the user's steering context.");
+        expect(memories.some((item) => item.content.includes(prompt))).toBe(false);
+      }
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+      expect(held.published).toEqual([]);
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, held.restore);
+    }
+  });
+
+  it.each([
     { kind: "steered failure", fresh: false },
     { kind: "steered failure", fresh: true },
     { kind: "reply-context failure", fresh: false },

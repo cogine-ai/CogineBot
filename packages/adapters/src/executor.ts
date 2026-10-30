@@ -24,6 +24,7 @@ import type {
   NotificationMessage,
   NotificationProvider,
   SandboxProvider,
+  ScriptedTurn,
   SecretStore,
   SemanticMemoryProvider,
   ToolResultHistoryReference,
@@ -4206,7 +4207,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let approvalPausePending = false;
         let handedOff = false;
         let progressRedactor = createStreamingRedactor(runSecrets);
-        const script = scripted ? inferScript(task.prompt, takeoverResume?.checkpoint) : undefined;
+        let script = scripted ? inferScript(task.prompt, takeoverResume?.checkpoint) : undefined;
         const flushProgress = async () => {
           if (scripted || !pendingProgress || isBackgroundRunTrigger(run.trigger)) return;
           await deps.events.append({
@@ -7016,6 +7017,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               },
               resumeFromCheckpoint: takeoverResume?.checkpoint,
               script,
+              ...(scripted
+                ? {
+                    onScriptResolved: (resolved: ScriptedTurn[]) => {
+                      script = resolved;
+                    },
+                  }
+                : {}),
               allowSilentEmpty: allowSilentEmptyRun,
               emptyResponseText,
               executeTool: scripted ? undefined : applyTool,

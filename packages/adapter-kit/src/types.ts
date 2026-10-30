@@ -528,6 +528,8 @@ export interface AgentRunRequest {
   ) => Promise<AgentRunModel>;
   resumeFromCheckpoint?: string;
   script?: ScriptedTurn[];
+  /** Scripted runtimes report their selected script before emitting its events and effects. */
+  onScriptResolved?: (script: ScriptedTurn[]) => void;
   /**
    * FYI bot-message wakes and scheduled routines may finish with no text.
    * When set, skip synthetic empty-turn fallbacks (including after tools).

@@ -238,6 +238,40 @@ describe("ScriptedAgentRuntime steering", () => {
     expect(batch).toEqual(original);
   });
 
+  it.each(["remember the synthetic orbit preference", "Use the revised synthetic orbit plan."])(
+    "reports the selected steering script before its events: %s",
+    async (prompt) => {
+      const resolved = vi.fn();
+      const iterator = new ScriptedAgentRuntime()
+        .run(
+          request({
+            script: [{ assistant: "prepared placeholder", complete: true }],
+            claimSteering: async () => [{ id: "steering", messageId: "message", text: prompt }],
+            onScriptResolved: resolved,
+          }),
+        )
+        [Symbol.asyncIterator]();
+      const first = await iterator.next();
+      expect(resolved).toHaveBeenCalledExactlyOnceWith(inferScript(prompt));
+      expect(first.value).toMatchObject({ type: "progress" });
+      await collect({ [Symbol.asyncIterator]: () => iterator });
+    },
+  );
+
+  it("reports an ordinary request's explicit script as its authoritative effects", async () => {
+    const script = [
+      { memory: [{ scope: "bot" as const, path: "MEMORY.md", content: "kept" }], complete: true },
+    ];
+    const resolved = vi.fn();
+    await collect(
+      new ScriptedAgentRuntime().run(
+        request({ isSteeringContinuation: false, script, onScriptResolved: resolved }),
+      ),
+    );
+    expect(resolved).toHaveBeenCalledExactlyOnceWith(script);
+    expect(resolved.mock.calls[0]![0]).toBe(script);
+  });
+
   it("uses history text so quoted context cannot choose a fixture intent", async () => {
     const events = await collect(
       new ScriptedAgentRuntime().run(

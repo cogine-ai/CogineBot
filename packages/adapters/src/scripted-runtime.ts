@@ -72,6 +72,7 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         steeredPrompt !== undefined
           ? inferScript(steeredPrompt, request.resumeFromCheckpoint)
           : (request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint));
+      request.onScriptResolved?.(script);
       // Per-run call index so repeated tools (e.g. message_agent) get distinct
       // executionIds — delivery keys and effect replays key off this value.
       let toolCallSeq = 0;
