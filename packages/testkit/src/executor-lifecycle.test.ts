@@ -663,6 +663,61 @@ describeIntegration("run executor lifecycle", () => {
     }
   });
 
+  it("does not persist unresolved effects when a hanging scripted continuation stops", async () => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation(
+      "scripted-unresolved-stop",
+      "keep working on the synthetic orbit plan",
+    );
+    const memoryBefore = await rpc<Array<{ content: string }>>(seeded.cookie, "memory/list", {
+      botId: seeded.bot.id,
+    });
+    const held = holdContinuationJobs(seeded.bot.id);
+    let stoppedBeforeHandoff = false;
+    const runRuntime = handles.runtime.run.bind(handles.runtime);
+    const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+      if (request.runId !== continuationRunId) return runRuntime(request, context);
+      return (async function* () {
+        for await (const event of runRuntime(request, context)) {
+          if (!stoppedBeforeHandoff && event.type === "tool") {
+            expect(event.name).toBe("list_files");
+            // Stop the real producer before its first tool reaches the executor's lease poll.
+            await handles.runtime.abort(request.runId);
+            stoppedBeforeHandoff = true;
+          }
+          yield event;
+        }
+      })();
+    });
+    try {
+      await handles.executor.continueRun(continuationRunId, "unresolved-stop-worker");
+      expect(stoppedBeforeHandoff).toBe(true);
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      const answer = await handles.prisma.message.findMany({
+        where: { runId: continuationRunId, role: "bot" },
+      });
+      expect(JSON.stringify(answer.map((item) => item.blocks))).toContain("stopped");
+      await expect(
+        rpc(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/last-task.md",
+        }),
+      ).rejects.toThrow();
+      expect(
+        await rpc<Array<{ content: string }>>(seeded.cookie, "memory/list", {
+          botId: seeded.bot.id,
+        }),
+      ).toEqual(memoryBefore);
+      expect(held.published).toEqual([]);
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, () => {
+        runtime.mockRestore();
+        held.restore();
+      });
+    }
+  });
+
   it.each([
     { kind: "steered failure", fresh: false },
     { kind: "steered failure", fresh: true },
