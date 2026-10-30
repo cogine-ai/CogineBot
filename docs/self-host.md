@@ -550,15 +550,42 @@ content while a digest is present.
 
 For the single-VM production layout, install `infra/compose/backup-prod.sh` as
 `/usr/local/sbin/rakazo-backup` and enable the supplied `rakazo-backup.timer`. It creates a verified
-Postgres custom-format dump plus an application-data archive under `/var/backups/rakazo`, with mode
-`0600` and seven-day rotation. These local snapshots help with operator mistakes but are not a
-substitute for an encrypted off-host backup or provider snapshot.
+Postgres custom-format dump plus an application-data archive under the fixed
+`/var/backups/rakazo` directory. Directories use mode `0700` and snapshot files use `0600`.
+Only one backup can run at a time. Cleanup is limited to managed timestamp directories under that
+root: incomplete snapshots and completed snapshots older than seven days. The latest completed
+snapshot is always retained, even when older than seven days or larger than the storage budget.
+Completed snapshots inside the seven-day window are not removed to make room for another backup;
+the new run fails if capacity is insufficient. These local snapshots help with operator mistakes
+but are not a substitute for an encrypted off-host backup or provider snapshot.
+
+The production backup accepts these storage settings. The two space limits must be positive
+whole GiB; the volume requirement accepts only `0` or `1`.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `RAKAZO_BACKUP_MIN_FREE_GB` | `5` | Free-space reserve on the backup filesystem |
+| `RAKAZO_BACKUP_MAX_GB` | `50` | Total local backup storage budget, including the new snapshot |
+| `RAKAZO_BACKUP_REQUIRE_VOLUME` | `0` | Set to `1` to require `/var/backups` to be mounted on a filesystem separate from `/` |
+
+The size estimate uses source growth, a 25% margin and an additional GiB. Each dump/archive output
+is capped using the remaining budget and free space, and final metadata is included in the checks.
+Other processes can still consume disk space during the backup. Insufficient space, invalid
+capacity readings or a failed write leave protected completed snapshots intact. Unfinished
+snapshot directories are removed under the same lock on a later run.
+
+`SHA256SUMS` is published only after the dump and archive can be listed, checksums have been
+written, and the files have been synced; the snapshot directory is synced before success is
+reported. New checksum entries are relative to the snapshot directory. These checks establish an
+archive receipt, not an application-consistent snapshot or a successful restore drill: the live
+application can continue writing while its files are archived.
 
 The scheduled backup uses `/srv/rakazo` by default. For another deployment directory, set
 `RAKAZO_DEPLOY_DIR=/absolute/path/to/checkout` in a root-owned `/etc/rakazo/backup.env`
 (mode `0600`). The service reads this optional file on each run; the script uses the selected
 checkout's `.env` and production Compose file. If the stack was started with a custom `-p`,
-set the same `COMPOSE_PROJECT_NAME` in that file. For a manual run, export these variables instead.
+set the same `COMPOSE_PROJECT_NAME` in that file. Storage settings can go in the same file. For a
+manual run, export these variables instead.
 When updating an existing backup installation, reinstall both the script and service unit,
 then run `systemctl daemon-reload`.
 
