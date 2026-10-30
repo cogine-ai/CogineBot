@@ -616,6 +616,11 @@ it for a manual run. Checks run under the deployment lock, before fetching or re
 again after cleanup or builder startup and before building. Space below the threshold stops the
 deployment; an admission check does not reserve capacity against other writers or cap build output.
 
+Explicit `COMPOSE_PROJECT_NAME` and `COMPOSE_PROFILES` selections are passed as Compose arguments
+so they remain effective under `sudo`. An explicitly empty project name is rejected; unset it to
+use the project's `.env` or Compose-file name. An explicitly empty profile selection clears profiles
+selected by `.env`. The resolved project is fixed for the rollout and rollback.
+
 Each checkout, Compose project and Docker daemon gets a dedicated, explicitly selected Buildx
 builder. Its first startup pulls a pinned official BuildKit image and creates a persistent,
 privileged BuildKit container with a named cache volume. These resources stay between deployments.
@@ -627,7 +632,8 @@ recorded, unused deployment history references. It preserves the running images 
 healthy generation, images with foreign or shared tags, and images referenced by running or stopped
 containers. Legacy builders, unregistered image tags, application volumes and user workspaces are
 left intact. The script rechecks free space after cleanup and refuses deployment if it remains
-insufficient.
+insufficient. Generated deployment history references are internal recovery records; use regular
+application image names in the deployment configuration.
 
 Pull-only dependencies are acquired with the missing-image policy before the build, with capacity
 checked again afterwards. Startup uses protected image references with rebuilding and pulling

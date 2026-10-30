@@ -30,6 +30,10 @@ state_file_safe() { owned_file "$1" && [[ "$(mode_of "$1")" == 600 ]]; }
 
 is_uint "${MIN_FREE_GB}" && ((MIN_FREE_GB <= MAX_INTEGER / 1024 / 1024)) ||
   fail "RAKAZO_DEPLOY_MIN_FREE_GB must be a nonnegative whole GiB within the supported integer range"
+if [[ "${COMPOSE_PROJECT_NAME+x}" == x ]]; then
+  [[ "${COMPOSE_PROJECT_NAME}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] ||
+    fail "COMPOSE_PROJECT_NAME must be a nonempty valid Compose project name when set"
+fi
 reserve_kb=$((MIN_FREE_GB * 1024 * 1024))
 is_path "${APP_DIR}" || fail "RAKAZO_DEPLOY_DIR must be an absolute path without control characters"
 cd -- "${APP_DIR}"
@@ -41,6 +45,17 @@ if command -v sha256sum >/dev/null; then hash_command=(sha256sum); else
   command -v shasum >/dev/null || fail "Deployment requires SHA-256 tooling"
   hash_command=(shasum -a 256)
 fi
+
+# Carry the caller's Compose selectors across sudo without changing its environment policy.
+compose_args=(--env-file .env -f "${COMPOSE_FILE}")
+if [[ "${COMPOSE_PROFILES+x}" == x ]]; then
+  profiles="$(jq -cn --arg profiles "${COMPOSE_PROFILES}" '
+    def trimspace: gsub("^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$"; "");
+    $profiles | (if . == "" then [""] else split(",") end) | map(trimspace)')"
+  while IFS= read -r -d '' profile; do compose_args+=(--profile "${profile}"); done < <(jq -j '.[]+"\u0000"' <<<"${profiles}")
+fi
+config_args=("${compose_args[@]}")
+if [[ "${COMPOSE_PROJECT_NAME+x}" == x ]]; then config_args+=(--project-name "${COMPOSE_PROJECT_NAME}"); fi
 
 # The installed entrypoint must not truncate an unexpected link or special file.
 [[ ! -L "${APP_DIR}/.deploy.lock" ]] || fail "The deployment lock must not be a symbolic link"
@@ -74,7 +89,7 @@ docker_command() {
   local limit="$1"; shift
   timeout --kill-after=30s "${limit}" sudo docker --host "${endpoint}" "$@"
 }
-compose() { local limit="$1"; shift; docker_command "${limit}" compose --env-file .env -f "${COMPOSE_FILE}" "$@"; }
+compose() { local limit="$1"; shift; docker_command "${limit}" compose --project-name "${project}" "${compose_args[@]}" "$@"; }
 healthy() {
   curl --fail --silent --show-error --max-time 15 "${RAKAZO_HEALTH_URL}" >/dev/null &&
     compose 5s exec -T api node -e \
@@ -110,7 +125,7 @@ docker_root="$(jq -r .DockerRootDir <<<"${engine}")"
 is_path "${docker_root}" && [[ -d "${docker_root}" ]] || fail "DockerRootDir must be an existing absolute local directory"
 
 read_config() {
-  compose 1m config --format json | jq -cse '
+  docker_command 1m compose "${config_args[@]}" config --format json | jq -cse '
     if length != 1 then error("ambiguous Compose config") else .[0] end |
     if (.name | type != "string") or (.name | test("^[a-z0-9][a-z0-9_-]*$") | not) or
        (.services | type != "object") or (.services | length == 0 or length > 256) then error("invalid Compose config") else
@@ -118,7 +133,10 @@ read_config() {
         if (.key | test("^[A-Za-z0-9][A-Za-z0-9_.-]*$") | not) or
            (.value.image | type != "string") or (.value.image | test("[[:space:][:cntrl:]]")) or
            (.value.image | startswith("-")) or (.value.image | length == 0)
-        then error("invalid service image") else {service:.key,image:.value.image,build:(.value.build != null)} end) | sort_by(.service))}
+        then error("invalid service image")
+        elif (.value.image | test("(^|/)coginebot-deploy-[0-9a-f]{32}(:|@|$)"))
+        then error("reserved deployment image namespace")
+        else {service:.key,image:.value.image,build:(.value.build != null)} end) | sort_by(.service))}
     end'
 }
 config="$(read_config)"; project="$(jq -r .project <<<"${config}")"
@@ -297,7 +315,11 @@ if [[ -z "${state}" ]]; then
   jq -e --arg name "${builder}" 'all(.[];.Name != $name)' <<<"${builders}" >/dev/null || fail "An unrecorded deployment builder already exists"
   jq -e --arg name "${builder_container}" 'all(.[];.Name != ("/"+$name))' <<<"${containers}" >/dev/null || fail "An unrecorded BuildKit container already exists"
   jq -e --arg name "${builder_volume}" 'all(.[];.Name != $name)' <<<"${volumes}" >/dev/null || fail "An unrecorded BuildKit volume already exists"
-  if [[ ! -d "${state_dir}" ]]; then mkdir -m 700 -- "${state_dir}"; fi
+  if [[ ! -d "${state_dir}" ]]; then
+    mkdir -m 700 -- "${state_dir}"
+    chmod 700 "${state_dir}"
+    chmod g-s "${state_dir}"
+  fi
   check_engine
   docker_command 1m buildx create --name "${builder}" --node "${node}" --driver docker-container \
     --driver-opt default-load=true --driver-opt "image=${BUILDKIT_IMAGE}" "${endpoint}" >/dev/null
@@ -431,16 +453,34 @@ rollback() {
     echo "Exact-image rollback is unavailable because the previous deployment image map is incomplete." >&2
     exit 1
   fi
-  local override
+  local rollback_config override
+  if ! rollback_config="$(read_config)"; then
+    echo "The previous Compose configuration could not be resolved; exact-image rollback was not started." >&2
+    exit 1
+  fi
+  if ! jq -e --arg project "${project}" --argjson previous "${before_services}" \
+    '.project == $project and (.services|map(.service)|sort) == ($previous|map(.service)|sort)' <<<"${rollback_config}" >/dev/null; then
+    echo "The previous Compose project or active services changed; exact-image rollback was not started." >&2
+    exit 1
+  fi
+  config="${rollback_config}"
   override="$(jq -cn --argjson images "${before_services}" '{services:($images|map({key:.service,value:{image:.ref}})|from_entries)}')"
   write_json "${state_dir}/rollback.json" "${override}"
   check_engine
-  if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" --env-file .env -f "${COMPOSE_FILE}" \
+  if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
     -f "${state_dir}/rollback.json" up -d --remove-orphans --no-build --pull never; then
     echo "Exact-image rollback could not restart the previous deployment." >&2; exit 1
   fi
   for _ in {1..30}; do
-    if healthy; then echo "The previous deployment images passed health and readiness checks." >&2; exit 1; fi
+    if healthy; then
+      read_containers; capture_services
+      if [[ "${current_complete}" == 1 ]] && jq -e --argjson actual "${current_services}" '. == $actual' <<<"${before_services}" >/dev/null; then
+        echo "The previous deployment images passed health and readiness checks." >&2
+      else
+        echo "Exact-image rollback service images differ from the protected previous images." >&2
+      fi
+      exit 1
+    fi
     sleep "${RAKAZO_DEPLOY_HEALTH_INTERVAL:-2}"
   done
   echo "Exact-image rollback did not pass health and readiness checks." >&2
@@ -475,7 +515,7 @@ forward_override="$(jq -cn --argjson images "${expected_services}" \
   '{services:($images | map({key:.service,value:{image:.ref}}) | from_entries)}')"
 write_json "${state_dir}/forward.json" "${forward_override}"
 check_engine
-docker_command "${UP_TIMEOUT}" compose --project-name "${project}" --env-file .env -f "${COMPOSE_FILE}" \
+docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
   -f "${state_dir}/forward.json" up -d --remove-orphans --no-build --pull never
 
 for _ in {1..30}; do

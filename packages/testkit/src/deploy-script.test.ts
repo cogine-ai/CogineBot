@@ -112,6 +112,7 @@ type DockerState = {
   bootstraps: number;
   removed: string[];
   activeProfiles: string[];
+  failedBuild?: boolean;
 };
 type ServiceImage = { service: string; id: string; ref: string };
 type DeploymentRecord = {
@@ -130,7 +131,8 @@ const input = process.argv.slice(2);
 const file = process.env.DOCKER_STATE;
 const state = JSON.parse(fs.readFileSync(file, 'utf8'));
 fs.appendFileSync(process.env.COMMAND_LOG, 'docker ' + input.join(' ') + ' @ ' + cp.execFileSync('git', ['rev-parse', '--short', 'HEAD'], {encoding:'utf8'}).trim() + '\n');
-fs.appendFileSync(process.env.DOCKER_ARGUMENTS_LOG, input.join('\0') + '\0\0');
+fs.appendFileSync(process.env.DOCKER_ARGUMENTS_LOG, Buffer.from(input.length+'\0'+input.join('\0')+'\0'));
+fs.appendFileSync(process.env.COMPOSE_SELECTORS_LOG, JSON.stringify({project:process.env.COMPOSE_PROJECT_NAME ?? null, profiles:process.env.COMPOSE_PROFILES ?? null})+'\n');
 function save() { fs.writeFileSync(file, JSON.stringify(state)); }
 function out(x) { save(); process.stdout.write((typeof x === 'string' ? x : JSON.stringify(x)) + '\n'); process.exit(0); }
 function fail(message, code = 1) { save(); if (message) process.stderr.write(message + '\n'); process.exit(code); }
@@ -230,12 +232,14 @@ if (args[0] === 'image' && args[1] === 'rm' && args.length===3) {
  out(ref);
 }
 if (args[0] === 'compose') {
- let i=1, project=null, files=[];
+ let i=1, project=null, files=[], profiles=null;
  while (i<args.length) {
-  if (args[i]==='--env-file' || args[i]==='-f' || args[i]==='--file' || args[i]==='-p' || args[i]==='--project-name') {
+  if (args[i]==='--env-file' || args[i]==='-f' || args[i]==='--file' || args[i]==='-p' || args[i]==='--project-name' || args[i]==='--profile') {
    const flag=args[i++],value=args[i++];
+   if (value === undefined) fail('missing Compose option value',2);
    if (flag==='-f'||flag==='--file') files.push(value);
    if (flag==='-p'||flag==='--project-name') project=value;
+   if (flag==='--profile') { profiles ??= []; profiles.push(value); }
   } else break;
  }
  const op=args[i++], tail=args.slice(i);
@@ -243,9 +247,19 @@ if (args[0] === 'compose') {
  if (op==='pull' && tail.length===1 && tail[0]==='--help' && files.length===0) out(process.env.COMPOSE_PULL_HELP || 'Usage: docker compose pull\n --ignore-buildable Skip buildable images\n --policy string Pull policy');
  if (files[0] !== 'infra/compose/docker-compose.prod.yml') fail('unexpected Compose file',2);
  const revision=cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+ const envFile=Object.fromEntries(fs.readFileSync('.env','utf8').split('\n').flatMap(line=>{const match=/^(COMPOSE_PROJECT_NAME|COMPOSE_PROFILES)=(.*)$/.exec(line);return match?[[match[1],match[2]]]:[]}));
+ const activeProfiles=profiles !== null ? profiles.filter(Boolean) : (process.env.COMPOSE_PROFILES ?? envFile.COMPOSE_PROFILES)?.split(',').map(s=>s.trim()).filter(Boolean) ?? state.activeProfiles;
  const config=JSON.parse(JSON.stringify(state.config));
- for (const [service,value] of Object.entries(config.services)) if (value.profiles && !state.activeProfiles.some(p=>value.profiles.includes(p))) delete config.services[service];
+ for (const [service,value] of Object.entries(config.services)) if (value.profiles && !activeProfiles.some(p=>p==='*' || value.profiles.includes(p))) delete config.services[service];
  if (process.env.TARGET_PROJECT && revision !== state.initialRevision) config.name=process.env.TARGET_PROJECT;
+ if (process.env.TARGET_IMAGE_REF && revision !== state.initialRevision) config.services.api.image=process.env.TARGET_IMAGE_REF;
+ if (state.failedBuild && revision === state.initialRevision) {
+  if (process.env.ROLLBACK_PROJECT) config.name=process.env.ROLLBACK_PROJECT;
+  if (process.env.ROLLBACK_ADD_SERVICE) config.services.extra={image:'postgres:16'};
+  if (process.env.ROLLBACK_REMOVE_SERVICE) delete config.services.web;
+  if (process.env.ROLLBACK_RENAME_SERVICE) { config.services.worker=config.services.web; delete config.services.web; }
+ }
+ if (envFile.COMPOSE_PROJECT_NAME) config.name=envFile.COMPOSE_PROJECT_NAME;
  if (process.env.COMPOSE_PROJECT_NAME) config.name=process.env.COMPOSE_PROJECT_NAME;
  if (project) config.name=project;
  if (op==='build' && tail.length===1 && tail[0]==='--help') out(process.env.COMPOSE_BUILD_HELP || 'Usage: docker compose build\n --builder string Set builder');
@@ -272,7 +286,7 @@ if (args[0] === 'compose') {
  }
  if (op==='build') {
   if (!(tail.length===0 || (tail.length===2 && tail[0]==='--builder' && state.builders[tail[1]]))) fail('unsupported build shape',2);
-  if (process.env.FAIL_BUILD) fail('build failed');
+  if (process.env.FAIL_BUILD) { state.failedBuild=true; fail('build failed'); }
   const imageId='sha256:'+crypto.createHash('sha256').update(revision).digest('hex');
   const refs=[...new Set(Object.values(config.services).filter(x=>x.build).map(x=>x.image))];
   for (const old of Object.values(state.images)) old.RepoTags=old.RepoTags.filter(ref=>!refs.includes(ref));
@@ -296,7 +310,7 @@ if (args[0] === 'compose') {
    services=Object.fromEntries(Object.entries(config.services).map(([name,value])=>[name,{...value,...override.services[name]}]));
   }
   for (const [name,value] of Object.entries(services)) {
-   if (value.profiles && !state.activeProfiles.some(p=>value.profiles.includes(p))) continue;
+   if (value.profiles && !activeProfiles.some(p=>p==='*' || value.profiles.includes(p))) continue;
    const image=Object.values(state.images).find(im=>im.Id===value.image || im.RepoTags.includes(value.image));
    if (!image) fail('up image missing for '+name);
    let container=Object.values(state.containers).find(c=>c.Config.Labels['com.docker.compose.project']===config.name && c.Config.Labels['com.docker.compose.service']===name);
@@ -305,7 +319,7 @@ if (args[0] === 'compose') {
     container={Id:cid,Name:'/'+config.name+'-'+name+'-1',Config:{Labels:{'com.docker.compose.project':config.name,'com.docker.compose.service':name}},State:{Status:'running'},Mounts:[]};
     state.containers[cid]=container;
    }
-   container.Image=(process.env.UP_IMAGE_MISMATCH && !rollback && name==='api') ? 'sha256:'+'a'.repeat(64) : image.Id;container.Config.Image=value.image;
+   container.Image=(process.env.UP_IMAGE_MISMATCH && !rollback && name==='api') ? 'sha256:'+'a'.repeat(64) : (process.env.ROLLBACK_IMAGE_MISMATCH && rollback && name==='api') ? 'sha256:'+'c'.repeat(64) : image.Id;container.Config.Image=value.image;
   }
   state.ups++;out('');
  }
@@ -331,6 +345,7 @@ function fixture() {
   const log = path.join(root, "commands.log");
   const argvLog = path.join(root, "docker-arguments.log");
   const eventsLog = path.join(root, "events.log");
+  const composeSelectorsLog = path.join(root, "compose-selectors.log");
   const firstImage = `sha256:${"a".repeat(64)}`;
   const databaseImage = `sha256:${"c".repeat(64)}`;
   const project = "example-prod";
@@ -404,7 +419,12 @@ function fixture() {
     activeProfiles: [],
   };
   write(stateFile, JSON.stringify(initial));
-  write(path.join(bin, "sudo"), '#!/bin/bash\nexec "$@"\n', 0o755);
+  // Model only the two Compose selectors commonly removed by sudo env_reset.
+  write(
+    path.join(bin, "sudo"),
+    '#!/bin/bash\nunset COMPOSE_PROJECT_NAME COMPOSE_PROFILES\nexec "$@"\n',
+    0o755,
+  );
   write(
     path.join(bin, "timeout"),
     '#!/bin/bash\nprintf "%s\\0" "$@" >> "$TIMEOUT_LOG"\nprintf "\\0" >> "$TIMEOUT_LOG"\nwhile [[ "$1" == --* ]]; do shift; done\nshift\nexec "$@"\n',
@@ -471,6 +491,7 @@ process.exit(result.status ?? 1);
     HOME: root,
     COMMAND_LOG: log,
     DOCKER_ARGUMENTS_LOG: argvLog,
+    COMPOSE_SELECTORS_LOG: composeSelectorsLog,
     EVENTS_LOG: eventsLog,
     DOCKER_STATE: stateFile,
     HOLD_READY: holdReady,
@@ -485,13 +506,26 @@ process.exit(result.status ?? 1);
     change(value);
     write(stateFile, JSON.stringify(value));
   };
-  const dockerArguments = (): string[][] =>
-    existsSync(argvLog)
-      ? readFileSync(argvLog, "utf8")
-          .split("\0\0")
-          .filter(Boolean)
-          .map((x) => x.split("\0"))
-      : [];
+  const dockerArguments = (): string[][] => {
+    if (!existsSync(argvLog)) return [];
+    const raw = readFileSync(argvLog, "utf8");
+    if (raw.length === 0) return [];
+    const words = raw.split("\0");
+    let offset = 0;
+    const commands: string[][] = [];
+    while (offset < words.length - 1) {
+      const countText = words[offset++]!;
+      expect(countText).toMatch(/^[1-9][0-9]*$/);
+      const count = Number(countText);
+      expect(Number.isSafeInteger(count) && count <= words.length - offset - 1).toBe(true);
+      const command = words.slice(offset, offset + count);
+      offset += count;
+      commands.push(command);
+    }
+    expect(offset).toBe(words.length - 1);
+    expect(words[offset]).toBe("");
+    return commands;
+  };
   const stateDirectory = path.join(checkout, ".git", "coginebot-deploy");
   const recordPath = path.join(stateDirectory, "state.json");
   return {
@@ -556,12 +590,21 @@ process.exit(result.status ?? 1);
         ? readFileSync(eventsLog, "utf8").trim().split("\n").filter(Boolean)
         : [],
     dockerArguments,
+    cliSelectors: (): { project: string | null; profiles: string | null }[] =>
+      existsSync(composeSelectorsLog)
+        ? readFileSync(composeSelectorsLog, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+        : [],
     composeArguments: (op: string) =>
       dockerArguments().filter((args) => composeOperation(args)[0] === op),
     record: (): DeploymentRecord => JSON.parse(readFileSync(recordPath, "utf8")),
     readyAttempts: () => state().readyAttempts,
     clearLogs() {
-      for (const file of [log, argvLog, eventsLog, env.TIMEOUT_LOG]) write(file, "");
+      for (const file of [log, argvLog, eventsLog, env.TIMEOUT_LOG, composeSelectorsLog])
+        write(file, "");
       update((s) => {
         s.readyAttempts = 0;
       });
@@ -613,7 +656,11 @@ function dockerOperation(args: string[]) {
 function composeOperation(args: string[]) {
   const command = dockerOperation(args);
   let index = 1;
-  while (["--env-file", "-f", "--file", "-p", "--project-name"].includes(command[index] || ""))
+  while (
+    ["--env-file", "-f", "--file", "-p", "--project-name", "--profile"].includes(
+      command[index] || "",
+    )
+  )
     index += 2;
   return command[0] === "compose" ? command.slice(index) : [];
 }
@@ -751,7 +798,19 @@ describe("production deploy script", () => {
     deploy.next("database unavailable");
     const result = deploy.run({ FAIL_READY: "1" });
     expect(result.status).toBe(1);
-    expect(deploy.readyAttempts()).toBeGreaterThanOrEqual(30);
+    expect(deploy.readyAttempts()).toBe(60);
+    const commands = deploy.dockerArguments();
+    const rollback = commands.findIndex(
+      (args) =>
+        args.some((arg) => arg.endsWith("/rollback.json")) && composeOperation(args)[0] === "up",
+    );
+    expect(rollback).toBeGreaterThan(0);
+    expect(
+      commands.slice(0, rollback).filter((args) => composeOperation(args)[0] === "exec"),
+    ).toHaveLength(30);
+    expect(
+      commands.slice(rollback + 1).filter((args) => composeOperation(args)[0] === "exec"),
+    ).toHaveLength(30);
     expect(deploy.head()).toBe(deploy.first);
     expect(deploy.deployed()).toBeUndefined();
     expect(
@@ -1825,3 +1884,281 @@ describe("production deploy pinned forward images", () => {
     ).toBe(true);
   });
 });
+
+describe("production deploy reserved image references and verified rollback", () => {
+  const internalAliases = [
+    ["private history reference", (ref: string) => ref],
+    ["Docker Hub qualified history reference", (ref: string) => `docker.io/library/${ref}`],
+    [
+      "foreign internal namespace alias",
+      () => `registry.example.test/team/coginebot-deploy-${"f".repeat(32)}:${"a".repeat(64)}`,
+    ],
+  ] as const;
+
+  it.each(internalAliases)("rejects an initial build tag using a %s", (_label, alias) => {
+    const deploy = fixture();
+    const before = prime(deploy);
+    deploy.update((state) => {
+      state.config.services.api!.image = alias(before.healthy!.services[0]!.ref);
+    });
+    const result = deploy.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("reserved deployment image namespace");
+    expect(deploy.state().builds).toBe(1);
+    expect(deploy.state().prunes).toBe(0);
+    expect(deploy.events().some((event) => event.startsWith("git fetch"))).toBe(false);
+    expect(imageMutations(deploy)).toHaveLength(0);
+    expect(deploy.record().healthy).toEqual(before.healthy);
+  });
+
+  it.each(internalAliases)("rejects a target build tag using a %s", (_label, alias) => {
+    const deploy = fixture();
+    const before = prime(deploy);
+    deploy.next();
+    const result = deploy.run({ TARGET_IMAGE_REF: alias(before.healthy!.services[0]!.ref) });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("reserved deployment image namespace");
+    expect(deploy.state().builds).toBe(1);
+    expect(deploy.record().healthy).toEqual(before.healthy);
+    expect(deploy.head()).toBe(deploy.first);
+    expect(
+      deploy
+        .composeArguments("up")
+        .some((args) => args.some((arg) => arg.endsWith("/forward.json"))),
+    ).toBe(false);
+    for (const image of before.healthy!.services)
+      expect(
+        Object.values(deploy.state().containers).find(
+          (container) => container.Config.Labels["com.docker.compose.service"] === image.service,
+        )?.Image,
+      ).toBe(image.id);
+  });
+
+  it.each([
+    { ROLLBACK_PROJECT: "another-stack" },
+    { ROLLBACK_ADD_SERVICE: "1" },
+    { ROLLBACK_REMOVE_SERVICE: "1" },
+    { ROLLBACK_RENAME_SERVICE: "1" },
+  ])(
+    "does not start rollback after the restored config changes project or active services: %j",
+    (fault) => {
+      const deploy = fixture();
+      const before = prime(deploy);
+      deploy.next();
+      const result = deploy.run({ FAIL_BUILD: "1", ...fault });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("previous Compose project or active services changed");
+      expect(result.stderr).not.toContain("passed health and readiness");
+      expect(deploy.composeArguments("up")).toHaveLength(0);
+      expect(deploy.record().healthy).toEqual(before.healthy);
+      expect(deploy.deployed()).toBe(deploy.first);
+      expect(deploy.head()).toBe(deploy.first);
+    },
+  );
+
+  it("does not claim exact-image rollback when health succeeds with different actual image IDs", () => {
+    const deploy = fixture();
+    const before = prime(deploy);
+    deploy.next();
+    const result = deploy.run({ FAIL_BUILD: "1", ROLLBACK_IMAGE_MISMATCH: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Exact-image rollback service images differ");
+    expect(result.stderr).not.toContain("passed health and readiness");
+    expect(deploy.readyAttempts()).toBe(1);
+    expect(deploy.state().containers["1".repeat(64)]!.Image).toBe(deploy.databaseImage);
+    expect(deploy.record().healthy).toEqual(before.healthy);
+    expect(deploy.deployed()).toBe(deploy.first);
+  });
+});
+
+describe("production deploy Compose selectors through sudo", () => {
+  function withProfiles(deploy: ReturnType<typeof fixture>) {
+    deploy.update((state) => {
+      state.config.services.optional = {
+        image: "example/app:local",
+        build: { context: "../.." },
+        profiles: ["optional"],
+      };
+      state.config.services.audit = {
+        image: "postgres:16",
+        profiles: ["audit"],
+      };
+    });
+  }
+  function profileArguments(args: string[]) {
+    return args.flatMap((arg, index) => (arg === "--profile" ? [args[index + 1]!] : []));
+  }
+  function executionArguments(deploy: ReturnType<typeof fixture>) {
+    return deploy.dockerArguments().filter((args) => {
+      const op = composeOperation(args)[0];
+      return op && !args.includes("--help");
+    });
+  }
+
+  it.each([
+    { callerProfiles: " optional , audit ", expectedProfiles: ["optional", "audit"] },
+    {
+      callerProfiles: "\u00a0optional\u3000, audit , ",
+      expectedProfiles: ["optional", "audit", ""],
+    },
+  ])(
+    "preserves caller project and multiple profiles in explicit arguments after sudo removes their environment: %j",
+    ({ callerProfiles, expectedProfiles }) => {
+      const deploy = fixture();
+      withProfiles(deploy);
+      write(
+        path.join(deploy.checkout, ".env"),
+        "RAKAZO_HOST=app.example.test\nCOMPOSE_PROJECT_NAME=dotenv-stack\nCOMPOSE_PROFILES=unused\n",
+      );
+      deploy.update((state) => {
+        for (const container of Object.values(state.containers))
+          container.Config.Labels["com.docker.compose.project"] = "caller-stack";
+      });
+      const result = deploy.run({
+        COMPOSE_PROJECT_NAME: "caller-stack",
+        COMPOSE_PROFILES: callerProfiles,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(deploy.record().owner.project).toBe("caller-stack");
+      expect(deploy.record().healthy!.services.map((service) => service.service)).toEqual([
+        "api",
+        "audit",
+        "optional",
+        "postgres",
+        "web",
+      ]);
+      const args = executionArguments(deploy);
+      expect(args.length).toBeGreaterThan(4);
+      for (const command of args) {
+        expect(command[command.indexOf("--project-name") + 1]).toBe("caller-stack");
+        expect(profileArguments(command)).toEqual(expectedProfiles);
+      }
+      expect(
+        deploy
+          .cliSelectors()
+          .every((selectors) => selectors.project === null && selectors.profiles === null),
+      ).toBe(true);
+      assertNoUnsafeCleanup(deploy);
+    },
+  );
+
+  it("preserves an explicitly empty caller profile selection over dotenv profiles", () => {
+    const deploy = fixture();
+    withProfiles(deploy);
+    write(
+      path.join(deploy.checkout, ".env"),
+      "RAKAZO_HOST=app.example.test\nCOMPOSE_PROFILES=optional,audit\n",
+    );
+    const result = deploy.run({ COMPOSE_PROFILES: "" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(deploy.record().healthy!.services.map((service) => service.service)).toEqual([
+      "api",
+      "postgres",
+      "web",
+    ]);
+    for (const command of executionArguments(deploy))
+      expect(profileArguments(command)).toEqual([""]);
+    expect(deploy.cliSelectors().every((selectors) => selectors.profiles === null)).toBe(true);
+  });
+
+  it("uses dotenv project and profiles when caller selectors are unset", () => {
+    const deploy = fixture();
+    withProfiles(deploy);
+    write(
+      path.join(deploy.checkout, ".env"),
+      "RAKAZO_HOST=app.example.test\nCOMPOSE_PROJECT_NAME=dotenv-stack\nCOMPOSE_PROFILES=optional\n",
+    );
+    deploy.update((state) => {
+      for (const container of Object.values(state.containers))
+        container.Config.Labels["com.docker.compose.project"] = "dotenv-stack";
+    });
+    const result = deploy.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(deploy.record().owner.project).toBe("dotenv-stack");
+    expect(deploy.record().healthy!.services.map((service) => service.service)).toEqual([
+      "api",
+      "optional",
+      "postgres",
+      "web",
+    ]);
+    for (const command of executionArguments(deploy)) expect(profileArguments(command)).toEqual([]);
+    const readConfig = executionArguments(deploy).find((command) =>
+      composeOperation(command).includes("--format"),
+    );
+    expect(readConfig).not.toContain("--project-name");
+  });
+
+  it("keeps the original caller selectors for rollback startup and readiness", () => {
+    const deploy = fixture();
+    withProfiles(deploy);
+    const selectors = { COMPOSE_PROJECT_NAME: "caller-stack", COMPOSE_PROFILES: "optional,audit" };
+    deploy.update((state) => {
+      for (const container of Object.values(state.containers))
+        container.Config.Labels["com.docker.compose.project"] = selectors.COMPOSE_PROJECT_NAME;
+    });
+    expect(deploy.run(selectors).status).toBe(0);
+    const before = deploy.record();
+    deploy.clearLogs();
+    deploy.next();
+    const result = deploy.run({ ...selectors, FAIL_BUILD: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("passed health and readiness");
+    expect(deploy.record().healthy).toEqual(before.healthy);
+    const rollback = deploy.composeArguments("up");
+    expect(rollback).toHaveLength(1);
+    for (const command of [...rollback, ...deploy.composeArguments("exec")]) {
+      expect(command[command.indexOf("--project-name") + 1]).toBe("caller-stack");
+      expect(profileArguments(command)).toEqual(["optional", "audit"]);
+    }
+  });
+
+  it("rejects an explicitly empty project selector before Docker, cleanup or checkout mutation", () => {
+    const deploy = fixture();
+    write(
+      path.join(deploy.checkout, ".env"),
+      "RAKAZO_HOST=app.example.test\nCOMPOSE_PROJECT_NAME=dotenv-stack\n",
+    );
+    const result = deploy.run({ COMPOSE_PROJECT_NAME: "" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "COMPOSE_PROJECT_NAME must be a nonempty valid Compose project name when set",
+    );
+    expect(deploy.dockerArguments()).toEqual([]);
+    expect(deploy.events()).toEqual([]);
+    expect(existsSync(deploy.stateDirectory)).toBe(false);
+    expect(deploy.head()).toBe(deploy.first);
+  });
+});
+
+describe.skipIf(process.platform !== "linux")(
+  "production deploy SGID state directory boundary",
+  () => {
+    it("normalizes only a newly created state directory beneath an owned SGID Git directory", () => {
+      const deploy = fixture();
+      const gitDirectory = path.dirname(deploy.stateDirectory);
+      const originalMode = statSync(gitDirectory).mode & 0o7777;
+      chmodSync(gitDirectory, 0o2700);
+      try {
+        const result = deploy.run();
+        expect(result.status, result.stderr).toBe(0);
+        expect(statSync(deploy.stateDirectory).mode & 0o7777).toBe(0o700);
+        expect(statSync(deploy.recordPath).mode & 0o7777).toBe(0o600);
+      } finally {
+        chmodSync(gitDirectory, originalMode);
+      }
+    });
+
+    it("refuses an existing SGID state directory instead of repairing it implicitly", () => {
+      const deploy = fixture();
+      const before = prime(deploy);
+      chmodSync(deploy.stateDirectory, 0o2700);
+      const result = deploy.run();
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("mode-0700");
+      expect(statSync(deploy.stateDirectory).mode & 0o7777).toBe(0o2700);
+      expect(deploy.record().healthy).toEqual(before.healthy);
+      expect(deploy.state().prunes).toBe(0);
+      expect(deploy.events().some((event) => event.startsWith("git fetch"))).toBe(false);
+    });
+  },
+);
