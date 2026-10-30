@@ -43,7 +43,7 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         return;
       }
       // Only a steering continuation replaces its task with the messages it claims.
-      // Other turns keep their own script, with those messages as context.
+      // Other turns keep their explicit scripts unchanged.
       const steeredPrompt =
         request.prompt.includes(STEERING_CONTINUATION_PROMPT) && steering.length
           ? steering.map((item) => item.historyText ?? item.text).join("\n")
