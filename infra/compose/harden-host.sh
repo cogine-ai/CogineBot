@@ -67,11 +67,21 @@ if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Saved configuration must meet the same ownership/write boundary as its rollback snapshot.
+protected_ufw_path() {
+  local details owner mode
+  details="$(stat -c '%u %a' -- "$1")" || return 1
+  read -r owner mode <<<"${details}"
+  [[ "${owner}" == 0 && "${mode}" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#${mode} & 0022) == 0 ))
+}
+
 # Audit saved rules even while UFW is inactive, before any host settings change.
 # Only UFW's exact empty report proves that no registered rules were reported.
-for config_directory in /etc/ufw /etc/default /lib/ufw /var/lib/ufw; do
+for config_directory in /etc /etc/ufw /etc/default /lib/ufw /var/lib/ufw; do
   if [[ -e "${config_directory}" || -L "${config_directory}" ]]; then
-    [[ -d "${config_directory}" && ! -L "${config_directory}" && -r "${config_directory}" && -x "${config_directory}" ]] || {
+    [[ -d "${config_directory}" && ! -L "${config_directory}" && -r "${config_directory}" && -x "${config_directory}" ]] &&
+      protected_ufw_path "${config_directory}" || {
       echo "Unsafe or unreadable UFW configuration directory; host hardening stopped before changing host configuration." >&2
       exit 1
     }
@@ -80,12 +90,27 @@ done
 # Preserving policy never authorizes UFW or package scripts to read unsafe paths.
 for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules /etc/default/ufw /lib/ufw/user.rules /lib/ufw/user6.rules; do
   if [[ -e "${rules_file}" || -L "${rules_file}" ]]; then
-    [[ -f "${rules_file}" && ! -L "${rules_file}" && -r "${rules_file}" ]] || {
+    [[ -f "${rules_file}" && ! -L "${rules_file}" && -r "${rules_file}" ]] &&
+      protected_ufw_path "${rules_file}" || {
       echo "Unsafe or unreadable saved UFW configuration; host hardening stopped before changing host configuration." >&2
       exit 1
     }
   fi
 done
+# UFW can read other saved configuration too; reject unsafe nested members before invoking it.
+ufw_config_paths=()
+[[ ! -e /etc/ufw ]] || ufw_config_paths+=(/etc/ufw)
+[[ ! -e /etc/default/ufw ]] || ufw_config_paths+=(/etc/default/ufw)
+if (( ${#ufw_config_paths[@]} )); then
+  if ! unsafe_saved_config="$(find "${ufw_config_paths[@]}" \( ! -user root -o -perm /022 -o \( ! -type f -a ! -type d \) \) -print -quit)"; then
+    echo "Cannot inspect saved UFW configuration; host hardening stopped before changing host configuration." >&2
+    exit 1
+  fi
+  [[ -z "${unsafe_saved_config}" ]] || {
+    echo "Unsafe saved UFW configuration; host hardening stopped before changing host configuration." >&2
+    exit 1
+  }
+fi
 ufw_audit_reason=""
 if command -v ufw >/dev/null 2>&1; then
   # Missing files leave policy unknown; never invoke UFW on an incomplete audit.

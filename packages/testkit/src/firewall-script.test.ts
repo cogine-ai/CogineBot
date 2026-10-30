@@ -113,7 +113,7 @@ if(name==='stat'){
  if(bad('findFail'))process.exit(1);
  const visit=f=>{const s=fs.lstatSync(f);if(s.isSymbolicLink()||(!s.isFile()&&!s.isDirectory())||(s.mode&0o022)||fault.owner===f)return f;
  if(s.isDirectory())for(const n of fs.readdirSync(f)){const found=visit(path.join(f,n));if(found)return found;}};
- for(const f of args.slice(0,2)){const found=visit(f);if(found){console.log(found);break;}}
+ for(const f of args.slice(0,args.indexOf('('))){const found=visit(f);if(found){console.log(found);break;}}
 }else if(name==='cat'){
  if(args[0]==='/proc/sys/kernel/random/uuid')console.log(fault.uuid||'${token}');
  else if(args[0]==='/proc/sys/kernel/random/boot_id'){
@@ -1060,6 +1060,74 @@ describe("firewall change rollback", () => {
       const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("Unsafe or unreadable");
+      expectNoHardeningWrites(f);
+      expect(f.calls().some((call) => ["ufw", "grep"].includes(call[0] as string))).toBe(false);
+    },
+  );
+
+  it.each(
+    [
+      "etc",
+      "etc/ufw",
+      "etc/default",
+      "legacy-ufw",
+      "retained-ufw",
+      "etc/ufw/user.rules",
+      "etc/ufw/user6.rules",
+      "etc/default/ufw",
+      "legacy-ufw/user.rules",
+      "legacy-ufw/user6.rules",
+    ].flatMap((file) =>
+      ["owner", "group-writable", "world-writable"].flatMap((hazard) =>
+        ["0", "1"].map((ack) => ({ file, hazard, ack })),
+      ),
+    ),
+  )(
+    "rejects unprotected UFW permissions before host changes: $file/$hazard/$ack",
+    ({ file, hazard, ack }) => {
+      const f = hardenFixture();
+      const target = path.join(f.root, file);
+      const directory = ["etc", "etc/ufw", "etc/default", "legacy-ufw", "retained-ufw"].includes(
+        file,
+      );
+      if (!existsSync(target)) {
+        if (directory) mkdirSync(target, { recursive: true, mode: 0o755 });
+        else write(target, "saved rules\n", 0o644);
+      }
+      if (hazard === "owner") f.faults({ owner: target });
+      else
+        chmodSync(
+          target,
+          directory
+            ? hazard === "group-writable"
+              ? 0o775
+              : 0o777
+            : hazard === "group-writable"
+              ? 0o664
+              : 0o666,
+        );
+      const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: ack });
+      expect(result.status).not.toBe(0);
+      expectNoHardeningWrites(f);
+      expect(f.calls().some((call) => ["ufw", "grep"].includes(call[0] as string))).toBe(false);
+      expect(result.stderr).toContain("Unsafe or unreadable");
+    },
+  );
+
+  it.each(["owner", "writable", "symlink", "find-failure"])(
+    "rejects unsafe nested UFW configuration before host changes: %s",
+    (hazard) => {
+      const f = hardenFixture();
+      const target = path.join(f.etc, "ufw", "ufw.conf");
+      write(target, "ENABLED=yes\n", 0o644);
+      if (hazard === "owner") f.faults({ owner: target });
+      else if (hazard === "writable") chmodSync(target, 0o666);
+      else if (hazard === "symlink") {
+        rmSync(target);
+        symlinkSync(path.join(f.etc, "default", "ufw"), target);
+      } else f.faults({ findFail: true });
+      const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      expect(result.status).not.toBe(0);
       expectNoHardeningWrites(f);
       expect(f.calls().some((call) => ["ufw", "grep"].includes(call[0] as string))).toBe(false);
     },

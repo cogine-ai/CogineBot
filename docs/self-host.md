@@ -468,7 +468,7 @@ sudo --preserve-env=SSH_CONNECTION DEPLOY_USER=deploy PRESERVE_EXISTING_UFW_RULE
 `PRESERVE_EXISTING_UFW_RULES` accepts only `0` (the default) or `1`. The acknowledgment preserves all
 existing rules as operator-approved exceptions, including public allows. Default deny and the new SSH
 limit do not override earlier allows. The acknowledgment never overrides the directory and saved-file
-safety checks; unsafe or unreadable paths stop hardening before package installation or configuration writes.
+safety checks; configuration paths must be root-owned and not group/world-writable, including nested UFW configuration. Unsafe or unreadable paths stop hardening before package installation or configuration writes.
 Inspect saved IPv6 rules too when UFW IPv6 is disabled, because
 the report omits them. Hardening does not reset, delete or reorder existing rules. Repeat runs need
 the same explicit acknowledgment once saved rules exist. This admission applies to host hardening;
