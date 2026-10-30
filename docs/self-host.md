@@ -443,13 +443,47 @@ sidecar is an explicit opt-in profile.
 
 Before deploying to a new Ubuntu host, create and verify a key-only `deploy` account, then apply the
 idempotent host-hardening baseline. It disables SSH passwords and root login, rate-limits SSH, allows
-only SSH/HTTP/HTTPS through UFW, enables fail2ban, unattended security updates, AppArmor, audit rules,
+the SSH/HTTP/HTTPS baseline through UFW while preserving existing private rules, enables fail2ban,
+unattended security updates, AppArmor, audit rules,
 and conservative kernel/network protections. Keep the provider console open until a fresh SSH login
 succeeds after the script reloads SSH.
 
 ```bash
-sudo DEPLOY_USER=deploy bash infra/compose/harden-host.sh
+sudo --preserve-env=SSH_CONNECTION DEPLOY_USER=deploy bash infra/compose/harden-host.sh
 ```
+
+Host hardening installs the root-owned `/usr/local/sbin/rakazo-firewall-change` helper. Its UFW edits
+run only after a 180-second systemd rollback is armed; the change command has a 120-second timeout
+and a five-second termination grace period. The helper requires a root SSH session, GNU coreutils,
+findutils, GNU tar, util-linux `flock`, systemd and UFW, and at least 100 MiB free on both the UFW and
+state filesystems. Its fixed state directory is `/var/lib/rakazo/firewall-change` (mode 700). State
+files must be root-owned, single-link regular files with mode 600. Unsafe configuration links,
+special files or writable rules are refused before a change.
+
+An identical installed helper is reused. If its content differs, hardening stops before package or
+host-setting changes. Finish or recover any pending firewall operation using the existing helper,
+verify the timer and state are clear, then install the reviewed replacement manually before rerunning
+hardening. An armed callback must not be replaced during an operation.
+
+After applying, keep the original connection and provider console open. Establish another SSH
+connection, verify access and run the exact confirmation command and token printed by the helper.
+Preserve `SSH_CONNECTION` through sudo. Confirming from the original connection is refused. Only
+deployment operators run this helper; it is not a Bot or API tool.
+
+For later UFW edits, use `sudo --preserve-env=SSH_CONNECTION /usr/local/sbin/rakazo-firewall-change
+apply COMMAND [ARGS...]`. Failed preparation or unconfirmed timer scheduling does not execute the
+command. An ambiguous scheduling result retains the snapshot and token; inspect the timer and use
+`rollback TOKEN` for recovery rather than deleting state or starting another change. Command errors
+and signals leave the rollback armed. The callback restores the prior UFW files and enabled state;
+new unconfirmed files inside `/etc/ufw` are removed, while other `/etc/default` files are preserved.
+It does not undo SSH, sysctl, package, Docker or arbitrary command side effects. Console recovery and
+an isolated fresh-SSH/rollback drill remain necessary before relying on this on a host.
+
+Confirmation commits by atomically recording the token before cancelling the timer. A callback that
+already fired rechecks that record under the same lock and does not undo a confirmed change. If
+timer cancellation or state cleanup fails after that commit, confirmation succeeds with a cleanup
+warning; repeat `confirm TOKEN` from the verified connection. A new apply is refused while the old
+token remains. A pre-commit confirmation failure leaves the pending rollback in place.
 
 The production host also uses `infra/compose/docker-daemon.json` to enable live restore, bounded local
 container logs, default no-new-privileges, and the kernel NAT path instead of Docker's userland proxy.

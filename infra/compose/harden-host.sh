@@ -4,9 +4,57 @@ set -Eeuo pipefail
 
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 SSH_PORT="${SSH_PORT:-22}"
+[[ "${SSH_PORT}" =~ ^[0-9]{1,5}$ ]] && (( 10#${SSH_PORT} > 0 && 10#${SSH_PORT} <= 65535 )) || {
+  echo "SSH_PORT must be an integer between 1 and 65535" >&2
+  exit 1
+}
+SSH_PORT="$((10#${SSH_PORT}))"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  exec sudo --preserve-env=DEPLOY_USER,SSH_PORT bash "$0" "$@"
+  exec sudo --preserve-env=DEPLOY_USER,SSH_PORT,SSH_CONNECTION bash "$0" "$@"
+fi
+
+[[ -n "${SSH_CONNECTION:-}" ]] || {
+  echo "Run host hardening through SSH, preserving SSH_CONNECTION through sudo" >&2
+  exit 1
+}
+read -r ssh_client ssh_client_port ssh_server ssh_server_port ssh_extra <<<"${SSH_CONNECTION}"
+[[ "${SSH_CONNECTION}" != *$'\n'* && -n "${ssh_client}" && -n "${ssh_server}" && -z "${ssh_extra}" &&
+  "${ssh_client_port}" =~ ^[0-9]{1,5}$ && "${ssh_server_port}" =~ ^[0-9]{1,5}$ ]] &&
+  (( 10#${ssh_client_port} > 0 && 10#${ssh_client_port} <= 65535 && 10#${ssh_server_port} > 0 && 10#${ssh_server_port} <= 65535 )) || {
+  echo "Invalid SSH_CONNECTION; run host hardening through a verified SSH session" >&2
+  exit 1
+}
+
+FIREWALL_HELPER_SOURCE="$(dirname "$(readlink -f "$0")")/firewall-change.sh"
+[[ -f "${FIREWALL_HELPER_SOURCE}" && ! -L "${FIREWALL_HELPER_SOURCE}" ]] || {
+  echo "Firewall helper source is missing or unsafe" >&2; exit 1;
+}
+# Reject unsafe or different installed callbacks before packages or host settings change.
+for directory in /usr /usr/local; do
+  [[ -d "${directory}" && ! -L "${directory}" && "$(stat -c '%u' "${directory}")" == 0 ]] &&
+    (( (8#$(stat -c '%a' "${directory}") & 0022) == 0 )) || {
+    echo "Unsafe firewall helper parent directory" >&2; exit 1;
+  }
+done
+[[ ! -L /usr/local/sbin && ! -L /usr/local/sbin/rakazo-firewall-change ]] || {
+  echo "Firewall helper installation must not follow symbolic links" >&2; exit 1;
+}
+if [[ -e /usr/local/sbin ]]; then
+  [[ -d /usr/local/sbin && "$(stat -c '%u' /usr/local/sbin)" == 0 ]] &&
+    (( (8#$(stat -c '%a' /usr/local/sbin) & 0022) == 0 )) || {
+    echo "Unsafe firewall helper installation directory" >&2; exit 1;
+  }
+fi
+if [[ -e /usr/local/sbin/rakazo-firewall-change ]]; then
+  [[ -f /usr/local/sbin/rakazo-firewall-change && "$(stat -c '%u %h' /usr/local/sbin/rakazo-firewall-change)" == '0 1' ]] &&
+    (( (8#$(stat -c '%a' /usr/local/sbin/rakazo-firewall-change) & 0022) == 0 )) || {
+    echo "Unsafe existing firewall helper" >&2; exit 1;
+  }
+  cmp -s -- "${FIREWALL_HELPER_SOURCE}" /usr/local/sbin/rakazo-firewall-change || {
+    echo "Existing firewall helper differs; finish pending changes and upgrade it manually before hardening" >&2
+    exit 1
+  }
 fi
 
 if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
@@ -127,17 +175,23 @@ cat >/etc/audit/rules.d/50-rakazo.rules <<'EOF'
 EOF
 augenrules --load >/dev/null
 
-ufw --force reset >/dev/null
-ufw default deny incoming
-ufw default allow outgoing
-ufw limit "${SSH_PORT}/tcp" comment 'Rate-limited SSH'
-ufw allow 80/tcp comment 'HTTP for ACME redirect'
-ufw allow 443/tcp comment 'HTTPS'
-ufw allow 443/udp comment 'HTTP/3'
-ufw --force enable
+# An identical existing callback is reused: never replace a potentially armed version.
+if [[ ! -e /usr/local/sbin/rakazo-firewall-change ]]; then
+  install -d -m 755 /usr/local/sbin
+  install -m 755 -- "${FIREWALL_HELPER_SOURCE}" /usr/local/sbin/rakazo-firewall-change
+fi
+/usr/local/sbin/rakazo-firewall-change apply /bin/bash -euo pipefail -c '
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw limit "$1/tcp" comment "Rate-limited SSH"
+  ufw allow 80/tcp comment "HTTP for ACME redirect"
+  ufw allow 443/tcp comment "HTTPS"
+  ufw allow 443/udp comment "HTTP/3"
+  ufw --force enable
+' -- "${SSH_PORT}"
 
 systemctl enable --now apparmor auditd fail2ban unattended-upgrades
 systemctl restart fail2ban
 systemctl reload ssh
 
-echo "Rakazo host hardening applied. Verify a fresh SSH session before closing the current one."
+echo "Host hardening applied. Verify a fresh SSH session and confirm the armed firewall change before closing the current one."
