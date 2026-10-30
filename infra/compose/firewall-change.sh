@@ -146,6 +146,11 @@ arm_boot_recovery() {
     '' '[Service]' 'Type=oneshot' "ExecStart=${SELF} recover" \
     '' '[Install]' 'WantedBy=multi-user.target')"
   if [[ ! -e "${file}" && ! -L "${file}" ]]; then
+    for property in LoadState FragmentPath DropInPaths; do
+      actual="$(systemctl show "${BOOT_UNIT}" --property="${property}" --value 9>&-)" || fail "Cannot inspect existing firewall boot recovery unit"
+      expected=''; [[ "${property}" != LoadState ]] || expected=not-found
+      [[ "${actual}" == "${expected}" ]] || fail "An existing firewall boot recovery unit must be reviewed before installation"
+    done
     (set -C; printf '%s\n' "${definition}" >"${file}")
   fi
   secure_file "${file}"

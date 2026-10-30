@@ -160,7 +160,7 @@ if(name==='stat'){
  }else if(args[0]==='show'){
   if(bad('showFail'))process.exit(1);
   const prop=args.find(a=>a.startsWith('--property=')).slice(11);
-  if(args[1]==='${bootUnit}')console.log(({LoadState:fault.bootLoadState??'loaded',FragmentPath:fault.bootFragment??unit,DropInPaths:fault.bootDropIns??'',UnitFileState:fault.bootUnitState??(fs.existsSync(wants)?'enabled':'disabled')})[prop]??'');
+  if(args[1]==='${bootUnit}')console.log(({LoadState:fault.bootLoadState??(fs.existsSync(unit)?'loaded':'not-found'),FragmentPath:fault.bootFragment??(fs.existsSync(unit)?unit:''),DropInPaths:fault.bootDropIns??'',UnitFileState:fault.bootUnitState??(fs.existsSync(wants)?'enabled':'disabled')})[prop]??'');
   else console.log(prop==='LoadState'?(Object.hasOwn(s,args[1])?'loaded':'not-found'):(s[args[1]]||'inactive'));
  }else if(args[0]==='stop'){if(bad('stopBefore')||!Object.hasOwn(s,args[1]))process.exit(1);s[args[1]]='inactive';save(s);if(bad('stopAfter'))process.exit(1);}
 }else if(name==='sync'){
@@ -387,6 +387,31 @@ describe("firewall change rollback", () => {
     expect(edit).toBeGreaterThan(flush);
     expect(calls[enable]).not.toContain("--runtime");
     expect(calls[enable]).not.toContain("--now");
+  });
+
+  it.each([
+    { bootLoadState: "loaded", bootFragment: "/usr/lib/systemd/system/vendor.service" },
+    { bootLoadState: "loaded", bootFragment: "/run/systemd/system/runtime.service" },
+    { bootLoadState: "masked" },
+    { bootLoadState: "error" },
+    { bootDropIns: "/run/systemd/system/service.d/override.conf" },
+    { showFail: true },
+  ])("refuses to shadow an existing manager unit before writing its own file %j", (fault) => {
+    const f = fixture();
+    f.faults(fault);
+    const unit = path.join(f.etc, "systemd", "system", bootUnit);
+    expect(f.apply().status).toBe(1);
+    expect(existsSync(unit)).toBe(false);
+    expect(f.pending()).toBe(false);
+    expect(
+      f
+        .calls()
+        .some(
+          (call) =>
+            call[0] === "systemctl" && ["daemon-reload", "enable"].includes(call[1] as string),
+        ),
+    ).toBe(false);
+    expect(f.calls().some((call) => call[0] === "ufw" || call[0] === "systemd-run")).toBe(false);
   });
 
   it.each([
