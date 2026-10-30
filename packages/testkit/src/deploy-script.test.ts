@@ -134,8 +134,8 @@ fs.appendFileSync(process.env.COMMAND_LOG, 'docker ' + input.join(' ') + ' @ ' +
 fs.appendFileSync(process.env.DOCKER_ARGUMENTS_LOG, Buffer.from(input.length+'\0'+input.join('\0')+'\0'));
 fs.appendFileSync(process.env.COMPOSE_SELECTORS_LOG, JSON.stringify({project:process.env.COMPOSE_PROJECT_NAME ?? null, profiles:process.env.COMPOSE_PROFILES ?? null})+'\n');
 function save() { fs.writeFileSync(file, JSON.stringify(state)); }
-function out(x) { save(); process.stdout.write((typeof x === 'string' ? x : JSON.stringify(x)) + '\n'); process.exit(0); }
-function fail(message, code = 1) { save(); if (message) process.stderr.write(message + '\n'); process.exit(code); }
+function out(x) { save(); fs.writeFileSync(1, (typeof x === 'string' ? x : JSON.stringify(x)) + '\n'); process.exit(0); }
+function fail(message, code = 1) { save(); if (message) fs.writeFileSync(2, message + '\n'); process.exit(code); }
 let args = [...input];
 while (args[0] === '--host' || args[0] === '-H' || args[0] === '--context') {
  const option = args.shift(), value = args.shift();
@@ -450,7 +450,7 @@ const state = JSON.parse(fs.readFileSync(process.env.DOCKER_STATE, 'utf8'));
 const args = process.argv.slice(2), p = args.at(-1);
 fs.appendFileSync(process.env.EVENTS_LOG, 'df ' + JSON.stringify(args) + '\\n');
 if (process.env.FAIL_DF || (process.env.FAIL_DF_PATH && p.includes(process.env.FAIL_DF_PATH))) process.exit(1);
-if (process.env.DF_RAW !== undefined) { process.stdout.write(process.env.DF_RAW); process.exit(0); }
+if (process.env.DF_RAW !== undefined) { fs.writeFileSync(1, process.env.DF_RAW); process.exit(0); }
 const isDocker = p === state.dockerRoot;
 const value = isDocker ? process.env.DOCKER_FREE_KB : process.env.APP_FREE_KB;
 const reads = process.env.FREE_KB ?? '52428800';
