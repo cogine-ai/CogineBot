@@ -77,7 +77,7 @@ protected_ufw_path() {
 }
 
 # Audit saved rules even while UFW is inactive, before any host settings change.
-# Only UFW's exact empty report proves that no registered rules were reported.
+# UFW's report covers registered rules, not every loadable policy file.
 for config_directory in /etc /etc/ufw /etc/default /lib/ufw /var/lib/ufw; do
   if [[ -e "${config_directory}" || -L "${config_directory}" ]]; then
     [[ -d "${config_directory}" && ! -L "${config_directory}" && -r "${config_directory}" && -x "${config_directory}" ]] &&
@@ -87,8 +87,15 @@ for config_directory in /etc /etc/ufw /etc/default /lib/ufw /var/lib/ufw; do
     }
   fi
 done
+ufw_policy_files=(
+  /etc/ufw/user.rules /etc/ufw/user6.rules
+  /etc/ufw/before.rules /etc/ufw/before6.rules
+  /etc/ufw/after.rules /etc/ufw/after6.rules
+  /etc/ufw/before.init /etc/ufw/after.init
+  /lib/ufw/user.rules /lib/ufw/user6.rules
+)
 # Preserving policy never authorizes UFW or package scripts to read unsafe paths.
-for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules /etc/default/ufw /lib/ufw/user.rules /lib/ufw/user6.rules; do
+for rules_file in "${ufw_policy_files[@]}" /etc/default/ufw; do
   if [[ -e "${rules_file}" || -L "${rules_file}" ]]; then
     [[ -f "${rules_file}" && ! -L "${rules_file}" && -r "${rules_file}" ]] &&
       protected_ufw_path "${rules_file}" || {
@@ -146,6 +153,14 @@ else
     fi
   done
 fi
+# An empty registered-rule report cannot certify raw rules or initialization hooks.
+# Even packaged baseline content requires explicit preservation acknowledgment.
+for rules_file in "${ufw_policy_files[@]}"; do
+  if [[ -s "${rules_file}" ]]; then
+    ufw_audit_reason="Existing nonempty UFW policy or initialization hook requires review"
+    break
+  fi
+done
 if [[ -n "${ufw_audit_reason}" && "${PRESERVE_EXISTING_UFW_RULES}" == 0 ]]; then
   echo "${ufw_audit_reason}; host hardening stopped before changing host configuration." >&2
   echo "Review all saved UFW rules, then set PRESERVE_EXISTING_UFW_RULES=1 only to explicitly preserve every existing rule." >&2

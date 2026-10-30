@@ -296,6 +296,7 @@ os.execvp(sys.argv[3],sys.argv[3:])
 
 function hardenFixture() {
   const f = fixture();
+  write(path.join(f.etc, "ufw", "user.rules"), "");
   write(path.join(f.etc, "ufw", "user6.rules"), "");
   const target = path.join(f.bin, "rakazo-firewall-change");
   write(
@@ -927,6 +928,63 @@ describe("firewall change rollback", () => {
     const packages = calls.findIndex((call) => call[0] === "apt-get");
     expect(audit).toBeGreaterThan(-1);
     expect(packages).toBeGreaterThan(audit);
+    expect(f.pending()).toBe(true);
+  });
+
+  const rawPolicyPaths = [
+    "etc/ufw/user.rules",
+    "etc/ufw/user6.rules",
+    "etc/ufw/before.rules",
+    "etc/ufw/before6.rules",
+    "etc/ufw/after.rules",
+    "etc/ufw/after6.rules",
+    "etc/ufw/before.init",
+    "etc/ufw/after.init",
+    "legacy-ufw/user.rules",
+    "legacy-ufw/user6.rules",
+  ];
+  it.each(
+    rawPolicyPaths.flatMap((file) =>
+      ["Status: active", "Status: inactive"].map((ufwStatus) => ({ file, ufwStatus })),
+    ),
+  )(
+    "requires acknowledgment for raw UFW policy omitted by the report: $file/$ufwStatus",
+    ({ file, ufwStatus }) => {
+      const f = hardenFixture();
+      const target = path.join(f.root, file);
+      const saved = file.endsWith(".init")
+        ? "#!/bin/sh\niptables -A INPUT -p tcp --dport 5432 -j ACCEPT\n"
+        : "*filter\n-A INPUT -p tcp --dport 5432 -j ACCEPT\nCOMMIT\n";
+      write(target, saved, file.endsWith(".init") ? 0o700 : 0o600);
+      f.faults({ ufwStatus, ufwAdded: emptyUfwAdded });
+      const rejected = f.runHarden();
+      expect(rejected.status).not.toBe(0);
+      expect(rejected.stderr).toContain("nonempty UFW policy or initialization hook");
+      expectNoHardeningWrites(f);
+      expect(readFileSync(target, "utf8")).toBe(saved);
+      const accepted = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      expect(accepted.status, accepted.stderr).toBe(0);
+      expect(accepted.stderr).toContain("including public allows");
+      expect(readFileSync(target, "utf8")).toBe(saved);
+      expect(f.pending()).toBe(true);
+      expect(
+        f
+          .calls()
+          .some(
+            (call) =>
+              call[0] === "ufw" &&
+              call.some((arg) => ["reset", "delete", "insert", "prepend"].includes(arg)),
+          ),
+      ).toBe(false);
+    },
+  );
+
+  it("admits byte-empty raw policy only after the exact no-rules audit", () => {
+    const f = hardenFixture();
+    for (const file of rawPolicyPaths) write(path.join(f.root, file), "");
+    const result = f.runHarden();
+    expect(result.status, result.stderr).toBe(0);
+    expect(f.calls()).toContainEqual(["ufw", "show", "added"]);
     expect(f.pending()).toBe(true);
   });
 

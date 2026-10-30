@@ -453,9 +453,13 @@ sudo --preserve-env=SSH_CONNECTION DEPLOY_USER=deploy bash infra/compose/harden-
 ```
 
 Hardening stops before package installation or host-setting changes if any saved UFW rules exist,
-including inactive rules, private allows or rules from an earlier hardening run. It audits
-`LC_ALL=C ufw show added` and both saved user-rule files; missing, unsafe or unreadable files and an
-unknown or failed audit also stop the script. Retained configuration without the UFW command requires
+including inactive rules, private allows or rules from an earlier hardening run. An empty
+`LC_ALL=C ufw show added` report is not proof of empty policy: any nonempty `user[6].rules`,
+`before[6].rules`, `after[6].rules`, `before.init`, `after.init` or known legacy user-rule file
+requires explicit preservation acknowledgment. This deliberately includes packaged baseline content;
+the script does not classify rule safety or recognize pristine package files. Byte-empty raw files
+still require the exact no-rules report; missing required user-rule files, unsafe or unreadable paths
+and an unknown or failed audit stop the default run. Retained configuration without the UFW command requires
 manual review. A new host without UFW or retained configuration can proceed to installation.
 
 Review every existing rule before explicitly choosing to preserve them all:
