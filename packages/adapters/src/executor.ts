@@ -6826,6 +6826,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         }
 
+        // Continuation identity comes from its assigned source row, never task text.
+        const isSteeringContinuation =
+          scripted &&
+          (run.trigger === "follow_up" || run.trigger === "messaging") &&
+          run.sourceMessageId !== null &&
+          (await deps.prisma.steeringMessage.findFirst({
+            where: { runId, messageId: run.sourceMessageId },
+            select: { id: true },
+          })) !== null;
+
         // Stop during setup must not still open the model. A reclaimed lease can
         // leave status "running" under a new owner, and the stream loop only
         // notices cancellation after the provider request has started.
@@ -6884,6 +6894,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               threadId: thread.id,
               runId,
               sourceMessageId: run.sourceMessageId,
+              ...(scripted ? { isSteeringContinuation } : {}),
               onUsage: async (event) => {
                 await recordUsage(deps.prisma, event, {
                   spaceId: run.spaceId,

@@ -4,7 +4,7 @@ import type {
   AgentRuntime,
   AgentRuntimeEvent,
 } from "@rakazo/adapter-kit";
-import { abortableDelay, inferHandoffTargetName, STEERING_CONTINUATION_PROMPT } from "@rakazo/core";
+import { abortableDelay, inferHandoffTargetName } from "@rakazo/core";
 
 const running = new Map<string, AbortController>();
 
@@ -37,7 +37,7 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         yield { type: "done", text: "stopped" };
         return;
       }
-      const continuation = request.prompt.includes(STEERING_CONTINUATION_PROMPT);
+      const continuation = request.isSteeringContinuation === true;
       // Ordinary scripts cannot interpret waiting messages; leave them for a continuation.
       const steering = continuation ? ((await request.claimSteering?.([])) ?? []) : [];
       if (signal.aborted || controller.signal.aborted) {

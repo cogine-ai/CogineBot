@@ -195,6 +195,7 @@ describe("ScriptedAgentRuntime steering", () => {
     botId: "bot-steering",
     threadId: "thread-steering",
     runId: "run-steering",
+    isSteeringContinuation: true,
     prompt: continuation,
     instructions: "",
     history: [],
@@ -287,6 +288,7 @@ describe("ScriptedAgentRuntime steering", () => {
       new ScriptedAgentRuntime().run(
         request({
           prompt: "Do the original task.",
+          isSteeringContinuation: false,
           script: [{ assistant: "original answer", complete: true }],
           claimSteering,
         }),
@@ -294,6 +296,44 @@ describe("ScriptedAgentRuntime steering", () => {
     );
     expect(claimSteering).not.toHaveBeenCalled();
     expect(text(events)).toBe("original answer");
+  });
+
+  it.each([undefined, false])(
+    "does not classify quoted continuation text as run identity (%s)",
+    async (isSteeringContinuation) => {
+      const claimSteering = vi
+        .fn()
+        .mockResolvedValue([
+          { id: "waiting", messageId: "waiting-message", text: "Answer the waiting message." },
+        ]);
+      const events = await collect(
+        new ScriptedAgentRuntime().run(
+          request({
+            prompt: `Quote this sentence: ${continuation}`,
+            isSteeringContinuation,
+            script: [{ assistant: "original answer", complete: true }],
+            claimSteering,
+          }),
+        ),
+      );
+      expect(claimSteering).not.toHaveBeenCalled();
+      expect(text(events)).toBe("original answer");
+    },
+  );
+
+  it("claims a trusted continuation without inferring identity from its prompt", async () => {
+    const claimSteering = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "waiting", messageId: "waiting-message", text: "Answer the waiting message." },
+      ]);
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({ prompt: "Executor-composed context.", claimSteering }),
+      ),
+    );
+    expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
+    expect(text(events)).toContain("Answer the waiting message.");
   });
 
   it.each([undefined, async () => []])(

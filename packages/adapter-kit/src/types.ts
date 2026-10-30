@@ -489,6 +489,8 @@ export interface AgentRunRequest {
   threadId: string;
   runId: string;
   sourceMessageId?: string | null;
+  /** Executor-owned identity of a run created for its assigned durable steering batch. */
+  isSteeringContinuation?: boolean;
   prompt: string;
   /** Trusted account timezone used for the current turn and delegated work. */
   userTimezone?: string | null;

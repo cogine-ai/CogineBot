@@ -541,71 +541,77 @@ describeIntegration("run executor lifecycle", () => {
     },
   );
 
-  it("keeps pending messages through an ordinary scripted run for one answering continuation", async () => {
-    const seeded = await seedRun("scripted-ordinary-pending", "Finish the original task.");
-    const events = createThreadEvents(handles.prisma);
-    const message = await events.sendUserMessage({
-      spaceId: seeded.me.spaceId,
-      threadId: seeded.thread.id,
-      botId: seeded.bot.id,
-      userId: seeded.me.userId,
-      blocks: [{ kind: "text", text: "Answer this follow-up separately." }],
-      prompt: "Answer this follow-up separately.",
-      trigger: "follow_up",
-    });
-    const steering = await handles.prisma.steeringMessage.findFirstOrThrow({
-      where: { botId: seeded.bot.id, messageId: message.messageId },
-    });
-    const held = holdContinuationJobs(seeded.bot.id);
-    try {
-      await handles.executor.continueRun(seeded.run.id, "ordinary-worker");
-      const pending = await handles.prisma.steeringMessage.findMany({
-        where: { botId: seeded.bot.id },
+  it.each([false, true])(
+    "keeps pending messages through an ordinary scripted run for one answering continuation (quoted marker: %s)",
+    async (quotedMarker) => {
+      const prompt = quotedMarker
+        ? "Quote this sentence: Respond to the user's steering context."
+        : "Finish the original task.";
+      const seeded = await seedRun(`scripted-ordinary-pending-${quotedMarker}`, prompt);
+      const events = createThreadEvents(handles.prisma);
+      const message = await events.sendUserMessage({
+        spaceId: seeded.me.spaceId,
+        threadId: seeded.thread.id,
+        botId: seeded.bot.id,
+        userId: seeded.me.userId,
+        blocks: [{ kind: "text", text: "Answer this follow-up separately." }],
+        prompt: "Answer this follow-up separately.",
+        trigger: "follow_up",
       });
-      expect({ pending: pending.length, publications: held.published.length }).toEqual({
-        pending: 1,
-        publications: 1,
+      const steering = await handles.prisma.steeringMessage.findFirstOrThrow({
+        where: { botId: seeded.bot.id, messageId: message.messageId },
       });
-      expect(pending).toEqual([
-        expect.objectContaining({
-          id: steering.id,
-          messageId: message.messageId,
-          runId: held.published[0],
-          claimedAt: null,
-        }),
-      ]);
-      const originalAnswer = await handles.prisma.message.findMany({
-        where: { runId: seeded.run.id, role: "bot" },
-      });
-      expect(JSON.stringify(originalAnswer.map((item) => item.blocks))).toContain(
-        "done. i handled: Finish the original task.",
-      );
-      expect(JSON.stringify(originalAnswer.map((item) => item.blocks))).not.toContain(
-        "Answer this follow-up separately.",
-      );
-      await handles.executor.continueRun(held.published[0]!, "answering-worker");
-      const followUp = await handles.prisma.message.findMany({
-        where: { runId: held.published[0], role: "bot" },
-      });
-      expect(JSON.stringify(followUp.map((item) => item.blocks))).toContain(
-        "done. i handled: Answer this follow-up separately.",
-      );
-      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
-        0,
-      );
-      expect(
-        await handles.prisma.run.count({ where: { botId: seeded.bot.id, status: "queued" } }),
-      ).toBe(0);
-      expect(
-        await handles.prisma.run.count({
-          where: { botId: seeded.bot.id, trigger: { not: "created" } },
-        }),
-      ).toBe(2);
-      expect(held.published).toHaveLength(1);
-    } finally {
-      await cleanupHeldRuns(seeded.bot.id, held.restore);
-    }
-  });
+      const held = holdContinuationJobs(seeded.bot.id);
+      try {
+        await handles.executor.continueRun(seeded.run.id, "ordinary-worker");
+        const pending = await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+        });
+        expect({ pending: pending.length, publications: held.published.length }).toEqual({
+          pending: 1,
+          publications: 1,
+        });
+        expect(pending).toEqual([
+          expect.objectContaining({
+            id: steering.id,
+            messageId: message.messageId,
+            runId: held.published[0],
+            claimedAt: null,
+          }),
+        ]);
+        const originalAnswer = await handles.prisma.message.findMany({
+          where: { runId: seeded.run.id, role: "bot" },
+        });
+        expect(JSON.stringify(originalAnswer.map((item) => item.blocks))).toContain(
+          `done. i handled: ${prompt}`,
+        );
+        expect(JSON.stringify(originalAnswer.map((item) => item.blocks))).not.toContain(
+          "Answer this follow-up separately.",
+        );
+        await handles.executor.continueRun(held.published[0]!, "answering-worker");
+        const followUp = await handles.prisma.message.findMany({
+          where: { runId: held.published[0], role: "bot" },
+        });
+        expect(JSON.stringify(followUp.map((item) => item.blocks))).toContain(
+          "done. i handled: Answer this follow-up separately.",
+        );
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.run.count({ where: { botId: seeded.bot.id, status: "queued" } }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.run.count({
+            where: { botId: seeded.bot.id, trigger: { not: "created" } },
+          }),
+        ).toBe(2);
+        expect(held.published).toHaveLength(1);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    },
+  );
 
   it.each([
     { kind: "steered failure", fresh: false },
