@@ -149,6 +149,9 @@ if(name==='stat'){
 }else if(name==='grep'){
  if(bad('ruleReadFail'))process.exit(2);
  const r=cp.spawnSync('/usr/bin/grep',args,{stdio:'inherit'});process.exit(r.status??2);
+}else if(name==='ufw-preserve-python3'){
+ const checks=fs.readFileSync(process.env.FW_LOG,'utf8').trim().split('\\n').map(l=>JSON.parse(l)).filter(c=>c[0]==='ufw-preserve-python3').length;
+ if(bad('preserveCheckFail')||(bad('preserveCheckAfterFail')&&checks>1)){console.error('Cannot preserve saved UFW user rules: formatter rejected input');process.exit(1);}
 }else if(name==='systemd-run'){
  const unit=args.find(a=>a.startsWith('--unit=')).slice(7);if(bad('scheduleBefore'))process.exit(1);
  const s=state();s[unit+'.timer']=fault.timerState||'active';save(s);if(bad('scheduleAfter'))process.exit(1);
@@ -181,6 +184,7 @@ if(name==='stat'){
     "rm",
     "ufw",
     "grep",
+    "ufw-preserve-python3",
     "systemd-run",
     "systemctl",
     "sync",
@@ -298,6 +302,10 @@ function hardenFixture() {
   const f = fixture();
   write(path.join(f.etc, "ufw", "user.rules"), "");
   write(path.join(f.etc, "ufw", "user6.rules"), "");
+  write(
+    path.join(f.bin, "ufw-preserve-check.py"),
+    "# Formatter command is stubbed by this shell fixture.\n",
+  );
   const target = path.join(f.bin, "rakazo-firewall-change");
   write(
     path.join(f.bin, "firewall-change.sh"),
@@ -316,6 +324,7 @@ function hardenFixture() {
     "utf8",
   )
     .replace(`[[ "\${EUID}" -ne 0 ]]`, `[[ "\${EUID}" -ne "\${UID}" ]]`)
+    .replaceAll("/usr/bin/python3", path.join(f.bin, "ufw-preserve-python3"))
     .replaceAll("/usr/local/sbin", f.bin)
     .replaceAll("/usr/local", f.root)
     .replaceAll("/usr", f.root)
@@ -956,13 +965,20 @@ describe("firewall change rollback", () => {
         ? "#!/bin/sh\niptables -A INPUT -p tcp --dport 5432 -j ACCEPT\n"
         : "*filter\n-A INPUT -p tcp --dport 5432 -j ACCEPT\nCOMMIT\n";
       write(target, saved, file.endsWith(".init") ? 0o700 : 0o600);
-      f.faults({ ufwStatus, ufwAdded: emptyUfwAdded });
+      const unsupportedUser = ["etc/ufw/user.rules", "etc/ufw/user6.rules"].includes(file);
+      f.faults({ ufwStatus, ufwAdded: emptyUfwAdded, preserveCheckFail: unsupportedUser });
       const rejected = f.runHarden();
       expect(rejected.status).not.toBe(0);
       expect(rejected.stderr).toContain("nonempty UFW policy or initialization hook");
       expectNoHardeningWrites(f);
       expect(readFileSync(target, "utf8")).toBe(saved);
       const accepted = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      if (unsupportedUser || file.startsWith("legacy-ufw/")) {
+        expect(accepted.status).not.toBe(0);
+        expectNoHardeningWrites(f);
+        expect(readFileSync(target, "utf8")).toBe(saved);
+        return;
+      }
       expect(accepted.status, accepted.stderr).toBe(0);
       expect(accepted.stderr).toContain("including public allows");
       expect(readFileSync(target, "utf8")).toBe(saved);
@@ -986,6 +1002,53 @@ describe("firewall change rollback", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(f.calls()).toContainEqual(["ufw", "show", "added"]);
     expect(f.pending()).toBe(true);
+  });
+
+  it.each(["user.rules", "user6.rules"])(
+    "refuses mixed registered and raw %s when the installed formatter rejects it",
+    (file) => {
+      const f = hardenFixture();
+      const target = path.join(f.etc, "ufw", file);
+      const saved =
+        "### tuple ### allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in\n-A ufw-user-input -p tcp --dport 5432 -j ACCEPT\n";
+      write(target, saved);
+      f.faults({ preserveCheckFail: true });
+      const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("cannot be preserved safely");
+      expect(readFileSync(target, "utf8")).toBe(saved);
+      expectNoHardeningWrites(f);
+    },
+  );
+
+  it("requires the installed formatter to accept nonempty user files before host writes", () => {
+    const f = hardenFixture();
+    write(path.join(f.etc, "ufw", "user.rules"), "formatter-approved fixture\n");
+    const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+    expect(result.status, result.stderr).toBe(0);
+    const calls = f.calls();
+    const check = calls.findIndex((call) => call[0] === "ufw-preserve-python3");
+    expect(check).toBeGreaterThan(-1);
+    expect(calls[check]?.slice(1, 3)).toEqual(["-I", "-B"]);
+    expect(calls.findIndex((call) => call[0] === "apt-get")).toBeGreaterThan(check);
+    expect(calls.filter((call) => call[0] === "ufw-preserve-python3")).toHaveLength(2);
+    expect(calls.find((call) => call[0] === "apt-get" && call[1] === "install")).toContain(
+      "--no-upgrade",
+    );
+  });
+
+  it("rechecks acknowledged user rules inside the armed guard before firewall mutations", () => {
+    const f = hardenFixture();
+    write(path.join(f.etc, "ufw", "user.rules"), "formatter-approved fixture\n");
+    f.faults({ preserveCheckAfterFail: true });
+    expect(f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" }).status).not.toBe(0);
+    expect(f.pending()).toBe(true);
+    expect(f.calls().filter((call) => call[0] === "ufw-preserve-python3")).toHaveLength(2);
+    expect(
+      f
+        .calls()
+        .some((call) => call[0] === "ufw" && !["show", "status"].includes(call[1] as string)),
+    ).toBe(false);
   });
 
   const savedRuleCases = ["Status: active", "Status: inactive"].flatMap((ufwStatus) =>

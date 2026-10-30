@@ -166,16 +166,38 @@ if [[ -n "${ufw_audit_reason}" && "${PRESERVE_EXISTING_UFW_RULES}" == 0 ]]; then
   echo "Review all saved UFW rules, then set PRESERVE_EXISTING_UFW_RULES=1 only to explicitly preserve every existing rule." >&2
   exit 1
 fi
+ufw_install_options=()
+check_existing_ufw=0
+preservation_checker=""
 if [[ "${PRESERVE_EXISTING_UFW_RULES}" == 1 ]]; then
+  # Legacy user files have no supported lossless migration through the current CLI.
+  for rules_file in /lib/ufw/user.rules /lib/ufw/user6.rules; do
+    [[ ! -s "${rules_file}" ]] || {
+      echo "Cannot preserve nonempty legacy UFW user rules; migrate them manually before hardening." >&2
+      exit 1
+    }
+  done
+  if [[ -s /etc/ufw/user.rules || -s /etc/ufw/user6.rules ]]; then
+    preservation_checker="$(dirname "${FIREWALL_HELPER_SOURCE}")/ufw-preserve-check.py"
+    [[ -f "${preservation_checker}" && ! -L "${preservation_checker}" ]] &&
+      command -v ufw >/dev/null 2>&1 &&
+      /usr/bin/python3 -I -B "${preservation_checker}" "$(command -v ufw)" /etc "${SSH_PORT}" || {
+      echo "Saved UFW user rules cannot be preserved safely; host hardening stopped before changing host configuration." >&2
+      exit 1
+    }
+    # Keep the checked installed formatter through this package operation.
+    ufw_install_options+=(--no-upgrade)
+    check_existing_ufw=1
+  fi
   if [[ -n "${ufw_audit_reason}" ]]; then
     echo "${ufw_audit_reason}; proceeding with explicit preservation acknowledgment." >&2
   fi
-  echo "PRESERVE_EXISTING_UFW_RULES=1: preserving all existing UFW rules as operator-approved exceptions, including public allows. Default deny and the SSH limit do not override earlier allows." >&2
+  echo "PRESERVE_EXISTING_UFW_RULES=1: preserving existing UFW rules as operator-approved exceptions, including public allows. Default deny and the SSH limit do not override earlier allows." >&2
 fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends \
+apt-get install "${ufw_install_options[@]}" -y --no-install-recommends \
   apparmor \
   apparmor-utils \
   auditd \
@@ -292,6 +314,9 @@ if [[ ! -e /usr/local/sbin/rakazo-firewall-change ]]; then
   install -m 755 -- "${FIREWALL_HELPER_SOURCE}" /usr/local/sbin/rakazo-firewall-change
 fi
 /usr/local/sbin/rakazo-firewall-change apply /bin/bash -euo pipefail -c '
+  if [[ "$2" == 1 ]]; then
+    /usr/bin/python3 -I -B "$3" "$(command -v ufw)" /etc "$1"
+  fi
   ufw default deny incoming
   ufw default allow outgoing
   ufw limit "$1/tcp" comment "Rate-limited SSH"
@@ -299,7 +324,7 @@ fi
   ufw allow 443/tcp comment "HTTPS"
   ufw allow 443/udp comment "HTTP/3"
   ufw --force enable
-' -- "${SSH_PORT}"
+' -- "${SSH_PORT}" "${check_existing_ufw}" "${preservation_checker}"
 
 systemctl enable --now apparmor auditd fail2ban unattended-upgrades
 systemctl restart fail2ban

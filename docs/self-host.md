@@ -469,8 +469,19 @@ sudo ufw show added
 sudo --preserve-env=SSH_CONNECTION DEPLOY_USER=deploy PRESERVE_EXISTING_UFW_RULES=1 bash infra/compose/harden-host.sh
 ```
 
-`PRESERVE_EXISTING_UFW_RULES` accepts only `0` (the default) or `1`. The acknowledgment preserves all
-existing rules as operator-approved exceptions, including public allows. Default deny and the new SSH
+`PRESERVE_EXISTING_UFW_RULES` accepts only `0` (the default) or `1`. The acknowledgment preserves
+supported existing rules as operator-approved exceptions, including public allows. Before host changes,
+nonempty `user.rules` and `user6.rules` must round-trip byte-for-byte through the installed UFW 0.36.2
+formatter in temporary staging, including saved IPv6 rules when IPv6 is disabled. This rejects handwritten
+or mixed content the CLI would discard, and fails closed for unsupported versions, layouts or formatter
+errors. The same backend models the baseline additions and rejects any that would replace or reorder
+an existing registered rule, including saved IPv6 rules. This conservative check can also reject package
+baseline files that have never been written by the CLI. The checked package is not upgraded during
+this hardening run, and the check runs again before firewall commands. Nonempty legacy user-rule
+files require manual migration. Raw rules in `before[6].rules`,
+`after[6].rules` and initialization hooks still require operator review; UFW's default-policy command may
+update logging prefixes in the after files. This is rule preservation, not a byte-identical snapshot.
+Default deny and the new SSH
 limit do not override earlier allows. The acknowledgment never overrides the directory and saved-file
 safety checks; configuration paths must be root-owned and not group/world-writable, including nested UFW configuration. Unsafe or unreadable paths stop hardening before package installation or configuration writes.
 Inspect saved IPv6 rules too when UFW IPv6 is disabled, because
