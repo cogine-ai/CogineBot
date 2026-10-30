@@ -603,9 +603,10 @@ its lock; a deploy that finds the lock held exits non-zero. For a checkout outsi
 deploy user.
 
 The deployment host also needs `jq`, Docker Buildx 0.14 or newer, and a Compose version that supports
-`build --builder`. The script checks these prerequisites before changing deployment resources;
-it does not install packages or expand the deploy user's `sudo docker` permissions. The selected
-Docker daemon must use a local Unix socket, and the deploy user must be able to read capacity for
+`build --builder`, `pull --ignore-buildable`, and `pull --policy`. The script checks these prerequisites
+before changing deployment resources; it does not install packages or expand the deploy user's
+`sudo docker` permissions. The selected Docker daemon must use a local Unix socket, and the deploy
+user must be able to read capacity for
 both the checkout and the daemon's actual data directory. A failed or malformed capacity reading
 refuses deployment.
 
