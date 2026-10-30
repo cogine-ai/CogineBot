@@ -69,12 +69,27 @@ fi
 
 # Audit saved rules even while UFW is inactive, before any host settings change.
 # Only UFW's exact empty report proves that no registered rules were reported.
+if [[ -e /etc/ufw || -L /etc/ufw ]]; then
+  [[ -d /etc/ufw && ! -L /etc/ufw && -r /etc/ufw && -x /etc/ufw ]] || {
+    echo "Unsafe or unreadable UFW configuration directory; host hardening stopped before changing host configuration." >&2
+    exit 1
+  }
+fi
+# Preserving policy never authorizes UFW or package scripts to read unsafe paths.
+for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules /etc/default/ufw /lib/ufw/user.rules /lib/ufw/user6.rules; do
+  if [[ -e "${rules_file}" || -L "${rules_file}" ]]; then
+    [[ -f "${rules_file}" && ! -L "${rules_file}" && -r "${rules_file}" ]] || {
+      echo "Unsafe or unreadable saved UFW configuration; host hardening stopped before changing host configuration." >&2
+      exit 1
+    }
+  fi
+done
 ufw_audit_reason=""
 if command -v ufw >/dev/null 2>&1; then
-  # Validate both paths before UFW itself opens them, including FIFOs and links.
+  # Missing files leave policy unknown; never invoke UFW on an incomplete audit.
   for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules; do
-    if [[ -L "${rules_file}" || ! -f "${rules_file}" || ! -r "${rules_file}" ]]; then
-      ufw_audit_reason="Missing, unsafe or unreadable saved UFW rules"
+    if [[ ! -e "${rules_file}" ]]; then
+      ufw_audit_reason="Missing saved UFW rules"
       break
     fi
   done

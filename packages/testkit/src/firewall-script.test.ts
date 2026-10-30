@@ -317,7 +317,9 @@ function hardenFixture() {
     .replaceAll("/usr/local/sbin", f.bin)
     .replaceAll("/usr/local", f.root)
     .replaceAll("/usr", f.root)
-    .replaceAll("/etc", f.etc);
+    .replaceAll("/etc", f.etc)
+    .replaceAll("/var/lib/ufw", path.join(f.root, "retained-ufw"))
+    .replaceAll("/lib/ufw", path.join(f.root, "legacy-ufw"));
   write(harden, text, 0o755);
   return {
     ...f,
@@ -1011,6 +1013,37 @@ describe("firewall change rollback", () => {
       expectNoHardeningWrites(f);
       expect(f.calls().some((call) => call[0] === "grep" && call.includes(file))).toBe(false);
       expect(f.calls().some((call) => call[0] === "ufw" && call[1] === "show")).toBe(false);
+    },
+  );
+
+  it.each(["directory-symlink", "rules-directory", "rules6-fifo", "defaults-symlink"])(
+    "rejects known unsafe UFW paths despite explicit rule-preservation acknowledgment: %s",
+    (kind) => {
+      const f = hardenFixture();
+      if (kind === "directory-symlink") {
+        const directory = path.join(f.etc, "ufw");
+        const target = path.join(f.root, "saved-ufw");
+        rmSync(directory, { recursive: true });
+        mkdirSync(target);
+        symlinkSync(target, directory);
+      } else if (kind === "rules-directory") {
+        const file = path.join(f.etc, "ufw", "user.rules");
+        rmSync(file);
+        mkdirSync(file);
+      } else if (kind === "rules6-fifo") {
+        const file = path.join(f.etc, "ufw", "user6.rules");
+        rmSync(file);
+        execFileSync("mkfifo", [file]);
+      } else {
+        const file = path.join(f.etc, "default", "ufw");
+        rmSync(file);
+        symlinkSync(path.join(f.etc, "ufw", "user.rules"), file);
+      }
+      const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Unsafe or unreadable");
+      expectNoHardeningWrites(f);
+      expect(f.calls().some((call) => ["ufw", "grep"].includes(call[0] as string))).toBe(false);
     },
   );
 
