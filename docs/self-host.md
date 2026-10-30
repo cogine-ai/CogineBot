@@ -593,13 +593,62 @@ To deploy from CI, install `infra/compose/deploy-main.sh` as `/usr/local/sbin/ra
 and give CI a key restricted to it in the deploy user's `authorized_keys`
 (`restrict,command="/usr/local/sbin/rakazo-deploy-main" ssh-ed25519 …`). It builds `origin/main`,
 restarts the stack, requires both `https://$RAKAZO_HOST/health` and container-local API `/ready`, and
-rolls back on failure. `RAKAZO_HEALTH_URL` still overrides only the public connectivity check. The
-readiness fetch has a two-second abort and its Compose command has a five-second timeout; the public
+retains the previous deployment's exact images for rollback. `RAKAZO_HEALTH_URL` still overrides
+only the public connectivity check. The readiness fetch has a two-second abort and its Compose
+command has a five-second timeout; the public
 check retains its 15-second timeout, so a whole deployment poll can take longer than the readiness
 HTTP deadline. Build and start are time-limited so a stuck build fails the deploy instead of holding
 its lock; a deploy that finds the lock held exits non-zero. For a checkout outside `/srv/rakazo`, put
 `RAKAZO_DEPLOY_DIR=/absolute/path` in a root-owned `/etc/rakazo/deploy.env` readable by the
 deploy user.
+
+The deployment host also needs `jq`, Docker Buildx 0.14 or newer, and a Compose version that supports
+`build --builder`. The script checks these prerequisites before changing deployment resources;
+it does not install packages or expand the deploy user's `sudo docker` permissions. The selected
+Docker daemon must use a local Unix socket, and the deploy user must be able to read capacity for
+both the checkout and the daemon's actual data directory. A failed or malformed capacity reading
+refuses deployment.
+
+`RAKAZO_DEPLOY_MIN_FREE_GB` defaults to `5` when unset. It accepts a nonnegative whole number of GiB;
+`0` disables the minimum threshold while keeping capacity and ownership validation. An empty or
+invalid value is rejected. Set it alongside `RAKAZO_DEPLOY_DIR` in `/etc/rakazo/deploy.env`, or export
+it for a manual run. Checks run under the deployment lock, before fetching or resetting Git, and
+again after cleanup or builder startup and before building. Space below the threshold stops the
+deployment; an admission check does not reserve capacity against other writers or cap build output.
+
+Each checkout, Compose project and Docker daemon gets a dedicated, explicitly selected Buildx
+builder. Its first startup pulls a pinned official BuildKit image and creates a persistent,
+privileged BuildKit container with a named cache volume. These resources stay between deployments.
+The script records their actual identities in protected deployment state under the checkout's Git
+metadata; it does not change the default builder, Docker context or credential configuration.
+
+Cleanup is limited to that verified builder's unused cache older than 24 hours and previously
+recorded, unused deployment history references. It preserves the running images and the previous
+healthy generation, images with foreign or shared tags, and images referenced by running or stopped
+containers. Legacy builders, unregistered image tags, application volumes and user workspaces are
+left intact. The script rechecks free space after cleanup and refuses deployment if it remains
+insufficient.
+
+Pull-only dependencies are acquired with the missing-image policy before the build, with capacity
+checked again afterwards. Startup uses protected image references with rebuilding and pulling
+disabled, so service pull policies cannot replace the selected images or use a different builder.
+The running service images must match those selected references before the healthy generation is
+recorded. This comparison records image identity; it is not a build-provenance attestation.
+
+The script refuses cleanup for an unknown builder, name collision, changed container or volume,
+invalid state record, or mismatch with the recorded project/daemon identity. If first startup stops
+before publishing its ownership record, inspect the deployment state and Docker resources before
+retrying; the script does not adopt or delete an unverified cache volume automatically.
+
+A failed rollout restores the previous Git revision and starts the retained exact service images
+with building and pulling disabled. If a complete prior image set is unavailable, including on a
+first installation, rollback is reported as unavailable rather than rebuilding a replacement.
+Successful deployment requires both health checks and publication of the healthy image generation.
+The first managed run builds and checks the deployment even when the older
+`.last-deployed-revision` file already matches Git; that file alone does not establish image identity.
+Later runs skip the rollout only when the generation, revision marker, actual images and both health
+checks agree. These guards do not establish that a database migration can be reversed or replace a
+recovery drill on an isolated host.
 
 ### Docker computers on the production stack
 
