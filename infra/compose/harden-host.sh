@@ -69,12 +69,14 @@ fi
 
 # Audit saved rules even while UFW is inactive, before any host settings change.
 # Only UFW's exact empty report proves that no registered rules were reported.
-if [[ -e /etc/ufw || -L /etc/ufw ]]; then
-  [[ -d /etc/ufw && ! -L /etc/ufw && -r /etc/ufw && -x /etc/ufw ]] || {
-    echo "Unsafe or unreadable UFW configuration directory; host hardening stopped before changing host configuration." >&2
-    exit 1
-  }
-fi
+for config_directory in /etc/ufw /etc/default /lib/ufw /var/lib/ufw; do
+  if [[ -e "${config_directory}" || -L "${config_directory}" ]]; then
+    [[ -d "${config_directory}" && ! -L "${config_directory}" && -r "${config_directory}" && -x "${config_directory}" ]] || {
+      echo "Unsafe or unreadable UFW configuration directory; host hardening stopped before changing host configuration." >&2
+      exit 1
+    }
+  fi
+done
 # Preserving policy never authorizes UFW or package scripts to read unsafe paths.
 for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules /etc/default/ufw /lib/ufw/user.rules /lib/ufw/user6.rules; do
   if [[ -e "${rules_file}" || -L "${rules_file}" ]]; then

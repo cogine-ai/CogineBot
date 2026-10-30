@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -1039,6 +1040,23 @@ describe("firewall change rollback", () => {
         rmSync(file);
         symlinkSync(path.join(f.etc, "ufw", "user.rules"), file);
       }
+      const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Unsafe or unreadable");
+      expectNoHardeningWrites(f);
+      expect(f.calls().some((call) => ["ufw", "grep"].includes(call[0] as string))).toBe(false);
+    },
+  );
+
+  it.each(["default", "legacy-ufw", "retained-ufw"])(
+    "rejects a saved configuration parent symlink despite explicit rule preservation: %s",
+    (kind) => {
+      const f = hardenFixture();
+      const directory = kind === "default" ? path.join(f.etc, kind) : path.join(f.root, kind);
+      const target = path.join(f.root, `saved-${kind}`);
+      if (kind === "default") renameSync(directory, target);
+      else mkdirSync(target);
+      symlinkSync(target, directory);
       const result = f.runHarden({ PRESERVE_EXISTING_UFW_RULES: "1" });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("Unsafe or unreadable");
