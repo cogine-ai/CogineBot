@@ -331,6 +331,7 @@ describe("firewall change rollback", () => {
   );
 
   it.each([
+    { findFail: true },
     { dfFail: true },
     { dfExtra: true },
     { tarFail: true },
@@ -446,6 +447,20 @@ describe("firewall change rollback", () => {
       expect(f.pending()).toBe(true);
     },
   );
+
+  it("retains recovery state after logging fails and completes a later retry", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    write(path.join(f.etc, "ufw", "user.rules"), "unconfirmed\n");
+    f.faults({ loggerFail: true });
+    expect(f.run(["rollback", token]).status).toBe(1);
+    expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("original rules\n");
+    expect(f.pending()).toBe(true);
+    expect(f.timer()).toBe("inactive");
+    f.faults({});
+    expect(f.run(["rollback", token]).status).toBe(0);
+    expect(f.pending()).toBe(false);
+  });
 
   it.each([
     "../outside\n",
@@ -592,6 +607,28 @@ describe("firewall change rollback", () => {
       f.calls().filter((call) => call[0] === "install" && call.at(-1) === target),
     ).toHaveLength(1);
     expect(f.read("token")).toBe("12345678-1234-4234-8234-123456789abd");
+  });
+
+  it("rejects an identical non-executable callback before changing host configuration", () => {
+    const f = hardenFixture();
+    const target = path.join(f.bin, "rakazo-firewall-change");
+    const identical = readFileSync(path.join(f.bin, "firewall-change.sh"), "utf8");
+    write(target, identical, 0o600);
+    const result = f.runHarden();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Unsafe existing firewall helper");
+    expect(readFileSync(target, "utf8")).toBe(identical);
+    expect(
+      f
+        .calls()
+        .some((call) =>
+          ["apt-get", "install", "systemd-run", "ufw", "sshd", "sysctl"].includes(
+            call[0] as string,
+          ),
+        ),
+    ).toBe(false);
+    expect(existsSync(path.join(f.etc, "ssh"))).toBe(false);
+    expect(f.pending()).toBe(false);
   });
 
   it("removes new unconfirmed UFW files while preserving unrelated defaults", () => {

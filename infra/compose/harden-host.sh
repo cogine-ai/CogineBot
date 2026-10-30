@@ -47,7 +47,7 @@ if [[ -e /usr/local/sbin ]]; then
   }
 fi
 if [[ -e /usr/local/sbin/rakazo-firewall-change ]]; then
-  [[ -f /usr/local/sbin/rakazo-firewall-change && "$(stat -c '%u %h' /usr/local/sbin/rakazo-firewall-change)" == '0 1' ]] &&
+  [[ -f /usr/local/sbin/rakazo-firewall-change && -x /usr/local/sbin/rakazo-firewall-change && "$(stat -c '%u %h' /usr/local/sbin/rakazo-firewall-change)" == '0 1' ]] &&
     (( (8#$(stat -c '%a' /usr/local/sbin/rakazo-firewall-change) & 0022) == 0 )) || {
     echo "Unsafe existing firewall helper" >&2; exit 1;
   }
