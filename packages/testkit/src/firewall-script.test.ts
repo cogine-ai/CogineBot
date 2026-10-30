@@ -103,7 +103,12 @@ if(name==='stat'){
  if(s.isDirectory())for(const n of fs.readdirSync(f)){const found=visit(path.join(f,n));if(found)return found;}};
  for(const f of args.slice(0,2)){const found=visit(f);if(found){console.log(found);break;}}
 }else if(name==='cat'){
- if(args[0]==='/proc/sys/kernel/random/uuid')console.log(fault.uuid||'${token}');else fs.writeFileSync(1,fs.readFileSync(args[0]??0));
+ if(args[0]==='/proc/sys/kernel/random/uuid')console.log(fault.uuid||'${token}');
+ else if(args[0]==='/proc/self/mountinfo'){
+  if(bad('mountReadFail'))process.exit(1);
+  if(fault.mountInfo!==undefined)process.stdout.write(fault.mountInfo);
+  else console.log('1 0 8:1 / '+(fault.mountPath||'/')+' rw - ext4 /dev/fixture rw');
+ }else fs.writeFileSync(1,fs.readFileSync(args[0]??0));
 }else if(name==='df'){
  if(bad('dfFail'))process.exit(1);
  process.stdout.write('Filesystem 1024-blocks Used Available Capacity Mounted on\\nfixture 999999 0 '+(fault.free??'102400')+' 0% /fixture\\n'+(fault.dfExtra?'extra\\n':''));
@@ -733,5 +738,49 @@ describe("firewall change rollback", () => {
     expect(existsSync(path.join(f.state, "confirmed"))).toBe(false);
     expect(f.read("token")).toBe(next);
     expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).not.toBe(0);
+  });
+
+  it.each(["ufw", "ufw/nested", "default/ufw"])(
+    "rejects a mounted rollback target %s before scheduling or changing rules",
+    (target) => {
+      const f = fixture();
+      f.faults({ mountPath: path.join(f.etc, target) });
+      const marker = path.join(f.root, "changed");
+      const result = f.run(["apply", "/usr/bin/touch", marker]);
+      expect(result.status).toBe(1);
+      expect(result.error).toBeUndefined();
+      expect(existsSync(marker)).toBe(false);
+      expect(f.pending()).toBe(false);
+      expect(f.calls().some((call) => call[0] === "systemd-run")).toBe(false);
+    },
+  );
+
+  it("supports the ordinary parent filesystem and unrelated mount siblings", () => {
+    const f = fixture();
+    f.faults({
+      mountInfo: `1 0 8:1 / ${f.etc} rw - ext4 /dev/fixture rw\n2 1 0:2 / ${f.etc}/ufw-other rw - tmpfs tmpfs rw\n`,
+    });
+    expect(f.apply().status).toBe(0);
+  });
+
+  it.each([{ mountReadFail: true }, { mountInfo: "" }, { mountInfo: "malformed\n" }])(
+    "rejects missing or malformed mount information before mutation %j",
+    (fault) => {
+      const f = fixture();
+      f.faults(fault);
+      expect(f.apply().status).toBe(1);
+      expect(f.pending()).toBe(false);
+      expect(f.calls().some((call) => call[0] === "systemd-run")).toBe(false);
+    },
+  );
+
+  it("retains recovery state if a mount appeared after the change was armed", () => {
+    const f = fixture();
+    expect(f.apply().status).toBe(0);
+    f.faults({ mountPath: path.join(f.etc, "ufw") });
+    expect(f.run(["rollback", token]).status).toBe(1);
+    expect(f.pending()).toBe(true);
+    expect(f.timer()).toBe("active");
+    expect(f.calls().some((call) => call[0] === "tar" && call.includes("-xpf"))).toBe(false);
   });
 });

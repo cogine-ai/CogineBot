@@ -57,6 +57,27 @@ check_config() {
   [[ -z "${unsafe}" ]] || fail "UFW configuration must contain only protected regular files and directories"
 }
 
+check_mounts() {
+  local mounts
+  mounts="$(cat /proc/self/mountinfo)" || fail "Cannot inspect UFW mount layout"
+  # Recursive restoration must be able to replace the UFW tree and defaults file.
+  # A normal /etc filesystem is supported; nested mounts require manual recovery.
+  printf '%s\n' "${mounts}" | awk -v ufw="${ETC}/ufw" -v defaults="${ETC}/default/ufw" '
+    {
+      separator=0
+      for (i=7; i<=NF; i++) if ($i == "-") { if (separator) bad=1; separator=i }
+      if (NF < 10 || separator != NF-3 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+:[0-9]+$/ || $4 !~ /^\// || $5 !~ /^\//) bad=1
+      target=$5; escaped=target
+      gsub(/\\(040|011|012|134)/, "", escaped)
+      if (escaped ~ /\\/) bad=1
+      gsub(/\\040/, " ", target); gsub(/\\011/, "\t", target)
+      gsub(/\\012/, "\n", target); gsub(/\\134/, "\\", target)
+      if (target == ufw || index(target, ufw "/") == 1 || target == defaults) bad=1
+    }
+    END { exit (bad || NR == 0) }
+  ' || fail "UFW mount layout is unreadable or contains a mounted rollback target"
+}
+
 check_archive() {
   local entry root_seen=0 defaults_seen=0 listing
   secure_file "$1"
@@ -120,6 +141,7 @@ case "${action}" in
     read -r script_owner script_mode script_links <<<"$(stat -c '%u %a %h' -- "${SELF}")"
     [[ "${script_owner}" == 0 && "${script_mode}" =~ ^[0-7]{3,4}$ && "${script_links}" == 1 ]] && (( (8#${script_mode} & 0022) == 0 )) || fail "Unsafe installed firewall helper"
     check_config
+    check_mounts
     require_space "${ETC}/ufw"
     require_space "${STATE}"
     token="$(cat /proc/sys/kernel/random/uuid)"
@@ -185,6 +207,7 @@ case "${action}" in
       secure_directory "${ETC}/default"
       if [[ -e "${ETC}/ufw" || -L "${ETC}/ufw" ]]; then secure_directory "${ETC}/ufw"; fi
       [[ ! -L "${ETC}/default/ufw" ]] || fail "Unsafe UFW defaults restore target"
+      check_mounts
       # The archive's only directory root is ufw: remove new unconfirmed members too,
       # without deleting any sibling of default/ufw or following directory symlinks.
       tar --recursive-unlink -xpf "${STATE}/before.tar" -C "${ETC}"

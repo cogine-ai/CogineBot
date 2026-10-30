@@ -459,6 +459,9 @@ findutils, GNU tar, util-linux `flock`, systemd and UFW, and at least 100 MiB fr
 state filesystems. Its fixed state directory is `/var/lib/rakazo/firewall-change` (mode 700). State
 files must be root-owned, single-link regular files with mode 600. Unsafe configuration links,
 special files or writable rules are refused before a change.
+The UFW directory, its descendants and `/etc/default/ufw` must not be mountpoints: bind mounts there
+cannot be replaced during recovery. A normal filesystem mounted at `/etc` is supported. Mounts
+introduced after arming cause recovery to stop with pending state retained for console inspection.
 
 An identical installed helper is reused. If its content differs, hardening stops before package or
 host-setting changes. Finish or recover any pending firewall operation using the existing helper,
