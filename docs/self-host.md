@@ -636,6 +636,12 @@ left intact. The script rechecks free space after cleanup and refuses deployment
 insufficient. Generated deployment history references are internal recovery records; use regular
 application image names in the deployment configuration.
 
+An interrupted history cleanup can leave a record for an obsolete reference that was already
+removed. A retry retires that record only after successful inventories confirm the reference is
+absent and its image is not protected by current or retained generations, shared tags, or any
+container. This updates the record without another Docker deletion. Failed inspection or inventory
+reads still stop deployment, and missing retained references still require operator inspection.
+
 Pull-only dependencies are acquired with the missing-image policy before the build, with capacity
 checked again afterwards. Startup uses protected image references with rebuilding and pulling
 disabled, so service pull policies cannot replace the selected images or use a different builder.

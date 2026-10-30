@@ -266,7 +266,7 @@ read_containers() {
   fi
 }
 read_images() {
-  images="$(docker_command 1m image ls --no-trunc --format '{{json .}}' | jq -cs \
+  images="$(docker_command 1m image ls --all --no-trunc --format '{{json .}}' | jq -cs \
     'if all(.[]; (.ID|type == "string" and test("^sha256:[0-9a-f]{64}$")) and (.Repository|type == "string") and (.Tag|type == "string")) then . else error("invalid image inventory") end')"
 }
 inspect_image() {
@@ -385,6 +385,23 @@ fi
 while IFS=$'\t' read -r ref id; do
   [[ -n "${ref}" ]] || continue
   if jq -e --arg id "${id}" 'index($id) != null' <<<"${protected_ids}" >/dev/null; then continue; fi
+  check_engine
+  read_images
+  ref_present="$(jq -c --arg ref "${ref}" 'any(.[];(.Repository+":"+.Tag) == $ref)' <<<"${images}")"
+  if [[ "${ref_present}" == false ]]; then
+    # A prior removal may have completed before its ledger update. Retire only verified obsolete metadata.
+    id_present="$(jq -c --arg id "${id}" 'any(.[];.ID == $id)' <<<"${images}")"
+    if [[ "${id_present}" == true ]]; then
+      actual="$(inspect_image "${id}")"; [[ "$(jq -r .Id <<<"${actual}")" == "${id}" ]] || fail "An obsolete deployment image identity changed"
+      private_image="$(image_has_only_recorded_refs "${id}" "${actual}")"
+      [[ "${private_image}" == true ]] || continue
+    fi
+    read_containers
+    if jq -e --arg id "${id}" 'any(.[];.Image == $id)' <<<"${containers}" >/dev/null; then continue; fi
+    check_engine
+    next="$(jq -c --arg ref "${ref}" '.images |= map(select(.ref != $ref))' <<<"${state}")"; publish_state "${next}"
+    continue
+  fi
   actual="$(inspect_image "${ref}")"; [[ "$(jq -r .Id <<<"${actual}")" == "${id}" ]] || fail "A cleanup image reference changed"
   private_image="$(image_has_only_recorded_refs "${id}" "${actual}")"
   [[ "${private_image}" == true ]] || continue

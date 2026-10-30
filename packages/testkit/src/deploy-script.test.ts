@@ -188,7 +188,7 @@ if (args[0] === 'buildx' && args[1] === 'prune') {
  state.prunes++;
  out('Total: 0B');
 }
-if (key === "image ls --no-trunc --format {{json .}}") {
+if (key === "image ls --no-trunc --format {{json .}}" || key === "image ls --all --no-trunc --format {{json .}}") {
  if (process.env.BAD_IMAGES_JSON) out(process.env.BAD_IMAGES_JSON);
  const rows=[]; for(const image of Object.values(state.images)) { for (const ref of image.RepoTags) { const split=ref.lastIndexOf(':');rows.push({Repository:ref.slice(0,split),Tag:ref.slice(split+1),ID:image.Id}); } if(!image.RepoTags.length) rows.push({Repository:'<none>',Tag:'<none>',ID:image.Id}); } out(rows.map(x=>JSON.stringify(x)).join('\n'));
 }
@@ -229,6 +229,7 @@ if (args[0] === 'image' && args[1] === 'rm' && args.length===3) {
  const ref=args[2], image=Object.values(state.images).find(im=>im.RepoTags.includes(ref));
  if (!image) fail('image reference not found');
  image.RepoTags=image.RepoTags.filter(x=>x!==ref);state.removed.push(ref);
+  if (process.env.FAIL_AFTER_IMAGE_RM) fail('image removal acknowledgement failed');
  out(ref);
 }
 if (args[0] === 'compose') {
@@ -475,6 +476,7 @@ if (path.basename(target)==='state.json') {
  const old=fs.existsSync(target) ? JSON.parse(fs.readFileSync(target,'utf8')) : null;
  if (process.env.FAIL_FIRST_STATE_PUBLISH && !old) process.exit(1);
  if (process.env.FAIL_LEDGER_PUBLISH && old && candidate.images.length > old.images.length) process.exit(1);
+ if (process.env.FAIL_LEDGER_SHRINK_PUBLISH && old && candidate.images.length < old.images.length) { fs.appendFileSync(process.env.EVENTS_LOG,'state ledger shrink publication failed\\n'); process.exit(1); }
  if (process.env.FAIL_HEALTHY_PUBLISH && candidate.healthy && (!old || candidate.healthy.revision !== old.healthy?.revision)) process.exit(1);
 }
 const priorRevision=path.basename(target)==='state.json' && fs.existsSync(target) ? JSON.parse(fs.readFileSync(target,'utf8')).healthy?.revision : null;
@@ -1439,6 +1441,220 @@ describe("production deploy exact rollback and owned image history", () => {
     expect(deploy.state().removed).toEqual([]);
     expect(deploy.events().some((x) => x.startsWith("git fetch"))).toBe(false);
   });
+});
+
+describe("production deploy interrupted image cleanup recovery", () => {
+  function obsoleteGeneration() {
+    const deploy = fixture();
+    prime(deploy);
+    deploy.next("second");
+    const result = deploy.run();
+    expect(result.status, result.stderr).toBe(0);
+    const before = deploy.record();
+    const obsolete = before.images.find((image) => image.id === deploy.firstImage)!;
+    expect(obsolete).toBeDefined();
+    expect(
+      [...before.healthy!.services, ...before.healthy!.previous].some(
+        (image) => image.id === obsolete.id,
+      ),
+    ).toBe(false);
+    deploy.clearLogs();
+    return { deploy, before, obsolete };
+  }
+
+  function expectProtectedUnchanged(deploy: ReturnType<typeof fixture>, before: DeploymentRecord) {
+    expect(deploy.record().healthy).toEqual(before.healthy);
+    for (const image of [...before.healthy!.services, ...before.healthy!.previous])
+      expect(deploy.state().images[image.id]?.RepoTags).toContain(image.ref);
+    expect(deploy.deployed()).toBe(before.healthy!.revision);
+    expect(deploy.head()).toBe(before.healthy!.revision);
+  }
+
+  it.each(["dangling image", "removed image"])(
+    "recovers after image removal succeeded but ledger publication failed with a %s",
+    (remaining) => {
+      const { deploy, before, obsolete } = obsoleteGeneration();
+      const failed = deploy.run({ FAIL_LEDGER_SHRINK_PUBLISH: "1" });
+      expect(failed.status).not.toBe(0);
+      expect(deploy.state().removed).toContain(obsolete.ref);
+      expect(deploy.state().images[obsolete.id]?.RepoTags).not.toContain(obsolete.ref);
+      expect(deploy.record().images).toContainEqual(obsolete);
+      expectProtectedUnchanged(deploy, before);
+      if (remaining === "removed image")
+        deploy.update((state) => {
+          delete state.images[obsolete.id];
+        });
+      const imageStateBeforeRetry = deploy.state().images;
+      const removedBeforeRetry = deploy.state().removed;
+      deploy.clearLogs();
+      const retried = deploy.run();
+      expect(retried.status, retried.stderr).toBe(0);
+      expect(retried.stdout).toContain("already at");
+      expect(deploy.record().images).toEqual(
+        before.images.filter((image) => image.ref !== obsolete.ref),
+      );
+      expect(deploy.state().images).toEqual(imageStateBeforeRetry);
+      expect(deploy.state().removed).toEqual(removedBeforeRetry);
+      expect(imageMutations(deploy)).toHaveLength(0);
+      expect(
+        deploy.composeArguments("build").filter((args) => !args.includes("--help")),
+      ).toHaveLength(0);
+      expect(deploy.composeArguments("up")).toHaveLength(0);
+      expectProtectedUnchanged(deploy, before);
+      assertNoUnsafeCleanup(deploy);
+    },
+  );
+
+  it("recovers a completed image removal whose command acknowledgement failed", () => {
+    const { deploy, before, obsolete } = obsoleteGeneration();
+    const failed = deploy.run({ FAIL_AFTER_IMAGE_RM: "1" });
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain("image removal acknowledgement failed");
+    expect(deploy.state().removed).toContain(obsolete.ref);
+    expect(deploy.state().images[obsolete.id]?.RepoTags).not.toContain(obsolete.ref);
+    expect(deploy.record().images).toEqual(before.images);
+    expectProtectedUnchanged(deploy, before);
+    const imageStateBeforeRetry = deploy.state().images;
+    const removedBeforeRetry = deploy.state().removed;
+    deploy.clearLogs();
+    const retried = deploy.run();
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(deploy.record().images).toEqual(
+      before.images.filter((image) => image.ref !== obsolete.ref),
+    );
+    expect(deploy.state().images).toEqual(imageStateBeforeRetry);
+    expect(deploy.state().removed).toEqual(removedBeforeRetry);
+    expect(imageMutations(deploy)).toHaveLength(0);
+    expectProtectedUnchanged(deploy, before);
+  });
+
+  it("retries a failed metadata-only reconciliation without repeating image deletion", () => {
+    const { deploy, before, obsolete } = obsoleteGeneration();
+    expect(deploy.run({ FAIL_LEDGER_SHRINK_PUBLISH: "1" }).status).not.toBe(0);
+    expect(deploy.state().removed).toContain(obsolete.ref);
+    expect(deploy.state().images[obsolete.id]?.RepoTags).not.toContain(obsolete.ref);
+    expect(deploy.record().images).toEqual(before.images);
+    const imageStateAfterRemoval = deploy.state().images;
+    const removedAfterFirstRun = deploy.state().removed;
+    deploy.clearLogs();
+    const failedRepair = deploy.run({ FAIL_LEDGER_SHRINK_PUBLISH: "1" });
+    expect(failedRepair.status).not.toBe(0);
+    expect(deploy.events()).toContain("state ledger shrink publication failed");
+    expect(deploy.record().images).toEqual(before.images);
+    expect(deploy.state().images).toEqual(imageStateAfterRemoval);
+    expect(deploy.state().removed).toEqual(removedAfterFirstRun);
+    expect(imageMutations(deploy)).toHaveLength(0);
+    expectProtectedUnchanged(deploy, before);
+    deploy.clearLogs();
+    const retried = deploy.run();
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(deploy.record().images).toEqual(
+      before.images.filter((image) => image.ref !== obsolete.ref),
+    );
+    expect(deploy.state().images).toEqual(imageStateAfterRemoval);
+    expect(deploy.state().removed).toEqual(removedAfterFirstRun);
+    expect(imageMutations(deploy)).toHaveLength(0);
+    expectProtectedUnchanged(deploy, before);
+  });
+
+  it.each(["inspect failure", "changed image identity"])(
+    "does not forget an obsolete reference still present in inventory after %s",
+    (fault) => {
+      const { deploy, before, obsolete } = obsoleteGeneration();
+      if (fault === "changed image identity")
+        deploy.update((state) => {
+          state.images[obsolete.id]!.RepoTags = state.images[obsolete.id]!.RepoTags.filter(
+            (ref) => ref !== obsolete.ref,
+          );
+          state.images[deploy.databaseImage]!.RepoTags.push(obsolete.ref);
+        });
+      const result = deploy.run(
+        fault === "inspect failure" ? { FAIL_DOCKER_MATCH: `image inspect ${obsolete.ref}` } : {},
+      );
+      expect(result.status).not.toBe(0);
+      expect(deploy.record().images).toEqual(before.images);
+      expect(deploy.state().removed).toEqual([]);
+      expect(imageMutations(deploy)).toHaveLength(0);
+      expect(deploy.events().some((event) => event.startsWith("git fetch"))).toBe(false);
+      expectProtectedUnchanged(deploy, before);
+    },
+  );
+
+  it.each([{ FAIL_DOCKER_MATCH: "image ls" }, { BAD_IMAGES_JSON: "bad" }])(
+    "does not reconcile a missing obsolete reference from a failed or malformed inventory: %j",
+    (fault) => {
+      const { deploy, before, obsolete } = obsoleteGeneration();
+      deploy.update((state) => {
+        state.images[obsolete.id]!.RepoTags = state.images[obsolete.id]!.RepoTags.filter(
+          (ref) => ref !== obsolete.ref,
+        );
+      });
+      const result = deploy.run(fault);
+      expect(result.status).not.toBe(0);
+      expect(deploy.record().images).toEqual(before.images);
+      expect(imageMutations(deploy)).toHaveLength(0);
+      expect(deploy.events().some((event) => event.startsWith("git fetch"))).toBe(false);
+      expectProtectedUnchanged(deploy, before);
+    },
+  );
+
+  it("does not forget a missing current history reference while its image still exists", () => {
+    const deploy = fixture();
+    const before = prime(deploy);
+    const current = before.healthy!.services.find((image) => image.service === "api")!;
+    deploy.update((state) => {
+      state.images[current.id]!.RepoTags = state.images[current.id]!.RepoTags.filter(
+        (ref) => ref !== current.ref,
+      );
+    });
+    const prunesBefore = deploy.state().prunes;
+    const result = deploy.run();
+    expect(result.status).not.toBe(0);
+    expect(deploy.record()).toEqual(before);
+    expect(deploy.state().prunes).toBe(prunesBefore);
+    expect(imageMutations(deploy)).toHaveLength(0);
+    expect(deploy.events().some((event) => event.startsWith("git fetch"))).toBe(false);
+  });
+
+  it.each(["foreign tag", "running foreign container", "stopped foreign container"])(
+    "keeps an absent obsolete reference recorded when its image has a %s",
+    (kind) => {
+      const { deploy, before, obsolete } = obsoleteGeneration();
+      deploy.update((state) => {
+        state.images[obsolete.id]!.RepoTags = state.images[obsolete.id]!.RepoTags.filter(
+          (ref) => ref !== obsolete.ref,
+        );
+        if (kind === "foreign tag") state.images[obsolete.id]!.RepoTags.push("foreign/shared:keep");
+        else {
+          const id = "8".repeat(64);
+          state.containers[id] = {
+            Id: id,
+            Name: "/foreign-worker-1",
+            Image: obsolete.id,
+            Config: {
+              Image: "foreign/shared:keep",
+              Labels: {
+                "com.docker.compose.project": "foreign",
+                "com.docker.compose.service": "worker",
+              },
+            },
+            State: { Status: kind.startsWith("stopped") ? "exited" : "running" },
+            Mounts: [],
+          };
+        }
+      });
+      const imageStateBefore = deploy.state().images;
+      const containersBefore = deploy.state().containers;
+      const result = deploy.run();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("already at");
+      expect(deploy.record().images).toEqual(before.images);
+      expect(deploy.state().images).toEqual(imageStateBefore);
+      expect(deploy.state().containers).toEqual(containersBefore);
+      expect(imageMutations(deploy)).toHaveLength(0);
+      expectProtectedUnchanged(deploy, before);
+    },
+  );
 });
 
 describe("production deploy authority fault boundaries", () => {
