@@ -208,7 +208,7 @@ if [[ "${action}" == recover ]]; then
   valid_token "${saved_boot}" || fail "Invalid saved boot identity"
   current_boot="$(boot_id)"
   if [[ "${saved_boot}" == "${current_boot}" ]]; then
-    echo "Current-boot firewall change remains protected by its rollback timer"
+    echo "Current-boot firewall change remains pending; use its recovery token to confirm or roll back"
     exit 0
   fi
   set -- "${token}"
@@ -242,6 +242,7 @@ case "${action}" in
     publish connection "${SSH_CONNECTION}"
     publish boot "${current_boot}"
     rm -f -- "${STATE}/confirmed" "${STATE}/confirmed.pending"
+    echo "Recovery command if setup fails: sudo ${SELF} rollback ${token}"
     publish token "${token}"
     unit="rakazo-firewall-rollback-${token}"
     if ! systemd-run --quiet --collect --unit="${unit}" --on-active=180s \

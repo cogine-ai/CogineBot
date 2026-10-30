@@ -493,7 +493,7 @@ hardening. An armed callback must not be replaced during an operation.
 
 Before each apply, the helper installs or verifies the protected
 `/etc/systemd/system/rakazo-firewall-recovery.service` and its persistent boot enablement. A different
-unit, override, unsafe installation path or unverified enablement refuses the firewall command.
+unit, override, unsafe installation path or unverified enablement refuses the firewall command. The helper prints a recovery command before publishing a pending token; if setup fails, use that command to restore and clear the pending change before retrying. A same-boot recovery check keeps the pending generation intact and does not claim its timer is active.
 The snapshot, state, helper and boot enablement are flushed before the command runs. After a reboot,
 the oneshot runs after UFW startup and the required filesystems are mounted, without an SSH session.
 It takes the same lock and restores an unconfirmed change saved by an earlier boot. A saved boot

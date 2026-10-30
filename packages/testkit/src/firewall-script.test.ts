@@ -671,18 +671,40 @@ describe("firewall change rollback", () => {
     expect(f.pending()).toBe(false);
   });
 
-  it.each([{ scheduleBefore: true }, { scheduleAfter: true }, { timerState: "inactive" }])(
-    "does not execute when scheduling is unconfirmed %j",
-    (fault) => {
-      const f = fixture();
-      f.faults(fault);
-      const marker = path.join(f.root, "changed");
-      expect(f.run(["apply", "/usr/bin/touch", marker]).status).not.toBe(0);
-      expect(existsSync(marker)).toBe(false);
-      expect(f.pending()).toBe(true);
-      expect(f.apply().status).not.toBe(0);
-    },
-  );
+  it.each([
+    { scheduleBefore: true },
+    { scheduleAfter: true },
+    { timerState: "inactive" },
+    { syncFail: true },
+  ])("reports recovery and does not execute when arming is unconfirmed %j", (fault) => {
+    const f = fixture();
+    f.faults(fault);
+    const marker = path.join(f.root, "changed");
+    const result = f.run(["apply", "/usr/bin/touch", marker]);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(f.pending()).toBe(true);
+    const recovery = /^Recovery command if setup fails: sudo (.+) rollback ([0-9a-f-]+)$/m.exec(
+      result.stdout,
+    );
+    expect(recovery).not.toBeNull();
+    expect(recovery![1]).toBe(f.script);
+    expect(recovery![2]).toBe(token);
+    expect(result.stdout).not.toContain("Rollback armed");
+    expect(f.apply().status).not.toBe(0);
+    f.faults({});
+    const sameBoot = f.run(["recover"], { SSH_CONNECTION: "" });
+    expect(sameBoot.status).toBe(0);
+    expect(sameBoot.stdout).toContain("remains pending");
+    expect(sameBoot.stdout).not.toContain("protected by its rollback timer");
+    expect(f.pending()).toBe(true);
+    const restored = f.run(["rollback", recovery![2]!], { SSH_CONNECTION: "" });
+    expect(restored.status, restored.stderr).toBe(0);
+    expect(f.pending()).toBe(false);
+    expect(readFileSync(path.join(f.etc, "ufw", "user.rules"), "utf8")).toBe("original rules\n");
+    f.faults({ uuid: "12345678-1234-4234-8234-123456789abd" });
+    expect(f.apply().status).toBe(0);
+  });
 
   it("keeps the rollback armed after a change command fails", () => {
     const f = fixture();
