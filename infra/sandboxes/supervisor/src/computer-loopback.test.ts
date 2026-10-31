@@ -770,6 +770,41 @@ describe("restricted egress rekeying", () => {
       expectNoAllocation(fixture);
     });
 
+    it.each([false, true])(
+      "attempts a security stop when inspection fails after the unsafe network is known: persistent=%s",
+      async (persistent) => {
+        const fixture = runningFixture();
+        let unsafeNetworkKnown = false;
+        let stopAttempted = false;
+        const inspectNetwork = fixture.network.inspect.getMockImplementation()!;
+        fixture.network.inspect.mockImplementation(async () => {
+          const network = await inspectNetwork();
+          unsafeNetworkKnown = true;
+          return network;
+        });
+        fixture.existing.inspect.mockImplementation(async () => {
+          if (unsafeNetworkKnown && !stopAttempted)
+            throw new Error("pre-stop inspection unavailable");
+          if (stopAttempted && persistent) throw new Error("post-stop inspection unavailable");
+          return structuredClone(fixture.info);
+        });
+        fixture.existing.stop.mockImplementation(async () => {
+          stopAttempted = true;
+          fixture.info.State.Running = false;
+        });
+
+        const response = await provision();
+        expect(fixture.existing.stop).toHaveBeenCalledExactlyOnceWith({ t: 1 });
+        expect(fixture.existing.kill).not.toHaveBeenCalled();
+        expect(fixture.info.State.Running).toBe(false);
+        expect(response.status).toBe(persistent ? 500 : 409);
+        if (persistent) {
+          expect(await response.json()).toEqual({ error: "post-stop inspection unavailable" });
+        }
+        expectNoAllocation(fixture);
+      },
+    );
+
     it.each(["still running", "unknown state", "missing state", "inspection failure"])(
       "does not confirm quarantine with %s",
       async (failure) => {

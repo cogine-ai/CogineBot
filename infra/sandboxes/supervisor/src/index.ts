@@ -275,12 +275,14 @@ app.post("/computers", async (c) => {
           ) {
             // Deferring DNS must not preserve a running computer outside the selected egress policy.
             await withComputerScreenLock(existing.id, async () => {
-              let stopped = await existing.inspect();
-              if (stopped.State?.Running !== false) {
+              // An optional fresh read avoids duplicate stops; failure must not skip quarantine.
+              let stopped = await existing.inspect().catch(() => undefined);
+              if (stopped?.State?.Running !== false) {
                 await stopContainer(existing);
+                // Keep Docker's diagnostic if the required stopped-state confirmation fails.
                 stopped = await existing.inspect();
               }
-              if (stopped.State?.Running !== false) {
+              if (stopped?.State?.Running !== false) {
                 throw new Error("Could not confirm the computer stopped for restricted egress.");
               }
               clearComputerScreenRegistry(computerScreens, computerScreenBoots, existing.id);
