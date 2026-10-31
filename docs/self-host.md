@@ -129,9 +129,37 @@ and the ruleset exempts traffic whose in- and out-interface are both `rakazo-c*`
 any drop (that exemption is load-bearing on hosts where `br_netfilter` feeds bridged
 frames through `FORWARD`). Rules match interface names rather than subnets, so computer
 create/delete cycles need no firewall maintenance; deleting a computer removes its
-traffic from the match and nothing else. A computer provisioned before the flag flips
-is replaced on its next provision — resuming it on an unnamed bridge would bypass the
-restriction.
+traffic from the match and nothing else. An existing computer on an incompatible network
+must stop using that network on its next provision; resuming it on an unnamed bridge
+would bypass the restriction. Plan this security-policy rollout after existing computers
+are saved and stopped. Enforcement can interrupt running work on an incompatible network.
+
+Computers resolve names through Docker's embedded DNS, which forwards lookups to the host's
+resolvers from the computer's network. If the host resolver has a private address, such as a
+cloud VPC resolver or LAN router, restricted egress blocks that forward too. DNS can then time
+out while connections by IP still work. Set `SANDBOX_COMPUTER_DNS` in `.env` to comma-separated
+DNS server IP addresses, in the required order, and recreate the supervisor. In restricted mode,
+choose public resolvers reachable under the host ruleset. Unset or empty keeps Docker's default;
+an invalid IP address prevents the supervisor from starting.
+
+DNS is fixed when a container is created. Compatible running computers keep their current DNS;
+restarting the supervisor alone does not replace them. New computers and safely stopped
+computers adopt the configured list when created or recreated on their next provision. Clearing
+the value likewise restores Docker's default after recreation. For an existing computer, let the
+idle lifecycle save and stop it before booting it again. If idle sleep is disabled, its DNS stays
+unchanged until it is safely saved and stopped. Do not interrupt an active Run to apply a DNS change.
+
+Changing DNS does not defer the existing computer configuration requirements: network mode
+and attachment, the restricted bridge when applicable, the selected user, control-port
+publication, and the expected home volume/subpath and writability. If DNS differs and a running
+computer is incompatible with one of these requirements, the supervisor stops that specific
+computer and confirms it is stopped before returning the DNS conflict. It retains the container
+and mounted data; the next stopped provision reapplies
+the selected configuration and DNS. This configuration stop may use a kill fallback and does
+not guarantee a browser checkpoint. With differing DNS, an image-version mismatch alone
+returns the conflict without stopping the computer; other upgrade paths retain their behavior.
+If Docker cannot confirm stopped state, provisioning fails rather than reporting a confirmed
+stop. DNS-only changes on an otherwise compatible running computer still leave it running.
 
 To disable restricted egress, set `SANDBOX_COMPUTER_EGRESS=open`, recreate the
 supervisor, and run `sudo bash infra/compose/restrict-computer-egress.sh --remove`.

@@ -18,11 +18,12 @@ import {
   TERMINAL_MENU_COMMAND,
 } from "@rakazo/core/node/desktop-runtime";
 import type Docker from "dockerode";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assertVolumeSubpathSupport,
   COMPUTER_IMAGE,
   computerBridgeNameFor,
+  computerDnsMatches,
   computerHomeStorage,
   computerNetworkCreateOptions,
   computerNetworkNameFor,
@@ -37,6 +38,7 @@ import {
   parseMemoryBytes,
   publishedLoopbackControlHostPort,
   resolveComputerControlEndpoint,
+  resolveComputerDns,
   resolveComputerEgressMode,
   resolveScreenNetworkMode,
   resolveScreenPublishTarget,
@@ -49,7 +51,119 @@ import {
   xdotoolCommand,
 } from "./computer-spec.js";
 
+describe("computer DNS configuration", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    ["2001:0DB8:0:0:0:0:0:0053", "2001:db8::53"],
+    ["0:0:0:0:0:FFFF:c000:235", "::ffff:192.0.2.53"],
+    ["FE80:0:0:0:0:0:0:0001%eth0", "fe80::1%eth0"],
+    ["FE80:0:0:0:0:0:0:0001%ETH0", "fe80::1%ETH0"],
+  ])(
+    "normalizes DNS address spelling without changing the address or zone: %s",
+    (input, expected) => {
+      expect(resolveComputerDns(input)).toEqual([expected]);
+    },
+  );
+
+  it("keeps DNS resolver order and duplicates after normalizing address spelling", () => {
+    expect(resolveComputerDns("2001:0DB8:0:0:0:0:0:0053,192.0.2.53,2001:db8::53")).toEqual([
+      "2001:db8::53",
+      "192.0.2.53",
+      "2001:db8::53",
+    ]);
+  });
+
+  it.each([
+    { current: ["2001:db8::53"], desired: ["2001:0DB8:0:0:0:0:0:0053"], matches: true },
+    { current: ["2001:0DB8:0:0:0:0:0:0053"], desired: ["2001:db8::53"], matches: true },
+    { current: ["::ffff:192.0.2.53"], desired: ["0:0:0:0:0:ffff:c000:235"], matches: true },
+    { current: ["192.0.2.53"], desired: ["::ffff:192.0.2.53"], matches: false },
+    { current: ["fe80::1%eth0"], desired: ["FE80:0:0:0:0:0:0:0001%eth0"], matches: true },
+    { current: ["fe80::1%eth0"], desired: ["fe80::1%ETH0"], matches: false },
+    { current: ["fe80::1%eth0"], desired: ["fe80::1"], matches: false },
+    { current: ["not-an-ip"], desired: ["not-an-ip"], matches: false },
+    {
+      current: ["2001:db8::53", "192.0.2.53"],
+      desired: ["192.0.2.53", "2001:0db8::53"],
+      matches: false,
+    },
+  ])(
+    "compares normalized DNS without losing address family, scope or order: %j",
+    ({ current, desired, matches }) => {
+      expect(computerDnsMatches(current, desired)).toBe(matches);
+    },
+  );
+
+  it.each(["", " ", " , ,\t, "])("keeps Docker's resolver when DNS is blank: %j", (value) => {
+    expect(resolveComputerDns(value)).toBeUndefined();
+  });
+
+  it("reads the optional supervisor environment without supplying public defaults", () => {
+    vi.stubEnv("SANDBOX_COMPUTER_DNS", undefined);
+    expect(resolveComputerDns()).toBeUndefined();
+    vi.stubEnv("SANDBOX_COMPUTER_DNS", "192.0.2.53");
+    expect(resolveComputerDns()).toEqual(["192.0.2.53"]);
+  });
+
+  it.each([
+    "dns.example",
+    "https://192.0.2.53",
+    "192.0.2.53:53",
+    "192.0.2.999",
+    "[2001:db8::53]",
+    "2001:db8::53/64",
+    "192.0.2.53,not-an-ip",
+  ])("rejects non-IP DNS configuration: %s", (value) =>
+    expect(() => resolveComputerDns(value)).toThrow(/SANDBOX_COMPUTER_DNS/),
+  );
+
+  it.each([
+    { current: undefined, desired: undefined, matches: true },
+    { current: null, desired: undefined, matches: true },
+    { current: [], desired: undefined, matches: true },
+    { current: undefined, desired: [], matches: true },
+    { current: ["192.0.2.53"], desired: undefined, matches: false },
+    { current: [], desired: ["192.0.2.53"], matches: false },
+    {
+      current: ["192.0.2.53", "2001:db8::53"],
+      desired: ["192.0.2.53", "2001:db8::53"],
+      matches: true,
+    },
+    {
+      current: ["192.0.2.53", "2001:db8::53"],
+      desired: ["2001:db8::53", "192.0.2.53"],
+      matches: false,
+    },
+  ])(
+    "compares Docker DNS lists with order and empty semantics: %j",
+    ({ current, desired, matches }) => {
+      expect(computerDnsMatches(current, desired)).toBe(matches);
+    },
+  );
+});
+
 describe("graphical computer spec", () => {
+  it("parses ordered IPv4 and IPv6 computer DNS addresses", () => {
+    expect(resolveComputerDns(" 192.0.2.53, , 2001:db8::53, ")).toEqual([
+      "192.0.2.53",
+      "2001:db8::53",
+    ]);
+  });
+
+  it("passes configured DNS servers into Docker without changing the home mount", () => {
+    const options = containerCreateOptions({
+      name: "computer",
+      image: COMPUTER_IMAGE,
+      botId: "bot",
+      spaceId: "space",
+      homePath: "/data/homes/bot",
+      dns: ["192.0.2.53", "2001:db8::53"],
+    });
+    expect(options.HostConfig.Dns).toEqual(["192.0.2.53", "2001:db8::53"]);
+    expect(options.HostConfig.Binds).toEqual(["/data/homes/bot:/home/rakazo"]);
+  });
+
   it("binds the embed WebSocket path to the current screen capability", () => {
     const url = new URL(screenUrlWithToken("http://screen.test:6080/embed.html", "current-token"));
     expect(url.pathname).toBe("/embed.html");

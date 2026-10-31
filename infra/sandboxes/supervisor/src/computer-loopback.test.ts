@@ -5,7 +5,9 @@ import { Readable } from "node:stream";
 import { resolveSupervisorToken } from "@rakazo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  COMPUTER_CONTROL_PORT,
   COMPUTER_IMAGE,
+  COMPUTER_USER,
   computerBridgeNameFor,
   computerNetworkNameFor,
   computerNetworkOwnerFor,
@@ -53,6 +55,8 @@ beforeEach(async () => {
   vi.stubEnv("HOSTNAME", "");
   vi.stubEnv("DATA_DIR", "/tmp/rakazo-loopback-test");
   vi.stubEnv("SANDBOX_SCREEN_NETWORK", "published");
+  vi.stubEnv("SANDBOX_COMPUTER_DNS", "");
+  vi.stubEnv("SANDBOX_CONTROL_VIA_LOOPBACK", "false");
   vi.stubEnv("SANDBOX_SCREEN_HOST", "127.0.0.1");
   screen = http.createServer((_req, res) => res.end("ok"));
   await new Promise<void>((resolve) => screen.listen(0, "127.0.0.1", resolve));
@@ -502,7 +506,7 @@ describe("restricted egress rekeying", () => {
         User: hostComputerUser(),
         Labels: { "rakazo.managed": "true", "rakazo.botId": "bot", "rakazo.spaceId": "space" },
       },
-      HostConfig: { NetworkMode: botNet, PortBindings: {} },
+      HostConfig: { NetworkMode: botNet, PortBindings: {}, Dns: undefined as string[] | undefined },
       State: { Running: false },
       NetworkSettings: {
         Ports: { "6080/tcp": [{ HostIp: "127.0.0.1", HostPort: screenPort }] },
@@ -514,6 +518,12 @@ describe("restricted egress rekeying", () => {
       inspect: vi.fn().mockResolvedValue(info),
       start: vi.fn().mockResolvedValue(undefined),
       remove: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(async () => {
+        info.State.Running = false;
+      }),
+      kill: vi.fn(async () => {
+        info.State.Running = false;
+      }),
     };
     const replacement = {
       id: "replacement",
@@ -527,7 +537,7 @@ describe("restricted egress rekeying", () => {
     mocks.docker.getContainer.mockReturnValue(existing);
     mocks.docker.listContainers.mockResolvedValue([{ Id: existing.id }]);
     mocks.docker.createContainer.mockResolvedValue(replacement);
-    return { homePath, existing, replacement };
+    return { homePath, existing, replacement, info };
   }
 
   async function provision() {
@@ -669,6 +679,487 @@ describe("restricted egress rekeying", () => {
     expect(mocks.docker.getContainer).toHaveBeenCalledWith(containerNameFor("bot"));
     expect(stop).toHaveBeenCalledWith({ t: 1 });
     expect(peer.stop).not.toHaveBeenCalled();
+  });
+
+  describe("runtime configuration with deferred DNS", () => {
+    function runningFixture() {
+      vi.stubEnv("SANDBOX_COMPUTER_EGRESS", "restricted");
+      vi.stubEnv("SANDBOX_COMPUTER_DNS", "192.0.2.53");
+      const botNet = computerNetworkNameFor("bot");
+      const fixture = setupExisting(botNet);
+      fixture.info.State.Running = true;
+      fixture.info.HostConfig.Dns = ["198.51.100.53"];
+      let networkInfo:
+        | { Id: string; Options: Record<string, string>; Containers: Record<string, object> }
+        | undefined = { Id: "bot-network", Options: {}, Containers: { existing: {}, peer: {} } };
+      const network = {
+        inspect: vi.fn(async () => {
+          if (!networkInfo) throw Object.assign(new Error("no such network"), { statusCode: 404 });
+          return networkInfo;
+        }),
+        disconnect: vi.fn().mockResolvedValue(undefined),
+        connect: vi.fn().mockResolvedValue(undefined),
+        remove: vi.fn(async () => {
+          networkInfo = undefined;
+        }),
+      };
+      mocks.docker.getNetwork.mockReturnValue(network);
+      mocks.docker.createNetwork.mockImplementation(async (options) => {
+        if (networkInfo) throw new Error("network already exists");
+        networkInfo = { Id: "restricted-network", Options: options.Options, Containers: {} };
+        return network;
+      });
+      return {
+        ...fixture,
+        botNet,
+        network,
+        setNetwork: (value: typeof networkInfo) => {
+          networkInfo = value;
+        },
+      };
+    }
+
+    function expectNoAllocation(fixture: ReturnType<typeof runningFixture>) {
+      expect(fixture.existing.remove).not.toHaveBeenCalled();
+      expect(fixture.existing.start).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).not.toHaveBeenCalled();
+      expect(mocks.docker.createNetwork).not.toHaveBeenCalled();
+      expect(fixture.network.connect).not.toHaveBeenCalled();
+      expect(fixture.network.disconnect).not.toHaveBeenCalled();
+      expect(fixture.network.remove).not.toHaveBeenCalled();
+      expect(mocks.assertHomeWritable).not.toHaveBeenCalled();
+      expect(mocks.docker.getContainer).not.toHaveBeenCalledWith("peer");
+    }
+
+    function compatibleFixture() {
+      const fixture = runningFixture();
+      fixture.setNetwork({
+        Id: "bot-network",
+        Options: { "com.docker.network.bridge.name": computerBridgeNameFor("bot") },
+        Containers: { existing: {}, peer: {} },
+      });
+      return fixture;
+    }
+
+    function supervisorFixture(fixture: ReturnType<typeof runningFixture>, volume = false) {
+      vi.stubEnv("HOSTNAME", "supervisor");
+      fixture.info.Config.User = COMPUTER_USER;
+      const supervisor = {
+        inspect: vi.fn().mockResolvedValue({
+          Config: { Labels: {} },
+          NetworkSettings: { Networks: { shared: {} } },
+          Mounts: volume
+            ? [{ Type: "volume", Name: "example_appdata", Destination: process.env.DATA_DIR }]
+            : [],
+        }),
+      };
+      mocks.docker.getContainer.mockImplementation((id: string) =>
+        id === "supervisor" ? supervisor : fixture.existing,
+      );
+      mocks.docker.version.mockResolvedValue({ ApiVersion: "1.45" });
+      const mount = {
+        Type: "volume",
+        Source: "example_appdata",
+        Target: "/home/rakazo",
+        VolumeOptions: { Subpath: "homes/bot", NoCopy: false },
+        ReadOnly: false,
+      };
+      if (volume) Object.assign(fixture.info.HostConfig, { Mounts: [mount] });
+      return mount;
+    }
+
+    const configurationFaults = [
+      "public control",
+      "missing required control",
+      "unwanted loopback control",
+      "invalid control port",
+      "mixed control bindings",
+      "root user",
+      "wrong nonroot user",
+      "empty user",
+      "missing home volume",
+      "wrong home volume",
+      "wrong home subpath",
+      "wrong home target",
+      "wrong home type",
+      "readonly home",
+      "open network mismatch",
+      "internal network mismatch",
+    ];
+
+    function configureFault(fixture: ReturnType<typeof runningFixture>, fault: string) {
+      if (fault.includes("control")) {
+        const published = fault !== "unwanted loopback control";
+        vi.stubEnv("SANDBOX_CONTROL_VIA_LOOPBACK", String(published));
+        fixture.info.HostConfig.PortBindings =
+          fault === "missing required control"
+            ? {}
+            : {
+                [`${COMPUTER_CONTROL_PORT}/tcp`]:
+                  fault === "mixed control bindings"
+                    ? [
+                        { HostIp: "127.0.0.1", HostPort: "0" },
+                        { HostIp: "::", HostPort: "7070" },
+                      ]
+                    : [
+                        {
+                          HostIp: fault === "public control" ? "0.0.0.0" : "127.0.0.1",
+                          HostPort: fault === "invalid control port" ? "invalid" : "7070",
+                        },
+                      ],
+              };
+      } else if (fault.includes("user")) {
+        fixture.info.Config.User =
+          fault === "root user" ? "0:0" : fault === "empty user" ? "" : "65432:65432";
+      } else if (fault.includes("home")) {
+        const mount = supervisorFixture(fixture, true);
+        if (fault === "missing home volume") Object.assign(fixture.info.HostConfig, { Mounts: [] });
+        if (fault === "wrong home volume") mount.Source = "other_appdata";
+        if (fault === "wrong home subpath") mount.VolumeOptions.Subpath = "homes/other-bot";
+        if (fault === "wrong home target") mount.Target = "/other-home";
+        if (fault === "wrong home type") mount.Type = "bind";
+        if (fault === "readonly home") mount.ReadOnly = true;
+      } else {
+        if (fault === "open network mismatch") vi.stubEnv("SANDBOX_COMPUTER_EGRESS", "open");
+        else {
+          supervisorFixture(fixture);
+          vi.stubEnv("SANDBOX_SCREEN_NETWORK", "internal");
+        }
+        fixture.info.HostConfig.NetworkMode = "bridge";
+      }
+    }
+
+    it.each(configurationFaults)(
+      "enforces existing runtime requirements before DNS conflict: %s",
+      async (fault) => {
+        const fixture = compatibleFixture();
+        configureFault(fixture, fault);
+        const response = await provision();
+        expect(response.status).toBe(409);
+        expect(fixture.existing.stop).toHaveBeenCalledExactlyOnceWith({ t: 1 });
+        expect(fixture.info.State.Running).toBe(false);
+        expect(fixture.existing.inspect.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+          fixture.existing.stop.mock.invocationCallOrder[0]!,
+        );
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it.each([
+      { current: ["198.51.100.53"], configured: "" },
+      { current: undefined, configured: "192.0.2.53" },
+      { current: ["192.0.2.53", "2001:db8::53"], configured: "2001:db8::53,192.0.2.53" },
+    ])(
+      "keeps control requirements when DNS is cleared, first configured or reordered: %j",
+      async ({ current, configured }) => {
+        const fixture = compatibleFixture();
+        configureFault(fixture, "public control");
+        fixture.info.HostConfig.Dns = current;
+        vi.stubEnv("SANDBOX_COMPUTER_DNS", configured);
+        expect((await provision()).status).toBe(409);
+        expect(fixture.existing.stop).toHaveBeenCalledOnce();
+        expect(fixture.info.State.Running).toBe(false);
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it.each(["", "0", "17770"])(
+      "keeps a valid required loopback control binding (%j)",
+      async (port) => {
+        const fixture = compatibleFixture();
+        vi.stubEnv("SANDBOX_CONTROL_VIA_LOOPBACK", "true");
+        fixture.info.HostConfig.PortBindings = {
+          [`${COMPUTER_CONTROL_PORT}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: port }],
+        };
+        expect((await provision()).status).toBe(200);
+        expect(fixture.existing.stop).not.toHaveBeenCalled();
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it("keeps a correctly configured own home volume with different DNS", async () => {
+      const fixture = compatibleFixture();
+      supervisorFixture(fixture, true);
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expectNoAllocation(fixture);
+    });
+
+    it("keeps a correct shared internal network with different DNS", async () => {
+      const fixture = compatibleFixture();
+      supervisorFixture(fixture);
+      vi.stubEnv("SANDBOX_SCREEN_NETWORK", "internal");
+      fixture.info.HostConfig.NetworkMode = "shared";
+      fixture.info.NetworkSettings.Networks = { shared: { NetworkID: "shared-network" } };
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expectNoAllocation(fixture);
+    });
+
+    it("repairs control publication on subsequent stopped DNS provisioning", async () => {
+      const fixture = compatibleFixture();
+      configureFault(fixture, "public control");
+      expect((await provision()).status).toBe(409);
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith();
+      expect(mocks.docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          HostConfig: expect.objectContaining({
+            Dns: ["192.0.2.53"],
+            PortBindings: expect.objectContaining({
+              [`${COMPUTER_CONTROL_PORT}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "0" }],
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("retains normal control repair when DNS already matches", async () => {
+      const fixture = compatibleFixture();
+      configureFault(fixture, "public control");
+      vi.stubEnv("SANDBOX_COMPUTER_DNS", "198.51.100.53");
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith({ force: true });
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).toHaveBeenCalledOnce();
+    });
+
+    it("enforces configuration requirements even when the image also differs", async () => {
+      const fixture = compatibleFixture();
+      configureFault(fixture, "public control");
+      fixture.info.Image = "previous-image";
+      expect((await provision()).status).toBe(409);
+      expect(fixture.existing.stop).toHaveBeenCalledOnce();
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+    });
+
+    it.each([
+      "generic bridge",
+      "default bridge",
+      "old network",
+      "missing network",
+      "missing endpoint",
+    ])("stops an unsafe running computer before DNS conflict: %s", async (topology) => {
+      const fixture = runningFixture();
+      if (topology !== "generic bridge") {
+        fixture.setNetwork({
+          Id: "bot-network",
+          Options: { "com.docker.network.bridge.name": computerBridgeNameFor("bot") },
+          Containers: { peer: {} },
+        });
+      }
+      if (topology === "default bridge") fixture.info.HostConfig.NetworkMode = "bridge";
+      if (topology === "old network") fixture.info.HostConfig.NetworkMode = "old-network";
+      if (topology === "missing network") fixture.setNetwork(undefined);
+      if (topology === "missing endpoint") fixture.info.NetworkSettings.Networks = {};
+      const response = await provision();
+      expect(response.status).toBe(409);
+      expect(fixture.existing.stop).toHaveBeenCalledExactlyOnceWith({ t: 1 });
+      expect(fixture.existing.kill).not.toHaveBeenCalled();
+      expect(fixture.info.State.Running).toBe(false);
+      expect(fixture.existing.inspect.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+        fixture.existing.stop.mock.invocationCallOrder[0]!,
+      );
+      expectNoAllocation(fixture);
+    });
+
+    it("uses the existing kill fallback and verifies stopped state", async () => {
+      const fixture = runningFixture();
+      fixture.existing.stop.mockRejectedValue(new Error("stop unavailable"));
+      expect((await provision()).status).toBe(409);
+      expect(fixture.existing.kill).toHaveBeenCalledOnce();
+      expect(fixture.existing.inspect.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+        fixture.existing.kill.mock.invocationCallOrder[0]!,
+      );
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+    });
+
+    it.each([false, true])(
+      "attempts a security stop when inspection fails after the unsafe network is known: persistent=%s",
+      async (persistent) => {
+        const fixture = runningFixture();
+        let unsafeNetworkKnown = false;
+        let stopAttempted = false;
+        const inspectNetwork = fixture.network.inspect.getMockImplementation()!;
+        fixture.network.inspect.mockImplementation(async () => {
+          const network = await inspectNetwork();
+          unsafeNetworkKnown = true;
+          return network;
+        });
+        fixture.existing.inspect.mockImplementation(async () => {
+          if (unsafeNetworkKnown && !stopAttempted)
+            throw new Error("pre-stop inspection unavailable");
+          if (stopAttempted && persistent) throw new Error("post-stop inspection unavailable");
+          return structuredClone(fixture.info);
+        });
+        fixture.existing.stop.mockImplementation(async () => {
+          stopAttempted = true;
+          fixture.info.State.Running = false;
+        });
+
+        const response = await provision();
+        expect(fixture.existing.stop).toHaveBeenCalledExactlyOnceWith({ t: 1 });
+        expect(fixture.existing.kill).not.toHaveBeenCalled();
+        expect(fixture.info.State.Running).toBe(false);
+        expect(response.status).toBe(persistent ? 500 : 409);
+        if (persistent) {
+          expect(await response.json()).toEqual({ error: "post-stop inspection unavailable" });
+        }
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it.each(["still running", "unknown state", "missing state", "inspection failure"])(
+      "does not confirm quarantine with %s",
+      async (failure) => {
+        const fixture = runningFixture();
+        let stopped = false;
+        fixture.existing.stop.mockImplementation(async () => {
+          stopped = true;
+        });
+        fixture.existing.inspect.mockImplementation(async () => {
+          if (!stopped) return fixture.info;
+          if (failure === "inspection failure") throw new Error("inspection unavailable");
+          if (failure === "unknown state") return { ...fixture.info, State: {} };
+          if (failure === "missing state") return { ...fixture.info, State: undefined };
+          return fixture.info;
+        });
+        const response = await provision();
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({
+          error:
+            failure === "inspection failure"
+              ? "inspection unavailable"
+              : "Could not confirm the computer stopped for configuration repair.",
+        });
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it("surfaces failure when both stop and kill leave the computer running", async () => {
+      const fixture = runningFixture();
+      fixture.existing.stop.mockRejectedValue(new Error("stop unavailable"));
+      fixture.existing.kill.mockRejectedValue(new Error("kill unavailable"));
+      expect((await provision()).status).toBe(500);
+      expect(fixture.existing.kill).toHaveBeenCalledOnce();
+      expect(fixture.info.State.Running).toBe(true);
+      expectNoAllocation(fixture);
+    });
+
+    it.each([false, true])(
+      "preserves an already restricted running computer, stale image=%s",
+      async (stale) => {
+        const fixture = runningFixture();
+        fixture.setNetwork({
+          Id: "bot-network",
+          Options: { "com.docker.network.bridge.name": computerBridgeNameFor("bot") },
+          Containers: { existing: {} },
+        });
+        if (stale) fixture.info.Image = "previous-image";
+        const response = await provision();
+        expect(response.status).toBe(stale ? 409 : 200);
+        expect(fixture.existing.stop).not.toHaveBeenCalled();
+        expect(fixture.existing.kill).not.toHaveBeenCalled();
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it.each(["open", "internal"])(
+      "does not introduce a security stop for %s topology",
+      async (mode) => {
+        const fixture = runningFixture();
+        fixture.info.Image = "previous-image";
+        if (mode === "open") vi.stubEnv("SANDBOX_COMPUTER_EGRESS", "open");
+        else vi.stubEnv("SANDBOX_SCREEN_NETWORK", "internal");
+        expect((await provision()).status).toBe(409);
+        expect(fixture.existing.stop).not.toHaveBeenCalled();
+        expect(fixture.existing.kill).not.toHaveBeenCalled();
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it("adopts DNS and preserves home on the subsequent stopped provision", async () => {
+      const fixture = runningFixture();
+      expect((await provision()).status).toBe(409);
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+      const response = await provision();
+      expect(response.status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith();
+      expect(mocks.docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          HostConfig: expect.objectContaining({
+            Dns: ["192.0.2.53"],
+            Binds: [`${fixture.homePath}:/home/rakazo`],
+          }),
+        }),
+      );
+    });
+
+    it("retains the existing restricted-network migration when DNS already matches", async () => {
+      const fixture = runningFixture();
+      vi.stubEnv("SANDBOX_COMPUTER_DNS", "198.51.100.53");
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith({ force: true });
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).toHaveBeenCalledOnce();
+    });
+
+    it("waits for an ordinary stop and rechecks state without stopping twice", async () => {
+      const fixture = runningFixture();
+      fixture.existing.inspect.mockImplementation(async () => structuredClone(fixture.info));
+      let enterStop!: () => void;
+      let releaseStop!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enterStop = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      fixture.existing.stop.mockImplementation(async () => {
+        enterStop();
+        await released;
+        fixture.info.State.Running = false;
+      });
+      Object.assign(fixture.existing, {
+        exec: vi.fn(async () => ({
+          start: async () => Readable.from([]),
+          inspect: async () => ({ ExitCode: 0 }),
+        })),
+      });
+      const { supervisorApp } = await import("./index.js");
+      const ordinaryStop = supervisorApp.request("/computers/existing/stop", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+          "x-rakazo-bot-id": "bot",
+          "x-rakazo-space-id": "space",
+        },
+      });
+      await entered;
+      let migrationSettled = false;
+      const migration = provision().then((response) => {
+        migrationSettled = true;
+        return response;
+      });
+      try {
+        await vi.waitFor(() => expect(mocks.docker.getNetwork).toHaveBeenCalled());
+        expect(migrationSettled).toBe(false);
+      } finally {
+        releaseStop();
+      }
+      const [stopped, conflict] = await Promise.all([ordinaryStop, migration]);
+      expect(stopped.status).toBe(200);
+      expect(conflict.status).toBe(409);
+      expect(fixture.existing.stop).toHaveBeenCalledOnce();
+      expect(fixture.existing.kill).not.toHaveBeenCalled();
+      expect(fixture.existing.remove).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).not.toHaveBeenCalled();
+    });
   });
 });
 
