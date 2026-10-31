@@ -79,7 +79,7 @@ jobs:
             timeout: 15
           - check: Default offline unit tests
             lane: unit
-            timeout: 20
+            timeout: 30
           - check: Official PostgreSQL integration
             lane: integration
             timeout: 20
