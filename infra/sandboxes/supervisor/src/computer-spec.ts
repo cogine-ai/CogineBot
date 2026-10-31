@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isIP } from "node:net";
+import { isIP, SocketAddress } from "node:net";
 import path from "node:path";
 import { MAX_DESKTOP_DISPLAY, screenPorts } from "@rakazo/core/node/desktop-runtime";
 import type Docker from "dockerode";
@@ -170,6 +170,17 @@ export function resolveComputerEgressMode(
   throw new Error(`Unsupported SANDBOX_COMPUTER_EGRESS value: ${value}`);
 }
 
+/** Canonical IP text across Docker API versions, preserving exact IPv6 zone identities. */
+function normalizedDnsServer(server: string): string | undefined {
+  const family = isIP(server);
+  if (family === 0) return undefined;
+  // SocketAddress omits zones; keep the suffix separate to avoid host interface lookups.
+  const scoped = server.indexOf("%");
+  const address = scoped < 0 ? server : server.slice(0, scoped);
+  const zone = scoped < 0 ? "" : server.slice(scoped);
+  return new SocketAddress({ address, family: family === 4 ? "ipv4" : "ipv6" }).address + zone;
+}
+
 /** Explicit DNS servers; unset keeps Docker's embedded resolver and host forwarding. */
 export function resolveComputerDns(value = process.env.SANDBOX_COMPUTER_DNS): string[] | undefined {
   const servers = (value ?? "")
@@ -177,16 +188,25 @@ export function resolveComputerDns(value = process.env.SANDBOX_COMPUTER_DNS): st
     .map((server) => server.trim())
     .filter(Boolean);
   if (servers.length === 0) return undefined;
-  const invalid = servers.find((server) => isIP(server) === 0);
-  if (invalid) throw new Error(`Unsupported SANDBOX_COMPUTER_DNS server: ${invalid}`);
-  return servers;
+  return servers.map((server) => {
+    const normalized = normalizedDnsServer(server);
+    if (normalized === undefined)
+      throw new Error(`Unsupported SANDBOX_COMPUTER_DNS server: ${server}`);
+    return normalized;
+  });
 }
 
 /** Docker preserves resolver order; an omitted list and an empty list are equivalent. */
 export function computerDnsMatches(current: string[] | null | undefined, desired?: string[]) {
   const have = current ?? [];
   const want = desired ?? [];
-  return have.length === want.length && have.every((server, index) => server === want[index]);
+  return (
+    have.length === want.length &&
+    have.every((server, index) => {
+      const normalized = normalizedDnsServer(server);
+      return normalized !== undefined && normalized === normalizedDnsServer(want[index] ?? "");
+    })
+  );
 }
 
 /**

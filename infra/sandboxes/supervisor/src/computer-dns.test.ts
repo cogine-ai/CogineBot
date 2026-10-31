@@ -86,6 +86,37 @@ function existingComputer(running: boolean, dns: string[] | null | undefined) {
 }
 
 describe("computer DNS provisioning", () => {
+  it("passes normalized IPv6 addresses and exact zones to Docker", async () => {
+    vi.stubEnv(
+      "SANDBOX_COMPUTER_DNS",
+      "2001:0DB8:0:0:0:0:0:0053,0:0:0:0:0:ffff:c000:235,FE80::0001%eth0",
+    );
+    expect((await provision()).status).toBe(200);
+    expect(mocks.createContainer.mock.calls[0]?.[0].HostConfig.Dns).toEqual([
+      "2001:db8::53",
+      "::ffff:192.0.2.53",
+      "fe80::1%eth0",
+    ]);
+  });
+
+  it.each([
+    { current: ["2001:db8::53"], configured: "2001:0DB8:0:0:0:0:0:0053" },
+    { current: ["2001:0DB8:0:0:0:0:0:0053"], configured: "2001:db8::53" },
+    { current: ["::ffff:192.0.2.53"], configured: "0:0:0:0:0:ffff:c000:235" },
+  ])(
+    "reuses a stopped computer with an equivalent DNS spelling: %j",
+    async ({ current, configured }) => {
+      vi.stubEnv("SANDBOX_COMPUTER_DNS", configured);
+      const { existing } = existingComputer(false, current);
+      const response = await provision();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ id: "existing", resumed: true, started: true });
+      expect(existing.start).toHaveBeenCalledOnce();
+      expect(existing.remove).not.toHaveBeenCalled();
+      expect(mocks.createContainer).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects invalid startup DNS before making Docker calls", async () => {
     vi.stubEnv("SANDBOX_COMPUTER_DNS", "not-an-ip");
     await expect(provision()).rejects.toThrow(/SANDBOX_COMPUTER_DNS/);

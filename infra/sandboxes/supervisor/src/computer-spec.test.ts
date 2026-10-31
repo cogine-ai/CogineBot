@@ -54,6 +54,47 @@ import {
 describe("computer DNS configuration", () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  it.each([
+    ["2001:0DB8:0:0:0:0:0:0053", "2001:db8::53"],
+    ["0:0:0:0:0:FFFF:c000:235", "::ffff:192.0.2.53"],
+    ["FE80:0:0:0:0:0:0:0001%eth0", "fe80::1%eth0"],
+    ["FE80:0:0:0:0:0:0:0001%ETH0", "fe80::1%ETH0"],
+  ])(
+    "normalizes DNS address spelling without changing the address or zone: %s",
+    (input, expected) => {
+      expect(resolveComputerDns(input)).toEqual([expected]);
+    },
+  );
+
+  it("keeps DNS resolver order and duplicates after normalizing address spelling", () => {
+    expect(resolveComputerDns("2001:0DB8:0:0:0:0:0:0053,192.0.2.53,2001:db8::53")).toEqual([
+      "2001:db8::53",
+      "192.0.2.53",
+      "2001:db8::53",
+    ]);
+  });
+
+  it.each([
+    { current: ["2001:db8::53"], desired: ["2001:0DB8:0:0:0:0:0:0053"], matches: true },
+    { current: ["2001:0DB8:0:0:0:0:0:0053"], desired: ["2001:db8::53"], matches: true },
+    { current: ["::ffff:192.0.2.53"], desired: ["0:0:0:0:0:ffff:c000:235"], matches: true },
+    { current: ["192.0.2.53"], desired: ["::ffff:192.0.2.53"], matches: false },
+    { current: ["fe80::1%eth0"], desired: ["FE80:0:0:0:0:0:0:0001%eth0"], matches: true },
+    { current: ["fe80::1%eth0"], desired: ["fe80::1%ETH0"], matches: false },
+    { current: ["fe80::1%eth0"], desired: ["fe80::1"], matches: false },
+    { current: ["not-an-ip"], desired: ["not-an-ip"], matches: false },
+    {
+      current: ["2001:db8::53", "192.0.2.53"],
+      desired: ["192.0.2.53", "2001:0db8::53"],
+      matches: false,
+    },
+  ])(
+    "compares normalized DNS without losing address family, scope or order: %j",
+    ({ current, desired, matches }) => {
+      expect(computerDnsMatches(current, desired)).toBe(matches);
+    },
+  );
+
   it.each(["", " ", " , ,\t, "])("keeps Docker's resolver when DNS is blank: %j", (value) => {
     expect(resolveComputerDns(value)).toBeUndefined();
   });
