@@ -838,6 +838,7 @@ export async function replaceComputer(
       await onProgress?.("saving");
       let revision: string | undefined;
       let exported = false;
+      let stagingFailed = false;
       try {
         revision = await checkpointComputerWorkspace(
           deps.home,
@@ -845,14 +846,20 @@ export async function replaceComputer(
           existing.homeKey,
           oldRef,
           context,
-          () => {
-            exported = true;
+          {
+            onExported: () => {
+              exported = true;
+            },
+            onStagingFailure: () => {
+              stagingFailed = true;
+            },
           },
         );
       } catch (error) {
-        // Recover can fall back to the saved home when export fails. Once all
-        // files were exported, keep the provider until storing them succeeds.
-        if (exported || (!isSandboxGoneError(error) && mode !== "recover")) throw error;
+        // Recover can fall back when exporting fails. Staging and post-export
+        // failures must leave the old provider intact.
+        if (stagingFailed || exported || (!isSandboxGoneError(error) && mode !== "recover"))
+          throw error;
       }
       if (revision !== undefined) {
         const recorded = await deps.prisma.computer.updateMany({
