@@ -5,7 +5,10 @@ import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import type { createApp } from "../../../../apps/api/src/app.ts";
 import { runProcess } from "./process.js";
+import { parseShard, selectIntegrationSuites } from "./shard.js";
 
+// Validate sharding before loading the environment or starting test services.
+const shard = parseShard(process.argv.slice(2));
 loadRootEnv();
 
 const integration = process.argv.includes("--integration");
@@ -42,6 +45,88 @@ if (sandboxProvider === "box" && !process.env.BOX_API_KEY) {
 }
 
 async function main() {
+  const remainingLifecycleSuite =
+    "packages/adapters/src/native-connectors/remaining-lifecycle.postgres.test.ts";
+  const suites = [
+    "packages/testkit/src/pi-offline.postgres.test.ts",
+    "packages/testkit/src/pi-lazy-computer.postgres.test.ts",
+    "packages/testkit/src/reply-announcements.postgres.test.ts",
+    "packages/testkit/src/usage-accounting.postgres.test.ts",
+    "packages/db/src/history-retrieval.postgres.test.ts",
+    "packages/db/src/tool-result-history.postgres.test.ts",
+    "packages/testkit/src/history-retrieval.postgres.test.ts",
+    "packages/testkit/src/tool-result-history.postgres.test.ts",
+    "packages/testkit/src/catalog-alias-approval.postgres.test.ts",
+    "packages/testkit/src/openapi-import.postgres.test.ts",
+    "packages/testkit/src/takeover-release.postgres.test.ts",
+    "packages/testkit/src/history-short-product.postgres.test.ts",
+    "packages/testkit/src/history-cache-default.postgres.test.ts",
+    "packages/testkit/src/history-followup-product.postgres.test.ts",
+    "packages/testkit/src/history-search-continuation.postgres.test.ts",
+    "packages/testkit/src/history-product-loop.postgres.test.ts",
+    "packages/testkit/src/history-clarification.postgres.test.ts",
+    "packages/testkit/src/computer-approval.postgres.test.ts",
+    "packages/testkit/src/eval-history.postgres.test.ts",
+    "packages/testkit/src/eval-customer-support.postgres.test.ts",
+    "packages/testkit/src/journeys.test.ts",
+    "packages/testkit/src/authorization.test.ts",
+    "packages/testkit/src/attachments.test.ts",
+    "packages/testkit/src/group-creation.postgres.test.ts",
+    "packages/testkit/src/account-profile.postgres.test.ts",
+    "apps/api/src/bot-profile.postgres.test.ts",
+    "apps/api/src/bot-creation.postgres.test.ts",
+    "apps/api/src/router-computer-heartbeat.postgres.test.ts",
+    "apps/api/src/router-gone-sandbox.postgres.test.ts",
+    "packages/adapters/src/computer-idle.postgres.test.ts",
+    "packages/adapters/src/scripted-file.postgres.test.ts",
+    "apps/api/src/routine-runs.postgres.test.ts",
+    "apps/api/src/routine-silence.postgres.test.ts",
+    "packages/testkit/src/thread-message-sequence.postgres.test.ts",
+    "apps/api/src/artifacts.postgres.test.ts",
+    "apps/api/src/board-app.postgres.test.ts",
+    "apps/api/src/health-app.postgres.test.ts",
+    "apps/api/src/model-connections.postgres.test.ts",
+    "apps/api/src/model-bindings.postgres.test.ts",
+    "apps/api/src/chatgpt-plan-finalization.postgres.test.ts",
+    "apps/api/src/chatgpt-plan-registration.postgres.test.ts",
+    "packages/adapters/src/chatgpt-plan-credential-lock.postgres.test.ts",
+    "packages/db/src/readiness.postgres.test.ts",
+    "packages/db/src/scripted-state-failure.postgres.test.ts",
+    "packages/db/src/model-connection-migration.postgres.test.ts",
+    "packages/db/src/board.postgres.test.ts",
+    "packages/db/src/bot-sections.postgres.test.ts",
+    "packages/testkit/src/voice.test.ts",
+    "packages/testkit/src/search.test.ts",
+    "packages/testkit/src/executor-lifecycle.test.ts",
+    "packages/testkit/src/connections.test.ts",
+    "packages/adapters/src/native-connectors/config.postgres.test.ts",
+    "packages/adapters/src/native-connectors/oauth.postgres.test.ts",
+    remainingLifecycleSuite,
+    "packages/adapters/src/native-connectors/mcp.postgres.test.ts",
+    "packages/adapters/src/native-connectors/events/events.postgres.test.ts",
+    "packages/adapters/src/native-connectors/events/hooks.postgres.test.ts",
+    "packages/adapters/src/native-connectors/collaboration-oauth.postgres.test.ts",
+    "packages/adapters/src/native-connectors/google-watch-config.postgres.test.ts",
+    "packages/adapters/src/native-connectors/events/slack-hooks.postgres.test.ts",
+    "packages/adapters/src/native-connectors/events/batch2-events.postgres.test.ts",
+    "packages/adapters/src/native-connectors/drive-picker.postgres.test.ts",
+    "packages/adapters/src/native-connectors/events/slack-lifecycle.postgres.test.ts",
+    "packages/adapters/src/native-connectors/events/gmail-push-service.postgres.test.ts",
+    "packages/adapters/src/native-connectors/events/slack-delivery.postgres.test.ts",
+    "packages/testkit/src/bot-secrets.test.ts",
+    "packages/db/src/space-membership.postgres.test.ts",
+    "packages/db/src/messaging.postgres.test.ts",
+    "packages/db/src/billing.postgres.test.ts",
+    "packages/db/src/billing-timezone.postgres.test.ts",
+    "apps/api/src/billing.postgres.test.ts",
+    "apps/api/src/billing-status-refresh.postgres.test.ts",
+    "packages/memory/src/commit.postgres.test.ts",
+    "packages/adapters/src/wakeup.postgres.test.ts",
+    "packages/adapters/src/realtime.postgres.test.ts",
+    "packages/adapters/src/job-reconciler.postgres.test.ts",
+    "packages/adapters/src/cloud-agent.postgres.test.ts",
+  ];
+  const selectedSuites = integration ? selectIntegrationSuites(suites, e2eSpec, shard) : [];
   const mode = integration ? "integration" : "e2e";
   const reportDir = path.resolve("test-report", mode);
   await mkdir(reportDir, { recursive: true });
@@ -86,87 +171,6 @@ async function main() {
     });
 
     if (integration) {
-      const remainingLifecycleSuite =
-        "packages/adapters/src/native-connectors/remaining-lifecycle.postgres.test.ts";
-      const suites = [
-        "packages/testkit/src/pi-offline.postgres.test.ts",
-        "packages/testkit/src/pi-lazy-computer.postgres.test.ts",
-        "packages/testkit/src/reply-announcements.postgres.test.ts",
-        "packages/testkit/src/usage-accounting.postgres.test.ts",
-        "packages/db/src/history-retrieval.postgres.test.ts",
-        "packages/db/src/tool-result-history.postgres.test.ts",
-        "packages/testkit/src/history-retrieval.postgres.test.ts",
-        "packages/testkit/src/tool-result-history.postgres.test.ts",
-        "packages/testkit/src/catalog-alias-approval.postgres.test.ts",
-        "packages/testkit/src/openapi-import.postgres.test.ts",
-        "packages/testkit/src/takeover-release.postgres.test.ts",
-        "packages/testkit/src/history-short-product.postgres.test.ts",
-        "packages/testkit/src/history-cache-default.postgres.test.ts",
-        "packages/testkit/src/history-followup-product.postgres.test.ts",
-        "packages/testkit/src/history-search-continuation.postgres.test.ts",
-        "packages/testkit/src/history-product-loop.postgres.test.ts",
-        "packages/testkit/src/history-clarification.postgres.test.ts",
-        "packages/testkit/src/computer-approval.postgres.test.ts",
-        "packages/testkit/src/eval-history.postgres.test.ts",
-        "packages/testkit/src/eval-customer-support.postgres.test.ts",
-        "packages/testkit/src/journeys.test.ts",
-        "packages/testkit/src/authorization.test.ts",
-        "packages/testkit/src/attachments.test.ts",
-        "packages/testkit/src/group-creation.postgres.test.ts",
-        "packages/testkit/src/account-profile.postgres.test.ts",
-        "apps/api/src/bot-profile.postgres.test.ts",
-        "apps/api/src/bot-creation.postgres.test.ts",
-        "apps/api/src/router-computer-heartbeat.postgres.test.ts",
-        "apps/api/src/router-gone-sandbox.postgres.test.ts",
-        "packages/adapters/src/computer-idle.postgres.test.ts",
-        "packages/adapters/src/scripted-file.postgres.test.ts",
-        "apps/api/src/routine-runs.postgres.test.ts",
-        "apps/api/src/routine-silence.postgres.test.ts",
-        "packages/testkit/src/thread-message-sequence.postgres.test.ts",
-        "apps/api/src/artifacts.postgres.test.ts",
-        "apps/api/src/board-app.postgres.test.ts",
-        "apps/api/src/health-app.postgres.test.ts",
-        "apps/api/src/model-connections.postgres.test.ts",
-        "apps/api/src/model-bindings.postgres.test.ts",
-        "apps/api/src/chatgpt-plan-finalization.postgres.test.ts",
-        "apps/api/src/chatgpt-plan-registration.postgres.test.ts",
-        "packages/adapters/src/chatgpt-plan-credential-lock.postgres.test.ts",
-        "packages/db/src/readiness.postgres.test.ts",
-        "packages/db/src/scripted-state-failure.postgres.test.ts",
-        "packages/db/src/model-connection-migration.postgres.test.ts",
-        "packages/db/src/board.postgres.test.ts",
-        "packages/db/src/bot-sections.postgres.test.ts",
-        "packages/testkit/src/voice.test.ts",
-        "packages/testkit/src/search.test.ts",
-        "packages/testkit/src/executor-lifecycle.test.ts",
-        "packages/testkit/src/connections.test.ts",
-        "packages/adapters/src/native-connectors/config.postgres.test.ts",
-        "packages/adapters/src/native-connectors/oauth.postgres.test.ts",
-        remainingLifecycleSuite,
-        "packages/adapters/src/native-connectors/mcp.postgres.test.ts",
-        "packages/adapters/src/native-connectors/events/events.postgres.test.ts",
-        "packages/adapters/src/native-connectors/events/hooks.postgres.test.ts",
-        "packages/adapters/src/native-connectors/collaboration-oauth.postgres.test.ts",
-        "packages/adapters/src/native-connectors/google-watch-config.postgres.test.ts",
-        "packages/adapters/src/native-connectors/events/slack-hooks.postgres.test.ts",
-        "packages/adapters/src/native-connectors/events/batch2-events.postgres.test.ts",
-        "packages/adapters/src/native-connectors/drive-picker.postgres.test.ts",
-        "packages/adapters/src/native-connectors/events/slack-lifecycle.postgres.test.ts",
-        "packages/adapters/src/native-connectors/events/gmail-push-service.postgres.test.ts",
-        "packages/adapters/src/native-connectors/events/slack-delivery.postgres.test.ts",
-        "packages/testkit/src/bot-secrets.test.ts",
-        "packages/db/src/space-membership.postgres.test.ts",
-        "packages/db/src/messaging.postgres.test.ts",
-        "packages/db/src/billing.postgres.test.ts",
-        "packages/db/src/billing-timezone.postgres.test.ts",
-        "apps/api/src/billing.postgres.test.ts",
-        "apps/api/src/billing-status-refresh.postgres.test.ts",
-        "packages/memory/src/commit.postgres.test.ts",
-        "packages/adapters/src/wakeup.postgres.test.ts",
-        "packages/adapters/src/realtime.postgres.test.ts",
-        "packages/adapters/src/job-reconciler.postgres.test.ts",
-        "packages/adapters/src/cloud-agent.postgres.test.ts",
-      ];
       // Each app reconciles all durable work in its database, including intentionally
       // unfinished fixture runs. Clone the pristine migrated schema so one suite
       // cannot execute another suite's backlog or wait for it during shutdown.
@@ -186,10 +190,6 @@ async function main() {
         if (result.exitCode !== 0)
           throw new Error("Isolated integration database operation failed");
       };
-      const selectedSuites = e2eSpec
-        ? suites.filter((suite) => new RegExp(e2eSpec).test(suite))
-        : suites;
-      if (selectedSuites.length === 0) throw new Error("No integration suites matched --spec");
       for (const [index, suite] of selectedSuites.entries()) {
         const database = `integration_${index}`;
         await databaseCommand(`CREATE DATABASE "${database}" TEMPLATE "${template}"`);
@@ -288,6 +288,7 @@ async function main() {
             "test",
             ...(e2eSpec ? [e2eSpec] : []),
             ...(e2eGrep ? ["--grep", e2eGrep] : []),
+            ...(shard ? [`--shard=${shard.current}/${shard.total}`] : []),
           ],
           {
             ...process.env,

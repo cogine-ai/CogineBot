@@ -109,7 +109,8 @@ describe("production mobile OTA workflow", () => {
     expect(mobileJob).toContain(
       "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
     );
-    expect(mobileJob).toContain("needs: checks");
+    expect(mobileJob).toContain("needs: result");
+    expect(workflow).toContain("needs: [repository, checks, screenshots]");
     expect(mobileJob).toMatch(/EXPO_OWNER: \$\{\{ vars\.EXPO_OWNER \}\}/);
     expect(mobileJob).toMatch(/EAS_PROJECT_ID: \$\{\{ vars\.EAS_PROJECT_ID \}\}/);
     expect(mobileJob).toContain("EAS_BUILD_PROFILE: production");
@@ -203,4 +204,44 @@ describe("production mobile OTA workflow", () => {
     expect(result.status).not.toBe(0);
     expect(result.calls).toBe("");
   });
+});
+
+describe("CI result gate", () => {
+  const resultJob = workflow.split("\n  result:\n")[1]!.split("\n  publish-mobile-update:")[0]!;
+  const script = resultJob.split("        run: |\n")[1]!.replace(/^ {10}/gm, "");
+  const passing = {
+    REPOSITORY_RESULT: "success",
+    CHECKS_SELECTED: "true",
+    CHECKS_RESULT: "success",
+    SCREENSHOTS_SELECTED: "true",
+    SCREENSHOTS_RESULT: "success",
+  };
+  function gate(environment: Record<string, string> = {}) {
+    return spawnSync("bash", ["-c", script], {
+      env: { ...process.env, ...passing, ...environment },
+      encoding: "utf8",
+    }).status;
+  }
+
+  it("accepts all selected checks and intentional documentation-only skips", () => {
+    expect(resultJob).toContain("if: always()");
+    expect(gate()).toBe(0);
+    expect(
+      gate({
+        CHECKS_SELECTED: "false",
+        CHECKS_RESULT: "skipped",
+        SCREENSHOTS_SELECTED: "false",
+        SCREENSHOTS_RESULT: "skipped",
+      }),
+    ).toBe(0);
+  });
+
+  it.each(["REPOSITORY_RESULT", "CHECKS_RESULT", "SCREENSHOTS_RESULT"])(
+    "rejects unsuccessful selected dependency %s",
+    (dependency) => {
+      for (const status of ["failure", "cancelled", "skipped"]) {
+        expect(gate({ [dependency]: status }), `${dependency}: ${status}`).not.toBe(0);
+      }
+    },
+  );
 });

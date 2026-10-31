@@ -52,40 +52,38 @@ jobs:
     name: Repository documentation and workflow checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.route.outputs.matrix }}
+      has_checks: ${{ steps.route.outputs.has_checks }}
+      web: ${{ steps.route.outputs.web }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 24.16.0
       - run: node scripts/check-repository.mjs
+      - run: bash infra/compose/run-smokes.sh
       - run: bash scripts/lint-workflows.sh
+      - run: node --test scripts/ci-router.test.mjs
+      - name: Route checks from the PR diff
+        id: route
+        run: node scripts/ci-router.mjs
 
   checks:
     name: ${{ matrix.check }}
     needs: repository
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeout }}
+    if: needs.repository.outputs.has_checks == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - check: Lint and typecheck
-            lane: static
-            timeout: 15
-          - check: Web production build
-            lane: build
-            timeout: 15
-          - check: Default offline unit tests
-            lane: unit
-            timeout: 30
-          - check: Official PostgreSQL integration
-            lane: integration
-            timeout: 20
-          - check: Selected fake web E2E
-            lane: web
-            timeout: 40
+      matrix: ${{ fromJSON(needs.repository.outputs.matrix) }}
+    env:
+      CI_SHARD: ${{ matrix.shard }}
+      CI_TEST_LANE: ${{ (matrix.lane == 'unit' || startsWith(matrix.lane, 'shell-')) && matrix.lane || '' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -111,6 +109,7 @@ jobs:
         if: matrix.lane == 'static'
         run: |
           set -euo pipefail
+          node scripts/check-ci-coverage.mjs
           pnpm lint 2>&1 | tee test-report/repository-ci/lint.log
           pnpm check 2>&1 | tee test-report/repository-ci/typecheck.log
       - name: Build the web application
@@ -118,8 +117,11 @@ jobs:
         run: |
           set -euo pipefail
           pnpm --filter @rakazo/web build 2>&1 | tee test-report/repository-ci/web-build.log
-      - name: Run the default offline unit suite
-        if: matrix.lane == 'unit'
+      - name: Build the marketing site
+        if: matrix.lane == 'marketing'
+        run: pnpm --filter @rakazo/www build
+      - name: Run the selected offline test lane
+        if: matrix.lane == 'unit' || startsWith(matrix.lane, 'shell-')
         run: |
           set -euo pipefail
           pnpm run test --maxWorkers=2 --reporter=default --reporter=json --outputFile=test-report/repository-ci/unit-results.json 2>&1 | tee test-report/repository-ci/unit.log
@@ -127,7 +129,7 @@ jobs:
         if: matrix.lane == 'integration'
         run: |
           set -euo pipefail
-          pnpm test:integration -- --sandbox=fake --runtime=scripted 2>&1 | tee test-report/repository-ci/integration.log
+          pnpm test:integration -- --sandbox=fake --runtime=scripted --shard="$CI_SHARD" 2>&1 | tee test-report/repository-ci/integration.log
       - name: Install Chromium and CJK fonts
         if: matrix.lane == 'web'
         timeout-minutes: 5
@@ -141,136 +143,21 @@ jobs:
         if: matrix.lane == 'web'
         run: |
           set -euo pipefail
-          pnpm test:e2e -- --sandbox=fake --runtime=scripted '--spec=(failure-recovery-auth|failure-recovery|routine-execution|messaging-settings|bot-templates|account-profile|model-settings|chat-reliability|artifact-preview|artifacts-tab|markdown-table|markdown-diagram|peer-messages|spaces|space-settings|desktop-shell|continuous-chat|composer-paste|composer-send-failure|routine-crud|sidebar-density|team-computer|teach-task|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|avatar-editor|avatar-motion|avatar-style|bot-crud|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel|consequential-approval|graphql-integrations|load-failure|mcp-oauth|stuck-work|connector-accounts|native-connectors|native-event-authoring|native-notion-webhook|native-batch2|native-remaining|mcp-approval-card|integration-setup|openapi-import|takeover-release|message-jump|billing-paywall|input-accessibility)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
-      - name: Retain diagram UI acceptance screenshots
+          pnpm test:e2e -- --sandbox=fake --runtime=scripted --shard="$CI_SHARD" '--spec=(failure-recovery-auth|failure-recovery|routine-execution|messaging-settings|bot-templates|account-profile|model-settings|chat-reliability|artifact-preview|artifacts-tab|markdown-table|markdown-diagram|peer-messages|spaces|space-settings|desktop-shell|continuous-chat|composer-paste|composer-send-failure|routine-crud|sidebar-density|team-computer|teach-task|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|avatar-editor|avatar-motion|avatar-style|bot-crud|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel|consequential-approval|graphql-integrations|load-failure|mcp-oauth|stuck-work|connector-accounts|native-connectors|native-event-authoring|native-notion-webhook|native-batch2|native-remaining|mcp-approval-card|integration-setup|openapi-import|takeover-release|message-jump|billing-paywall|input-accessibility)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
+      - name: Collect acceptance screenshots for this shard
         if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: diagram-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/markdown-diagram-*/**/markdown-diagram-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain model connection acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: model-connection-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            apps/web/test-results/model-settings-*/**/a1-*.png
-            apps/web/test-results/model-settings-*/**/chatgpt-plan-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain shared notification acceptance screenshot
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: shared-notification-ui-screenshot-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/bot-crud-*/**/a3-shared-notification-setting.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain group and Space settings acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: group-space-settings-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            apps/web/test-results/space-settings-*/**/space-*.png
-            apps/web/test-results/group-member-settings-*/**/a4-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain Bot template acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: bot-template-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/bot-templates-*/**/a6-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain failure recovery acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: failure-recovery-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/failure-recovery-*/**/b5-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain account and profile acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: account-profile-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/account-profile-*/**/a5-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain OpenAPI import acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: openapi-import-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/openapi-import-*/**/b23-openapi-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain takeover release acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: takeover-release-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/takeover-release-*/**/b31-takeover-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain message jump acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: message-jump-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/message-jump-*/**/b31-jump-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain passive computer panel acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: passive-computer-panel-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/team-computer-*/**/b41-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain visible computer attendance acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: visible-computer-attendance-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/team-computer-*/**/b42-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain computer recovery acceptance screenshot
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: computer-recovery-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/chat-reliability-*/**/b43-*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain access recovery acceptance screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: access-recovery-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/billing-paywall-*/**/*.png
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retain chat input accessibility screenshots
-        if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: chat-input-accessibility-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/input-accessibility-*/**/*.png
+          name: acceptance-shard-${{ strategy.job-index }}
+          overwrite: true
+          path: apps/web/test-results/
           if-no-files-found: error
           retention-days: 7
       - name: Retain successful synthetic UI screenshots
         if: inputs.upload_artifacts == true && matrix.lane == 'web' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: repository-ci-web-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          name: repository-ci-web-screenshots-${{ strategy.job-index }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             playwright-report/
             apps/web/test-results/**/*.png
@@ -280,7 +167,7 @@ jobs:
         if: (inputs.upload_artifacts == true || (github.event_name == 'pull_request' && matrix.lane == 'web')) && failure() && !cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: repository-ci-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: repository-ci-${{ matrix.lane }}-${{ strategy.job-index }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-report/repository-ci/
             test-report/integration/summary.json
@@ -290,10 +177,160 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  screenshots:
+    name: Verify UI acceptance screenshots
+    needs: [repository, checks]
+    if: github.event_name == 'pull_request' && needs.repository.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: acceptance-shard-*
+          path: apps/web/test-results
+          merge-multiple: true
+      - name: Retain diagram UI acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: diagram-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/markdown-diagram-*/**/markdown-diagram-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain model connection acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: model-connection-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/web/test-results/model-settings-*/**/a1-*.png
+            apps/web/test-results/model-settings-*/**/chatgpt-plan-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain shared notification acceptance screenshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shared-notification-ui-screenshot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/bot-crud-*/**/a3-shared-notification-setting.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain group and Space settings acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: group-space-settings-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/web/test-results/space-settings-*/**/space-*.png
+            apps/web/test-results/group-member-settings-*/**/a4-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain Bot template acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bot-template-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/bot-templates-*/**/a6-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain failure recovery acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failure-recovery-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/failure-recovery-*/**/b5-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain account and profile acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: account-profile-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/account-profile-*/**/a5-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain OpenAPI import acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: openapi-import-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/openapi-import-*/**/b23-openapi-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain takeover release acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: takeover-release-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/takeover-release-*/**/b31-takeover-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain message jump acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: message-jump-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/message-jump-*/**/b31-jump-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain passive computer panel acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: passive-computer-panel-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/team-computer-*/**/b41-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain visible computer attendance acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: visible-computer-attendance-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/team-computer-*/**/b42-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain computer recovery acceptance screenshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: computer-recovery-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/chat-reliability-*/**/b43-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain access recovery acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: access-recovery-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/billing-paywall-*/**/*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain chat input accessibility screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chat-input-accessibility-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/input-accessibility-*/**/*.png
+          if-no-files-found: error
+          retention-days: 7
+
+  result:
+    name: CI result
+    needs: [repository, checks, screenshots]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected check and screenshot validation
+        env:
+          REPOSITORY_RESULT: ${{ needs.repository.result }}
+          CHECKS_SELECTED: ${{ needs.repository.outputs.has_checks }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          SCREENSHOTS_SELECTED: ${{ github.event_name == 'pull_request' && needs.repository.outputs.web == 'true' }}
+          SCREENSHOTS_RESULT: ${{ needs.screenshots.result }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY_RESULT" == success ]]
+          if [[ "$CHECKS_SELECTED" == true ]]; then
+            [[ "$CHECKS_RESULT" == success ]]
+          else
+            [[ "$CHECKS_RESULT" == skipped ]]
+          fi
+          if [[ "$SCREENSHOTS_SELECTED" == true ]]; then
+            [[ "$SCREENSHOTS_RESULT" == success ]]
+          else
+            [[ "$SCREENSHOTS_RESULT" == skipped ]]
+          fi
+
   publish-mobile-update:
     name: Publish compatible mobile update
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: checks
+    needs: result
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
