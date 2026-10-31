@@ -22,7 +22,8 @@
     },
     "test": {
       "dependsOn": ["^generate"],
-      "outputs": ["coverage/**"]
+      "outputs": ["coverage/**"],
+      "env": ["CI_TEST_LANE"]
     },
     "dev": {
       "cache": false,

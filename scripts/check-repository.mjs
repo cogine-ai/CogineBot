@@ -99,6 +99,23 @@ for (const file of ["README.md", "README.zh-CN.md", "SECURITY.md"]) {
 if (!readFileSync(path.join(root, "LICENSE"), "utf8").includes("Apache License")) {
   failures.push("Root Apache license is missing");
 }
+// These source contracts also appear in the database journey suite. Keep them
+// active on documentation/deployment-only PRs without starting a database.
+for (const file of [
+  "docs/self-host.md",
+  "infra/compose/docker-compose.yml",
+  "scripts/backup.sh",
+  "scripts/restore.sh",
+]) {
+  if (!existsSync(path.join(root, file))) failures.push(`Missing backup/restore contract: ${file}`);
+}
+const selfHost = path.join(root, "docs/self-host.md");
+if (existsSync(selfHost)) {
+  const content = readFileSync(selfHost, "utf8");
+  if (!/pg_dump/.test(content) || !/Restore/.test(content)) {
+    failures.push("Self-host documentation must describe database backup and restore");
+  }
+}
 if (failures.length) {
   for (const failure of failures) console.error(failure);
   process.exitCode = 1;

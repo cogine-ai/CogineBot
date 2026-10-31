@@ -1,6 +1,18 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
+// CI separates shell integration work without changing the default local suite.
+const lane = process.env.CI_TEST_LANE;
+if (lane && !["unit", "shell-deploy", "shell-other"].includes(lane)) {
+  throw new Error(`Unknown CI_TEST_LANE: ${lane}`);
+}
+const deployTests = "packages/testkit/src/deploy-script.test.ts";
+const shellTests = [
+  "packages/testkit/src/*-script.test.ts",
+  "packages/testkit/src/backup-scripts.test.ts",
+  "packages/testkit/src/compose*.test.ts",
+];
+
 export default defineConfig({
   resolve: {
     alias: [
@@ -39,19 +51,25 @@ export default defineConfig({
     server: { deps: { inline: [/react-native-markdown-display/] } },
     environment: "node",
     setupFiles: ["./packages/testkit/src/pin-test-env.ts"],
-    include: [
-      ".agents/skills/pr-watch/*.test.ts",
-      "packages/*/src/**/*.test.{ts,tsx}",
-      "infra/sandboxes/supervisor/src/**/*.test.ts",
-      "infra/updater/src/**/*.test.ts",
-      "apps/desktop/src/**/*.test.ts",
-      "apps/web/src/**/*.test.{ts,tsx}",
-      "apps/mobile/lib/**/*.test.{ts,tsx}",
-      "apps/mobile/plugins/**/*.test.js",
-      "apps/api/src/**/*.test.ts",
-      "apps/worker/src/**/*.test.ts",
-      "apps/www/src/**/*.test.ts",
-    ],
+    include:
+      lane === "shell-deploy"
+        ? [deployTests]
+        : lane === "shell-other"
+          ? shellTests
+          : [
+              ".agents/skills/pr-watch/*.test.ts",
+              "packages/*/src/**/*.test.{ts,tsx}",
+              "infra/sandboxes/supervisor/src/**/*.test.ts",
+              "infra/updater/src/**/*.test.ts",
+              "apps/desktop/src/**/*.test.ts",
+              "apps/web/src/**/*.test.{ts,tsx}",
+              "apps/mobile/lib/**/*.test.{ts,tsx}",
+              "apps/mobile/plugins/**/*.test.js",
+              "apps/api/src/**/*.test.ts",
+              "apps/worker/src/**/*.test.ts",
+              "apps/www/src/**/*.test.ts",
+            ],
+    exclude: lane === "unit" ? shellTests : lane === "shell-other" ? [deployTests] : undefined,
     testTimeout: 30_000,
     hookTimeout: 60_000,
   },
