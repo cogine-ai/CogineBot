@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import path from "node:path";
 import { MAX_DESKTOP_DISPLAY, screenPorts } from "@rakazo/core/node/desktop-runtime";
 import type Docker from "dockerode";
@@ -169,6 +170,25 @@ export function resolveComputerEgressMode(
   throw new Error(`Unsupported SANDBOX_COMPUTER_EGRESS value: ${value}`);
 }
 
+/** Explicit DNS servers; unset keeps Docker's embedded resolver and host forwarding. */
+export function resolveComputerDns(value = process.env.SANDBOX_COMPUTER_DNS): string[] | undefined {
+  const servers = (value ?? "")
+    .split(",")
+    .map((server) => server.trim())
+    .filter(Boolean);
+  if (servers.length === 0) return undefined;
+  const invalid = servers.find((server) => isIP(server) === 0);
+  if (invalid) throw new Error(`Unsupported SANDBOX_COMPUTER_DNS server: ${invalid}`);
+  return servers;
+}
+
+/** Docker preserves resolver order; an omitted list and an empty list are equivalent. */
+export function computerDnsMatches(current: string[] | null | undefined, desired?: string[]) {
+  const have = current ?? [];
+  const want = desired ?? [];
+  return have.length === want.length && have.every((server, index) => server === want[index]);
+}
+
 /**
  * Host bridge interface name for a computer network. Linux caps interface names
  * at 15 bytes (IFNAMSIZ), so "rakazo-c" gets a 7-hex-char suffix derived from the
@@ -307,6 +327,7 @@ export interface ComputerCreateInput {
   controlToken?: string;
   networkMode?: string;
   publishControlPort?: boolean;
+  dns?: string[];
 }
 
 interface PointerInput {
@@ -369,6 +390,7 @@ export function containerCreateOptions(input: ComputerCreateInput) {
       ReadonlyPaths: ["/usr/share/novnc"],
       AutoRemove: false,
       NetworkMode: input.networkMode ?? "bridge",
+      Dns: input.dns,
     },
     WorkingDir: "/home/rakazo",
   };

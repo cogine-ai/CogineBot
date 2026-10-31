@@ -27,6 +27,7 @@ import {
   COMPUTER_UID,
   COMPUTER_USER,
   computerBridgeNameFor,
+  computerDnsMatches,
   computerHomeStorage,
   computerNetworkCreateOptions,
   computerNetworkNameFor,
@@ -41,6 +42,7 @@ import {
   legacyNetworkOwnedSolelyBy,
   publishedLoopbackControlHostPort,
   resolveComputerControlEndpoint,
+  resolveComputerDns,
   resolveComputerEgressMode,
   resolveScreenNetworkMode,
   resolveScreenPublishTarget,
@@ -108,6 +110,7 @@ let dockerApiVersion: string | undefined;
 const supervisorToken = resolveSupervisorToken(process.env);
 const screenNetworkMode = resolveScreenNetworkMode(process.env.SANDBOX_SCREEN_NETWORK);
 const computerEgressMode = resolveComputerEgressMode();
+const computerDns = resolveComputerDns();
 const teamScreenLimit = resolveTeamScreenLimit();
 // Host-run supervisors on Docker Desktop (macOS/Windows) cannot reach container
 // IPs, so computer control must use a published loopback port instead.
@@ -202,8 +205,10 @@ app.post("/computers", async (c) => {
       }
       const computerUser = runtimeInfo ? COMPUTER_USER : hostComputerUser(hostUid, hostGid);
       const existing = await findBotContainer(body.botId, body.spaceId);
+      let replaceForDns = false;
       if (existing) {
         const info = await existing.inspect();
+        const dnsMatches = computerDnsMatches(info.HostConfig.Dns, computerDns);
         const desired = await docker.getImage(COMPUTER_IMAGE).inspect();
         const controlPublishOk = controlPortPublicationMatches(
           info.HostConfig.PortBindings,
@@ -243,6 +248,8 @@ app.post("/computers", async (c) => {
               (reconnect || Boolean(info.NetworkSettings?.Networks?.[networkMode])))) &&
           restrictedBridgeOk &&
           info.Config.User === computerUser &&
+          // Keep running work on its existing DNS until a saved, stopped computer can be replaced.
+          (dnsMatches || info.State.Running) &&
           controlPublishOk &&
           (!storage.homeVolume || homeVolumeMatches(info.HostConfig.Mounts, storage.homeVolume)) &&
           // A computer that cannot rejoin its network is replaced below instead.
@@ -258,6 +265,13 @@ app.post("/computers", async (c) => {
             started,
           });
         }
+        if (info.State.Running && !dnsMatches) {
+          return c.json(
+            { error: "Computer DNS changes require a stopped computer before replacement." },
+            409,
+          );
+        }
+        replaceForDns = !dnsMatches;
       }
 
       // Under a space cap, serialize count+create and incompatible replace (remove+create)
@@ -298,7 +312,12 @@ app.post("/computers", async (c) => {
         try {
           if (existing) {
             await withComputerScreenLock(existing.id, async () => {
-              await existing.remove({ force: true }).catch(() => undefined);
+              if (replaceForDns) {
+                // Docker must refuse if this stopped computer started after inspection.
+                await existing.remove();
+              } else {
+                await existing.remove({ force: true }).catch(() => undefined);
+              }
               clearComputerScreenRegistry(computerScreens, computerScreenBoots, existing.id);
             });
           }
@@ -313,6 +332,7 @@ app.post("/computers", async (c) => {
               networkMode,
               controlToken: randomUUID(),
               publishControlPort: controlViaLoopback,
+              dns: computerDns,
             }),
           );
           await container.start();

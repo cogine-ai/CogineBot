@@ -133,6 +133,21 @@ traffic from the match and nothing else. A computer provisioned before the flag 
 is replaced on its next provision — resuming it on an unnamed bridge would bypass the
 restriction.
 
+Computers resolve names through Docker's embedded DNS, which forwards lookups to the host's
+resolvers from the computer's network. If the host resolver has a private address, such as a
+cloud VPC resolver or LAN router, restricted egress blocks that forward too. DNS can then time
+out while connections by IP still work. Set `SANDBOX_COMPUTER_DNS` in `.env` to comma-separated
+DNS server IP addresses, in the required order, and recreate the supervisor. In restricted mode,
+choose public resolvers reachable under the host ruleset. Unset or empty keeps Docker's default;
+an invalid IP address prevents the supervisor from starting.
+
+DNS is fixed when a container is created. Compatible running computers keep their current DNS;
+restarting the supervisor alone does not replace them. New computers and safely stopped
+computers adopt the configured list when created or recreated on their next provision. Clearing
+the value likewise restores Docker's default after recreation. For an existing computer, let the
+idle lifecycle save and stop it before booting it again. If idle sleep is disabled, its DNS stays
+unchanged until it is safely saved and stopped. Do not interrupt an active Run to apply a DNS change.
+
 To disable restricted egress, set `SANDBOX_COMPUTER_EGRESS=open`, recreate the
 supervisor, and run `sudo bash infra/compose/restrict-computer-egress.sh --remove`.
 The flag alone does not uninstall the host rules, which keep matching the still-named
