@@ -149,11 +149,15 @@ the value likewise restores Docker's default after recreation. For an existing c
 idle lifecycle save and stop it before booting it again. If idle sleep is disabled, its DNS stays
 unchanged until it is safely saved and stopped. Do not interrupt an active Run to apply a DNS change.
 
-Changing DNS does not defer restricted-egress enforcement. When both settings change and a
-running computer is on an incompatible network, the supervisor stops that specific computer
-and confirms it is stopped before returning the DNS conflict. It retains the container and
-home; the next stopped provision applies the normal network migration and DNS recreation.
-This security stop may use a kill fallback and does not guarantee a browser checkpoint.
+Changing DNS does not defer the existing computer configuration requirements: network mode
+and attachment, the restricted bridge when applicable, the selected user, control-port
+publication, and the expected home volume/subpath and writability. If DNS differs and a running
+computer is incompatible with one of these requirements, the supervisor stops that specific
+computer and confirms it is stopped before returning the DNS conflict. It retains the container
+and mounted data; the next stopped provision reapplies
+the selected configuration and DNS. This configuration stop may use a kill fallback and does
+not guarantee a browser checkpoint. With differing DNS, an image-version mismatch alone
+returns the conflict without stopping the computer; other upgrade paths retain their behavior.
 If Docker cannot confirm stopped state, provisioning fails rather than reporting a confirmed
 stop. DNS-only changes on an otherwise compatible running computer still leave it running.
 

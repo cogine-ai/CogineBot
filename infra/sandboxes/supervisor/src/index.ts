@@ -242,18 +242,20 @@ app.post("/computers", async (c) => {
           !networkMode ||
           (info.HostConfig.NetworkMode === networkMode &&
             (reconnect || Boolean(info.NetworkSettings?.Networks?.[networkMode])));
+        const runtimeConfigMatches =
+          networkMatches &&
+          restrictedBridgeOk &&
+          info.Config.User === computerUser &&
+          controlPublishOk &&
+          (!storage.homeVolume || homeVolumeMatches(info.HostConfig.Mounts, storage.homeVolume));
         if (
           info.Image === desired.Id &&
           // A named-network container must also still be attached: a network
           // deleted mid-recreate leaves HostConfig.NetworkMode set while
           // NetworkSettings is empty, and resuming that yields no connectivity.
-          networkMatches &&
-          restrictedBridgeOk &&
-          info.Config.User === computerUser &&
+          runtimeConfigMatches &&
           // Keep running work on its existing DNS until a saved, stopped computer can be replaced.
           (dnsMatches || info.State.Running) &&
-          controlPublishOk &&
-          (!storage.homeVolume || homeVolumeMatches(info.HostConfig.Mounts, storage.homeVolume)) &&
           // A computer that cannot rejoin its network is replaced below instead.
           (!reconnect ||
             (await reconnectBotComputer(existing, body.botId, networkOwner, Boolean(endpoint))))
@@ -268,12 +270,8 @@ app.post("/computers", async (c) => {
           });
         }
         if (info.State.Running && !dnsMatches) {
-          if (
-            botNetwork &&
-            computerEgressMode === "restricted" &&
-            (!networkMatches || !restrictedBridgeOk)
-          ) {
-            // Deferring DNS must not preserve a running computer outside the selected egress policy.
+          if (!runtimeConfigMatches) {
+            // Deferring DNS must not defer the computer's existing isolation and access requirements.
             await withComputerScreenLock(existing.id, async () => {
               // An optional fresh read avoids duplicate stops; failure must not skip quarantine.
               let stopped = await existing.inspect().catch(() => undefined);
@@ -283,7 +281,7 @@ app.post("/computers", async (c) => {
                 stopped = await existing.inspect();
               }
               if (stopped?.State?.Running !== false) {
-                throw new Error("Could not confirm the computer stopped for restricted egress.");
+                throw new Error("Could not confirm the computer stopped for configuration repair.");
               }
               clearComputerScreenRegistry(computerScreens, computerScreenBoots, existing.id);
             });

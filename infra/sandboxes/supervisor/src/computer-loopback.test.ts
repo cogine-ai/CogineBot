@@ -5,7 +5,9 @@ import { Readable } from "node:stream";
 import { resolveSupervisorToken } from "@rakazo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  COMPUTER_CONTROL_PORT,
   COMPUTER_IMAGE,
+  COMPUTER_USER,
   computerBridgeNameFor,
   computerNetworkNameFor,
   computerNetworkOwnerFor,
@@ -54,6 +56,7 @@ beforeEach(async () => {
   vi.stubEnv("DATA_DIR", "/tmp/rakazo-loopback-test");
   vi.stubEnv("SANDBOX_SCREEN_NETWORK", "published");
   vi.stubEnv("SANDBOX_COMPUTER_DNS", "");
+  vi.stubEnv("SANDBOX_CONTROL_VIA_LOOPBACK", "false");
   vi.stubEnv("SANDBOX_SCREEN_HOST", "127.0.0.1");
   screen = http.createServer((_req, res) => res.end("ok"));
   await new Promise<void>((resolve) => screen.listen(0, "127.0.0.1", resolve));
@@ -678,7 +681,7 @@ describe("restricted egress rekeying", () => {
     expect(peer.stop).not.toHaveBeenCalled();
   });
 
-  describe("restricted egress with deferred DNS", () => {
+  describe("runtime configuration with deferred DNS", () => {
     function runningFixture() {
       vi.stubEnv("SANDBOX_COMPUTER_EGRESS", "restricted");
       vi.stubEnv("SANDBOX_COMPUTER_DNS", "192.0.2.53");
@@ -727,6 +730,211 @@ describe("restricted egress rekeying", () => {
       expect(mocks.assertHomeWritable).not.toHaveBeenCalled();
       expect(mocks.docker.getContainer).not.toHaveBeenCalledWith("peer");
     }
+
+    function compatibleFixture() {
+      const fixture = runningFixture();
+      fixture.setNetwork({
+        Id: "bot-network",
+        Options: { "com.docker.network.bridge.name": computerBridgeNameFor("bot") },
+        Containers: { existing: {}, peer: {} },
+      });
+      return fixture;
+    }
+
+    function supervisorFixture(fixture: ReturnType<typeof runningFixture>, volume = false) {
+      vi.stubEnv("HOSTNAME", "supervisor");
+      fixture.info.Config.User = COMPUTER_USER;
+      const supervisor = {
+        inspect: vi.fn().mockResolvedValue({
+          Config: { Labels: {} },
+          NetworkSettings: { Networks: { shared: {} } },
+          Mounts: volume
+            ? [{ Type: "volume", Name: "example_appdata", Destination: process.env.DATA_DIR }]
+            : [],
+        }),
+      };
+      mocks.docker.getContainer.mockImplementation((id: string) =>
+        id === "supervisor" ? supervisor : fixture.existing,
+      );
+      mocks.docker.version.mockResolvedValue({ ApiVersion: "1.45" });
+      const mount = {
+        Type: "volume",
+        Source: "example_appdata",
+        Target: "/home/rakazo",
+        VolumeOptions: { Subpath: "homes/bot", NoCopy: false },
+        ReadOnly: false,
+      };
+      if (volume) Object.assign(fixture.info.HostConfig, { Mounts: [mount] });
+      return mount;
+    }
+
+    const configurationFaults = [
+      "public control",
+      "missing required control",
+      "unwanted loopback control",
+      "invalid control port",
+      "mixed control bindings",
+      "root user",
+      "wrong nonroot user",
+      "empty user",
+      "missing home volume",
+      "wrong home volume",
+      "wrong home subpath",
+      "wrong home target",
+      "wrong home type",
+      "readonly home",
+      "open network mismatch",
+      "internal network mismatch",
+    ];
+
+    function configureFault(fixture: ReturnType<typeof runningFixture>, fault: string) {
+      if (fault.includes("control")) {
+        const published = fault !== "unwanted loopback control";
+        vi.stubEnv("SANDBOX_CONTROL_VIA_LOOPBACK", String(published));
+        fixture.info.HostConfig.PortBindings =
+          fault === "missing required control"
+            ? {}
+            : {
+                [`${COMPUTER_CONTROL_PORT}/tcp`]:
+                  fault === "mixed control bindings"
+                    ? [
+                        { HostIp: "127.0.0.1", HostPort: "0" },
+                        { HostIp: "::", HostPort: "7070" },
+                      ]
+                    : [
+                        {
+                          HostIp: fault === "public control" ? "0.0.0.0" : "127.0.0.1",
+                          HostPort: fault === "invalid control port" ? "invalid" : "7070",
+                        },
+                      ],
+              };
+      } else if (fault.includes("user")) {
+        fixture.info.Config.User =
+          fault === "root user" ? "0:0" : fault === "empty user" ? "" : "65432:65432";
+      } else if (fault.includes("home")) {
+        const mount = supervisorFixture(fixture, true);
+        if (fault === "missing home volume") Object.assign(fixture.info.HostConfig, { Mounts: [] });
+        if (fault === "wrong home volume") mount.Source = "other_appdata";
+        if (fault === "wrong home subpath") mount.VolumeOptions.Subpath = "homes/other-bot";
+        if (fault === "wrong home target") mount.Target = "/other-home";
+        if (fault === "wrong home type") mount.Type = "bind";
+        if (fault === "readonly home") mount.ReadOnly = true;
+      } else {
+        if (fault === "open network mismatch") vi.stubEnv("SANDBOX_COMPUTER_EGRESS", "open");
+        else {
+          supervisorFixture(fixture);
+          vi.stubEnv("SANDBOX_SCREEN_NETWORK", "internal");
+        }
+        fixture.info.HostConfig.NetworkMode = "bridge";
+      }
+    }
+
+    it.each(configurationFaults)(
+      "enforces existing runtime requirements before DNS conflict: %s",
+      async (fault) => {
+        const fixture = compatibleFixture();
+        configureFault(fixture, fault);
+        const response = await provision();
+        expect(response.status).toBe(409);
+        expect(fixture.existing.stop).toHaveBeenCalledExactlyOnceWith({ t: 1 });
+        expect(fixture.info.State.Running).toBe(false);
+        expect(fixture.existing.inspect.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+          fixture.existing.stop.mock.invocationCallOrder[0]!,
+        );
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it.each([
+      { current: ["198.51.100.53"], configured: "" },
+      { current: undefined, configured: "192.0.2.53" },
+      { current: ["192.0.2.53", "2001:db8::53"], configured: "2001:db8::53,192.0.2.53" },
+    ])(
+      "keeps control requirements when DNS is cleared, first configured or reordered: %j",
+      async ({ current, configured }) => {
+        const fixture = compatibleFixture();
+        configureFault(fixture, "public control");
+        fixture.info.HostConfig.Dns = current;
+        vi.stubEnv("SANDBOX_COMPUTER_DNS", configured);
+        expect((await provision()).status).toBe(409);
+        expect(fixture.existing.stop).toHaveBeenCalledOnce();
+        expect(fixture.info.State.Running).toBe(false);
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it.each(["", "0", "17770"])(
+      "keeps a valid required loopback control binding (%j)",
+      async (port) => {
+        const fixture = compatibleFixture();
+        vi.stubEnv("SANDBOX_CONTROL_VIA_LOOPBACK", "true");
+        fixture.info.HostConfig.PortBindings = {
+          [`${COMPUTER_CONTROL_PORT}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: port }],
+        };
+        expect((await provision()).status).toBe(200);
+        expect(fixture.existing.stop).not.toHaveBeenCalled();
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it("keeps a correctly configured own home volume with different DNS", async () => {
+      const fixture = compatibleFixture();
+      supervisorFixture(fixture, true);
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expectNoAllocation(fixture);
+    });
+
+    it("keeps a correct shared internal network with different DNS", async () => {
+      const fixture = compatibleFixture();
+      supervisorFixture(fixture);
+      vi.stubEnv("SANDBOX_SCREEN_NETWORK", "internal");
+      fixture.info.HostConfig.NetworkMode = "shared";
+      fixture.info.NetworkSettings.Networks = { shared: { NetworkID: "shared-network" } };
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expectNoAllocation(fixture);
+    });
+
+    it("repairs control publication on subsequent stopped DNS provisioning", async () => {
+      const fixture = compatibleFixture();
+      configureFault(fixture, "public control");
+      expect((await provision()).status).toBe(409);
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith();
+      expect(mocks.docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          HostConfig: expect.objectContaining({
+            Dns: ["192.0.2.53"],
+            PortBindings: expect.objectContaining({
+              [`${COMPUTER_CONTROL_PORT}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "0" }],
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("retains normal control repair when DNS already matches", async () => {
+      const fixture = compatibleFixture();
+      configureFault(fixture, "public control");
+      vi.stubEnv("SANDBOX_COMPUTER_DNS", "198.51.100.53");
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith({ force: true });
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).toHaveBeenCalledOnce();
+    });
+
+    it("enforces configuration requirements even when the image also differs", async () => {
+      const fixture = compatibleFixture();
+      configureFault(fixture, "public control");
+      fixture.info.Image = "previous-image";
+      expect((await provision()).status).toBe(409);
+      expect(fixture.existing.stop).toHaveBeenCalledOnce();
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+    });
 
     it.each([
       "generic bridge",
@@ -826,7 +1034,7 @@ describe("restricted egress rekeying", () => {
           error:
             failure === "inspection failure"
               ? "inspection unavailable"
-              : "Could not confirm the computer stopped for restricted egress.",
+              : "Could not confirm the computer stopped for configuration repair.",
         });
         expectNoAllocation(fixture);
       },
