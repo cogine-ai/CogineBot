@@ -653,6 +653,7 @@ model Run {
   leaseFence           Int              @default(0)
   leaseExpiresAt       DateTime?
   checkpoint           String?
+  scriptedState        Json?
   clientNonce          String?
   sourceMessageId      String?
   sourceMessage        Message?         @relation("RunSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)

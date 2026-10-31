@@ -831,40 +831,52 @@ export async function replaceComputer(
   }
 
   const oldRef = existing.providerRef ? toComputerRef(existing) : null;
+  let tornDown = false;
   try {
     // Retry the checkpoint even after an earlier update left the row in error.
     if (oldRef && (mode === "update" || (existing.state === "running" && mode === "recover"))) {
+      await onProgress?.("saving");
+      let revision: string | undefined;
+      let exported = false;
+      let stagingFailed = false;
       try {
-        await onProgress?.("saving");
-        const revision = await checkpointComputerWorkspace(
+        revision = await checkpointComputerWorkspace(
           deps.home,
           deps.sandbox,
           existing.homeKey,
           oldRef,
           context,
+          {
+            onExported: () => {
+              exported = true;
+            },
+            onStagingFailure: () => {
+              stagingFailed = true;
+            },
+          },
         );
+      } catch (error) {
+        // Recover can fall back when exporting fails. Staging and post-export
+        // failures must leave the old provider intact.
+        if (stagingFailed || exported || (!isSandboxGoneError(error) && mode !== "recover"))
+          throw error;
+      }
+      if (revision !== undefined) {
         const recorded = await deps.prisma.computer.updateMany({
           where: { id: computerId, state: "suspending", updatedAt: claimStamp },
           data: { homeRevision: revision, updatedAt: claimStamp },
         });
         if (recorded.count !== 1) throw new ComputerBusyError();
-      } catch (error) {
-        // A gone sandbox has nothing left to checkpoint; the replacement restores
-        // the last recorded revision instead of failing the whole replacement.
-        if (
-          !isSandboxGoneError(error) &&
-          (mode !== "recover" || error instanceof ComputerBusyError)
-        )
-          throw error;
       }
     }
     await onProgress?.("recreating");
+    tornDown = true;
     if (oldRef) {
       await deps.sandbox.releaseScreen?.(oldRef, context).catch(() => undefined);
       try {
         await deps.sandbox.destroy(oldRef, context);
       } catch (error) {
-        if (mode !== "recover" && !isSandboxGoneError(error)) throw error;
+        if (!isSandboxGoneError(error)) throw error;
       }
     }
     const stopped = await deps.prisma.computer.updateMany({
@@ -895,7 +907,7 @@ export async function replaceComputer(
           updatedAt: claimStamp,
           maintenanceId: existing.maintenanceId ?? null,
         },
-        data: { state: "error" },
+        data: { state: previousState === "running" && !tornDown ? "running" : "error" },
       })
       .catch(() => undefined);
     throw error;

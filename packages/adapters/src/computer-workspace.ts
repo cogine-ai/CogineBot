@@ -279,18 +279,37 @@ export async function checkpointComputerWorkspace(
   homeKey: string,
   computer: ComputerRef,
   context: AdapterContext,
+  options?: { onExported?: () => void; onStagingFailure?: () => void },
 ): Promise<string> {
   if (computer.kind === "docker" && home instanceof LocalAgentHomeStore) {
     return home.revise(homeKey);
   }
-  const staging = await mkdtemp(path.join(tmpdir(), "rakazo-workspace-"));
+  const failStaging: (error: unknown) => never = (error) => {
+    options?.onStagingFailure?.();
+    throw error;
+  };
+  let staging: string;
+  try {
+    staging = await mkdtemp(path.join(tmpdir(), "rakazo-workspace-"));
+  } catch (error) {
+    failStaging(error);
+  }
   try {
     for await (const file of sandbox.exportWorkspace(computer, context)) {
-      await writePortableFile(staging, file);
+      try {
+        await writePortableFile(staging, file);
+      } catch (error) {
+        failStaging(error);
+      }
     }
+    options?.onExported?.();
     return await home.commit(homeKey, staging, context);
   } finally {
-    await rm(staging, { recursive: true, force: true });
+    try {
+      await rm(staging, { recursive: true, force: true });
+    } catch (error) {
+      failStaging(error);
+    }
   }
 }
 

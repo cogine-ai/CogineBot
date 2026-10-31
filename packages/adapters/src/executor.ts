@@ -24,6 +24,8 @@ import type {
   NotificationMessage,
   NotificationProvider,
   SandboxProvider,
+  ScriptedRuntimeState,
+  ScriptedTurn,
   SecretStore,
   SemanticMemoryProvider,
   ToolResultHistoryReference,
@@ -33,6 +35,7 @@ import {
   DEFAULT_CONTEXT_STRATEGY,
   historyCompactJob,
   MEMORY_REVISION_CONFLICT_ERROR,
+  MemoryCommitIdentityError,
   routineJobKey,
   routineWakeupJob,
   runContinueJob,
@@ -89,6 +92,7 @@ import {
   renderBotDirectory,
   resolveActionApprovalDetail,
   sandboxCommandTimeoutMs,
+  sanitizeJsonValue,
   toolRequiresApproval,
   toolRequiresExplicitApproval,
   truncatedPlainText,
@@ -102,17 +106,19 @@ import {
   stableJsonValue,
   toolEffectIdempotencyKey,
 } from "@rakazo/core/node/approval-effect-key";
-import type { McpServer, Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   appendEventInTransaction,
   createSpaceForMember,
   createThreadMessageInTransaction,
   effectiveMemoryScope,
+  failScriptedRunPreservingSteering,
   findDefaultModelCredential,
   findModelCredential,
   InvalidSpaceNameError,
   isTooManyDatabaseConnections,
   loadRunHistoryMessages,
+  Prisma,
   parseComputerMode,
   readHistory,
   recordUsage,
@@ -363,7 +369,21 @@ import {
   removeScratchpadItemFromTool,
   updateScratchpadItemFromTool,
 } from "./scratchpad-tools.js";
+import {
+  commitScriptedFile,
+  ScriptedFileUncertainError,
+  verifyScriptedFileReceipt,
+} from "./scripted-file.js";
 import { inferScript } from "./scripted-runtime.js";
+import type { ScriptedOutputState, StoredScriptedState } from "./scripted-state.js";
+import {
+  ScriptedStateError,
+  ScriptedStateInvalidError,
+  scriptedStateDigest,
+  scriptedStateJson,
+  sealScriptedState,
+} from "./scripted-state.js";
+import { loadScriptedResume } from "./scripted-state-store.js";
 import {
   isRunningShellCommand,
   observeShellCommand,
@@ -414,6 +434,7 @@ import {
   finalBlocksAfterMidTurnProgress,
   isProgressMessageTruncated,
   isUserProgressClientNonce,
+  USER_PROGRESS_CLIENT_NONCE_PREFIX,
   userProgressClientNonce,
 } from "./user-progress.js";
 import { createWebProvider } from "./web-provider-factory.js";
@@ -3029,6 +3050,13 @@ export function isTerminalModelSetupError(error: unknown): boolean {
   );
 }
 
+class RunCompletionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunCompletionValidationError";
+  }
+}
+
 export function createRunExecutor(deps: ExecutorDeps) {
   const contextStrategy = deps.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
   const web = deps.web ?? createWebProvider();
@@ -3356,8 +3384,53 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
       if (isTerminal(run.status as RunStatus)) return;
+      // Admission must not inspect or terminate another worker's unexpired episode.
+      if (
+        (run.status === "running" || run.status === "leased") &&
+        (!run.leaseExpiresAt || run.leaseExpiresAt.getTime() > Date.now())
+      )
+        return;
       let { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume } =
         takeoverContinuePlan(run);
+      const scripted = deps.runtime.describe().capabilities.scripted;
+      const isSteeringContinuation =
+        scripted &&
+        (run.scriptedState !== null ||
+          ((run.trigger === "follow_up" || run.trigger === "messaging") &&
+            run.sourceMessageId !== null &&
+            (await deps.prisma.steeringMessage.findFirst({
+              where: { runId, messageId: run.sourceMessageId },
+              select: { id: true },
+            })) !== null));
+      let scriptedResume: Awaited<ReturnType<typeof loadScriptedResume>> = { held: false };
+      let scriptedFileReceipts: Array<{ id: string; status: string }> = [];
+      let scriptedAdmissionError:
+        | ScriptedStateInvalidError
+        | ScriptedFileUncertainError
+        | undefined;
+      if (isSteeringContinuation) {
+        try {
+          scriptedResume = await loadScriptedResume(deps.prisma, run, takeoverResume?.checkpoint);
+          scriptedFileReceipts = await deps.prisma.externalEffect.findMany({
+            where: { runId, spaceId: run.spaceId, kind: "scripted.file" },
+            select: { id: true, status: true },
+          });
+          if (scriptedFileReceipts.length && !scriptedResume.stored)
+            throw new ScriptedStateInvalidError();
+          const unsafe = scriptedFileReceipts.filter(
+            (effect) => effect.status !== "completed" && effect.status !== "intended",
+          );
+          if (unsafe.length) throw new ScriptedFileUncertainError();
+        } catch (error) {
+          if (
+            !(error instanceof ScriptedStateInvalidError) &&
+            !(error instanceof ScriptedFileUncertainError)
+          )
+            throw error;
+          scriptedAdmissionError = error;
+        }
+        if (!scriptedAdmissionError && scriptedResume.held) return;
+      }
       const settleTakeoverCards = async () => {
         if (!takeoverResume) return;
         await settleReleasedTakeoverCards(
@@ -3379,6 +3452,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
         where: {
           id: runId,
           ...continueRunClaimFence(run),
+          ...(isSteeringContinuation
+            ? {
+                leaseFence: run.leaseFence,
+                updatedAt: run.updatedAt,
+                scriptedState: {
+                  equals: run.scriptedState === null ? Prisma.DbNull : run.scriptedState,
+                },
+              }
+            : {}),
           OR: [
             { status: { in: ["queued", "waiting_input", "waiting_takeover"] } },
             {
@@ -3419,6 +3501,43 @@ export function createRunExecutor(deps: ExecutorDeps) {
         data: { status: "running", startedAt: current.startedAt ?? new Date() },
       });
       if (started.count !== 1) return;
+      if (isSteeringContinuation) {
+        // A former worker can finish its receipt transaction before this lease is won.
+        // Admission reads cannot authorize an effect; inspect the ledger under our fence.
+        scriptedFileReceipts = await deps.prisma.externalEffect.findMany({
+          where: { runId, spaceId: run.spaceId, kind: "scripted.file" },
+          select: { id: true, status: true },
+        });
+        if (scriptedAdmissionError instanceof ScriptedFileUncertainError)
+          scriptedAdmissionError = undefined;
+        if (scriptedFileReceipts.length && !scriptedResume.stored)
+          scriptedAdmissionError = new ScriptedStateInvalidError();
+        if (
+          scriptedFileReceipts.some(
+            (effect) => effect.status !== "completed" && effect.status !== "intended",
+          )
+        )
+          scriptedAdmissionError = new ScriptedFileUncertainError();
+      }
+      if (scriptedAdmissionError) {
+        const failed = await failScriptedRunPreservingSteering(deps.prisma, {
+          runId,
+          taskId: run.taskId,
+          threadId: run.threadId,
+          spaceId: run.spaceId,
+          botId: run.botId,
+          status: "running",
+          leaseOwner: workerId,
+          workerId,
+          leaseFence: fence,
+          error:
+            scriptedAdmissionError instanceof ScriptedFileUncertainError
+              ? scriptedAdmissionError.message
+              : "Scripted continuation progress could not be verified",
+        });
+        if (failed) await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
+        return;
+      }
       const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
         where: { id: run.botId },
         select: { computerId: true, computerSwitching: true },
@@ -3482,6 +3601,49 @@ export function createRunExecutor(deps: ExecutorDeps) {
       heartbeat.unref?.();
 
       const runSecrets = [...deps.secrets];
+      const parkScriptedProgress = async (error: unknown) => {
+        const failed = await failScriptedRunPreservingSteering(deps.prisma, {
+          runId,
+          taskId: run.taskId,
+          threadId: run.threadId,
+          spaceId: run.spaceId,
+          botId: run.botId,
+          status: "running",
+          leaseOwner: workerId,
+          workerId,
+          leaseFence: fence,
+          attemptId: attempt.id,
+          error: redactSecrets(error instanceof Error ? error.message : String(error), runSecrets),
+        });
+        if (failed) await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
+      };
+      const retainScriptedProgress = async () => {
+        await deps.prisma.$transaction(async (tx) => {
+          const retained = await tx.run.updateMany({
+            where: {
+              id: runId,
+              status: { in: ["leased", "running"] },
+              leaseOwner: workerId,
+              leaseFence: fence,
+            },
+            data: {
+              status: "queued",
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              error: "Scripted continuation progress could not be verified",
+            },
+          });
+          if (retained.count === 1)
+            await tx.attempt.updateMany({
+              where: { id: attempt.id, runId, fence, status: "running" },
+              data: {
+                status: "failed",
+                error: "Scripted continuation progress could not be verified",
+                finishedAt: new Date(),
+              },
+            });
+        });
+      };
       try {
         const sourceBlocks =
           run.trigger === "messaging" && run.sourceMessageId
@@ -4094,7 +4256,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // The intro turn confirms how a bot read its own role before anyone hands it
         // real work — it must not be able to act on that reading (shell, computer,
         // scheduling, spawning another bot, ...) before the user has assigned any task.
-        const scripted = deps.runtime.describe().capabilities.scripted;
         // Optional discovery must not block an independently configured active model.
         const helperChoices =
           !scripted &&
@@ -4122,8 +4283,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const approvedEffects = await deps.prisma.externalEffect.findMany({
           where: { runId, status: "approved" },
           orderBy: APPROVED_EFFECT_REPLAY_ORDER,
-          select: { kind: true, request: true },
+          select: { id: true, idempotencyKey: true, kind: true, request: true },
         });
+        if (
+          isSteeringContinuation &&
+          approvedEffects.some(
+            (effect) =>
+              effect.id !== scriptedResume.stored?.pendingEffect?.id ||
+              effect.idempotencyKey !== scriptedResume.stored.pendingEffect.idempotencyKey,
+          )
+        )
+          throw new ScriptedStateInvalidError();
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
         const baseComputerInstruction = persistentComputerInstruction({
           heldForTakeover,
@@ -4143,13 +4313,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? `Your Team Computer home is ${teamBotWorkspaceDirectory(bot.id)}. Relative file paths and shell working directories start there. Put intentionally shared work under shared/. Other bots' folders are visible under bots/; treat them as their working areas.`
             : "This entire computer workspace is your private home. Relative file paths and shell working directories start at its root.";
 
-        let assembled = "";
-        let currentTextSegment = "";
-        let messageSegments: MessageBlock[] = [];
+        const restoredOutput = scriptedResume.stored
+          ? redactScriptedOutput(scriptedResume.stored.output, runSecrets)
+          : undefined;
+        let assembled = restoredOutput?.assembled ?? "";
+        let currentTextSegment = restoredOutput?.currentTextSegment ?? "";
+        let messageSegments: MessageBlock[] = restoredOutput
+          ? structuredClone(restoredOutput.messageSegments)
+          : [];
+        let lastToolOrdinal = restoredOutput?.lastToolOrdinal ?? -1;
         // Terminal subagent rows are published as their own messages (not appended to
         // messageSegments). Treat that like tool/step durable activity so we do not invent
         // an empty-run "done." completion afterward.
-        let publishedTerminalSubagent = false;
+        let publishedTerminalSubagent = restoredOutput?.publishedTerminalSubagent ?? false;
         // Durable chat messages posted mid-turn (message_user / promoted narration).
         // Rehydrate from this run's prior progress rows so a resume after ask/takeover
         // still knows progress was already published (skip hollow finals; status outcome).
@@ -4182,7 +4358,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         // Tool calls that land mid-sentence wait here until the narration catches up to a
         // sentence boundary, so the step chips never render in the middle of a clause.
-        let pendingToolNames: string[] = [];
+        let pendingToolNames: string[] = restoredOutput ? [...restoredOutput.pendingToolNames] : [];
         const flushPendingTools = () => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
@@ -4207,6 +4383,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let handedOff = false;
         let progressRedactor = createStreamingRedactor(runSecrets);
         const script = scripted ? inferScript(task.prompt, takeoverResume?.checkpoint) : undefined;
+        let resolvedEffectScript: ScriptedTurn[] | undefined;
+        let scriptCompleted = false;
         const flushProgress = async () => {
           if (scripted || !pendingProgress || isBackgroundRunTrigger(run.trigger)) return;
           await deps.events.append({
@@ -4228,6 +4406,35 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const publishMidTurnNarration = async () => {
           const extracted = extractNarrationText(messageSegments, currentTextSegment);
           const narration = clampUserProgressMessage(redactSecrets(extracted.text, runSecrets));
+          if (
+            isSteeringContinuation &&
+            lastScriptedState &&
+            narration &&
+            runPromotesMidTurnNarration(run.trigger)
+          ) {
+            const cleared = {
+              ...snapshotScriptedOutput(),
+              assembled: "",
+              currentTextSegment: "",
+              messageSegments: extracted.remaining,
+            };
+            await publishDurableScriptedOutput(
+              [{ kind: "text", text: narration }],
+              undefined,
+              "narration",
+              cleared,
+            );
+            messageSegments = cleared.messageSegments;
+            currentTextSegment = "";
+            assembled = "";
+            hasStreamedText = false;
+            pendingProgress = "";
+            midTurnUserTexts.push(narration);
+            publishedMidTurnUserMessage = true;
+            midTurnProgressCount += 1;
+            return;
+          }
+          // Native runtimes keep their existing publication and progress nonce semantics.
           messageSegments = extracted.remaining;
           currentTextSegment = "";
           if (!narration) return;
@@ -4280,8 +4487,231 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return secretPausedToolResult();
         };
 
-        const mutatingEffectOccurrences = new Map<string, number>();
-        const consumedEffectIds = new Set<string>();
+        const mutatingEffectOccurrences = new Map<string, number>(
+          scriptedResume.stored?.effectOccurrences,
+        );
+        const consumedEffectIds = new Set<string>(scriptedResume.stored?.consumedEffectIds);
+        let lastScriptedState = scriptedResume.stored;
+        const snapshotScriptedOutput = (): ScriptedOutputState =>
+          redactScriptedOutput(
+            {
+              assembled,
+              currentTextSegment,
+              messageSegments: structuredClone(messageSegments),
+              pendingToolNames: [...pendingToolNames],
+              publishedTerminalSubagent,
+              lastToolOrdinal,
+            },
+            runSecrets,
+          );
+        const publishDurableScriptedOutput = async (
+          blocks: MessageBlock[],
+          markUnread: boolean | undefined,
+          kind: string,
+          output: ScriptedOutputState,
+        ) => {
+          if (!isSteeringContinuation || !lastScriptedState) throw new ScriptedStateInvalidError();
+          blocks = redactScriptedDeliveryBlocks(blocks, runSecrets);
+          // Cursor and delivery kind are stable when fresh steering is appended to the script.
+          const nonce = `${USER_PROGRESS_CLIENT_NONCE_PREFIX}${runId}:scripted:${scriptedStateDigest({ cursor: lastScriptedState.state.cursor, kind })}`;
+          const { digest: _digest, pause: _pause, ...body } = lastScriptedState;
+          const stored = sealScriptedState({
+            ...body,
+            attemptId: attempt.id,
+            fence,
+            output: redactScriptedOutput(output, runSecrets),
+          });
+          try {
+            context.signal.throwIfAborted();
+            const committed = await deps.prisma.$transaction(
+              async (tx) => {
+                // Match history/Stop/pause lock order: Thread, then the fenced Run.
+                await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
+                const updated = await tx.run.updateMany({
+                  where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+                  data: { scriptedState: scriptedStateJson(stored) },
+                });
+                if (updated.count !== 1) throw new ScriptedStateError();
+                const prior = await tx.message.findUnique({
+                  where: { threadId_clientNonce: { threadId: thread.id, clientNonce: nonce } },
+                });
+                if (prior) {
+                  if (
+                    prior.runId !== runId ||
+                    prior.botId !== bot.id ||
+                    prior.role !== "bot" ||
+                    scriptedStateDigest(prior.blocks) !== scriptedStateDigest(blocks)
+                  )
+                    throw new ScriptedStateInvalidError();
+                  return { eventSeq: undefined };
+                }
+                return persistMessageInTransaction(tx, run, "bot", blocks, markUnread, nonce);
+              },
+              { maxWait: 5_000, timeout: 20_000 },
+            );
+            lastScriptedState = stored;
+            if (committed.eventSeq !== undefined)
+              await deps.events.notify(thread.id, committed.eventSeq).catch((error) => {
+                getLogger().error("scripted output realtime notification", error);
+              });
+            context.signal.throwIfAborted();
+          } catch (error) {
+            if (error instanceof ScriptedStateInvalidError) throw error;
+            throw new ScriptedStateError();
+          }
+        };
+        const appendScriptedMemoryRevision = async (
+          turnIndex: number,
+          memoryIndex: number,
+          revision: { path: string; scope: "bot" | "user" },
+        ) => {
+          const id = `scripted-memory-revised:${runId}:${turnIndex}:${memoryIndex}`;
+          const payload = sanitizeJsonValue(revision);
+          try {
+            context.signal.throwIfAborted();
+            const event = await deps.prisma.$transaction(
+              async (tx) => {
+                await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} AND "spaceId" = ${run.spaceId} FOR UPDATE`;
+                const owned = await tx.$queryRaw<Array<{ id: string }>>`
+                  SELECT id FROM runs WHERE id = ${runId} AND "spaceId" = ${run.spaceId}
+                  AND "botId" = ${bot.id} AND "userId" = ${run.userId} AND status = 'running'
+                  AND "leaseOwner" = ${workerId} AND "leaseFence" = ${fence}
+                  AND "leaseExpiresAt" > ${new Date()} FOR UPDATE`;
+                if (owned.length !== 1) throw new ScriptedStateError();
+                const prior = await tx.event.findUnique({ where: { id } });
+                if (prior) {
+                  if (
+                    prior.spaceId !== run.spaceId ||
+                    prior.threadId !== thread.id ||
+                    prior.botId !== bot.id ||
+                    prior.runId !== runId ||
+                    prior.type !== "memory.revised" ||
+                    scriptedStateDigest(prior.payload) !== scriptedStateDigest(payload)
+                  )
+                    throw new ScriptedStateInvalidError();
+                  return prior;
+                }
+                return appendEventInTransaction(
+                  tx,
+                  {
+                    spaceId: run.spaceId,
+                    threadId: thread.id,
+                    botId: bot.id,
+                    type: "memory.revised",
+                    runId,
+                    payload,
+                  },
+                  id,
+                );
+              },
+              { maxWait: 5_000, timeout: 20_000 },
+            );
+            // A repeated hint catches clients up to the same durable event and sequence.
+            await deps.events.notify(event.threadId, event.seq).catch((error) => {
+              getLogger().error("scripted memory realtime notification", error);
+            });
+            context.signal.throwIfAborted();
+          } catch (error) {
+            if (error instanceof ScriptedStateInvalidError) throw error;
+            throw new ScriptedStateError();
+          }
+        };
+        const writeScriptedState = async (stored: StoredScriptedState) => {
+          try {
+            context.signal.throwIfAborted();
+            const updated = await deps.prisma.run.updateMany({
+              where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+              data: { scriptedState: scriptedStateJson(stored) },
+            });
+            if (updated.count !== 1) throw new ScriptedStateError();
+            lastScriptedState = stored;
+            context.signal.throwIfAborted();
+          } catch {
+            throw new ScriptedStateError();
+          }
+        };
+        const saveScriptedCheckpoint = async (state: ScriptedRuntimeState) => {
+          const samePending =
+            lastScriptedState?.pendingEffect &&
+            state.cursor.phase === "tool" &&
+            scriptedStateDigest(lastScriptedState.state.cursor) ===
+              scriptedStateDigest(state.cursor);
+          await writeScriptedState(
+            sealScriptedState({
+              kind: "scripted-state",
+              version: 2,
+              runId,
+              attemptId: attempt.id,
+              fence,
+              state,
+              output: snapshotScriptedOutput(),
+              effectOccurrences: [...mutatingEffectOccurrences],
+              consumedEffectIds: [...consumedEffectIds],
+              ...(samePending ? { pendingEffect: lastScriptedState!.pendingEffect } : {}),
+            }),
+          );
+        };
+        const pauseRunForInput = async (input: Parameters<ThreadEvents["pauseRunForInput"]>[0]) => {
+          try {
+            return await deps.events.pauseRunForInput(input);
+          } catch (error) {
+            if (isSteeringContinuation) throw new ScriptedStateError();
+            throw error;
+          }
+        };
+        const pauseRunForTakeover = async (
+          input: Parameters<ThreadEvents["pauseRunForTakeover"]>[0],
+        ) => {
+          try {
+            return await deps.events.pauseRunForTakeover(input);
+          } catch (error) {
+            if (isSteeringContinuation) throw new ScriptedStateError();
+            throw error;
+          }
+        };
+        const bindScriptedEffect = async (
+          effect: { id: string; kind: string; idempotencyKey: string; request: unknown },
+          executionId: string,
+        ) => {
+          if (!isSteeringContinuation || !lastScriptedState) return;
+          const cursor = lastScriptedState.state.cursor;
+          const call = lastScriptedState.state.script[cursor.turn]?.toolCalls?.[cursor.tool];
+          if (
+            cursor.phase !== "tool" ||
+            !call ||
+            executionId !== `${runId}:${call.name}:${cursor.ordinal}`
+          ) {
+            throw new ScriptedStateInvalidError();
+          }
+          const pendingEffect = {
+            id: effect.id,
+            kind: effect.kind,
+            idempotencyKey: effect.idempotencyKey,
+            requestDigest: scriptedStateDigest(effect.request),
+          };
+          if (
+            lastScriptedState.pendingEffect &&
+            scriptedStateDigest(lastScriptedState.pendingEffect) !==
+              scriptedStateDigest(pendingEffect)
+          ) {
+            throw new ScriptedStateInvalidError();
+          }
+          // Keep the pre-call occurrence map: this pending call must reuse its own key.
+          await writeScriptedState(
+            sealScriptedState({
+              kind: "scripted-state",
+              version: 2,
+              runId,
+              attemptId: attempt.id,
+              fence,
+              state: lastScriptedState.state,
+              output: snapshotScriptedOutput(),
+              effectOccurrences: lastScriptedState.effectOccurrences,
+              consumedEffectIds: lastScriptedState.consumedEffectIds,
+              pendingEffect,
+            }),
+          );
+        };
         const nextMutatingEffectOccurrence = (toolName: string, args: Record<string, unknown>) => {
           const fingerprint = toolEffectIdempotencyKey(runId, toolName, args);
           const occurrence = mutatingEffectOccurrences.get(fingerprint) ?? 0;
@@ -4608,6 +5038,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 executionId,
                 consumedEffectIds,
               );
+          if (applied) await bindScriptedEffect(applied.effect, executionId);
 
           const runAutoReview = async () => {
             if (!injectedReview && !checker) return;
@@ -4800,7 +5231,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return pauseForApproval();
             }
             await workspaceCheckpoint.flush();
-            const paused = await deps.events.pauseRunForInput({
+            const paused = await pauseRunForInput({
               spaceId: run.spaceId,
               threadId: run.threadId,
               botId: run.botId,
@@ -4808,6 +5239,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               attemptId: attempt.id,
               leaseOwner: workerId,
               leaseFence: fence,
+              ...(isSteeringContinuation && lastScriptedState
+                ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                : {}),
               blocks: [
                 buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
                   reviewReason,
@@ -6230,6 +6664,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
             }
             const recordedForAsk = await recordEffect(deps, run, name, effectKey, args);
+            await bindScriptedEffect(recordedForAsk.effect, executionId);
             const missingSecretAction = resolveMissingRunSecretAction(recordedForAsk.effect);
             if (missingSecretAction.action === "return") return missingSecretAction.result;
             if (connectionId) {
@@ -6285,7 +6720,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return pauseForSecret();
             }
             await workspaceCheckpoint.flush();
-            const paused = await deps.events.pauseRunForInput({
+            const paused = await pauseRunForInput({
               spaceId: run.spaceId,
               threadId: run.threadId,
               botId: run.botId,
@@ -6293,6 +6728,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               attemptId: attempt.id,
               leaseOwner: workerId,
               leaseFence: fence,
+              ...(isSteeringContinuation && lastScriptedState
+                ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                : {}),
               blocks: [
                 {
                   kind: "ask",
@@ -6482,14 +6920,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const truncated = isProgressMessageTruncated(rawMessage);
             await flushProgress();
             await publishMidTurnNarration();
-            await publishMessage(
-              deps,
-              run,
-              "bot",
-              [{ kind: "text", text }],
-              true,
-              userProgressClientNonce(run.id, midTurnProgressCount++),
-            );
+            if (isSteeringContinuation && lastScriptedState) {
+              await publishDurableScriptedOutput(
+                [{ kind: "text", text }],
+                true,
+                "message_user",
+                snapshotScriptedOutput(),
+              );
+              midTurnProgressCount += 1;
+            } else {
+              await publishMessage(
+                deps,
+                run,
+                "bot",
+                [{ kind: "text", text }],
+                true,
+                userProgressClientNonce(run.id, midTurnProgressCount++),
+              );
+            }
             midTurnUserTexts.push(text);
             publishedMidTurnUserMessage = true;
             return finish(
@@ -6844,6 +7292,37 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return;
         }
 
+        if (scriptedFileReceipts.length) {
+          const saved = scriptedResume.stored;
+          if (!saved) throw new ScriptedStateInvalidError();
+          const computer = await runComputer.get();
+          let verified = 0;
+          for (const [turnIndex, turn] of saved.state.script.entries()) {
+            for (const [fileIndex, file] of (turn.files ?? []).entries()) {
+              context.signal.throwIfAborted();
+              const status = await verifyScriptedFileReceipt(
+                deps.prisma,
+                {
+                  runId,
+                  spaceId: run.spaceId,
+                  workerId,
+                  leaseFence: fence,
+                  turnIndex,
+                  fileIndex,
+                  computer,
+                  file: {
+                    path: resolveBotWorkspacePath(computerMode, bot.id, file.path),
+                    content: new TextEncoder().encode(file.content),
+                  },
+                },
+                context,
+              );
+              if (status !== "missing") verified += 1;
+            }
+          }
+          if (verified !== scriptedFileReceipts.length) throw new ScriptedStateInvalidError();
+        }
+
         let fallbackModels: {
           provider: string;
           modelId: string;
@@ -6884,6 +7363,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               threadId: thread.id,
               runId,
               sourceMessageId: run.sourceMessageId,
+              ...(scripted ? { isSteeringContinuation } : {}),
+              ...(isSteeringContinuation
+                ? {
+                    scriptedState: scriptedResume.stored?.state,
+                    scriptedResume: scriptedResume.resume,
+                    onScriptCheckpoint: saveScriptedCheckpoint,
+                  }
+                : {}),
               onUsage: async (event) => {
                 await recordUsage(deps.prisma, event, {
                   spaceId: run.spaceId,
@@ -7005,6 +7492,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
               },
               resumeFromCheckpoint: takeoverResume?.checkpoint,
               script,
+              ...(scripted
+                ? {
+                    onScriptResolved: (resolved: ScriptedTurn[]) => {
+                      resolvedEffectScript = resolved;
+                      scriptCompleted = false;
+                    },
+                    onScriptCompleted: () => {
+                      scriptCompleted = true;
+                    },
+                  }
+                : {}),
               allowSilentEmpty: allowSilentEmptyRun,
               emptyResponseText,
               executeTool: scripted ? undefined : applyTool,
@@ -7046,60 +7544,58 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       runSecrets,
                     )
                   : Promise.resolve(undefined),
-              claimSteering: scripted
-                ? undefined
-                : async (seenIds) => {
-                    const steering = await deps.events.claimSteering({
-                      threadId: thread.id,
-                      botId: bot.id,
-                      runId,
-                      leaseOwner: workerId,
-                      leaseFence: fence,
-                      seenIds,
-                    });
-                    return Promise.all(
-                      steering.map(async (item) => {
-                        const { images, files, unavailableInstruction } =
-                          await settleSteeringAttachmentLoads(
-                            loadCurrentTurnImages(deps, item.blocks, context),
-                            deps.artifacts
-                              ? materializeCurrentTurnFiles(
-                                  {
-                                    prisma: deps.prisma,
-                                    artifacts: deps.artifacts,
-                                    sandbox: deps.sandbox,
-                                  },
-                                  item.blocks,
-                                  {
-                                    context,
-                                    computer: runComputer.get,
-                                    computerMode,
-                                    markWorkspaceDirty: workspaceCheckpoint.markDirty,
-                                  },
-                                )
-                              : Promise.resolve([]),
-                            item.blocks,
-                            context.signal,
-                          );
-                        workspaceCheckpoint.markFiles(files);
-                        const filesInstruction = currentTurnFilesInstruction(files);
-                        return {
-                          id: item.id,
-                          messageId: item.messageId,
-                          historyText: item.text,
-                          text: [
-                            await loadReplyContext(deps.prisma, thread.id, item.messageId),
-                            item.text,
-                            filesInstruction,
-                            unavailableInstruction,
-                          ]
-                            .filter(Boolean)
-                            .join("\n\n"),
-                          images,
-                        };
-                      }),
-                    );
-                  },
+              claimSteering: async (seenIds) => {
+                const steering = await deps.events.claimSteering({
+                  threadId: thread.id,
+                  botId: bot.id,
+                  runId,
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                  seenIds,
+                });
+                return Promise.all(
+                  steering.map(async (item) => {
+                    const { images, files, unavailableInstruction } =
+                      await settleSteeringAttachmentLoads(
+                        loadCurrentTurnImages(deps, item.blocks, context),
+                        deps.artifacts
+                          ? materializeCurrentTurnFiles(
+                              {
+                                prisma: deps.prisma,
+                                artifacts: deps.artifacts,
+                                sandbox: deps.sandbox,
+                              },
+                              item.blocks,
+                              {
+                                context,
+                                computer: runComputer.get,
+                                computerMode,
+                                markWorkspaceDirty: workspaceCheckpoint.markDirty,
+                              },
+                            )
+                          : Promise.resolve([]),
+                        item.blocks,
+                        context.signal,
+                      );
+                    workspaceCheckpoint.markFiles(files);
+                    const filesInstruction = currentTurnFilesInstruction(files);
+                    return {
+                      id: item.id,
+                      messageId: item.messageId,
+                      historyText: item.text,
+                      text: [
+                        await loadReplyContext(deps.prisma, thread.id, item.messageId),
+                        item.text,
+                        filesInstruction,
+                        unavailableInstruction,
+                      ]
+                        .filter(Boolean)
+                        .join("\n\n"),
+                      images,
+                    };
+                  }),
+                );
+              },
             },
             context,
           );
@@ -7180,7 +7676,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 label: redactSecrets(action.label, runSecrets),
               }));
               await workspaceCheckpoint.flush();
-              const paused = await deps.events.pauseRunForInput({
+              const paused = await pauseRunForInput({
                 spaceId: run.spaceId,
                 threadId: run.threadId,
                 botId: run.botId,
@@ -7188,6 +7684,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 attemptId: attempt.id,
                 leaseOwner: workerId,
                 leaseFence: fence,
+                ...(isSteeringContinuation && lastScriptedState
+                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                  : {}),
                 blocks: [
                   {
                     kind: "ask",
@@ -7220,14 +7719,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (assembled.trim()) {
                 const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
                 if (narration && runPromotesMidTurnNarration(run.trigger)) {
-                  await publishMessage(
-                    deps,
-                    run,
-                    "bot",
-                    [{ kind: "text", text: narration }],
-                    undefined,
-                    userProgressClientNonce(run.id, midTurnProgressCount++),
-                  );
+                  if (isSteeringContinuation && lastScriptedState) {
+                    await publishDurableScriptedOutput(
+                      [{ kind: "text", text: narration }],
+                      undefined,
+                      "takeover-narration",
+                      { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
+                    );
+                    midTurnProgressCount += 1;
+                  } else {
+                    await publishMessage(
+                      deps,
+                      run,
+                      "bot",
+                      [{ kind: "text", text: narration }],
+                      undefined,
+                      userProgressClientNonce(run.id, midTurnProgressCount++),
+                    );
+                  }
                   midTurnUserTexts.push(narration);
                   publishedMidTurnUserMessage = true;
                 } else if (narration) {
@@ -7237,18 +7746,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 hasStreamedText = false;
                 pendingProgress = "";
               }
-              await publishMessage(
-                deps,
-                run,
-                "bot",
-                [{ kind: "computer", state: "Needs you", text: safeReason }],
-                true,
-              );
+              if (!(isSteeringContinuation && lastScriptedState)) {
+                await publishMessage(
+                  deps,
+                  run,
+                  "bot",
+                  [{ kind: "computer", state: "Needs you", text: safeReason }],
+                  true,
+                );
+              }
               await workspaceCheckpoint.flush();
               if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
                 throw new Error("Computer lease expired before takeover");
               }
-              const paused = await deps.events.pauseRunForTakeover({
+              const paused = await pauseRunForTakeover({
                 spaceId: run.spaceId,
                 threadId: run.threadId,
                 botId: run.botId,
@@ -7258,6 +7769,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 leaseFence: fence,
                 reason: safeReason,
                 computerId: storedComputer.id,
+                ...(isSteeringContinuation && lastScriptedState
+                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                  : {}),
               });
               if (!paused) return;
               retainComputerLease = true;
@@ -7278,16 +7792,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (event.name !== "message_user") {
                 await publishMidTurnNarration();
               }
-              await deps.events.append({
-                spaceId: run.spaceId,
-                threadId: thread.id,
-                botId: bot.id,
-                type: "agent.tool.called",
-                runId,
-                payload: { name: event.name, executionId: event.executionId },
-              });
-              pendingToolNames.push(event.name);
-              tryFlushPendingTools();
+              let alreadyRepresented = false;
+              if (isSteeringContinuation && lastScriptedState) {
+                const cursor = lastScriptedState.state.cursor;
+                const call = lastScriptedState.state.script[cursor.turn]?.toolCalls?.[cursor.tool];
+                if (
+                  cursor.phase !== "tool" ||
+                  !call ||
+                  event.executionId !== `${runId}:${call.name}:${cursor.ordinal}` ||
+                  lastToolOrdinal > cursor.ordinal
+                ) {
+                  throw new ScriptedStateInvalidError();
+                }
+                alreadyRepresented = lastToolOrdinal === cursor.ordinal;
+                lastToolOrdinal = cursor.ordinal;
+              }
+              if (!alreadyRepresented) {
+                await deps.events.append({
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  type: "agent.tool.called",
+                  runId,
+                  payload: { name: event.name, executionId: event.executionId },
+                });
+                pendingToolNames.push(event.name);
+                tryFlushPendingTools();
+              }
               const loopGuard = advanceToolCallLoopGuard(toolCallStreak, event.name, event.args);
               toolCallStreak = loopGuard.streak;
               if (loopGuard.stuck) {
@@ -7401,23 +7932,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
               if (event.status === "completed" || event.status === "failed") {
                 publishedTerminalSubagent ||= !subagentMarksUnread(run.trigger, event.status);
-                await publishMessage(
-                  deps,
-                  run,
-                  "bot",
-                  [
-                    {
-                      kind: "subagent",
-                      agentId: event.agentId,
-                      name: event.name,
-                      task: safeTask,
-                      status: event.status,
-                      progress: safeProgress,
-                      result: safeResult,
-                    },
-                  ],
-                  subagentMarksUnread(run.trigger, event.status),
-                );
+                const blocks: MessageBlock[] = [
+                  {
+                    kind: "subagent",
+                    agentId: event.agentId,
+                    name: event.name,
+                    task: safeTask,
+                    status: event.status,
+                    progress: safeProgress,
+                    result: safeResult,
+                  },
+                ];
+                if (isSteeringContinuation && lastScriptedState) {
+                  await publishDurableScriptedOutput(
+                    blocks,
+                    subagentMarksUnread(run.trigger, event.status),
+                    `subagent:${event.agentId}:${event.status}`,
+                    snapshotScriptedOutput(),
+                  );
+                } else {
+                  await publishMessage(
+                    deps,
+                    run,
+                    "bot",
+                    blocks,
+                    subagentMarksUnread(run.trigger, event.status),
+                  );
+                }
               }
             } else if (event.type === "usage" && !event.accounted) {
               await recordUsage(deps.prisma, event, {
@@ -7444,23 +7985,55 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           runComputer.throwIfFailed();
           if (approvalPausePending || !leaseValid) return;
-          approvedEffectReplays.assertDrained();
+          try {
+            approvedEffectReplays.assertDrained();
+          } catch (error) {
+            if (isSteeringContinuation && scriptCompleted)
+              throw new RunCompletionValidationError(
+                error instanceof Error ? error.message : String(error),
+              );
+            throw error;
+          }
           pendingProgress += progressRedactor.finish();
           await flushProgress();
 
-          for (const turn of script ?? []) {
-            for (const file of turn.files ?? []) {
+          for (const [turnIndex, turn] of (
+            (scriptCompleted ? resolvedEffectScript : undefined) ?? []
+          ).entries()) {
+            for (const [fileIndex, file] of (turn.files ?? []).entries()) {
+              context.signal.throwIfAborted();
+              if (isSteeringContinuation && !(await renewRunLease(deps, runId, workerId, fence)))
+                throw new ScriptedStateError();
               workspaceCheckpoint.markDirty();
-              await deps.sandbox.writeFile(
-                await runComputer.get(),
-                {
-                  path: resolveBotWorkspacePath(computerMode, bot.id, file.path),
-                  content: new TextEncoder().encode(file.content),
-                },
-                context,
-              );
+              const computer = await runComputer.get();
+              const input = {
+                path: resolveBotWorkspacePath(computerMode, bot.id, file.path),
+                content: new TextEncoder().encode(file.content),
+              };
+              if (isSteeringContinuation) {
+                await commitScriptedFile(
+                  deps.prisma,
+                  deps.sandbox,
+                  {
+                    runId,
+                    spaceId: run.spaceId,
+                    workerId,
+                    leaseFence: fence,
+                    turnIndex,
+                    fileIndex,
+                    computer,
+                    file: input,
+                  },
+                  context,
+                );
+              } else {
+                await deps.sandbox.writeFile(computer, input, context);
+              }
             }
-            for (const mem of turn.memory ?? []) {
+            for (const [memoryIndex, mem] of (turn.memory ?? []).entries()) {
+              context.signal.throwIfAborted();
+              if (isSteeringContinuation && !(await renewRunLease(deps, runId, workerId, fence)))
+                throw new ScriptedStateError();
               await deps.memory.commit(
                 {
                   scope: mem.scope,
@@ -7469,17 +8042,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   content: mem.content,
                   sourceRunId: runId,
                   sourceThreadId: thread.id,
+                  ...(isSteeringContinuation
+                    ? { idempotencyKey: `scripted-memory:${runId}:${turnIndex}:${memoryIndex}` }
+                    : {}),
                 },
                 context,
               );
-              await deps.events.append({
-                spaceId: run.spaceId,
-                threadId: thread.id,
-                botId: bot.id,
-                type: "memory.revised",
-                runId,
-                payload: { path: mem.path, scope: mem.scope },
-              });
+              const payload = { path: mem.path, scope: mem.scope };
+              if (isSteeringContinuation) {
+                await appendScriptedMemoryRevision(turnIndex, memoryIndex, payload);
+              } else {
+                await deps.events.append({
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  type: "memory.revised",
+                  runId,
+                  payload,
+                });
+              }
             }
           }
 
@@ -7516,7 +8097,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? ""
             : redactSecrets(completionNotificationBody(silentReply.assembled, blocks), runSecrets);
           if (containsSecret(text, runSecrets)) {
-            throw new Error("refusing to persist a secret in the thread");
+            throw new RunCompletionValidationError("refusing to persist a secret in the thread");
           }
           // Tool steps succeeded and the only completion text is the synthetic
           // empty notice. That is a missed final answer or a swallowed provider
@@ -7526,7 +8107,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             !silentReply.assembled.trim() &&
             emptyDelegatedToolTurnShouldFail(completionBlocks)
           ) {
-            throw new Error(TOOL_STEPS_WITHOUT_RESPONSE);
+            throw new RunCompletionValidationError(TOOL_STEPS_WITHOUT_RESPONSE);
           }
           if (!(await renewRunLease(deps, runId, workerId, fence))) return;
           const botMessageOutcome =
@@ -7605,6 +8186,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().error("history.compact enqueue failed", error);
           }
         } catch (error) {
+          if (
+            error instanceof ScriptedStateInvalidError ||
+            error instanceof MemoryCommitIdentityError ||
+            error instanceof ScriptedFileUncertainError ||
+            (isSteeringContinuation && error instanceof RunCompletionValidationError)
+          ) {
+            await parkScriptedProgress(error);
+            return;
+          }
+          if (error instanceof ScriptedStateError || (isSteeringContinuation && scriptCompleted)) {
+            await retainScriptedProgress();
+            return;
+          }
           // A computer that could not start fails setup, as it did when every run started it.
           runComputer.throwIfFailed();
           if (!terminalCheckpointComplete) {
@@ -7652,6 +8246,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         }
       } catch (setupError) {
+        if (
+          setupError instanceof ScriptedStateInvalidError ||
+          setupError instanceof MemoryCommitIdentityError ||
+          setupError instanceof ScriptedFileUncertainError
+        ) {
+          await parkScriptedProgress(setupError);
+          return;
+        }
+        if (setupError instanceof ScriptedStateError) {
+          await retainScriptedProgress();
+          return;
+        }
         const computerBusy = setupError instanceof ComputerBusyError;
         const retryForever = computerBusy || isTooManyDatabaseConnections(setupError);
         const setupFailureMessage =
@@ -8598,6 +9204,39 @@ async function requeueComputerRun(
     ...runContinueJob(runId),
     availableAt: new Date(Date.now() + computerRetryDelay(fence)),
   });
+}
+
+function redactScriptedDeliveryBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[] {
+  return blocks.map((block) => {
+    if (block.kind === "text") return { ...block, text: redactSecrets(block.text, secrets) };
+    if (block.kind === "steps")
+      return {
+        ...block,
+        steps: block.steps.map((step) => ({ ...step, label: redactSecrets(step.label, secrets) })),
+      };
+    if (block.kind === "subagent")
+      return {
+        ...block,
+        agentId: redactSecrets(block.agentId, secrets),
+        name: redactSecrets(block.name, secrets),
+        task: redactSecrets(block.task, secrets),
+        ...(block.progress !== undefined
+          ? { progress: redactSecrets(block.progress, secrets) }
+          : {}),
+        ...(block.result !== undefined ? { result: redactSecrets(block.result, secrets) } : {}),
+      };
+    throw new ScriptedStateInvalidError();
+  });
+}
+
+function redactScriptedOutput(output: ScriptedOutputState, secrets: string[]): ScriptedOutputState {
+  return {
+    ...output,
+    assembled: redactSecrets(output.assembled, secrets),
+    currentTextSegment: redactSecrets(output.currentTextSegment, secrets),
+    messageSegments: redactScriptedDeliveryBlocks(output.messageSegments, secrets),
+    pendingToolNames: output.pendingToolNames.map((name) => redactSecrets(name, secrets)),
+  };
 }
 
 function redactBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[] {

@@ -21,6 +21,7 @@ export * from "./model-credentials.js";
 export * from "./readiness.js";
 export * from "./repos.js";
 export * from "./scope.js";
+export * from "./scripted-state-failure.js";
 export * from "./sessions.js";
 export * from "./spaces.js";
 export { loadThreadAttention } from "./thread-listing.js";

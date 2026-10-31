@@ -3,8 +3,11 @@ import type {
   AgentRunRequest,
   AgentRuntime,
   AgentRuntimeEvent,
+  ScriptedRuntimeState,
+  ScriptedTurn,
 } from "@rakazo/adapter-kit";
 import { abortableDelay, inferHandoffTargetName } from "@rakazo/core";
+import { composeScriptedTurns, parseScriptedState, scriptedStateDigest } from "./scripted-state.js";
 
 const running = new Map<string, AbortController>();
 
@@ -29,11 +32,34 @@ export class ScriptedAgentRuntime implements AgentRuntime {
     const controller = new AbortController();
     running.set(request.runId, controller);
     const signal = context?.signal ?? controller.signal;
+    const isAborted = () => signal.aborted || controller.signal.aborted;
     try {
       if (shouldFail(request.prompt)) {
         throw new Error("Scripted run failure");
       }
-      if (shouldHang(request.prompt)) {
+      if (signal.aborted || controller.signal.aborted) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+      const continuation = request.isSteeringContinuation === true;
+      // Ordinary scripts cannot interpret waiting messages; leave them for a continuation.
+      const steering = continuation
+        ? ((await request.claimSteering?.(
+            request.scriptedState?.batch.map((item) => item.id) ?? [],
+          )) ?? [])
+        : [];
+      if (signal.aborted || controller.signal.aborted) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+      const steeredPrompt = steering.length
+        ? steering.map((item) => item.historyText ?? item.text).join("\n")
+        : undefined;
+      const prompt = steeredPrompt ?? request.prompt;
+      if (shouldFail(prompt)) {
+        throw new Error("Scripted run failure");
+      }
+      if (shouldHang(prompt)) {
         // Long-running work happens on the computer, which starts it like any real run would.
         yield {
           type: "tool",
@@ -50,7 +76,25 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         yield { type: "done", text: "stopped" };
         return;
       }
-      const script = request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint);
+      if (
+        continuation &&
+        request.onScriptCheckpoint &&
+        (request.scriptedState || steering.length)
+      ) {
+        yield* runDurableScript(request, steering, isAborted);
+        return;
+      }
+      const script =
+        steeredPrompt !== undefined
+          ? steering
+              .flatMap((item) =>
+                inferScript(item.historyText ?? item.text, request.resumeFromCheckpoint),
+              )
+              .map((turn, index, turns) =>
+                turn.complete && index < turns.length - 1 ? { ...turn, complete: false } : turn,
+              )
+          : (request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint));
+      request.onScriptResolved?.(script);
       // Per-run call index so repeated tools (e.g. message_agent) get distinct
       // executionIds — delivery keys and effect replays key off this value.
       let toolCallSeq = 0;
@@ -61,9 +105,17 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         }
         if (turn.assistant) {
           yield { type: "progress", text: "working…", activity: true };
+          if (isAborted()) {
+            yield { type: "done", text: "stopped" };
+            return;
+          }
           yield { type: "text", text: turn.assistant };
         }
         for (const call of turn.toolCalls ?? []) {
+          if (isAborted()) {
+            yield { type: "done", text: "stopped" };
+            return;
+          }
           const executionId = `${request.runId}:${call.name}:${toolCallSeq++}`;
           if (call.name === "run_subagent") {
             const agentId = `${request.runId}:subagent`;
@@ -77,12 +129,20 @@ export class ScriptedAgentRuntime implements AgentRuntime {
               status: "running",
               progress: "working…",
             };
+            if (isAborted()) {
+              yield { type: "done", text: "stopped" };
+              return;
+            }
             yield {
               type: "tool",
               name: call.name,
               args: call.args,
               executionId,
             };
+            if (isAborted()) {
+              yield { type: "done", text: "stopped" };
+              return;
+            }
             yield {
               type: "subagent",
               agentId,
@@ -99,6 +159,10 @@ export class ScriptedAgentRuntime implements AgentRuntime {
             args: call.args,
             executionId,
           };
+        }
+        if (isAborted()) {
+          yield { type: "done", text: "stopped" };
+          return;
         }
         if (turn.ask) {
           yield {
@@ -123,17 +187,210 @@ export class ScriptedAgentRuntime implements AgentRuntime {
             provider: "scripted",
             model: "scripted",
           };
+          if (isAborted()) {
+            yield { type: "done", text: "stopped" };
+            return;
+          }
           yield { type: "done", text: turn.assistant };
+          if (!isAborted()) request.onScriptCompleted?.();
           return;
         }
       }
       yield { type: "text", text: "done." };
+      if (isAborted()) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
       yield { type: "done", text: "done." };
+      if (!isAborted()) request.onScriptCompleted?.();
     } finally {
       controller.abort();
       running.delete(request.runId);
     }
   }
+}
+
+async function* runDurableScript(
+  request: AgentRunRequest,
+  fresh: Awaited<ReturnType<NonNullable<AgentRunRequest["claimSteering"]>>>,
+  isAborted: () => boolean,
+): AsyncIterable<AgentRuntimeEvent> {
+  const prior = request.scriptedState ? structuredClone(request.scriptedState) : undefined;
+  let script: ScriptedTurn[] = prior ? [...prior.script] : [];
+  const owners = prior ? [...prior.owners] : [];
+  const batch = prior ? [...prior.batch] : [];
+  let cursor: ScriptedRuntimeState["cursor"] = prior
+    ? { ...prior.cursor }
+    : { turn: 0, tool: 0, ordinal: 0, phase: "turn" };
+  if (request.scriptedResume) {
+    const expected = request.scriptedResume === "answer" ? "ask" : "takeover";
+    if (!prior || cursor.phase !== expected) throw new Error("Invalid scripted resume boundary");
+    const response =
+      request.scriptedResume === "answer"
+        ? (request.script ?? inferScript(request.prompt))
+        : inferScript("", request.resumeFromCheckpoint);
+    const owner = owners[cursor.turn]!;
+    const index = cursor.turn + 1;
+    script.splice(index, 0, ...response);
+    owners.splice(index, 0, ...response.map(() => owner));
+    cursor = { turn: index, tool: 0, ordinal: cursor.ordinal, phase: "turn" };
+  }
+  for (const item of fresh) {
+    if (batch.some((entry) => entry.id === item.id || entry.messageId === item.messageId)) {
+      throw new Error("Duplicate scripted continuation member");
+    }
+    const text = item.historyText ?? item.text;
+    const turns = inferScript(text);
+    batch.push({
+      id: item.id,
+      messageId: item.messageId,
+      contentDigest: scriptedStateDigest(text),
+    });
+    script.push(...turns);
+    owners.push(...turns.map(() => item.id));
+  }
+  if (cursor.phase === "complete" && cursor.turn < script.length)
+    cursor = { ...cursor, phase: "turn" };
+  script = composeScriptedTurns(script);
+  let state: ScriptedRuntimeState = parseScriptedState(
+    {
+      version: 1,
+      runId: request.runId,
+      batch,
+      script,
+      owners,
+      scriptDigest: scriptedStateDigest(script),
+      cursor,
+    },
+    request.runId,
+  );
+  const save = async (next: ScriptedRuntimeState["cursor"]) => {
+    if (isAborted()) return false;
+    state = parseScriptedState({ ...state, cursor: next }, request.runId);
+    await request.onScriptCheckpoint!(structuredClone(state));
+    return !isAborted();
+  };
+  if (!(await save(state.cursor))) {
+    yield { type: "done", text: "stopped" };
+    return;
+  }
+  request.onScriptResolved?.(script);
+  for (let index = state.cursor.turn; index < script.length; index++) {
+    const turn = script[index]!;
+    const start = index === state.cursor.turn ? state.cursor : undefined;
+    if (isAborted()) {
+      yield { type: "done", text: "stopped" };
+      return;
+    }
+    if (!start || start.phase === "turn") {
+      if (turn.assistant) {
+        yield { type: "progress", text: "working…", activity: true };
+        if (isAborted()) {
+          yield { type: "done", text: "stopped" };
+          return;
+        }
+        yield { type: "text", text: turn.assistant };
+      }
+    }
+    const calls = turn.toolCalls ?? [];
+    let ordinal = state.cursor.ordinal;
+    for (let tool = start?.tool ?? 0; tool < calls.length; tool++) {
+      if (!(await save({ turn: index, tool, ordinal, phase: "tool" }))) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+      const call = calls[tool]!;
+      const executionId = `${request.runId}:${call.name}:${ordinal}`;
+      if (call.name === "run_subagent") {
+        const agentId = `${request.runId}:subagent`;
+        const name = String(call.args.name ?? "helper");
+        const task = String(call.args.task ?? request.prompt);
+        yield { type: "subagent", agentId, name, task, status: "running", progress: "working…" };
+        if (isAborted()) {
+          yield { type: "done", text: "stopped" };
+          return;
+        }
+        yield { type: "tool", name: call.name, args: structuredClone(call.args), executionId };
+        if (isAborted()) {
+          yield { type: "done", text: "stopped" };
+          return;
+        }
+        yield {
+          type: "subagent",
+          agentId,
+          name,
+          task,
+          status: "completed",
+          result: `done. i handled: ${task.slice(0, 180)}`,
+        };
+      } else {
+        yield { type: "tool", name: call.name, args: structuredClone(call.args), executionId };
+      }
+      ordinal++;
+      if (
+        !(await save({
+          turn: index,
+          tool: tool + 1,
+          ordinal,
+          phase: tool + 1 < calls.length ? "tool" : "after-tools",
+        }))
+      ) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+    }
+    if (isAborted()) {
+      yield { type: "done", text: "stopped" };
+      return;
+    }
+    if (turn.ask) {
+      if (!(await save({ turn: index, tool: calls.length, ordinal, phase: "ask" }))) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+      yield {
+        type: "ask",
+        text: turn.ask.text,
+        detail: turn.ask.detail,
+        actions: turn.ask.actions,
+      };
+      return;
+    }
+    if (turn.takeover) {
+      if (!(await save({ turn: index, tool: calls.length, ordinal, phase: "takeover" }))) {
+        yield { type: "done", text: "stopped" };
+        return;
+      }
+      yield { type: "takeover", reason: turn.takeover.reason };
+      return;
+    }
+    if (
+      !(await save({
+        turn: index + 1,
+        tool: 0,
+        ordinal,
+        phase: index + 1 === script.length ? "complete" : "turn",
+      }))
+    ) {
+      yield { type: "done", text: "stopped" };
+      return;
+    }
+  }
+  yield {
+    type: "usage",
+    inputTokens: 12,
+    outputTokens: 40,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    provider: "scripted",
+    model: "scripted",
+  };
+  if (isAborted()) {
+    yield { type: "done", text: "stopped" };
+    return;
+  }
+  yield { type: "done", text: script.at(-1)?.assistant ?? "done." };
+  if (!isAborted()) request.onScriptCompleted?.();
 }
 
 export function inferScript(

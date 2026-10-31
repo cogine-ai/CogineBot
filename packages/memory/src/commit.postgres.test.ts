@@ -102,6 +102,144 @@ describePostgres("memory commits (PostgreSQL)", () => {
   }
 
   it.each(["user", "bot"] as const)(
+    "replays an idempotent %s commit without overwriting a later revision",
+    async (scope) => {
+      const path = `idempotent-replay-${scope}.md`;
+      const write = {
+        ...request(path, "first"),
+        scope,
+        botId: scope === "bot" ? "memory-commit-bot" : undefined,
+        expectedRevision: 0,
+        idempotencyKey: `replay-${scope}`,
+      };
+      const first = await store.commit(write, context);
+      await store.commit(
+        { ...write, content: "later", expectedRevision: 1, idempotencyKey: `later-${scope}` },
+        context,
+      );
+
+      await expect(store.commit(write, context)).resolves.toEqual(first);
+      const current = await document(path);
+      expect(current).toMatchObject({ content: "later", revision: 2 });
+      expect(current.revisions.map(({ content }) => content)).toEqual(["first", "later"]);
+    },
+  );
+
+  it("does not append another idempotent revision after a committed reply is lost", async () => {
+    const path = "idempotent-lost-reply.md";
+    const write = { ...request(path, "original"), idempotencyKey: "lost-reply" };
+    const committed = await store.commit(write, context);
+    const recovered = await store.commit(write, context);
+    expect(recovered).toEqual(committed);
+    expect((await document(path)).revisions).toHaveLength(1);
+  });
+
+  it("keeps distinct idempotent intents even when their content is identical", async () => {
+    const path = "idempotent-distinct.md";
+    const write = { ...request(path, "same"), idempotencyKey: "intent-1" };
+    const first = await store.commit(write, context);
+    const second = await store.commit({ ...write, idempotencyKey: "intent-2" }, context);
+    const third = await store.commit(request(path, "same"), context);
+    const fourth = await store.commit(request(path, "same"), context);
+    expect([first.revision, second.revision, third.revision, fourth.revision]).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect((await document(path)).revisions).toHaveLength(4);
+  });
+
+  it.each([
+    { path: "other-idempotent-target.md" },
+    { content: "changed" },
+    { scope: "bot" as const, botId: "memory-commit-bot" },
+    { botId: "memory-commit-bot" },
+    { sourceRunId: "other-run" },
+    { sourceThreadId: "other-thread" },
+  ])("rejects an idempotent key reused for a changed request: %j", async (changed) => {
+    const suffix = Object.keys(changed)[0];
+    const path = `idempotent-mismatch-${suffix}.md`;
+    const write = { ...request(path, "original"), idempotencyKey: `mismatch-${suffix}` };
+    await store.commit(write, context);
+    await expect(store.commit({ ...write, ...changed }, context)).rejects.toThrow(
+      "Memory commit identity does not match its saved revision",
+    );
+    const current = await document(path);
+    expect(current).toMatchObject({ content: "original", revision: 1 });
+    expect(current.revisions).toHaveLength(1);
+    if (changed.path) {
+      expect(
+        await prisma.memoryDocument.count({
+          where: { spaceId: context.spaceId, path: changed.path },
+        }),
+      ).toBe(0);
+    }
+  });
+
+  it("namespaces an idempotent key by the caller's space and user", async () => {
+    const write = {
+      ...request("idempotent-namespace.md", "original"),
+      idempotencyKey: "namespace",
+    };
+    const first = await store.commit(write, context);
+    const other = await store.commit(write, { ...context, userId: "other-memory-user" });
+    expect(other.id).not.toBe(first.id);
+    expect(other.revision).toBe(1);
+    await expect(store.commit(write, context)).resolves.toEqual(first);
+  });
+
+  it("commits overlapping idempotent retries only once", async () => {
+    const path = "idempotent-overlap.md";
+    const write = { ...request(path, "original"), expectedRevision: 0, idempotencyKey: "overlap" };
+    const racing = concurrentStore();
+    const results = await Promise.all([
+      racing.commit(write, context),
+      racing.commit(write, context),
+    ]);
+    expect(results[1]).toEqual(results[0]);
+    expect((await document(path)).revisions).toHaveLength(1);
+  });
+
+  it("rejects overlapping idempotent requests with different contents", async () => {
+    const path = "idempotent-overlap-mismatch.md";
+    const write = { ...request(path, "original"), idempotencyKey: "overlap-mismatch" };
+    const racing = concurrentStore();
+    const results = await Promise.allSettled([
+      racing.commit(write, context),
+      racing.commit({ ...write, content: "changed" }, context),
+    ]);
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" && rejected.reason).toMatchObject({
+      message: "Memory commit identity does not match its saved revision",
+    });
+    expect((await document(path)).revisions).toHaveLength(1);
+  });
+
+  it("rolls back an idempotent commit when its receipt cannot be saved", async () => {
+    const path = "idempotent-rollback.md";
+    const write = { ...request(path, "original"), idempotencyKey: "rollback" };
+    const fault = new Error("receipt storage failed");
+    const failing = new MarkdownMemoryStore(
+      prisma.$extends({
+        query: {
+          memoryRevision: {
+            async create() {
+              throw fault;
+            },
+          },
+        },
+      }) as PrismaClient,
+    );
+    await expect(failing.commit(write, context)).rejects.toBe(fault);
+    expect(await prisma.memoryDocument.count({ where: { spaceId: context.spaceId, path } })).toBe(
+      0,
+    );
+    const first = await store.commit(write, context);
+    await expect(store.commit(write, context)).resolves.toEqual(first);
+    expect((await document(path)).revisions).toHaveLength(1);
+  });
+
+  it.each(["user", "bot"] as const)(
     "creates only at revision zero and rejects stale %s saves without adding history",
     async (scope) => {
       const path = `conditional-${scope}.md`;
