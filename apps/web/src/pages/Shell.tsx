@@ -7213,7 +7213,8 @@ const Transcript = memo(function Transcript({
     window.clearTimeout(jumpScrollTimer.current);
     jumpScrollTimer.current = window.setTimeout(endJumpScroll, 2_000);
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    row.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+    // Center synchronously so streamed layout updates cannot interrupt the jump.
+    row.scrollIntoView({ behavior: "auto", block: "center" });
     row.animate(
       reducedMotion
         ? [{ backgroundColor: "var(--muted)" }, { backgroundColor: "var(--muted)" }]

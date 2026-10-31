@@ -1819,6 +1819,55 @@ it.each(
 );
 
 it.each(
+  [false, true].flatMap((reducedMotion) =>
+    ["bot", "group"].map((kind) => ({ reducedMotion, kind })),
+  ),
+)(
+  "centers an admitted $kind message immediately, reduced motion=$reducedMotion",
+  async ({ kind, reducedMotion }) => {
+    window.matchMedia = (query) =>
+      ({
+        matches: query === "(prefers-reduced-motion: reduce)" && reducedMotion,
+        addEventListener() {},
+        removeEventListener() {},
+      }) as unknown as MediaQueryList;
+    const target = jumpSnapshot("chief", 20, "Done");
+    if (kind === "group") {
+      target.groupId = "ops";
+      delete target.botId;
+      target.threadId = "thread-ops";
+      target.messages = target.messages.map((message) => ({
+        ...message,
+        threadId: target.threadId,
+      }));
+      target.members = bootstrap().groups[0]!.members;
+    }
+    const get = deferred<ThreadSnapshot>();
+    const scrolled: Array<ScrollIntoViewOptions | boolean | undefined> = [];
+    Element.prototype.scrollIntoView = function (options) {
+      if (this.getAttribute("data-message-id") === "card") scrolled.push(options);
+    };
+    Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+    boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: null });
+    const fallback = boundary.call.getMockImplementation()!;
+    boundary.call.mockImplementation(async (path, input, options) => {
+      if (path === "threads.get") return get.promise;
+      if (path === "threads.messages") {
+        return { threadId: target.threadId, olderCursor: null, messages: target.messages };
+      }
+      return fallback(path, input, options);
+    });
+    await render(`${kind === "group" ? "/app/g/ops" : "/app/chief"}?m=card`);
+    expect(scrolled).toEqual([]);
+    await act(async () => get.resolve(target));
+    expect(scrolled).toContainEqual({ behavior: "auto", block: "center" });
+    expect(
+      scrolled.every((options) => typeof options === "object" && options.behavior === "auto"),
+    ).toBe(true);
+  },
+);
+
+it.each(
   (["thread.message.created", "thread.message.updated"] as const).flatMap((type) =>
     ["pre-clear", "known-fallback", "admitted"].flatMap((scenario) =>
       [false, true].map((inGroup) => ({ type, scenario, inGroup })),

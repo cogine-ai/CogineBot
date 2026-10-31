@@ -299,16 +299,20 @@ RAKAZO_IF_INET6="$inet6_global" RAKAZO_IPTABLES="$bin/iptables" \
 RAKAZO_IPTABLES="$bin/missing-iptables" RAKAZO_IP6TABLES="$bin/missing-ip6tables" \
   bash "$script" --apply && fail "--apply succeeded with no iptables binary" || true
 
-# Docs and Compose keep the flag and script wired together.
+# Docs, examples and every Compose variant keep both settings wired together.
 docs="$root/../../docs/self-host.md"
 grep -q 'restrict-computer-egress.sh' "$docs" || fail "self-host.md does not mention the script"
-grep -q 'SANDBOX_COMPUTER_EGRESS' "$docs" || fail "self-host.md does not document the flag"
-for compose in docker-compose.yml docker-compose.images.yml docker-compose.topology.yml; do
-  grep -q 'SANDBOX_COMPUTER_EGRESS' "$root/$compose" ||
-    fail "$compose does not pass SANDBOX_COMPUTER_EGRESS"
+for flag in SANDBOX_COMPUTER_EGRESS SANDBOX_COMPUTER_DNS; do
+  grep -q "$flag" "$docs" || fail "self-host.md does not document $flag"
+  for sample in "$root/../../.env.example" "$root/.env.images.example"; do
+    grep -Eq "^[[:space:]]*#?[[:space:]]*$flag=" "$sample" ||
+      fail "$(basename "$sample") lacks $flag"
+  done
+  for compose in docker-compose.yml docker-compose.images.yml docker-compose.topology.yml \
+    docker-compose.prod.docker.yml; do
+    grep -Eq "^[[:space:]]*['\"]?$flag['\"]?[[:space:]]*:" "$root/$compose" ||
+      fail "$compose does not pass $flag"
+  done
 done
-grep -q 'SANDBOX_COMPUTER_EGRESS' "$root/../../.env.example" || fail ".env.example lacks the flag"
-grep -q 'SANDBOX_COMPUTER_EGRESS' "$root/.env.images.example" ||
-  fail ".env.images.example lacks the flag"
 
 echo "restrict-computer-egress smoke checks passed."
