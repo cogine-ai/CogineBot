@@ -53,6 +53,7 @@ beforeEach(async () => {
   vi.stubEnv("HOSTNAME", "");
   vi.stubEnv("DATA_DIR", "/tmp/rakazo-loopback-test");
   vi.stubEnv("SANDBOX_SCREEN_NETWORK", "published");
+  vi.stubEnv("SANDBOX_COMPUTER_DNS", "");
   vi.stubEnv("SANDBOX_SCREEN_HOST", "127.0.0.1");
   screen = http.createServer((_req, res) => res.end("ok"));
   await new Promise<void>((resolve) => screen.listen(0, "127.0.0.1", resolve));
@@ -502,7 +503,7 @@ describe("restricted egress rekeying", () => {
         User: hostComputerUser(),
         Labels: { "rakazo.managed": "true", "rakazo.botId": "bot", "rakazo.spaceId": "space" },
       },
-      HostConfig: { NetworkMode: botNet, PortBindings: {} },
+      HostConfig: { NetworkMode: botNet, PortBindings: {}, Dns: undefined as string[] | undefined },
       State: { Running: false },
       NetworkSettings: {
         Ports: { "6080/tcp": [{ HostIp: "127.0.0.1", HostPort: screenPort }] },
@@ -514,6 +515,12 @@ describe("restricted egress rekeying", () => {
       inspect: vi.fn().mockResolvedValue(info),
       start: vi.fn().mockResolvedValue(undefined),
       remove: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(async () => {
+        info.State.Running = false;
+      }),
+      kill: vi.fn(async () => {
+        info.State.Running = false;
+      }),
     };
     const replacement = {
       id: "replacement",
@@ -527,7 +534,7 @@ describe("restricted egress rekeying", () => {
     mocks.docker.getContainer.mockReturnValue(existing);
     mocks.docker.listContainers.mockResolvedValue([{ Id: existing.id }]);
     mocks.docker.createContainer.mockResolvedValue(replacement);
-    return { homePath, existing, replacement };
+    return { homePath, existing, replacement, info };
   }
 
   async function provision() {
@@ -669,6 +676,247 @@ describe("restricted egress rekeying", () => {
     expect(mocks.docker.getContainer).toHaveBeenCalledWith(containerNameFor("bot"));
     expect(stop).toHaveBeenCalledWith({ t: 1 });
     expect(peer.stop).not.toHaveBeenCalled();
+  });
+
+  describe("restricted egress with deferred DNS", () => {
+    function runningFixture() {
+      vi.stubEnv("SANDBOX_COMPUTER_EGRESS", "restricted");
+      vi.stubEnv("SANDBOX_COMPUTER_DNS", "192.0.2.53");
+      const botNet = computerNetworkNameFor("bot");
+      const fixture = setupExisting(botNet);
+      fixture.info.State.Running = true;
+      fixture.info.HostConfig.Dns = ["198.51.100.53"];
+      let networkInfo:
+        | { Id: string; Options: Record<string, string>; Containers: Record<string, object> }
+        | undefined = { Id: "bot-network", Options: {}, Containers: { existing: {}, peer: {} } };
+      const network = {
+        inspect: vi.fn(async () => {
+          if (!networkInfo) throw Object.assign(new Error("no such network"), { statusCode: 404 });
+          return networkInfo;
+        }),
+        disconnect: vi.fn().mockResolvedValue(undefined),
+        connect: vi.fn().mockResolvedValue(undefined),
+        remove: vi.fn(async () => {
+          networkInfo = undefined;
+        }),
+      };
+      mocks.docker.getNetwork.mockReturnValue(network);
+      mocks.docker.createNetwork.mockImplementation(async (options) => {
+        if (networkInfo) throw new Error("network already exists");
+        networkInfo = { Id: "restricted-network", Options: options.Options, Containers: {} };
+        return network;
+      });
+      return {
+        ...fixture,
+        botNet,
+        network,
+        setNetwork: (value: typeof networkInfo) => {
+          networkInfo = value;
+        },
+      };
+    }
+
+    function expectNoAllocation(fixture: ReturnType<typeof runningFixture>) {
+      expect(fixture.existing.remove).not.toHaveBeenCalled();
+      expect(fixture.existing.start).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).not.toHaveBeenCalled();
+      expect(mocks.docker.createNetwork).not.toHaveBeenCalled();
+      expect(fixture.network.connect).not.toHaveBeenCalled();
+      expect(fixture.network.disconnect).not.toHaveBeenCalled();
+      expect(fixture.network.remove).not.toHaveBeenCalled();
+      expect(mocks.assertHomeWritable).not.toHaveBeenCalled();
+      expect(mocks.docker.getContainer).not.toHaveBeenCalledWith("peer");
+    }
+
+    it.each([
+      "generic bridge",
+      "default bridge",
+      "old network",
+      "missing network",
+      "missing endpoint",
+    ])("stops an unsafe running computer before DNS conflict: %s", async (topology) => {
+      const fixture = runningFixture();
+      if (topology !== "generic bridge") {
+        fixture.setNetwork({
+          Id: "bot-network",
+          Options: { "com.docker.network.bridge.name": computerBridgeNameFor("bot") },
+          Containers: { peer: {} },
+        });
+      }
+      if (topology === "default bridge") fixture.info.HostConfig.NetworkMode = "bridge";
+      if (topology === "old network") fixture.info.HostConfig.NetworkMode = "old-network";
+      if (topology === "missing network") fixture.setNetwork(undefined);
+      if (topology === "missing endpoint") fixture.info.NetworkSettings.Networks = {};
+      const response = await provision();
+      expect(response.status).toBe(409);
+      expect(fixture.existing.stop).toHaveBeenCalledExactlyOnceWith({ t: 1 });
+      expect(fixture.existing.kill).not.toHaveBeenCalled();
+      expect(fixture.info.State.Running).toBe(false);
+      expect(fixture.existing.inspect.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+        fixture.existing.stop.mock.invocationCallOrder[0]!,
+      );
+      expectNoAllocation(fixture);
+    });
+
+    it("uses the existing kill fallback and verifies stopped state", async () => {
+      const fixture = runningFixture();
+      fixture.existing.stop.mockRejectedValue(new Error("stop unavailable"));
+      expect((await provision()).status).toBe(409);
+      expect(fixture.existing.kill).toHaveBeenCalledOnce();
+      expect(fixture.existing.inspect.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+        fixture.existing.kill.mock.invocationCallOrder[0]!,
+      );
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+    });
+
+    it.each(["still running", "unknown state", "missing state", "inspection failure"])(
+      "does not confirm quarantine with %s",
+      async (failure) => {
+        const fixture = runningFixture();
+        let stopped = false;
+        fixture.existing.stop.mockImplementation(async () => {
+          stopped = true;
+        });
+        fixture.existing.inspect.mockImplementation(async () => {
+          if (!stopped) return fixture.info;
+          if (failure === "inspection failure") throw new Error("inspection unavailable");
+          if (failure === "unknown state") return { ...fixture.info, State: {} };
+          if (failure === "missing state") return { ...fixture.info, State: undefined };
+          return fixture.info;
+        });
+        const response = await provision();
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({
+          error:
+            failure === "inspection failure"
+              ? "inspection unavailable"
+              : "Could not confirm the computer stopped for restricted egress.",
+        });
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it("surfaces failure when both stop and kill leave the computer running", async () => {
+      const fixture = runningFixture();
+      fixture.existing.stop.mockRejectedValue(new Error("stop unavailable"));
+      fixture.existing.kill.mockRejectedValue(new Error("kill unavailable"));
+      expect((await provision()).status).toBe(500);
+      expect(fixture.existing.kill).toHaveBeenCalledOnce();
+      expect(fixture.info.State.Running).toBe(true);
+      expectNoAllocation(fixture);
+    });
+
+    it.each([false, true])(
+      "preserves an already restricted running computer, stale image=%s",
+      async (stale) => {
+        const fixture = runningFixture();
+        fixture.setNetwork({
+          Id: "bot-network",
+          Options: { "com.docker.network.bridge.name": computerBridgeNameFor("bot") },
+          Containers: { existing: {} },
+        });
+        if (stale) fixture.info.Image = "previous-image";
+        const response = await provision();
+        expect(response.status).toBe(stale ? 409 : 200);
+        expect(fixture.existing.stop).not.toHaveBeenCalled();
+        expect(fixture.existing.kill).not.toHaveBeenCalled();
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it.each(["open", "internal"])(
+      "does not introduce a security stop for %s topology",
+      async (mode) => {
+        const fixture = runningFixture();
+        fixture.info.Image = "previous-image";
+        if (mode === "open") vi.stubEnv("SANDBOX_COMPUTER_EGRESS", "open");
+        else vi.stubEnv("SANDBOX_SCREEN_NETWORK", "internal");
+        expect((await provision()).status).toBe(409);
+        expect(fixture.existing.stop).not.toHaveBeenCalled();
+        expect(fixture.existing.kill).not.toHaveBeenCalled();
+        expectNoAllocation(fixture);
+      },
+    );
+
+    it("adopts DNS and preserves home on the subsequent stopped provision", async () => {
+      const fixture = runningFixture();
+      expect((await provision()).status).toBe(409);
+      expect(fixture.info.State.Running).toBe(false);
+      expectNoAllocation(fixture);
+      const response = await provision();
+      expect(response.status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith();
+      expect(mocks.docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          HostConfig: expect.objectContaining({
+            Dns: ["192.0.2.53"],
+            Binds: [`${fixture.homePath}:/home/rakazo`],
+          }),
+        }),
+      );
+    });
+
+    it("retains the existing restricted-network migration when DNS already matches", async () => {
+      const fixture = runningFixture();
+      vi.stubEnv("SANDBOX_COMPUTER_DNS", "198.51.100.53");
+      expect((await provision()).status).toBe(200);
+      expect(fixture.existing.remove).toHaveBeenCalledExactlyOnceWith({ force: true });
+      expect(fixture.existing.stop).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).toHaveBeenCalledOnce();
+    });
+
+    it("waits for an ordinary stop and rechecks state without stopping twice", async () => {
+      const fixture = runningFixture();
+      fixture.existing.inspect.mockImplementation(async () => structuredClone(fixture.info));
+      let enterStop!: () => void;
+      let releaseStop!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enterStop = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      fixture.existing.stop.mockImplementation(async () => {
+        enterStop();
+        await released;
+        fixture.info.State.Running = false;
+      });
+      Object.assign(fixture.existing, {
+        exec: vi.fn(async () => ({
+          start: async () => Readable.from([]),
+          inspect: async () => ({ ExitCode: 0 }),
+        })),
+      });
+      const { supervisorApp } = await import("./index.js");
+      const ordinaryStop = supervisorApp.request("/computers/existing/stop", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+          "x-rakazo-bot-id": "bot",
+          "x-rakazo-space-id": "space",
+        },
+      });
+      await entered;
+      let migrationSettled = false;
+      const migration = provision().then((response) => {
+        migrationSettled = true;
+        return response;
+      });
+      try {
+        await vi.waitFor(() => expect(mocks.docker.getNetwork).toHaveBeenCalled());
+        expect(migrationSettled).toBe(false);
+      } finally {
+        releaseStop();
+      }
+      const [stopped, conflict] = await Promise.all([ordinaryStop, migration]);
+      expect(stopped.status).toBe(200);
+      expect(conflict.status).toBe(409);
+      expect(fixture.existing.stop).toHaveBeenCalledOnce();
+      expect(fixture.existing.kill).not.toHaveBeenCalled();
+      expect(fixture.existing.remove).not.toHaveBeenCalled();
+      expect(mocks.docker.createContainer).not.toHaveBeenCalled();
+    });
   });
 });
 

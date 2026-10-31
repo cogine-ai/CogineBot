@@ -238,14 +238,16 @@ app.post("/computers", async (c) => {
           computerEgressMode !== "restricted" ||
           botNetworkInfo?.Options?.["com.docker.network.bridge.name"] ===
             computerBridgeNameFor(body.botId);
+        const networkMatches =
+          !networkMode ||
+          (info.HostConfig.NetworkMode === networkMode &&
+            (reconnect || Boolean(info.NetworkSettings?.Networks?.[networkMode])));
         if (
           info.Image === desired.Id &&
           // A named-network container must also still be attached: a network
           // deleted mid-recreate leaves HostConfig.NetworkMode set while
           // NetworkSettings is empty, and resuming that yields no connectivity.
-          (!networkMode ||
-            (info.HostConfig.NetworkMode === networkMode &&
-              (reconnect || Boolean(info.NetworkSettings?.Networks?.[networkMode])))) &&
+          networkMatches &&
           restrictedBridgeOk &&
           info.Config.User === computerUser &&
           // Keep running work on its existing DNS until a saved, stopped computer can be replaced.
@@ -266,6 +268,24 @@ app.post("/computers", async (c) => {
           });
         }
         if (info.State.Running && !dnsMatches) {
+          if (
+            botNetwork &&
+            computerEgressMode === "restricted" &&
+            (!networkMatches || !restrictedBridgeOk)
+          ) {
+            // Deferring DNS must not preserve a running computer outside the selected egress policy.
+            await withComputerScreenLock(existing.id, async () => {
+              let stopped = await existing.inspect();
+              if (stopped.State?.Running !== false) {
+                await stopContainer(existing);
+                stopped = await existing.inspect();
+              }
+              if (stopped.State?.Running !== false) {
+                throw new Error("Could not confirm the computer stopped for restricted egress.");
+              }
+              clearComputerScreenRegistry(computerScreens, computerScreenBoots, existing.id);
+            });
+          }
           return c.json(
             { error: "Computer DNS changes require a stopped computer before replacement." },
             409,
