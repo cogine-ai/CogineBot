@@ -442,14 +442,113 @@ overlay that runs local Docker computers on the same stack (see below). The root
 sidecar is an explicit opt-in profile.
 
 Before deploying to a new Ubuntu host, create and verify a key-only `deploy` account, then apply the
-idempotent host-hardening baseline. It disables SSH passwords and root login, rate-limits SSH, allows
-only SSH/HTTP/HTTPS through UFW, enables fail2ban, unattended security updates, AppArmor, audit rules,
+host-hardening baseline. It disables SSH passwords and root login, rate-limits SSH, allows
+the SSH/HTTP/HTTPS baseline through UFW, enables fail2ban,
+unattended security updates, AppArmor, audit rules,
 and conservative kernel/network protections. Keep the provider console open until a fresh SSH login
 succeeds after the script reloads SSH.
 
 ```bash
-sudo DEPLOY_USER=deploy bash infra/compose/harden-host.sh
+sudo --preserve-env=SSH_CONNECTION DEPLOY_USER=deploy bash infra/compose/harden-host.sh
 ```
+
+Hardening stops before package installation or host-setting changes if any saved UFW rules exist,
+including inactive rules, private allows or rules from an earlier hardening run. An empty
+`LC_ALL=C ufw show added` report is not proof of empty policy: any nonempty `user[6].rules`,
+`before[6].rules`, `after[6].rules`, `before.init`, `after.init` or known legacy user-rule file
+requires explicit preservation acknowledgment. This deliberately includes packaged baseline content;
+the script does not classify rule safety. Byte-empty raw files
+still require the exact no-rules report; missing required user-rule files, unsafe or unreadable paths
+and an unknown or failed audit stop the default run. Retained configuration without the UFW command requires
+manual review. A new host without UFW or retained configuration can proceed to installation.
+
+Review every existing rule before explicitly choosing to preserve them all:
+
+```bash
+sudo ufw show added
+sudo --preserve-env=SSH_CONNECTION DEPLOY_USER=deploy PRESERVE_EXISTING_UFW_RULES=1 bash infra/compose/harden-host.sh
+```
+
+`PRESERVE_EXISTING_UFW_RULES` accepts only `0` (the default) or `1`. The acknowledgment preserves
+supported existing rules as operator-approved exceptions, including public allows. Before host changes,
+nonempty `user.rules` and `user6.rules` must round-trip byte-for-byte through the installed UFW 0.36.2
+formatter in temporary staging, including saved IPv6 rules when IPv6 is disabled. This rejects handwritten
+or mixed content the CLI would discard, and fails closed for unsupported versions, layouts or formatter
+errors. The same backend models the baseline additions and rejects any that would replace or reorder
+an existing registered rule, including saved IPv6 rules. One narrow exception permits the unchanged
+UFW 0.36.2 `user.rules` and `user6.rules` package templates, whose first CLI write adds formatter
+sections. Each saved file must match its corresponding known template bytes and the installed copy
+under `/usr/share/ufw/iptables`; that directory, every ancestor and the template must be root-owned,
+not group/world-writable and free of symbolic links. Modified or unsupported package templates fail
+closed. This exception only applies to the acknowledged user-file serialization check: a stock host's
+nonempty rules and hooks still stop the default run and require `PRESERVE_EXISTING_UFW_RULES=1`.
+The checked package is not upgraded during
+this hardening run, and the check runs again before firewall commands. Nonempty legacy user-rule
+files require manual migration. Raw rules in `before[6].rules`,
+`after[6].rules` and initialization hooks still require operator review; UFW's default-policy command may
+update logging prefixes in the after files. This is rule preservation, not a byte-identical snapshot.
+Default deny and the new SSH
+limit do not override earlier allows. The acknowledgment never overrides the directory and saved-file
+safety checks; configuration paths must be root-owned and not group/world-writable, including nested UFW configuration. Unsafe or unreadable paths stop hardening before package installation or configuration writes.
+Inspect saved IPv6 rules too when UFW IPv6 is disabled, because
+the report omits them. Hardening does not reset, delete or reorder existing rules. Repeat runs need
+the same explicit acknowledgment once saved rules exist. This admission applies to host hardening;
+the generic guarded command below remains an operator-controlled command.
+
+Host hardening installs the root-owned `/usr/local/sbin/rakazo-firewall-change` helper. Its UFW edits
+run only after a 180-second systemd rollback and persistent boot recovery are armed; the change
+command has a 120-second timeout and a five-second termination grace period. Apply and confirm
+require a root SSH session. The helper requires GNU coreutils,
+findutils, GNU tar, util-linux `flock`, systemd and UFW, and at least 100 MiB free on both the UFW and
+state filesystems. Its fixed state directory is `/var/lib/rakazo/firewall-change` (mode 700). State
+files must be root-owned, single-link regular files with mode 600. Unsafe configuration links,
+special files or writable rules are refused before a change.
+The UFW directory, its descendants and `/etc/default/ufw` must not be mountpoints: bind mounts there
+cannot be replaced during recovery. A normal filesystem mounted at `/etc` is supported. Mounts
+introduced after arming cause recovery to stop with pending state retained for console inspection.
+
+An identical installed helper is reused. If its content differs, hardening stops before package or
+host-setting changes. Finish or recover any pending firewall operation using the existing helper,
+verify the timer and state are clear, then install the reviewed replacement manually before rerunning
+hardening. An armed callback must not be replaced during an operation.
+
+Before each apply, the helper installs or verifies the protected
+`/etc/systemd/system/rakazo-firewall-recovery.service` and its persistent boot enablement. A different
+unit, override, unsafe installation path or unverified enablement refuses the firewall command. The helper prints a recovery command before publishing a pending token; if setup fails, use that command to restore and clear the pending change before retrying. A same-boot recovery check keeps the pending generation intact and does not claim its timer is active.
+The snapshot, state, helper and boot enablement are flushed before the command runs. After a reboot,
+the oneshot runs after UFW startup and the required filesystems are mounted, without an SSH session.
+It takes the same lock and restores an unconfirmed change saved by an earlier boot. A saved boot
+identity prevents a delayed boot callback from undoing a newer current-boot change. No pending token
+or an already committed confirmation causes no rollback. Do not disable or replace the service
+while recovery is pending. An isolated reboot recovery drill remains necessary before relying on it.
+
+After applying, keep the original connection and provider console open. Establish another SSH
+connection, verify access and run the exact confirmation command and token printed by the helper.
+Preserve `SSH_CONNECTION` through sudo. Confirming from the original connection is refused. Only
+deployment operators run this helper; it is not a Bot or API tool.
+
+For later UFW edits, use `sudo --preserve-env=SSH_CONNECTION /usr/local/sbin/rakazo-firewall-change
+apply COMMAND [ARGS...]`. Failed preparation or unconfirmed timer scheduling does not execute the
+command. An ambiguous scheduling result retains the snapshot and token; inspect the timer and use
+`rollback TOKEN` for recovery rather than deleting state or starting another change. Command errors
+and signals leave the rollback armed. The callback restores the prior UFW files and enabled state;
+new unconfirmed files inside `/etc/ufw` are removed, while other `/etc/default` files are preserved.
+It does not undo SSH, sysctl, package, Docker or arbitrary command side effects. Console recovery and
+an isolated fresh-SSH/rollback drill remain necessary before relying on this on a host.
+
+Confirmation commits by atomically recording the token before cancelling the timer. A callback that
+already fired rechecks that record under the same lock and does not undo a confirmed change. If
+timer cancellation or state cleanup fails after that commit, confirmation succeeds with a cleanup
+warning; repeat `confirm TOKEN` from the verified connection. A new apply is refused while the old
+token remains. After reboot, confirmation cleanup accepts a vanished timer only when its absence
+is verified, so the committed token can be retired and a later change admitted. A pre-commit
+confirmation failure leaves the pending rollback in place.
+If flushing the confirmation record fails before cleanup, the helper reports that confirmation is
+committed but durability is unverified; it retains the pending token and skips timer cleanup.
+Repeat `confirm TOKEN` to retry the flush. Recovery flushes restored UFW files before retiring the
+token. If a final state flush fails after token retirement, the helper reports that retirement
+already happened. Retry `confirm TOKEN` for a committed confirmation, or
+`sudo /usr/local/sbin/rakazo-firewall-change recover` for a completed restoration.
 
 The production host also uses `infra/compose/docker-daemon.json` to enable live restore, bounded local
 container logs, default no-new-privileges, and the kernel NAT path instead of Docker's userland proxy.
