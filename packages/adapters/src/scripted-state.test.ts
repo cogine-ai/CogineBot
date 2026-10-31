@@ -59,11 +59,19 @@ function fixture(): ScriptedRuntimeState {
 function storedFixture(): StoredScriptedState {
   return sealScriptedState({
     kind: "scripted-state",
-    version: 1,
+    version: 2,
     runId: RUN_ID,
     attemptId: "attempt-paused",
     fence: 3,
     state: fixture(),
+    output: {
+      assembled: "",
+      currentTextSegment: "",
+      messageSegments: [],
+      pendingToolNames: [],
+      publishedTerminalSubagent: false,
+      lastToolOrdinal: -1,
+    },
     effectOccurrences: [
       [FIRST_KEY, 1],
       [PENDING_KEY, 0],
@@ -259,7 +267,7 @@ describe("stored scripted continuation envelope", () => {
 
   const corruptions: Array<[string, (value: StoredScriptedState) => Record<string, unknown>]> = [
     ["another envelope kind", (value) => ({ ...value, kind: "other" })],
-    ["another envelope version", (value) => ({ ...value, version: 2 })],
+    ["another envelope version", (value) => ({ ...value, version: 3 })],
     ["another envelope run", (value) => ({ ...value, runId: "run-other" })],
     ["empty writer attempt", (value) => ({ ...value, attemptId: "" })],
     ["zero lease fence", (value) => ({ ...value, fence: 0 })],
@@ -406,5 +414,146 @@ describe("stored scripted continuation envelope", () => {
     expect(() => parseStoredScriptedState({ ...value, digest: "0".repeat(64) }, RUN_ID)).toThrow(
       ERROR,
     );
+  });
+
+  it("rejects a legacy v1 envelope whose output progress is unavailable", () => {
+    const legacy = reseal({ ...storedFixture(), version: 1, output: undefined });
+    expect(() => parseStoredScriptedState(legacy, RUN_ID)).toThrow(ERROR);
+  });
+
+  it("retains redacted prefix output, ordered steps and repeated pending tool names", () => {
+    const value = reseal({
+      ...storedFixture(),
+      output: {
+        assembled: "Prefix [redacted]. Still working",
+        currentTextSegment: "Still working",
+        messageSegments: [
+          { kind: "text", text: "Prefix [redacted]." },
+          { kind: "steps", steps: [{ label: "Ran command", count: 2 }], durationMs: 4 },
+        ],
+        pendingToolNames: ["shell", "shell"],
+        publishedTerminalSubagent: true,
+        lastToolOrdinal: 1,
+      },
+    });
+    expect(parseStoredScriptedState(reverseObjectKeys(value), RUN_ID)).toEqual(value);
+  });
+
+  it("allows only completed-tool ordinals outside a pending tool boundary", () => {
+    const value = storedFixture();
+    const completed = reseal({
+      ...value,
+      pendingEffect: undefined,
+      state: {
+        ...value.state,
+        cursor: { turn: 3, tool: 0, ordinal: 2, phase: "complete" },
+      },
+      output: { ...value.output, lastToolOrdinal: 1 },
+    });
+    expect(parseStoredScriptedState(completed, RUN_ID)).toEqual(completed);
+    expect(() =>
+      parseStoredScriptedState(
+        reseal({ ...completed, output: { ...value.output, lastToolOrdinal: 2 } }),
+        RUN_ID,
+      ),
+    ).toThrow(ERROR);
+  });
+
+  it.each([
+    "assembled",
+    "currentTextSegment",
+    "messageSegments",
+    "pendingToolNames",
+    "publishedTerminalSubagent",
+    "lastToolOrdinal",
+  ] as const)("rejects output with missing %s even after resealing", (field) => {
+    const value = storedFixture();
+    const output = { ...value.output, [field]: undefined };
+    expect(() => parseStoredScriptedState(reseal({ ...value, output }), RUN_ID)).toThrow(ERROR);
+  });
+
+  const outputCorruptions: Array<
+    [string, (value: StoredScriptedState) => Record<string, unknown>]
+  > = [
+    ["missing output", (value) => ({ ...value, output: undefined })],
+    [
+      "non-string assembled text",
+      (value) => ({ ...value, output: { ...value.output, assembled: 7 } }),
+    ],
+    [
+      "non-string current segment",
+      (value) => ({ ...value, output: { ...value.output, currentTextSegment: null } }),
+    ],
+    [
+      "non-array segments",
+      (value) => ({ ...value, output: { ...value.output, messageSegments: {} } }),
+    ],
+    [
+      "interactive card in buffered output",
+      (value) => ({
+        ...value,
+        output: { ...value.output, messageSegments: [{ kind: "ask", text: "Already answered?" }] },
+      }),
+    ],
+    [
+      "invalid text segment",
+      (value) => ({
+        ...value,
+        output: { ...value.output, messageSegments: [{ kind: "text", text: 7 }] },
+      }),
+    ],
+    [
+      "invalid step count",
+      (value) => ({
+        ...value,
+        output: {
+          ...value.output,
+          messageSegments: [{ kind: "steps", steps: [{ label: "Ran command", count: 0 }] }],
+        },
+      }),
+    ],
+    [
+      "non-string pending tool name",
+      (value) => ({ ...value, output: { ...value.output, pendingToolNames: ["shell", 1] } }),
+    ],
+    [
+      "non-boolean terminal subagent marker",
+      (value) => ({ ...value, output: { ...value.output, publishedTerminalSubagent: "true" } }),
+    ],
+    [
+      "unknown output field",
+      (value) => ({ ...value, output: { ...value.output, completed: true } }),
+    ],
+    [
+      "tool ordinal below the initial sentinel",
+      (value) => ({ ...value, output: { ...value.output, lastToolOrdinal: -2 } }),
+    ],
+    [
+      "fractional tool ordinal",
+      (value) => ({ ...value, output: { ...value.output, lastToolOrdinal: 0.5 } }),
+    ],
+    [
+      "tool ordinal ahead of the pending call",
+      (value) => ({ ...value, output: { ...value.output, lastToolOrdinal: 2 } }),
+    ],
+  ];
+
+  it.each(outputCorruptions)(
+    "rejects %s even with a recomputed output digest",
+    (_label, corrupt) => {
+      expect(() => parseStoredScriptedState(reseal(corrupt(storedFixture())), RUN_ID)).toThrow(
+        ERROR,
+      );
+    },
+  );
+
+  it("detects a changed output buffer without resealing", () => {
+    const value = storedFixture();
+    expect(() =>
+      parseStoredScriptedState(
+        { ...value, output: { ...value.output, assembled: "changed prefix" } },
+        RUN_ID,
+      ),
+    ).toThrow(ERROR);
   });
 });

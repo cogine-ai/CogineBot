@@ -909,7 +909,7 @@ async function bindScriptedPause(
   const stored = input.scriptedState;
   if (
     stored.kind !== "scripted-state" ||
-    stored.version !== 1 ||
+    stored.version !== 2 ||
     stored.runId !== input.runId ||
     stored.attemptId !== input.attemptId ||
     stored.fence !== input.leaseFence

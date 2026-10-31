@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ScriptedRuntimeState, ScriptedTurn } from "@rakazo/adapter-kit";
+import type { MessageBlock } from "@rakazo/contracts";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import { isToolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { Prisma } from "@rakazo/db";
 
@@ -7,6 +9,14 @@ export class ScriptedStateError extends Error {
   constructor() {
     super("Scripted continuation progress could not be verified");
     this.name = "ScriptedStateError";
+  }
+}
+
+export class ScriptedStateInvalidError extends ScriptedStateError {
+  constructor(message = "Scripted continuation progress could not be verified") {
+    super();
+    this.message = message;
+    this.name = "ScriptedStateInvalidError";
   }
 }
 
@@ -28,7 +38,7 @@ function canonical(value: unknown): string {
   }
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (!object(value)) throw new Error("Invalid scripted continuation state");
+  if (!object(value)) throw new ScriptedStateInvalidError("Invalid scripted continuation state");
   return `{${Object.keys(value)
     .filter((key) => value[key] !== undefined)
     .sort()
@@ -198,7 +208,7 @@ export function parseScriptedState(value: unknown, runId: string): ScriptedRunti
   try {
     if (state(value, runId)) return value;
   } catch {}
-  throw new Error("Invalid scripted continuation state");
+  throw new ScriptedStateInvalidError("Invalid scripted continuation state");
 }
 
 export function composeScriptedTurns(turns: ScriptedTurn[]): ScriptedTurn[] {
@@ -207,13 +217,23 @@ export function composeScriptedTurns(turns: ScriptedTurn[]): ScriptedTurn[] {
   );
 }
 
+export interface ScriptedOutputState {
+  assembled: string;
+  currentTextSegment: string;
+  messageSegments: MessageBlock[];
+  pendingToolNames: string[];
+  publishedTerminalSubagent: boolean;
+  lastToolOrdinal: number;
+}
+
 export interface StoredScriptedState {
   kind: "scripted-state";
-  version: 1;
+  version: 2;
   runId: string;
   attemptId: string;
   fence: number;
   state: ScriptedRuntimeState;
+  output: ScriptedOutputState;
   effectOccurrences: Array<[string, number]>;
   consumedEffectIds: string[];
   pendingEffect?: { id: string; kind: string; idempotencyKey: string; requestDigest: string };
@@ -249,6 +269,7 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
         "attemptId",
         "fence",
         "state",
+        "output",
         "effectOccurrences",
         "consumedEffectIds",
         "pendingEffect",
@@ -259,7 +280,7 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
       throw new Error();
     if (
       value.kind !== "scripted-state" ||
-      value.version !== 1 ||
+      value.version !== 2 ||
       value.runId !== runId ||
       typeof value.attemptId !== "string" ||
       !value.attemptId ||
@@ -267,7 +288,34 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
       Number(value.fence) < 1
     )
       throw new Error();
-    parseScriptedState(value.state, runId);
+    const runtime = parseScriptedState(value.state, runId);
+    const output = value.output;
+    if (
+      !object(output) ||
+      !fields(output, [
+        "assembled",
+        "currentTextSegment",
+        "messageSegments",
+        "pendingToolNames",
+        "publishedTerminalSubagent",
+        "lastToolOrdinal",
+      ]) ||
+      typeof output.assembled !== "string" ||
+      typeof output.currentTextSegment !== "string" ||
+      typeof output.publishedTerminalSubagent !== "boolean" ||
+      !Array.isArray(output.messageSegments) ||
+      !output.messageSegments.every(
+        (block) => object(block) && (block.kind === "text" || block.kind === "steps"),
+      ) ||
+      !MessageBlockSchema.array().safeParse(output.messageSegments).success ||
+      !Array.isArray(output.pendingToolNames) ||
+      !output.pendingToolNames.every((name) => typeof name === "string" && name.length > 0) ||
+      !Number.isSafeInteger(output.lastToolOrdinal) ||
+      Number(output.lastToolOrdinal) < -1 ||
+      Number(output.lastToolOrdinal) >
+        runtime.cursor.ordinal - (runtime.cursor.phase === "tool" ? 0 : 1)
+    )
+      throw new Error();
     if (
       !Array.isArray(value.effectOccurrences) ||
       !value.effectOccurrences.every(
@@ -338,6 +386,7 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
 }
 
 export function parseStoredScriptedState(value: unknown, runId: string): StoredScriptedState {
-  if (!stored(value, runId)) throw new Error("Invalid scripted continuation state");
+  if (!stored(value, runId))
+    throw new ScriptedStateInvalidError("Invalid scripted continuation state");
   return value;
 }

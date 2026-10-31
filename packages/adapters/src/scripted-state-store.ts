@@ -2,7 +2,11 @@ import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import { blocksToAgentHistoryText, isApprovalAskBlock, isSecretAskBlock } from "@rakazo/core";
 import type { PrismaClient, Run } from "@rakazo/db";
 import type { StoredScriptedState } from "./scripted-state.js";
-import { parseStoredScriptedState, scriptedStateDigest } from "./scripted-state.js";
+import {
+  parseStoredScriptedState,
+  ScriptedStateInvalidError,
+  scriptedStateDigest,
+} from "./scripted-state.js";
 
 type ScriptedRun = Pick<Run, "id" | "spaceId" | "botId" | "threadId" | "scriptedState">;
 
@@ -13,7 +17,7 @@ export interface ScriptedResume {
 }
 
 function invalidState(): never {
-  throw new Error("Invalid scripted continuation state");
+  throw new ScriptedStateInvalidError("Invalid scripted continuation state");
 }
 
 /** Admit only progress whose source rows and interactive receipt still belong to this run. */

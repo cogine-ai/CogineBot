@@ -328,6 +328,17 @@ export interface MemorySearchResult {
 export const MEMORY_REVISION_CONFLICT_ERROR =
   "Shared memory changed since it was read. Read the latest version and save again.";
 
+export class MemoryCommitIdentityError extends Error {
+  constructor(reason: "empty" | "mismatch") {
+    super(
+      reason === "empty"
+        ? "Memory commit idempotency key must not be empty"
+        : "Memory commit identity does not match its saved revision",
+    );
+    this.name = "MemoryCommitIdentityError";
+  }
+}
+
 export interface MemoryCommitRequest {
   scope: "bot" | "user";
   botId?: string;
@@ -337,6 +348,8 @@ export interface MemoryCommitRequest {
   expectedRevision?: number;
   sourceRunId?: string;
   sourceThreadId?: string;
+  /** Verified key replays return the first result before revision checks; a different request fails. */
+  idempotencyKey?: string;
 }
 
 export interface MemoryRevision {
