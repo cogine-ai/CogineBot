@@ -289,6 +289,46 @@ describePostgres("scripted recovery failure (PostgreSQL)", () => {
     ).toEqual(fixture.steering);
   });
 
+  it.each(["waiting_input", "waiting_takeover", "running"])(
+    "fails the prior %s attempt when admission has advanced the run fence",
+    async (status) => {
+      const fixture = await seed();
+      await prisma.attempt.update({
+        where: { id: fixture.attempt.id },
+        data: { status },
+      });
+      const history = await prisma.attempt.create({
+        data: { runId: fixture.run.id, fence: 5, status: "completed", finishedAt: new Date() },
+      });
+      const neighbor = await seed();
+      await prisma.run.update({
+        where: { id: fixture.run.id },
+        data: { leaseFence: 8 },
+      });
+      const { attemptId: _attemptId, ...input } = fixture.input;
+      await failScriptedRunPreservingSteering(prisma, { ...input, leaseFence: 8 });
+      expect(
+        await prisma.attempt.findUniqueOrThrow({ where: { id: fixture.attempt.id } }),
+      ).toMatchObject({ status: "failed", error: input.error, finishedAt: expect.any(Date) });
+      expect(await prisma.attempt.findUniqueOrThrow({ where: { id: history.id } })).toEqual(
+        history,
+      );
+      expect(
+        await prisma.attempt.findUniqueOrThrow({ where: { id: neighbor.attempt.id } }),
+      ).toEqual(neighbor.attempt);
+      expect(
+        await prisma.steeringMessage.findMany({
+          where: { runId: fixture.run.id },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(fixture.steering);
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: fixture.run.id } })).toMatchObject({
+        status: "failed",
+        scriptedState: fixture.savedState,
+      });
+    },
+  );
+
   it("leaves a task running when a different sibling is still active", async () => {
     const fixture = await seed();
     await prisma.run.create({

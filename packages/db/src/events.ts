@@ -1706,6 +1706,7 @@ function steeringOrigin(item: {
 export async function appendEventInTransaction(
   tx: Prisma.TransactionClient,
   input: AppendEventInput,
+  eventId?: string,
 ) {
   const thread = await tx.thread.update({
     where: { id: input.threadId },
@@ -1723,6 +1724,7 @@ export async function appendEventInTransaction(
   const payload = sanitizeJsonValue(input.payload);
   return tx.event.create({
     data: {
+      ...(eventId ? { id: eventId } : {}),
       spaceId: input.spaceId,
       threadId: input.threadId,
       botId: input.botId,

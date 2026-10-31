@@ -68,9 +68,10 @@ export async function failScriptedRunPreservingSteering(
       });
       const attempt = await tx.attempt.updateMany({
         where: {
-          ...(input.attemptId ? { id: input.attemptId } : {}),
+          // Admission has won a new fence before creating an attempt. The terminal
+          // run CAS above authorizes closing its prior active attempts as well.
+          ...(input.attemptId ? { id: input.attemptId, fence: input.leaseFence } : {}),
           runId: input.runId,
-          fence: input.leaseFence,
           status: { in: ["running", "waiting_input", "waiting_takeover"] },
         },
         data: { status: "failed", error: input.error, finishedAt: now },

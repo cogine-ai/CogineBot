@@ -1256,6 +1256,165 @@ describeIntegration("run executor lifecycle", () => {
     }
   });
 
+  it.sequential("delivers each deferred memory revision event once across a failed completion", async () => {
+    const prompt = "remember the synthetic repeated memory-delivery preference";
+    const { seeded, continuationRunId } = await seedSteeringContinuation(
+      "scripted-memory-delivery-recovery",
+      [prompt, prompt],
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    let removeFault: (() => Promise<void>) | undefined;
+    try {
+      removeFault = await installScriptedMemoryCompletionFault();
+      await handles.executor.continueRun(continuationRunId, "interrupted-memory-delivery-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "queued" });
+      const revisions = await handles.prisma.memoryRevision.findMany({
+        where: { sourceRunId: continuationRunId },
+        orderBy: { revision: "asc" },
+      });
+      expect(revisions).toHaveLength(2);
+      expect(revisions[0]!.content).toBe(revisions[1]!.content);
+      expect(revisions[0]!.revision + 1).toBe(revisions[1]!.revision);
+      const delivered = await handles.prisma.event.findMany({
+        where: { runId: continuationRunId, type: "memory.revised" },
+        orderBy: { seq: "asc" },
+        select: { id: true, seq: true, payload: true },
+      });
+      expect(delivered).toHaveLength(2);
+      expect(new Set(delivered.map((event) => event.id)).size).toBe(2);
+      expect(delivered.map((event) => event.payload)).toEqual([
+        { path: "MEMORY.md", scope: "bot" },
+        { path: "MEMORY.md", scope: "bot" },
+      ]);
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        2,
+      );
+      await removeFault();
+      const beforeRetry = await handles.prisma.thread.findUniqueOrThrow({
+        where: { id: seeded.thread.id },
+      });
+      await handles.executor.continueRun(continuationRunId, "recovered-memory-delivery-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(
+        await handles.prisma.event.findMany({
+          where: { runId: continuationRunId, type: "memory.revised" },
+          orderBy: { seq: "asc" },
+          select: { id: true, seq: true, payload: true },
+        }),
+      ).toEqual(delivered);
+      expect(
+        await handles.prisma.memoryRevision.findMany({
+          where: { sourceRunId: continuationRunId },
+          orderBy: { revision: "asc" },
+        }),
+      ).toEqual(revisions);
+      await expect(
+        handles.prisma.thread.findUniqueOrThrow({ where: { id: seeded.thread.id } }),
+      ).resolves.toMatchObject({ nextEventSeq: beforeRetry.nextEventSeq + 3 });
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+    } finally {
+      try {
+        await removeFault?.();
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    }
+  });
+
+  it.sequential("parks a mismatched memory revision event without appending a replacement", async () => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation(
+      "scripted-memory-event-identity",
+      "remember the synthetic memory-event identity preference",
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    let removeFault: (() => Promise<void>) | undefined;
+    try {
+      removeFault = await installScriptedMemoryCompletionFault();
+      await handles.executor.continueRun(continuationRunId, "interrupted-memory-identity-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "queued" });
+      const delivered = await handles.prisma.event.findFirstOrThrow({
+        where: { runId: continuationRunId, type: "memory.revised" },
+      });
+      const corrupted = await handles.prisma.event.update({
+        where: { id: delivered.id },
+        data: { payload: { path: "OTHER.md", scope: "bot" } },
+      });
+      await removeFault();
+      const revisions = await handles.prisma.memoryRevision.findMany({
+        where: { sourceRunId: continuationRunId },
+      });
+      expect(revisions).toHaveLength(1);
+      const document = await handles.prisma.memoryDocument.findUniqueOrThrow({
+        where: { id: revisions[0]!.documentId },
+      });
+      const messages = await handles.prisma.message.findMany({
+        where: { runId: continuationRunId },
+        orderBy: { seq: "asc" },
+      });
+      const rows = await handles.prisma.steeringMessage.findMany({
+        where: { botId: seeded.bot.id },
+        orderBy: { id: "asc" },
+      });
+      expect(rows).toHaveLength(1);
+      const before = await handles.prisma.thread.findUniqueOrThrow({
+        where: { id: seeded.thread.id },
+      });
+      await handles.executor.continueRun(continuationRunId, "mismatched-memory-identity-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "failed" });
+      expect(await handles.prisma.event.findUniqueOrThrow({ where: { id: delivered.id } })).toEqual(
+        corrupted,
+      );
+      expect(
+        await handles.prisma.event.count({
+          where: { runId: continuationRunId, type: "memory.revised" },
+        }),
+      ).toBe(1);
+      expect(
+        await handles.prisma.memoryRevision.findMany({ where: { sourceRunId: continuationRunId } }),
+      ).toEqual(revisions);
+      expect(
+        await handles.prisma.memoryDocument.findUniqueOrThrow({ where: { id: document.id } }),
+      ).toEqual(document);
+      expect(
+        await handles.prisma.message.findMany({
+          where: { runId: continuationRunId },
+          orderBy: { seq: "asc" },
+        }),
+      ).toEqual(messages);
+      expect(
+        await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(rows);
+      const added = await handles.prisma.event.findMany({
+        where: { threadId: seeded.thread.id, seq: { gte: before.nextEventSeq } },
+        orderBy: { seq: "asc" },
+        select: { type: true },
+      });
+      expect(added).toEqual([{ type: "run.started" }, { type: "run.failed" }]);
+      await expect(
+        handles.prisma.thread.findUniqueOrThrow({ where: { id: seeded.thread.id } }),
+      ).resolves.toMatchObject({ nextEventSeq: before.nextEventSeq + 2 });
+    } finally {
+      try {
+        await removeFault?.();
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    }
+  });
+
   it("does not repeat a deferred memory revision or overwrite a later edit after lease loss", async () => {
     const preference = "remember the synthetic memory-replay orbit preference";
     const { seeded, events, continuationRunId } = await seedSteeringContinuation(
@@ -1333,6 +1492,11 @@ describeIntegration("run executor lifecycle", () => {
       expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
         2,
       );
+      expect(
+        await handles.prisma.event.count({
+          where: { runId: continuationRunId, type: "memory.revised" },
+        }),
+      ).toBe(0);
       // Retry starts only after the old worker and its committed-memory fault have ended.
       await handles.prisma.run.update({
         where: { id: continuationRunId },
@@ -1371,6 +1535,12 @@ describeIntegration("run executor lifecycle", () => {
         )
         .join("\n");
       expect(durableText).toContain(freshPrompt);
+      expect(
+        await handles.prisma.event.findMany({
+          where: { runId: continuationRunId, type: "memory.revised" },
+          select: { payload: true },
+        }),
+      ).toEqual([{ payload: { path: "MEMORY.md", scope: "bot" } }]);
       expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
         0,
       );
@@ -1381,6 +1551,86 @@ describeIntegration("run executor lifecycle", () => {
       });
     }
   });
+
+  it.each([
+    {
+      label: "tool-response",
+      message: "The model finished its tool steps without a written response.",
+    },
+    { label: "secret-refusal", message: "refusing to persist a secret in the thread" },
+  ])(
+    "retries an ordinary memory transport error matching the $label validation message",
+    async ({ label, message }) => {
+      const { seeded, continuationRunId } = await seedSteeringContinuation(
+        `scripted-transport-${label}`,
+        "remember the synthetic same-message transport preference",
+      );
+      const held = holdContinuationJobs(seeded.bot.id);
+      let interrupted = false;
+      const commit = MarkdownMemoryStore.prototype.commit;
+      const memory = vi
+        .spyOn(MarkdownMemoryStore.prototype, "commit")
+        .mockImplementation(async function (this: MarkdownMemoryStore, request, context) {
+          const result = await commit.call(this, request, context);
+          if (!interrupted && request.sourceRunId === continuationRunId) {
+            interrupted = true;
+            throw new Error(message);
+          }
+          return result;
+        });
+      try {
+        await handles.executor.continueRun(continuationRunId, "same-message-transport-worker");
+        memory.mockRestore();
+        expect(interrupted).toBe(true);
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "queued" });
+        const revisions = await handles.prisma.memoryRevision.findMany({
+          where: { sourceRunId: continuationRunId },
+        });
+        expect(revisions).toHaveLength(1);
+        const document = await handles.prisma.memoryDocument.findUniqueOrThrow({
+          where: { id: revisions[0]!.documentId },
+        });
+        expect(
+          await handles.prisma.event.count({
+            where: { runId: continuationRunId, type: "memory.revised" },
+          }),
+        ).toBe(0);
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(1);
+        await handles.executor.continueRun(
+          continuationRunId,
+          "same-message-transport-retry-worker",
+        );
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "completed" });
+        expect(
+          await handles.prisma.memoryRevision.findMany({
+            where: { sourceRunId: continuationRunId },
+          }),
+        ).toEqual(revisions);
+        expect(
+          await handles.prisma.memoryDocument.findUniqueOrThrow({ where: { id: document.id } }),
+        ).toEqual(document);
+        expect(
+          await handles.prisma.event.count({
+            where: { runId: continuationRunId, type: "memory.revised" },
+          }),
+        ).toBe(1);
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(0);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, () => {
+          memory.mockRestore();
+          held.restore();
+        });
+      }
+    },
+  );
 
   it("preserves a later file edit when a confirmed deferred write resumes before memory commit", async () => {
     const preference = "remember the synthetic confirmed-file recovery preference";
@@ -1996,10 +2246,139 @@ describeIntegration("run executor lifecycle", () => {
     }
   });
 
+  it.sequential("parks a real secret completion refusal without repeating its completed tool prefix", async () => {
+    const originalHandles = handles;
+    const originalPublisher = holdRunContinuePublications(originalHandles);
+    const isolatedDir = mkdtempSync(path.join(tmpdir(), "rakazo-scripted-secret-refusal-"));
+    let isolated: typeof handles | undefined;
+    let isolatedPublisher: ReturnType<typeof holdRunContinuePublications> | undefined;
+    try {
+      const { createApp: makeApp } = await import("../../../apps/api/src/app.ts");
+      isolated = await makeApp({
+        databaseUrl: process.env.DATABASE_URL!,
+        dataDir: isolatedDir,
+        sandboxProvider: "fake",
+        agentRuntime: "scripted",
+        wakeupDriver: "memory",
+        defaultProvider: "scripted",
+        defaultModel: "scripted",
+        deploymentModelKey: "[redacted]",
+        deploymentModelConfigured: false,
+      });
+      isolatedPublisher = holdRunContinuePublications(isolated);
+      handles = isolated;
+      const { seeded, continuationRunId } = await seedSteeringContinuation(
+        "scripted-real-secret-refusal",
+        [
+          "write this to the destination crm as a real secret-guard prefix",
+          "Use the synthetic secret-guard final plan.",
+        ],
+      );
+      const held = isolatedPublisher;
+      const recordsBefore = handles.connector.records.length;
+      let injected = false;
+      let finalTurn = false;
+      let completedCheckpoint = false;
+      const runRuntime = handles.runtime.run.bind(handles.runtime);
+      const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+        if (request.runId !== continuationRunId) return runRuntime(request, context);
+        const save = request.onScriptCheckpoint;
+        if (!save) throw new Error("Expected a durable scripted checkpoint callback");
+        const input = {
+          ...request,
+          onScriptCheckpoint: async (state: NonNullable<typeof request.scriptedState>) => {
+            await save(state);
+            finalTurn = state.cursor.phase === "turn" && state.cursor.turn === 1;
+            completedCheckpoint ||= state.cursor.phase === "complete";
+          },
+        };
+        return (async function* () {
+          for await (const event of runRuntime(input, context)) {
+            yield event;
+            if (!injected && finalTurn && event.type === "text") {
+              injected = true;
+              yield { type: "text" as const, text: "\n[redacted]\n" };
+            }
+          }
+        })();
+      });
+      const writes = vi.spyOn(handles.sandbox, "writeFile");
+      try {
+        await handles.executor.continueRun(continuationRunId, "real-secret-refusal-worker");
+        expect(injected).toBe(true);
+        expect(completedCheckpoint).toBe(true);
+        expect(handles.connector.records).toHaveLength(recordsBefore + 1);
+        const rejected = await handles.prisma.run.findUniqueOrThrow({
+          where: { id: continuationRunId },
+        });
+        expect.soft(rejected.status, "deterministic secret refusal is terminal").toBe("failed");
+        expect
+          .soft(rejected.error, "secret guard keeps its actual validation reason")
+          .toBe("refusing to persist a secret in the thread");
+        expect(rejected.scriptedState).toMatchObject({ state: { cursor: { phase: "complete" } } });
+        const rows = await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+          orderBy: { id: "asc" },
+        });
+        expect(rows).toHaveLength(2);
+        const attempts = await handles.prisma.attempt.count({
+          where: { runId: continuationRunId },
+        });
+        const publications = held.published.filter((id) => id === continuationRunId);
+        const originalPublications = originalPublisher.published.filter(
+          (id) => id === continuationRunId,
+        );
+        const runtimeCalls = runtime.mock.calls.filter(
+          ([request]) => request.runId === continuationRunId,
+        ).length;
+        const fileWrites = writes.mock.calls.filter(
+          ([, , context]) => context.runId === continuationRunId,
+        ).length;
+        await handles.executor.continueRun(continuationRunId, "real-secret-refusal-late-worker");
+        expect(await handles.prisma.attempt.count({ where: { runId: continuationRunId } })).toBe(
+          attempts,
+        );
+        expect(
+          runtime.mock.calls.filter(([request]) => request.runId === continuationRunId),
+        ).toHaveLength(runtimeCalls);
+        expect(
+          writes.mock.calls.filter(([, , context]) => context.runId === continuationRunId),
+        ).toHaveLength(fileWrites);
+        expect(handles.connector.records).toHaveLength(recordsBefore + 1);
+        expect(held.published.filter((id) => id === continuationRunId)).toEqual(publications);
+        expect(originalPublisher.published.filter((id) => id === continuationRunId)).toEqual(
+          originalPublications,
+        );
+        expect(
+          await handles.prisma.steeringMessage.findMany({
+            where: { botId: seeded.bot.id },
+            orderBy: { id: "asc" },
+          }),
+        ).toEqual(rows);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, () => {
+          writes.mockRestore();
+          runtime.mockRestore();
+        });
+      }
+    } finally {
+      handles = originalHandles;
+      try {
+        await isolated?.stop();
+      } finally {
+        isolatedPublisher?.restore();
+        originalPublisher.restore();
+        rmSync(isolatedDir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it.sequential("redacts buffered output before checkpoint, publication and retry", async () => {
     const originalHandles = handles;
+    const originalPublisher = holdRunContinuePublications(originalHandles);
     const isolatedDir = mkdtempSync(path.join(tmpdir(), "rakazo-scripted-output-redaction-"));
     let isolated: typeof handles | undefined;
+    let isolatedPublisher: ReturnType<typeof holdRunContinuePublications> | undefined;
     const secret = "synthetic-output-redaction-private-key";
     const redactedMarker = "Synthetic private marker: [redacted].";
     try {
@@ -2015,12 +2394,12 @@ describeIntegration("run executor lifecycle", () => {
         deploymentModelKey: secret,
         deploymentModelConfigured: false,
       });
+      isolatedPublisher = holdRunContinuePublications(isolated);
       handles = isolated;
       const { seeded, continuationRunId } = await seedSteeringContinuation(
         "scripted-output-redaction",
         "write this to the destination crm as a redacted-output recovery note",
       );
-      const held = holdContinuationJobs(seeded.bot.id);
       let injected = false;
       const runRuntime = handles.runtime.run.bind(handles.runtime);
       const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
@@ -2084,7 +2463,6 @@ describeIntegration("run executor lifecycle", () => {
         await cleanupHeldRuns(seeded.bot.id, () => {
           create.mockRestore();
           runtime.mockRestore();
-          held.restore();
         });
       }
     } finally {
@@ -2092,6 +2470,8 @@ describeIntegration("run executor lifecycle", () => {
       try {
         await isolated?.stop();
       } finally {
+        isolatedPublisher?.restore();
+        originalPublisher.restore();
         rmSync(isolatedDir, { recursive: true, force: true });
       }
     }
@@ -2598,6 +2978,10 @@ describeIntegration("run executor lifecycle", () => {
           where: { id: continuationRunId },
         });
         expect(paused.scriptedState).toEqual(expect.any(Object));
+        const pausedAttempt = await handles.prisma.attempt.findFirstOrThrow({
+          where: { runId: continuationRunId, fence: paused.leaseFence },
+        });
+        expect(pausedAttempt.status).toBe("waiting_input");
         const [card] = await scriptedAskCards(continuationRunId);
         await rpc(seeded.cookie, "threads/answer", {
           botId: seeded.bot.id,
@@ -2644,6 +3028,14 @@ describeIntegration("run executor lifecycle", () => {
           where: { id: continuationRunId },
         });
         expect(rejected.status).toBe("failed");
+        expect(rejected.error).toEqual(expect.any(String));
+        await expect(
+          handles.prisma.attempt.findUniqueOrThrow({ where: { id: pausedAttempt.id } }),
+        ).resolves.toMatchObject({
+          status: "failed",
+          error: rejected.error,
+          finishedAt: expect.any(Date),
+        });
         expect(handles.connector.records).toHaveLength(recordsBefore);
         expect(
           await handles.prisma.steeringMessage.findMany({
@@ -2672,6 +3064,84 @@ describeIntegration("run executor lifecycle", () => {
       }
     },
   );
+
+  it("closes the prior takeover attempt when corrupt scripted progress is parked", async () => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation(
+      "scripted-takeover-corrupt-attempt",
+      ["take over so I can sign in", "remember the protected takeover suffix"],
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    const memoryBefore = await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id });
+    try {
+      await handles.executor.continueRun(continuationRunId, "corrupt-takeover-pause-worker");
+      const paused = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      expect(paused.status).toBe("waiting_takeover");
+      const attempt = await handles.prisma.attempt.findFirstOrThrow({
+        where: { runId: continuationRunId, fence: paused.leaseFence },
+      });
+      expect(attempt.status).toBe("waiting_takeover");
+      const rows = await handles.prisma.steeringMessage.findMany({
+        where: { botId: seeded.bot.id },
+        orderBy: { id: "asc" },
+      });
+      expect(rows).toHaveLength(2);
+      await handles.prisma.run.update({
+        where: { id: continuationRunId },
+        data: { scriptedState: {} },
+      });
+      await handles.executor.continueRun(continuationRunId, "corrupt-takeover-admission-worker");
+      const rejected = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      expect(rejected).toMatchObject({ status: "failed", leaseOwner: null });
+      expect(rejected.error).toEqual(expect.any(String));
+      await expect(
+        handles.prisma.attempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+      ).resolves.toMatchObject({
+        status: "failed",
+        error: rejected.error,
+        finishedAt: expect.any(Date),
+      });
+      expect(
+        await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(rows);
+      expect(
+        await handles.prisma.externalEffect.count({ where: { runId: continuationRunId } }),
+      ).toBe(0);
+      expect(await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id })).toEqual(
+        memoryBefore,
+      );
+      expect(
+        await handles.prisma.event.count({
+          where: { runId: continuationRunId, type: "computer.takeover.requested" },
+        }),
+      ).toBe(1);
+      const attempts = await handles.prisma.attempt.count({ where: { runId: continuationRunId } });
+      const published = [...held.published];
+      await handles.executor.continueRun(continuationRunId, "corrupt-takeover-late-worker");
+      expect(await handles.prisma.attempt.count({ where: { runId: continuationRunId } })).toBe(
+        attempts,
+      );
+      expect(held.published).toEqual(published);
+      expect(
+        await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(rows);
+    } finally {
+      try {
+        await rpc(seeded.cookie, "threads/stop", { botId: seeded.bot.id });
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    }
+  });
 
   it.each(["after resolution", "mid tool", "after done"] as const)(
     "does not persist deferred effects when a resolved script stops %s",
@@ -3503,6 +3973,50 @@ describeIntegration("run executor lifecycle", () => {
     }
   });
 
+  async function installScriptedMemoryCompletionFault() {
+    let functionInstalled = false;
+    let triggerInstalled = false;
+    const remove = async () => {
+      if (triggerInstalled) {
+        await handles.prisma.$executeRawUnsafe(
+          "DROP TRIGGER test_scripted_memory_completion_failure ON runs",
+        );
+        triggerInstalled = false;
+      }
+      if (functionInstalled) {
+        await handles.prisma.$executeRawUnsafe(
+          "DROP FUNCTION test_scripted_memory_completion_failure()",
+        );
+        functionInstalled = false;
+      }
+    };
+    try {
+      await handles.prisma.$executeRawUnsafe(`
+        CREATE FUNCTION test_scripted_memory_completion_failure() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.status = 'completed' AND OLD.status <> 'completed'
+             AND NEW."scriptedState" IS NOT NULL THEN
+            RAISE EXCEPTION 'Synthetic scripted memory completion failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+      `);
+      functionInstalled = true;
+      await handles.prisma.$executeRawUnsafe(`
+        CREATE TRIGGER test_scripted_memory_completion_failure
+        BEFORE UPDATE OF status ON runs
+        FOR EACH ROW EXECUTE FUNCTION test_scripted_memory_completion_failure()
+      `);
+      triggerInstalled = true;
+      return remove;
+    } catch (error) {
+      await remove();
+      throw error;
+    }
+  }
+
   async function scriptedAskCards(runId: string) {
     const messages = await handles.prisma.message.findMany({
       where: { runId, role: "bot" },
@@ -3513,6 +4027,19 @@ describeIntegration("run executor lifecycle", () => {
         .parse(message.blocks)
         .flatMap((ask) => (ask.kind === "ask" ? [{ message, ask }] : [])),
     );
+  }
+
+  function holdRunContinuePublications(target: typeof handles) {
+    const published: string[] = [];
+    const enqueue = target.jobs.enqueue.bind(target.jobs);
+    const spy = vi.spyOn(target.jobs, "enqueue").mockImplementation(async (job) => {
+      if (job.name === "run.continue") {
+        published.push(job.payload.runId);
+        return;
+      }
+      await enqueue(job);
+    });
+    return { published, restore: () => spy.mockRestore() };
   }
 
   function holdContinuationJobs(botId: string) {

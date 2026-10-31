@@ -92,6 +92,7 @@ import {
   renderBotDirectory,
   resolveActionApprovalDetail,
   sandboxCommandTimeoutMs,
+  sanitizeJsonValue,
   toolRequiresApproval,
   toolRequiresExplicitApproval,
   truncatedPlainText,
@@ -3049,6 +3050,13 @@ export function isTerminalModelSetupError(error: unknown): boolean {
   );
 }
 
+class RunCompletionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunCompletionValidationError";
+  }
+}
+
 export function createRunExecutor(deps: ExecutorDeps) {
   const contextStrategy = deps.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
   const web = deps.web ?? createWebProvider();
@@ -4546,6 +4554,62 @@ export function createRunExecutor(deps: ExecutorDeps) {
               await deps.events.notify(thread.id, committed.eventSeq).catch((error) => {
                 getLogger().error("scripted output realtime notification", error);
               });
+            context.signal.throwIfAborted();
+          } catch (error) {
+            if (error instanceof ScriptedStateInvalidError) throw error;
+            throw new ScriptedStateError();
+          }
+        };
+        const appendScriptedMemoryRevision = async (
+          turnIndex: number,
+          memoryIndex: number,
+          revision: { path: string; scope: "bot" | "user" },
+        ) => {
+          const id = `scripted-memory-revised:${runId}:${turnIndex}:${memoryIndex}`;
+          const payload = sanitizeJsonValue(revision);
+          try {
+            context.signal.throwIfAborted();
+            const event = await deps.prisma.$transaction(
+              async (tx) => {
+                await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} AND "spaceId" = ${run.spaceId} FOR UPDATE`;
+                const owned = await tx.$queryRaw<Array<{ id: string }>>`
+                  SELECT id FROM runs WHERE id = ${runId} AND "spaceId" = ${run.spaceId}
+                  AND "botId" = ${bot.id} AND "userId" = ${run.userId} AND status = 'running'
+                  AND "leaseOwner" = ${workerId} AND "leaseFence" = ${fence}
+                  AND "leaseExpiresAt" > ${new Date()} FOR UPDATE`;
+                if (owned.length !== 1) throw new ScriptedStateError();
+                const prior = await tx.event.findUnique({ where: { id } });
+                if (prior) {
+                  if (
+                    prior.spaceId !== run.spaceId ||
+                    prior.threadId !== thread.id ||
+                    prior.botId !== bot.id ||
+                    prior.runId !== runId ||
+                    prior.type !== "memory.revised" ||
+                    scriptedStateDigest(prior.payload) !== scriptedStateDigest(payload)
+                  )
+                    throw new ScriptedStateInvalidError();
+                  return prior;
+                }
+                return appendEventInTransaction(
+                  tx,
+                  {
+                    spaceId: run.spaceId,
+                    threadId: thread.id,
+                    botId: bot.id,
+                    type: "memory.revised",
+                    runId,
+                    payload,
+                  },
+                  id,
+                );
+              },
+              { maxWait: 5_000, timeout: 20_000 },
+            );
+            // A repeated hint catches clients up to the same durable event and sequence.
+            await deps.events.notify(event.threadId, event.seq).catch((error) => {
+              getLogger().error("scripted memory realtime notification", error);
+            });
             context.signal.throwIfAborted();
           } catch (error) {
             if (error instanceof ScriptedStateInvalidError) throw error;
@@ -7921,7 +7985,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           runComputer.throwIfFailed();
           if (approvalPausePending || !leaseValid) return;
-          approvedEffectReplays.assertDrained();
+          try {
+            approvedEffectReplays.assertDrained();
+          } catch (error) {
+            if (isSteeringContinuation && scriptCompleted)
+              throw new RunCompletionValidationError(
+                error instanceof Error ? error.message : String(error),
+              );
+            throw error;
+          }
           pendingProgress += progressRedactor.finish();
           await flushProgress();
 
@@ -7976,14 +8048,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
                 context,
               );
-              await deps.events.append({
-                spaceId: run.spaceId,
-                threadId: thread.id,
-                botId: bot.id,
-                type: "memory.revised",
-                runId,
-                payload: { path: mem.path, scope: mem.scope },
-              });
+              const payload = { path: mem.path, scope: mem.scope };
+              if (isSteeringContinuation) {
+                await appendScriptedMemoryRevision(turnIndex, memoryIndex, payload);
+              } else {
+                await deps.events.append({
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  type: "memory.revised",
+                  runId,
+                  payload,
+                });
+              }
             }
           }
 
@@ -8020,7 +8097,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? ""
             : redactSecrets(completionNotificationBody(silentReply.assembled, blocks), runSecrets);
           if (containsSecret(text, runSecrets)) {
-            throw new Error("refusing to persist a secret in the thread");
+            throw new RunCompletionValidationError("refusing to persist a secret in the thread");
           }
           // Tool steps succeeded and the only completion text is the synthetic
           // empty notice. That is a missed final answer or a swallowed provider
@@ -8030,7 +8107,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             !silentReply.assembled.trim() &&
             emptyDelegatedToolTurnShouldFail(completionBlocks)
           ) {
-            throw new Error(TOOL_STEPS_WITHOUT_RESPONSE);
+            throw new RunCompletionValidationError(TOOL_STEPS_WITHOUT_RESPONSE);
           }
           if (!(await renewRunLease(deps, runId, workerId, fence))) return;
           const botMessageOutcome =
@@ -8112,7 +8189,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (
             error instanceof ScriptedStateInvalidError ||
             error instanceof MemoryCommitIdentityError ||
-            error instanceof ScriptedFileUncertainError
+            error instanceof ScriptedFileUncertainError ||
+            (isSteeringContinuation && error instanceof RunCompletionValidationError)
           ) {
             await parkScriptedProgress(error);
             return;
