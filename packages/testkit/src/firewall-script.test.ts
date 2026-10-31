@@ -842,6 +842,67 @@ describe("firewall change rollback", () => {
     expect(f.pending()).toBe(true);
   });
 
+  it.each(["pending", "retired"])(
+    "rejects missing connection state before accepting %s confirmation",
+    (stage) => {
+      const f = fixture();
+      expect(f.apply().status).toBe(0);
+      if (stage === "retired") {
+        expect(f.run(["confirm", token], { SSH_CONNECTION: secondConnection }).status).toBe(0);
+      }
+      rmSync(path.join(f.state, "connection"));
+      const timerBefore = f.timer();
+      const callsBefore = f.calls().length;
+      const result = f.run(["confirm", token], { SSH_CONNECTION: secondConnection });
+      const later = f.calls().slice(callsBefore);
+      const observed = {
+        pending: f.pending(),
+        confirmed: existsSync(path.join(f.state, "confirmed")),
+        timer: f.timer(),
+        later,
+      };
+      expect(result.status, JSON.stringify(observed)).not.toBe(0);
+      expect(result.stderr).toContain("Unsafe firewall state file");
+      expect(f.pending()).toBe(stage === "pending");
+      expect(f.timer()).toBe(timerBefore);
+      expect(existsSync(path.join(f.state, "confirmed"))).toBe(stage === "retired");
+      if (stage === "retired") expect(f.read("confirmed")).toBe(token);
+      expect(
+        later.some((call) =>
+          ["mv", "rm", "sync", "systemctl", "ufw", "tar"].includes(call[0] as string),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.each(["confirm", "rollback", "recover"])(
+    "rejects missing enabled state before %s changes the pending generation",
+    (action) => {
+      const f = fixture();
+      expect(f.apply().status).toBe(0);
+      rmSync(path.join(f.state, "enabled"));
+      if (action === "recover") f.reboot();
+      const timerBefore = f.timer();
+      const callsBefore = f.calls().length;
+      const result = f.run(action === "recover" ? [action] : [action, token], {
+        SSH_CONNECTION: secondConnection,
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Invalid saved firewall state");
+      expect(f.pending()).toBe(true);
+      expect(f.timer()).toBe(timerBefore);
+      expect(existsSync(path.join(f.state, "confirmed"))).toBe(false);
+      expect(
+        f
+          .calls()
+          .slice(callsBefore)
+          .some((call) =>
+            ["mv", "rm", "sync", "systemctl", "ufw", "tar"].includes(call[0] as string),
+          ),
+      ).toBe(false);
+    },
+  );
+
   it.each(["symlink", "hardlink", "writable", "owner"])(
     "rejects unsafe pending metadata %s",
     (kind) => {

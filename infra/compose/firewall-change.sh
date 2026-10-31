@@ -203,7 +203,6 @@ if [[ "${action}" == recover ]]; then
   # Read the token only after protected-state validation and acquiring the lock.
   token="$(cat "${STATE}/token")"
   valid_token "${token}" || fail "Invalid pending firewall token"
-  secure_file "${STATE}/boot"
   saved_boot="$(cat "${STATE}/boot")"
   valid_token "${saved_boot}" || fail "Invalid saved boot identity"
   current_boot="$(boot_id)"
@@ -273,7 +272,6 @@ case "${action}" in
       [[ "$(cat "${STATE}/confirmed")" == "${token}" ]] || fail "Mismatched firewall confirmation state"
     fi
     secure_file "${STATE}/connection"
-    secure_file "${STATE}/enabled"
     [[ "$(cat "${STATE}/enabled")" == 0 || "$(cat "${STATE}/enabled")" == 1 ]] || fail "Invalid saved firewall state"
     if [[ "${action}" == confirm ]]; then
       [[ "${SSH_CONNECTION}" != "$(cat "${STATE}/connection")" ]] || fail "Confirm from a fresh SSH connection, preserving SSH_CONNECTION through sudo"
