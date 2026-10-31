@@ -10,7 +10,8 @@ also select the complete matrix.
 | Changed scope | Selected application checks |
 | --- | --- |
 | Allowlisted root documents and documentation assets | None; repository validation and router tests still run |
-| `apps/www/` | Marketing build |
+| Marketing pages, components, layouts, styles and static assets | Marketing build |
+| Marketing API, middleware, fetch helpers and other site files | Lint/typecheck, ordinary unit tests and marketing build |
 | `infra/compose/`, backup/restore scripts, shell test files | Lint/typecheck, ordinary unit tests and both shell test lanes |
 | `apps/web/` | Lint/typecheck, Web build, ordinary unit tests, PostgreSQL integration and all selected Web E2E specs |
 | Shared code, native apps, dependencies, tooling, or any unknown path | Complete matrix |

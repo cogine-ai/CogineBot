@@ -95,6 +95,17 @@ export function routeChangedPaths(files) {
       categories.add("documentation");
     } else if (file.startsWith("apps/www/")) {
       lanes.add("marketing");
+      // API, middleware and data-fetching modules have existing functional tests.
+      // Only page presentation and static assets can safely use build alone.
+      if (
+        !/^apps\/www\/(?:public\/|src\/(?:pages|components|layouts|styles|assets)\/)/u.test(file) ||
+        !/\.(?:astro|mdx?|css|scss|sass|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|txt)$/u.test(
+          file,
+        )
+      ) {
+        lanes.add("static");
+        lanes.add("unit");
+      }
       categories.add("marketing");
     } else if (
       file.startsWith("infra/compose/") ||

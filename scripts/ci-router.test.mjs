@@ -51,6 +51,23 @@ test("marketing changes build marketing without product tests", () => {
   assert.deepEqual(selected(routeChangedPaths(["apps/www/src/pages/index.astro"])), ["marketing"]);
 });
 
+test("marketing API, middleware and fetch helpers retain existing functional tests", () => {
+  for (const file of [
+    "apps/www/api/waitlist.ts",
+    "apps/www/src/pages/api/signup.ts",
+    "apps/www/src/components/form.test.ts",
+    "apps/www/public/service-worker.js",
+    "apps/www/src/waitlist.ts",
+    "apps/www/src/middleware.ts",
+    "apps/www/vercel.json",
+    "apps/www/src/github.ts",
+    "apps/www/src/github.test.ts",
+    "apps/www/package.json",
+  ]) {
+    assert.deepEqual(selected(routeChangedPaths([file])), ["static", "unit", "marketing"], file);
+  }
+});
+
 test("web changes retain the complete web lanes", () => {
   assert.deepEqual(selected(routeChangedPaths(["apps/web/src/App.tsx"])), [
     "static",
@@ -292,7 +309,7 @@ test("base-ref fallback compares the checked-out PR head", (t) => {
 test("GitHub PR payload resolves actual head SHA and publishes usable workflow outputs", (t) => {
   const repo = repository(t);
   repo.git("checkout", "--quiet", "-b", "feature");
-  repo.write("apps/www/src/index.astro");
+  repo.write("apps/www/src/pages/index.astro");
   const head = repo.commit();
   repo.git("checkout", "--quiet", "main");
   const eventPath = path.join(repo.cwd, "event.json");
