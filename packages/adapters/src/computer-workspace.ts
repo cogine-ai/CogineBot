@@ -279,6 +279,7 @@ export async function checkpointComputerWorkspace(
   homeKey: string,
   computer: ComputerRef,
   context: AdapterContext,
+  onExported?: () => void,
 ): Promise<string> {
   if (computer.kind === "docker" && home instanceof LocalAgentHomeStore) {
     return home.revise(homeKey);
@@ -288,6 +289,7 @@ export async function checkpointComputerWorkspace(
     for await (const file of sandbox.exportWorkspace(computer, context)) {
       await writePortableFile(staging, file);
     }
+    onExported?.();
     return await home.commit(homeKey, staging, context);
   } finally {
     await rm(staging, { recursive: true, force: true });

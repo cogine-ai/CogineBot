@@ -247,7 +247,7 @@ describe("computer recovery preserves live work", () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       await expect(replaceComputer(deps, row.id, "update", context)).rejects.toBe(error);
       expect(row).toMatchObject({
-        state: "error",
+        state: "running",
         providerRef: first.providerRef,
         homeRevision: "saved",
       });
@@ -289,6 +289,235 @@ describe("computer recovery preserves live work", () => {
       expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
     },
   );
+
+  it.each([
+    { label: "storage", gone: false },
+    { label: "gone-shaped storage", gone: true },
+  ])(
+    "blocks recovery and its retry after a complete export on $label failure",
+    async ({ gone }) => {
+      const { deps, row, first } = await fixture();
+      const failure = new Error("Synthetic home commit failure");
+      if (gone) failure.name = "SandboxNotFoundError";
+      const exportWorkspace = deps.sandbox.exportWorkspace.bind(deps.sandbox);
+      let completedExports = 0;
+      const exported = vi
+        .spyOn(deps.sandbox, "exportWorkspace")
+        .mockImplementation(async function* (...args) {
+          yield* exportWorkspace(...args);
+          completedExports += 1;
+        });
+      const commit = vi.spyOn(deps.home, "commit").mockRejectedValue(failure);
+      const destroy = vi.spyOn(deps.sandbox, "destroy");
+      const provision = vi.spyOn(deps.sandbox, "provision");
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        await expect(replaceComputer(deps, row.id, "recover", context)).rejects.toBe(failure);
+        expect(completedExports).toBe(attempt);
+        expect(commit).toHaveBeenCalledTimes(attempt);
+        expect(row).toMatchObject({
+          state: "running",
+          providerRef: first.providerRef,
+          homeRevision: "saved",
+        });
+        expect(destroy).not.toHaveBeenCalled();
+        expect(provision).not.toHaveBeenCalled();
+        expect(
+          new TextDecoder().decode(await deps.sandbox.readFile(first, "notes.txt", context)),
+        ).toBe("live work");
+        expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
+      }
+      commit.mockRestore();
+      const recovered = await replaceComputer(deps, row.id, "recover", context);
+      expect(recovered.fresh).toBe(true);
+      expect(exported).toHaveBeenCalledTimes(3);
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(provision).toHaveBeenCalledOnce();
+      expect(row).toMatchObject({ state: "running", providerRef: recovered.providerRef });
+      expect(
+        new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+      ).toBe("live work");
+      expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
+    },
+  );
+
+  it("blocks recovery and its retry when the committed home revision cannot be recorded", async () => {
+    const { deps, row, computer, first } = await fixture();
+    const failure = new Error("Synthetic home revision record failure");
+    const update = computer.updateMany.getMockImplementation();
+    if (!update) throw new Error("Expected the fixture's fenced computer update");
+    computer.updateMany.mockImplementation(async (input) => {
+      if ("homeRevision" in input.data) throw failure;
+      return update(input);
+    });
+    const exported = vi.spyOn(deps.sandbox, "exportWorkspace");
+    const commit = vi.spyOn(deps.home, "commit");
+    const destroy = vi.spyOn(deps.sandbox, "destroy");
+    const provision = vi.spyOn(deps.sandbox, "provision");
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await expect(replaceComputer(deps, row.id, "recover", context)).rejects.toBe(failure);
+      expect(exported).toHaveBeenCalledTimes(attempt);
+      expect(commit).toHaveBeenCalledTimes(attempt);
+      expect(row).toMatchObject({
+        state: "running",
+        providerRef: first.providerRef,
+        homeRevision: "saved",
+      });
+      expect(destroy).not.toHaveBeenCalled();
+      expect(provision).not.toHaveBeenCalled();
+      expect(
+        new TextDecoder().decode(await deps.sandbox.readFile(first, "notes.txt", context)),
+      ).toBe("live work");
+      // Storage succeeded even though its revision was not durably recorded on the computer.
+      expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
+    }
+    computer.updateMany.mockImplementation(update);
+    const recovered = await replaceComputer(deps, row.id, "recover", context);
+    expect(recovered.fresh).toBe(true);
+    expect(row).toMatchObject({ state: "running", providerRef: recovered.providerRef });
+    expect(row.homeRevision).not.toBe("saved");
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(provision).toHaveBeenCalledOnce();
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+    ).toBe("live work");
+    expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
+  });
+
+  it.each([
+    { state: "running", stage: "saving" },
+    { state: "running", stage: "recreating" },
+    { state: "error", stage: "recreating" },
+  ] as const)(
+    "preserves a $state computer when recovery progress fails at $stage",
+    async ({ state, stage }) => {
+      const { deps, row, first } = await fixture();
+      row.state = state;
+      const failure = new Error(`Synthetic ${stage} progress failure`);
+      const progress = vi.fn<NonNullable<Parameters<typeof replaceComputer>[5]>>(
+        async (current) => {
+          if (current === stage) throw failure;
+        },
+      );
+      const exported = vi.spyOn(deps.sandbox, "exportWorkspace");
+      const destroy = vi.spyOn(deps.sandbox, "destroy");
+      const provision = vi.spyOn(deps.sandbox, "provision");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(
+          replaceComputer(deps, row.id, "recover", context, "none", progress),
+        ).rejects.toBe(failure);
+        expect(row).toMatchObject({ state, providerRef: first.providerRef });
+        expect(destroy).not.toHaveBeenCalled();
+        expect(provision).not.toHaveBeenCalled();
+        expect(
+          new TextDecoder().decode(await deps.sandbox.readFile(first, "notes.txt", context)),
+        ).toBe("live work");
+        expect(await deps.home.readFile("bot", "notes.txt", context)).toBe(
+          state === "running" && stage === "recreating" ? "live work" : "checkpoint",
+        );
+      }
+      if (stage === "saving" || state === "error") expect(exported).not.toHaveBeenCalled();
+      else expect(exported).toHaveBeenCalledTimes(2);
+      progress.mockImplementation(async () => undefined);
+      const recovered = await replaceComputer(deps, row.id, "recover", context, "none", progress);
+      expect(recovered.fresh).toBe(true);
+      expect(row).toMatchObject({ state: "running", providerRef: recovered.providerRef });
+      expect(
+        new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+      ).toBe(state === "error" ? "checkpoint" : "live work");
+    },
+  );
+
+  it.each([
+    { label: "transport failure", gone: false },
+    { label: "gone provider", gone: true },
+  ])("recovers the saved home when workspace export stops early with $label", async ({ gone }) => {
+    const { deps, row } = await fixture();
+    const failure = new Error("Synthetic incomplete workspace export");
+    if (gone) failure.name = "SandboxNotFoundError";
+    const exportWorkspace = deps.sandbox.exportWorkspace.bind(deps.sandbox);
+    vi.spyOn(deps.sandbox, "exportWorkspace").mockImplementation(async function* (...args) {
+      for await (const file of exportWorkspace(...args)) {
+        yield file;
+        throw failure;
+      }
+      throw failure;
+    });
+    const commit = vi.spyOn(deps.home, "commit");
+    const recovered = await replaceComputer(deps, row.id, "recover", context);
+    expect(recovered.fresh).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      state: "running",
+      providerRef: recovered.providerRef,
+      homeRevision: "saved",
+    });
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+    ).toBe("checkpoint");
+    expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
+  });
+
+  it("recovers an error-started computer without exporting its live workspace", async () => {
+    const { deps, row } = await fixture();
+    row.state = "error";
+    const exported = vi.spyOn(deps.sandbox, "exportWorkspace");
+    const commit = vi.spyOn(deps.home, "commit");
+    const recovered = await replaceComputer(deps, row.id, "recover", context);
+    expect(recovered.fresh).toBe(true);
+    expect(exported).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      state: "running",
+      providerRef: recovered.providerRef,
+      homeRevision: "saved",
+    });
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+    ).toBe("checkpoint");
+  });
+
+  it("preserves the old reference after ambiguous recovery teardown failure and retries safely", async () => {
+    const { deps, row, first } = await fixture();
+    const failure = new Error("Synthetic provider teardown transport failure");
+    const destroy = vi.spyOn(deps.sandbox, "destroy").mockRejectedValue(failure);
+    const provision = vi.spyOn(deps.sandbox, "provision");
+    const exported = vi.spyOn(deps.sandbox, "exportWorkspace");
+    await expect(replaceComputer(deps, row.id, "recover", context)).rejects.toBe(failure);
+    expect(row).toMatchObject({ state: "error", providerRef: first.providerRef });
+    expect(provision).not.toHaveBeenCalled();
+    expect(new TextDecoder().decode(await deps.sandbox.readFile(first, "notes.txt", context))).toBe(
+      "live work",
+    );
+    expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
+    destroy.mockRestore();
+    const recovered = await replaceComputer(deps, row.id, "recover", context);
+    expect(recovered.fresh).toBe(true);
+    expect(exported).toHaveBeenCalledOnce();
+    expect(provision).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({ state: "running", providerRef: recovered.providerRef });
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+    ).toBe("live work");
+  });
+
+  it("continues recovery when teardown reports the old provider gone", async () => {
+    const { deps, row } = await fixture();
+    const destroyComputer = deps.sandbox.destroy.bind(deps.sandbox);
+    const destroy = vi.spyOn(deps.sandbox, "destroy").mockImplementationOnce(async (...args) => {
+      await destroyComputer(...args);
+      throw Object.assign(new Error("Synthetic provider already removed"), {
+        name: "SandboxNotFoundError",
+      });
+    });
+    const recovered = await replaceComputer(deps, row.id, "recover", context);
+    expect(recovered.fresh).toBe(true);
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({ state: "running", providerRef: recovered.providerRef });
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+    ).toBe("live work");
+    expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
+  });
 
   it("resets a computer stuck suspending after a hung stop", async () => {
     const { deps, row } = await fixture();
