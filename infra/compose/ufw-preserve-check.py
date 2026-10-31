@@ -3,11 +3,41 @@
 
 import ast
 import gettext
+import hashlib
 import io
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
+
+
+PACKAGED_TEMPLATE_DIRECTORY = Path("/usr/share/ufw/iptables")
+PACKAGED_USER_TEMPLATES = {
+    "user.rules": (307, "320f53e1ee90a7fd92f17b67f50b06b51cb20998cd52f01dbcb52e24160618bf"),
+    "user6.rules": (107, "f6696cd7741aada36ab2055dd1a9d098e23e0290ca3a67dafbbad2920e5fdf60"),
+}
+
+
+def matches_packaged_template(name, original):
+    expected = PACKAGED_USER_TEMPLATES.get(name)
+    if expected is None or (len(original), hashlib.sha256(original).hexdigest()) != expected:
+        return False
+    template = PACKAGED_TEMPLATE_DIRECTORY / name
+    try:
+        for directory in reversed(template.parents):
+            details = directory.lstat()
+            if (not stat.S_ISDIR(details.st_mode) or details.st_uid != 0
+                    or details.st_mode & 0o022 or not os.access(directory, os.R_OK | os.X_OK)):
+                return False
+        details = template.lstat()
+        if (not stat.S_ISREG(details.st_mode) or details.st_uid != 0
+                or details.st_mode & 0o022 or details.st_size != expected[0]
+                or not os.access(template, os.R_OK)):
+            return False
+        return template.read_bytes() == original
+    except OSError:
+        return False
 
 
 def check(ufw_command, config, ssh_port):
@@ -97,7 +127,9 @@ def check(ufw_command, config, ssh_port):
                 if output.getvalue().encode("ascii") == original:
                     matched = True
                     break
-            if not matched:
+            # Pristine package files contain no registered user policy, but the
+            # formatter adds section markers on their first CLI write.
+            if not matched and not matches_packaged_template(name, original):
                 raise ValueError(f"{name} contains content UFW would rewrite or discard")
 
         # CLI additions may replace a rule with matching selectors and another action.

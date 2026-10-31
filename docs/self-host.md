@@ -457,7 +457,7 @@ including inactive rules, private allows or rules from an earlier hardening run.
 `LC_ALL=C ufw show added` report is not proof of empty policy: any nonempty `user[6].rules`,
 `before[6].rules`, `after[6].rules`, `before.init`, `after.init` or known legacy user-rule file
 requires explicit preservation acknowledgment. This deliberately includes packaged baseline content;
-the script does not classify rule safety or recognize pristine package files. Byte-empty raw files
+the script does not classify rule safety. Byte-empty raw files
 still require the exact no-rules report; missing required user-rule files, unsafe or unreadable paths
 and an unknown or failed audit stop the default run. Retained configuration without the UFW command requires
 manual review. A new host without UFW or retained configuration can proceed to installation.
@@ -475,8 +475,14 @@ nonempty `user.rules` and `user6.rules` must round-trip byte-for-byte through th
 formatter in temporary staging, including saved IPv6 rules when IPv6 is disabled. This rejects handwritten
 or mixed content the CLI would discard, and fails closed for unsupported versions, layouts or formatter
 errors. The same backend models the baseline additions and rejects any that would replace or reorder
-an existing registered rule, including saved IPv6 rules. This conservative check can also reject package
-baseline files that have never been written by the CLI. The checked package is not upgraded during
+an existing registered rule, including saved IPv6 rules. One narrow exception permits the unchanged
+UFW 0.36.2 `user.rules` and `user6.rules` package templates, whose first CLI write adds formatter
+sections. Each saved file must match its corresponding known template bytes and the installed copy
+under `/usr/share/ufw/iptables`; that directory, every ancestor and the template must be root-owned,
+not group/world-writable and free of symbolic links. Modified or unsupported package templates fail
+closed. This exception only applies to the acknowledged user-file serialization check: a stock host's
+nonempty rules and hooks still stop the default run and require `PRESERVE_EXISTING_UFW_RULES=1`.
+The checked package is not upgraded during
 this hardening run, and the check runs again before firewall commands. Nonempty legacy user-rule
 files require manual migration. Raw rules in `before[6].rules`,
 `after[6].rules` and initialization hooks still require operator review; UFW's default-policy command may

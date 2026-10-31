@@ -368,6 +368,118 @@ function expectNoHardeningWrites(f: ReturnType<typeof hardenFixture>) {
   expect(f.pending()).toBe(false);
 }
 
+describe("packaged UFW template trust", () => {
+  function match(name: string, hazard = "exact") {
+    const root = mkdtempSync(path.join(os.tmpdir(), "ufw-template-trust-"));
+    temporaryDirectories.push(root);
+    const runner = path.join(root, "check-template.py");
+    write(
+      runner,
+      String.raw`import hashlib, json, os, runpy, stat, sys
+from pathlib import Path
+
+root, name, hazard = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+namespace = runpy.run_path(sys.argv[1])
+match = namespace["matches_packaged_template"]
+settings = match.__globals__
+directory = root / "usr/share/ufw/iptables"
+directory.mkdir(parents=True)
+for ancestor in directory.parents:
+    if ancestor == root or ancestor.is_relative_to(root):
+        ancestor.chmod(0o755)
+directory.chmod(0o755)
+# Tiny synthetic data tests the trust function; official template conformance is separate.
+contents = {"user.rules": b"synthetic ipv4 template\n", "user6.rules": b"synthetic ipv6 template\n"}
+settings["PACKAGED_USER_TEMPLATES"] = {
+    file: (len(content), hashlib.sha256(content).hexdigest()) for file, content in contents.items()
+}
+settings["PACKAGED_TEMPLATE_DIRECTORY"] = directory
+for file, content in contents.items():
+    target = directory / file
+    target.write_bytes(content)
+    target.chmod(0o644)
+template, parent = directory / name, directory.parent
+original, bad_owner = contents[name], None
+if hazard == "prefix": original = original[:6]
+elif hazard == "appended raw": original += b"custom raw rule\n"
+elif hazard == "wrong family": original = contents["user6.rules" if name == "user.rules" else "user.rules"]
+elif hazard == "changed both":
+    original += b"custom raw rule\n"
+    template.write_bytes(original)
+elif hazard == "missing": template.unlink()
+elif hazard == "symlink leaf":
+    target = template.with_suffix(".target")
+    template.rename(target)
+    template.symlink_to(target)
+elif hazard == "symlink parent":
+    target = parent.with_name("original-ufw")
+    parent.rename(target)
+    parent.symlink_to(target, target_is_directory=True)
+elif hazard in ("group leaf", "world leaf"): template.chmod(0o664 if hazard == "group leaf" else 0o666)
+elif hazard in ("group parent", "world parent"): parent.chmod(0o775 if hazard == "group parent" else 0o777)
+elif hazard == "owner leaf": bad_owner = template
+elif hazard == "owner parent": bad_owner = parent
+elif hazard == "nonregular":
+    template.unlink()
+    template.mkdir()
+# Model root ownership and protected host ancestors without changing real /tmp or needing root.
+# Inside the owned fixture, real file types, symlinks and permission bits remain authoritative.
+lstat = Path.lstat
+def metadata(candidate, *args, **kwargs):
+    if candidate != root and not candidate.is_relative_to(root):
+        return os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+    details = list(lstat(candidate, *args, **kwargs))
+    details[4] = 99 if candidate == bad_owner else 0
+    return os.stat_result(details)
+Path.lstat = metadata
+print(json.dumps(match(name, original)))
+`,
+    );
+    const result = spawnSync(
+      "python3",
+      [
+        "-I",
+        "-B",
+        runner,
+        path.resolve(import.meta.dirname, "../../../infra/compose/ufw-preserve-check.py"),
+        root,
+        name,
+        hazard,
+      ],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    return JSON.parse(result.stdout.trim());
+  }
+
+  it.each(["user.rules", "user6.rules"])("accepts the exact trusted family template %s", (name) => {
+    expect(match(name)).toBe(true);
+  });
+
+  it.each(
+    ["user.rules", "user6.rules"].flatMap((name) =>
+      [
+        "prefix",
+        "appended raw",
+        "wrong family",
+        "changed both",
+        "missing",
+        "symlink leaf",
+        "symlink parent",
+        "group leaf",
+        "world leaf",
+        "group parent",
+        "world parent",
+        "owner leaf",
+        "owner parent",
+        "nonregular",
+      ].map((hazard) => ({ name, hazard })),
+    ),
+  )("rejects an untrusted or changed family template: $name/$hazard", ({ name, hazard }) => {
+    expect(match(name, hazard)).toBe(false);
+  });
+});
+
 describe("firewall change rollback", () => {
   it("arms a generation-specific timer before executing the bounded command", () => {
     const f = fixture();
