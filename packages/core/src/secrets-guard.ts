@@ -1,4 +1,5 @@
 export const DEV_AUTH_SECRET_PLACEHOLDER = "dev-secret-change-me-please-32chars";
+
 export const DEV_ENCRYPTION_KEY_PLACEHOLDER = "dev-encryption-key";
 export const DEV_SUPERVISOR_TOKEN_PLACEHOLDER = "dev-supervisor-token-change-me-32chars";
 export const DEV_SCREEN_PROXY_SECRET_PLACEHOLDER = "dev-screen-proxy-secret-change-me-32chars";
@@ -16,6 +17,11 @@ const DEDICATED_SECRET_PLACEHOLDERS = new Set([
   EXAMPLE_SUPERVISOR_TOKEN_PLACEHOLDER,
   EXAMPLE_SCREEN_PROXY_SECRET_PLACEHOLDER,
 ]);
+
+/** Stored protected input belongs to exactly one run. */
+export function runSecretKind(runId: string): string {
+  return `run-secret:${runId}`;
+}
 
 export function isDevSecretAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.RAKAZO_ALLOW_DEV_SECRETS === "1") return true;

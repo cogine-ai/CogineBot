@@ -87,6 +87,7 @@ async function runWithModel(
     status: "queued",
     trigger: "user",
     leaseFence: 0,
+    scriptedState: null,
     modelPinned: attachmentOptions.pinned ?? false,
     modelProvider: attachmentOptions.pinned ? "openrouter" : null,
     modelId: attachmentOptions.pinned ? modelId : null,

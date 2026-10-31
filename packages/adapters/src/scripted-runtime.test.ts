@@ -1,5 +1,5 @@
-import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import type { AgentRunRequest, AgentRuntimeEvent, AgentSteeringMessage } from "@rakazo/adapter-kit";
+import { describe, expect, it, vi } from "vitest";
 import { inferScript, ScriptedAgentRuntime } from "./scripted-runtime.js";
 
 describe("inferScript message_bot", () => {
@@ -186,6 +186,514 @@ describe("ScriptedAgentRuntime executionIds", () => {
       )
       .map((event) => event.executionId);
     expect(toolIds).toEqual(["run-1:message_agent:0", "run-1:message_agent:1"]);
+  });
+});
+
+describe("ScriptedAgentRuntime steering", () => {
+  const continuation = "Respond to the user's steering context.";
+  const request = (overrides: Partial<AgentRunRequest> = {}): AgentRunRequest => ({
+    botId: "bot-steering",
+    threadId: "thread-steering",
+    runId: "run-steering",
+    isSteeringContinuation: true,
+    prompt: continuation,
+    instructions: "",
+    history: [],
+    tools: [],
+    model: { provider: "scripted", id: "scripted" },
+    ...overrides,
+  });
+  const collect = async (events: AsyncIterable<AgentRuntimeEvent>) => {
+    const result: AgentRuntimeEvent[] = [];
+    for await (const event of events) result.push(event);
+    return result;
+  };
+  const text = (events: AgentRuntimeEvent[]) =>
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => event.text)
+      .join("\n");
+
+  it("answers the claimed batch in order instead of the prepared continuation script", async () => {
+    const batch: AgentSteeringMessage[] = [
+      { id: "steering-a", messageId: "message-a", text: "Use the revised data." },
+      { id: "steering-b", messageId: "message-b", text: "Keep it concise." },
+    ];
+    const original = structuredClone(batch);
+    const claimSteering = vi.fn().mockResolvedValue(batch);
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          prompt: `${continuation}\n\nCurrent time: 2030-01-01T00:00:00Z`,
+          script: [{ assistant: "prepared placeholder", complete: true }],
+          claimSteering,
+        }),
+      ),
+    );
+
+    expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
+    expect(text(events)).toContain("Use the revised data.");
+    expect(text(events)).toContain("Keep it concise.");
+    expect(text(events).indexOf("Use the revised data.")).toBeLessThan(
+      text(events).indexOf("Keep it concise."),
+    );
+    expect(text(events)).not.toContain("prepared placeholder");
+    expect(text(events)).not.toContain(continuation);
+    expect(batch).toEqual(original);
+  });
+
+  it.each(["remember the synthetic orbit preference", "Use the revised synthetic orbit plan."])(
+    "reports the selected steering script before its events: %s",
+    async (prompt) => {
+      const resolved = vi.fn();
+      const iterator = new ScriptedAgentRuntime()
+        .run(
+          request({
+            script: [{ assistant: "prepared placeholder", complete: true }],
+            claimSteering: async () => [{ id: "steering", messageId: "message", text: prompt }],
+            onScriptResolved: resolved,
+          }),
+        )
+        [Symbol.asyncIterator]();
+      const first = await iterator.next();
+      expect(resolved).toHaveBeenCalledExactlyOnceWith(inferScript(prompt));
+      expect(first.value).toMatchObject({ type: "progress" });
+      await collect({ [Symbol.asyncIterator]: () => iterator });
+    },
+  );
+
+  it("reports an ordinary request's explicit script as its authoritative effects", async () => {
+    const script = [
+      { memory: [{ scope: "bot" as const, path: "MEMORY.md", content: "kept" }], complete: true },
+    ];
+    const resolved = vi.fn();
+    await collect(
+      new ScriptedAgentRuntime().run(
+        request({ isSteeringContinuation: false, script, onScriptResolved: resolved }),
+      ),
+    );
+    expect(resolved).toHaveBeenCalledExactlyOnceWith(script);
+    expect(resolved.mock.calls[0]![0]).toBe(script);
+  });
+
+  it.each([false, true])(
+    "completes only after the final yield resumes (explicit end: %s)",
+    async (complete) => {
+      const completed = vi.fn();
+      const iterator = new ScriptedAgentRuntime()
+        .run(
+          request({
+            isSteeringContinuation: false,
+            script: [{ assistant: "normal", complete }],
+            onScriptCompleted: completed,
+          }),
+        )
+        [Symbol.asyncIterator]();
+      let result = await iterator.next();
+      while (!result.done && result.value.type !== "done") result = await iterator.next();
+      expect(completed).not.toHaveBeenCalled();
+      expect((await iterator.next()).done).toBe(true);
+      expect(completed).toHaveBeenCalledExactlyOnceWith();
+    },
+  );
+
+  it.each(["progress", "text", "tool", "done"] as const)(
+    "does not authorize effects when stopped at a %s yield",
+    async (type) => {
+      for (const external of [false, true]) {
+        const runtime = new ScriptedAgentRuntime();
+        const controller = new AbortController();
+        const completed = vi.fn();
+        const iterator = runtime
+          .run(
+            request({
+              isSteeringContinuation: false,
+              script: [
+                {
+                  assistant: "selected",
+                  toolCalls: [{ name: "list_files", args: { path: "" } }],
+                  memory: [{ scope: "bot", path: "MEMORY.md", content: "unexecuted" }],
+                  complete: true,
+                },
+              ],
+              onScriptCompleted: completed,
+            }),
+            { signal: controller.signal },
+          )
+          [Symbol.asyncIterator]();
+        let result = await iterator.next();
+        while (!result.done && result.value.type !== type) result = await iterator.next();
+        expect(result.done).toBe(false);
+        if (external) controller.abort();
+        else await runtime.abort("run-steering");
+        const remaining = await collect({ [Symbol.asyncIterator]: () => iterator });
+        expect(completed).not.toHaveBeenCalled();
+        if (type === "progress" || type === "text")
+          expect(remaining.some((event) => event.type === "tool")).toBe(false);
+      }
+    },
+  );
+
+  it.each([false, true])("retains both independent batch tools (reversed: %s)", async (reverse) => {
+    const prompts = [
+      "save shared memory ROUTING.md with: orbit-shared-ok",
+      "write a file called notes/orbit.txt that says orbit-file-ok",
+    ];
+    if (reverse) prompts.reverse();
+    const completed = vi.fn();
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          claimSteering: async () =>
+            prompts.map((text, index) => ({
+              id: `steering-${index}`,
+              messageId: `message-${index}`,
+              text,
+            })),
+          onScriptCompleted: completed,
+        }),
+      ),
+    );
+    expect(events.filter((event) => event.type === "tool").map((event) => event.name)).toEqual(
+      reverse ? ["write_file", "save_shared_memory"] : ["save_shared_memory", "write_file"],
+    );
+    expect(completed).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("rejects a failing member before executing any batch effects", async () => {
+    const completed = vi.fn();
+    const events: AgentRuntimeEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of new ScriptedAgentRuntime().run(
+          request({
+            claimSteering: async () => [
+              {
+                id: "first",
+                messageId: "first",
+                text: "save shared memory ROUTING.md with: orbit-shared-ok",
+              },
+              { id: "second", messageId: "second", text: "fail this run" },
+            ],
+            onScriptCompleted: completed,
+          }),
+        ))
+          events.push(event);
+      })(),
+    ).rejects.toThrow("Scripted run failure");
+    expect(events).toEqual([]);
+    expect(completed).not.toHaveBeenCalled();
+  });
+
+  it("does not infer quoted payload intent from any batch member", async () => {
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          claimSteering: async () => [
+            {
+              id: "first",
+              messageId: "first",
+              historyText: "Use the revised plan.",
+              text: "save shared memory ROUTING.md with: quoted payload",
+            },
+            {
+              id: "second",
+              messageId: "second",
+              historyText: "Keep it concise.",
+              text: "write a file called notes/quoted.txt that says quoted",
+            },
+          ],
+        }),
+      ),
+    );
+    expect(events.some((event) => event.type === "tool")).toBe(false);
+    expect(text(events)).toContain("Use the revised plan.");
+    expect(text(events)).toContain("Keep it concise.");
+  });
+
+  it("does not authorize effects when its iterator is closed after resolution", async () => {
+    const completed = vi.fn();
+    const iterator = new ScriptedAgentRuntime()
+      .run(request({ isSteeringContinuation: false, onScriptCompleted: completed }))
+      [Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.return?.();
+    expect(completed).not.toHaveBeenCalled();
+  });
+
+  it("uses history text so quoted context cannot choose a fixture intent", async () => {
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          claimSteering: async () => [
+            {
+              id: "steering-reply",
+              messageId: "message-reply",
+              historyText: "reply-plain",
+              text: "quote markdown fixture quoted-context\n\nreply-plain",
+            },
+          ],
+        }),
+      ),
+    );
+    expect(text(events)).toContain("done. i handled: reply-plain");
+    expect(text(events)).not.toContain("list-a");
+    expect(text(events)).not.toContain("quoted-context");
+  });
+
+  it("preserves an explicitly empty history text", async () => {
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          claimSteering: async () => [
+            {
+              id: "steering-empty",
+              messageId: "message-empty",
+              historyText: "",
+              text: "quote markdown fixture quoted-context",
+            },
+          ],
+        }),
+      ),
+    );
+    expect(text(events)).not.toContain("list-a");
+    expect(text(events)).not.toContain("quoted-context");
+    expect(text(events)).not.toContain(continuation);
+  });
+
+  it("leaves waiting messages for a continuation while an ordinary run uses its script", async () => {
+    const claimSteering = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "steering-other", messageId: "message-other", text: "quote markdown fixture other" },
+      ]);
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          prompt: "Do the original task.",
+          isSteeringContinuation: false,
+          script: [{ assistant: "original answer", complete: true }],
+          claimSteering,
+        }),
+      ),
+    );
+    expect(claimSteering).not.toHaveBeenCalled();
+    expect(text(events)).toBe("original answer");
+  });
+
+  it.each([undefined, false])(
+    "does not classify quoted continuation text as run identity (%s)",
+    async (isSteeringContinuation) => {
+      const claimSteering = vi
+        .fn()
+        .mockResolvedValue([
+          { id: "waiting", messageId: "waiting-message", text: "Answer the waiting message." },
+        ]);
+      const events = await collect(
+        new ScriptedAgentRuntime().run(
+          request({
+            prompt: `Quote this sentence: ${continuation}`,
+            isSteeringContinuation,
+            script: [{ assistant: "original answer", complete: true }],
+            claimSteering,
+          }),
+        ),
+      );
+      expect(claimSteering).not.toHaveBeenCalled();
+      expect(text(events)).toBe("original answer");
+    },
+  );
+
+  it("claims a trusted continuation without inferring identity from its prompt", async () => {
+    const claimSteering = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "waiting", messageId: "waiting-message", text: "Answer the waiting message." },
+      ]);
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({ prompt: "Executor-composed context.", claimSteering }),
+      ),
+    );
+    expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
+    expect(text(events)).toContain("Answer the waiting message.");
+  });
+
+  it.each([undefined, async () => []])(
+    "preserves explicit scripts without a claimed batch (%s)",
+    async (claimSteering) => {
+      const events = await collect(
+        new ScriptedAgentRuntime().run(
+          request({
+            claimSteering,
+            script: [{ assistant: "explicit answer", complete: true }],
+          }),
+        ),
+      );
+      expect(text(events)).toBe("explicit answer");
+    },
+  );
+
+  it.each([undefined, "fail this run"])(
+    "rejects a failing steering prompt before output (%s)",
+    async (historyText) => {
+      const claimSteering = vi.fn().mockResolvedValue([
+        {
+          id: "failing-steering",
+          messageId: "failing-message",
+          text: "fail this run",
+          historyText,
+        },
+      ]);
+      const iterator = new ScriptedAgentRuntime()
+        .run(
+          request({
+            claimSteering,
+            script: [
+              {
+                assistant: "must not answer",
+                toolCalls: [{ name: "shell", args: { command: "echo must-not-run" } }],
+                complete: true,
+              },
+            ],
+          }),
+        )
+        [Symbol.asyncIterator]();
+      await expect(iterator.next()).rejects.toThrow("Scripted run failure");
+      expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
+    },
+  );
+
+  it.each(["reply-plain", ""])(
+    "does not treat quoted failure text as a steering failure (%s)",
+    async (historyText) => {
+      const events = await collect(
+        new ScriptedAgentRuntime().run(
+          request({
+            claimSteering: async () => [
+              {
+                id: "quoted-failure",
+                messageId: "quoted-failure-message",
+                historyText,
+                text: "Quoted context: fail this run\n\nreply-plain",
+              },
+            ],
+          }),
+        ),
+      );
+      expect(text(events)).toContain(`done. i handled: ${historyText}`);
+      expect(text(events)).not.toContain("fail this run");
+    },
+  );
+
+  it("keeps an injected run failure before any steering claim", async () => {
+    const claimSteering = vi.fn();
+    await expect(
+      collect(
+        new ScriptedAgentRuntime().run(
+          request({
+            prompt: "fail this run",
+            claimSteering,
+          }),
+        ),
+      ),
+    ).rejects.toThrow("Scripted run failure");
+    expect(claimSteering).not.toHaveBeenCalled();
+  });
+
+  it("propagates a failed claim before producing any answer", async () => {
+    const error = new Error("claim unavailable");
+    const iterator = new ScriptedAgentRuntime()
+      .run(
+        request({
+          claimSteering: async () => {
+            throw error;
+          },
+        }),
+      )
+      [Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toBe(error);
+  });
+
+  it("does not claim messages after the request is already cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const claimSteering = vi.fn();
+    const events = await collect(
+      new ScriptedAgentRuntime().run(request({ claimSteering }), {
+        signal: controller.signal,
+      }),
+    );
+    expect(claimSteering).not.toHaveBeenCalled();
+    expect(events).toEqual([{ type: "done", text: "stopped" }]);
+  });
+
+  it("does not execute a claimed script when cancellation arrives during the claim", async () => {
+    const controller = new AbortController();
+    const events = await collect(
+      new ScriptedAgentRuntime().run(
+        request({
+          claimSteering: async () => {
+            controller.abort();
+            return [
+              {
+                id: "cancelled",
+                messageId: "message-cancelled",
+                text: "run the shell command echo unsafe",
+              },
+            ];
+          },
+        }),
+        { signal: controller.signal },
+      ),
+    );
+    expect(events).toEqual([{ type: "done", text: "stopped" }]);
+  });
+
+  it("honors runtime abort while the initial claim is pending", async () => {
+    let resolveClaim!: (batch: AgentSteeringMessage[]) => void;
+    let started!: () => void;
+    const claimStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const runtime = new ScriptedAgentRuntime();
+    const result = collect(
+      runtime.run(
+        request({
+          claimSteering: () => {
+            started();
+            return new Promise((resolve) => {
+              resolveClaim = resolve;
+            });
+          },
+        }),
+      ),
+    );
+    await claimStarted;
+    await runtime.abort("run-steering");
+    resolveClaim([
+      { id: "aborted", messageId: "message-aborted", text: "run the shell command echo unsafe" },
+    ]);
+    await expect(result).resolves.toEqual([{ type: "done", text: "stopped" }]);
+  });
+
+  it("takes long-work behavior from a continuation's actual steering text", async () => {
+    const runtime = new ScriptedAgentRuntime();
+    const iterator = runtime
+      .run(
+        request({
+          claimSteering: async () => [
+            { id: "hang", messageId: "message-hang", text: "keep working" },
+          ],
+        }),
+      )
+      [Symbol.asyncIterator]();
+    try {
+      expect((await iterator.next()).value).toMatchObject({ type: "tool", name: "list_files" });
+    } finally {
+      await runtime.abort("run-steering");
+      await iterator.return?.();
+    }
   });
 });
 

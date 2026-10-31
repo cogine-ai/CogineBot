@@ -1,5 +1,7 @@
 import type { RunStatus } from "@rakazo/contracts";
 
+export const STEERING_CONTINUATION_PROMPT = "Respond to the user's steering context.";
+
 export const ACTIVE_RUN_STATUSES = [
   "queued",
   "leased",

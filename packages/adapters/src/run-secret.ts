@@ -5,16 +5,15 @@ import {
   MessageBlock as MessageBlockSchema,
   SecretAskPurpose,
 } from "@rakazo/contracts";
-import { isSecretAskBlock } from "@rakazo/core";
+import { isSecretAskBlock, runSecretKind } from "@rakazo/core";
 import type { PrismaClient, RunSecretWriter } from "@rakazo/db";
 import { withTransactionRetry } from "@rakazo/db";
-import { type ApprovalPausedToolResult, resolveDuplicateEffectGate } from "./approval-effect.js";
+import type { ApprovalPausedToolResult } from "./approval-effect.js";
+import { resolveDuplicateEffectGate } from "./approval-effect.js";
 import { prepareBotSecret } from "./bot-secrets.js";
 import { persistPreparedSecret } from "./secret-persistence.js";
 
-export function runSecretKind(runId: string): string {
-  return `run-secret:${runId}`;
-}
+export { runSecretKind };
 
 export function normalizeSecretAskPurpose(purpose: string | undefined): SecretAskPurpose {
   return SecretAskPurpose.safeParse(purpose).data ?? "otp";

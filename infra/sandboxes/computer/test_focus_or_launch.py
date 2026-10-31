@@ -1,8 +1,10 @@
 """Offline regressions for the focus-or-launch wrapper and its control argv."""
+from contextlib import contextmanager
 import importlib.machinery
 import importlib.util
 import os
 from pathlib import Path
+import select
 import stat
 import subprocess
 import sys
@@ -22,6 +24,38 @@ def load_module(name, filename):
 
 helper = load_module("focus_or_launch", "rakazo-focus-or-launch")
 control = load_module("control", "control.py")
+
+
+@contextmanager
+def profile_process(*profile_args, ready_timeout=2):
+    """Yield a ready fixture child and reap it on every exit path."""
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "import os, sys; os.write(sys.stdout.fileno(), b'ready\\n'); sys.stdin.buffer.read()",
+            *profile_args,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        readable, _, _ = select.select([proc.stdout], [], [], ready_timeout)
+        if not readable:
+            raise TimeoutError("profile fixture readiness timed out")
+        token = os.read(proc.stdout.fileno(), len(b"ready\n"))
+        if token != b"ready\n" or proc.poll() is not None:
+            raise RuntimeError(
+                f"profile fixture did not become ready: token={token!r}, status={proc.poll()}"
+            )
+        yield proc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate(timeout=2)
+
 
 LISTING = """\
 0x01800003  0 99999991 chromium.Chromium   box  Example page - Chromium
@@ -266,27 +300,12 @@ class ControlArgvTest(unittest.TestCase):
 class ScriptTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc process arguments")
     def test_window_profile_reads_the_user_data_dir_flag(self):
-        # The flag has to stay on this process. A shell would exec the sleep away.
-        equals = subprocess.Popen(
-            ["python3", "-c", "import time; time.sleep(30)", "--user-data-dir=/profiles/mine"]
-        )
-        separate = subprocess.Popen(
-            [
-                "python3",
-                "-c",
-                "import time; time.sleep(30)",
-                "--user-data-dir",
-                "/profiles/other",
-            ]
-        )
-        try:
+        with profile_process("--user-data-dir=/profiles/mine") as equals, profile_process(
+            "--user-data-dir", "/profiles/other"
+        ) as separate:
             self.assertEqual(helper.window_profile(str(equals.pid)), "/profiles/mine")
             self.assertEqual(helper.window_profile(str(separate.pid)), "/profiles/other")
             self.assertIsNone(helper.window_profile("99999999"))
-        finally:
-            for proc in (equals, separate):
-                proc.kill()
-                proc.wait()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc process arguments")
     def test_script_raises_the_requested_browser_profile_only(self):
@@ -295,13 +314,9 @@ class ScriptTest(unittest.TestCase):
             bin_dir.mkdir()
             windows = Path(tmp) / "windows"
             args_log = Path(tmp) / "args"
-            other = subprocess.Popen(
-                ["python3", "-c", "import time; time.sleep(30)", "--user-data-dir=/profiles/other"]
-            )
-            mine = subprocess.Popen(
-                ["python3", "-c", "import time; time.sleep(30)", "--user-data-dir=/profiles/mine"]
-            )
-            try:
+            with profile_process("--user-data-dir=/profiles/other") as other, profile_process(
+                "--user-data-dir=/profiles/mine"
+            ) as mine:
                 windows.write_text(
                     f"0x111 0 {other.pid} chromium.Chromium host Other\n"
                     f"0x222 0 {mine.pid} chromium.Chromium host Mine\n"
@@ -347,10 +362,111 @@ class ScriptTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(args_log.read_text().strip(), "browser")
-            finally:
-                for proc in (other, mine):
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc process arguments")
+class FixtureLifetimeTest(unittest.TestCase):
+    @contextmanager
+    def child_program(self, program, start_at=0):
+        popen = subprocess.Popen
+        spawned = []
+
+        def launch(argv, **kwargs):
+            argv = list(argv)
+            if len(spawned) >= start_at:
+                argv[3] = program
+            proc = popen(argv, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        try:
+            with patch.object(subprocess, "Popen", side_effect=launch):
+                yield spawned
+        finally:
+            for proc in spawned:
+                if proc.poll() is None:
                     proc.kill()
-                    proc.wait()
+                proc.communicate(timeout=2)
+
+    def assert_reaped(self, proc):
+        self.assertIsNotNone(proc.poll())
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            self.assertTrue(stream.closed)
+
+    def test_ready_child_exposes_profile_until_context_exits(self):
+        with profile_process("--user-data-dir=/profiles/mine") as proc:
+            self.assertEqual(helper.window_profile(str(proc.pid)), "/profiles/mine")
+        self.assert_reaped(proc)
+
+    def test_child_exit_before_readiness_is_rejected_and_reaped(self):
+        with self.child_program("raise SystemExit(7)") as spawned:
+            with self.assertRaisesRegex(RuntimeError, "did not become ready"):
+                with profile_process("--user-data-dir=/profiles/mine"):
+                    self.fail("an exited fixture must not reach the consumer")
+            self.assertEqual(spawned[0].returncode, 7)
+            self.assert_reaped(spawned[0])
+
+    def test_live_child_without_readiness_times_out_and_is_reaped(self):
+        with self.child_program("import sys; sys.stdin.buffer.read()") as spawned:
+            with self.assertRaisesRegex(TimeoutError, "readiness timed out"):
+                with profile_process("--user-data-dir=/profiles/mine", ready_timeout=0.02):
+                    self.fail("an unready fixture must not reach the consumer")
+            self.assert_reaped(spawned[0])
+
+    def test_partial_readiness_does_not_block_and_is_reaped(self):
+        program = "import os, sys; os.write(sys.stdout.fileno(), b'rea'); sys.stdin.buffer.read()"
+        with self.child_program(program) as spawned:
+            with self.assertRaisesRegex(RuntimeError, "did not become ready"):
+                with profile_process("--user-data-dir=/profiles/mine"):
+                    self.fail("partial readiness must not reach the consumer")
+            self.assert_reaped(spawned[0])
+
+    def test_consumer_failure_reaps_the_child(self):
+        with self.assertRaisesRegex(RuntimeError, "fixture consumer failed"):
+            with profile_process("--user-data-dir=/profiles/mine") as proc:
+                raise RuntimeError("fixture consumer failed")
+        self.assert_reaped(proc)
+
+    def test_second_readiness_failure_reaps_both_children(self):
+        with self.child_program("import sys; sys.stdin.buffer.read()", start_at=1) as spawned:
+            with self.assertRaisesRegex(TimeoutError, "readiness timed out"):
+                with profile_process("--user-data-dir=/profiles/other"), profile_process(
+                    "--user-data-dir=/profiles/mine", ready_timeout=0.02
+                ):
+                    self.fail("the second fixture was not ready")
+            self.assertEqual(len(spawned), 2)
+            for proc in spawned:
+                self.assert_reaped(proc)
+
+    def test_script_reaps_first_child_when_second_spawn_fails(self):
+        for method in (
+            "test_window_profile_reads_the_user_data_dir_flag",
+            "test_script_raises_the_requested_browser_profile_only",
+        ):
+            with self.subTest(method=method):
+                popen = subprocess.Popen
+                spawned = []
+
+                def fail_second(*args, **kwargs):
+                    if spawned:
+                        raise OSError("fixture second spawn failed")
+                    proc = popen(*args, **kwargs)
+                    spawned.append(proc)
+                    return proc
+
+                try:
+                    with patch.object(subprocess, "Popen", side_effect=fail_second):
+                        with self.assertRaisesRegex(OSError, "fixture second spawn failed"):
+                            getattr(ScriptTest(), method)()
+                    self.assertIsNotNone(spawned[0].poll(), "profile fixture child was not reaped")
+                finally:
+                    for proc in spawned:
+                        if proc.poll() is None:
+                            proc.kill()
+                        proc.wait(timeout=2)
+                        for stream in (proc.stdin, proc.stdout, proc.stderr):
+                            if stream is not None:
+                                stream.close()
 
 
 if __name__ == "__main__":
