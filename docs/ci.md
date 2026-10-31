@@ -3,6 +3,10 @@
 Repository CI selects checks from a pull request's changes. The router compares
 its actual head with the merge base of its target branch, including deleted
 paths and both sides of renames. Mixed changes take the union of their checks.
+The always-run repository job also executes the existing Compose shell smoke
+checks. These validate the self-host documentation, including the digest-verified
+startup example, using a fake Docker CLI without a daemon or network.
+
 A missing comparison, empty diff, unknown path, shared package, dependency or CI
 configuration change selects the complete matrix. Main pushes and manual runs
 also select the complete matrix.

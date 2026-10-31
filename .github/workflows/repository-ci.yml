@@ -65,6 +65,7 @@ jobs:
         with:
           node-version: 24.16.0
       - run: node scripts/check-repository.mjs
+      - run: bash infra/compose/run-smokes.sh
       - run: bash scripts/lint-workflows.sh
       - run: node --test scripts/ci-router.test.mjs
       - name: Route checks from the PR diff
