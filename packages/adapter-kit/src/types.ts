@@ -532,6 +532,12 @@ export interface AgentRunRequest {
   onScriptResolved?: (script: ScriptedTurn[]) => void;
   /** Authorize deferred scripted effects only after normal, uninterrupted iteration completes. */
   onScriptCompleted?: () => void;
+  /** Internal durable progress for the deterministic scripted continuation only. */
+  scriptedState?: ScriptedRuntimeState;
+  /** Executor-verified answer or takeover release for the suspended scripted position. */
+  scriptedResume?: "answer" | "takeover";
+  /** Awaited, lease-fenced persistence before scripted work or an interactive pause. */
+  onScriptCheckpoint?: (state: ScriptedRuntimeState) => Promise<void>;
   /**
    * FYI bot-message wakes and scheduled routines may finish with no text.
    * When set, skip synthetic empty-turn fallbacks (including after tools).
@@ -564,6 +570,22 @@ export interface ScriptedTurn {
   files?: Array<{ path: string; content: string }>;
   memory?: Array<{ scope: "bot" | "user"; path: string; content: string }>;
   complete?: boolean;
+}
+
+/** Internal execution data; never include this value in model context or client responses. */
+export interface ScriptedRuntimeState {
+  version: 1;
+  runId: string;
+  batch: Array<{ id: string; messageId: string; contentDigest: string }>;
+  script: ScriptedTurn[];
+  scriptDigest: string;
+  owners: string[];
+  cursor: {
+    turn: number;
+    tool: number;
+    ordinal: number;
+    phase: "turn" | "tool" | "after-tools" | "ask" | "takeover" | "complete";
+  };
 }
 
 /** Provider-neutral per-call measurements. Null means unavailable, never free/zero.

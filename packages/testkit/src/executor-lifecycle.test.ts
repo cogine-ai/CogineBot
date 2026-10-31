@@ -2,11 +2,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRuntimeEvent, AgentSteeringMessage } from "@rakazo/adapter-kit";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
-import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
+import {
+  createThreadEvents,
+  createThreadMessage,
+  loadRunHistoryMessages,
+  Prisma,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import * as replyContext from "../../adapters/src/reply-context.js";
+import { parseStoredScriptedState, ScriptedStateError } from "../../adapters/src/scripted-state.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
 process.env.WAKEUP_DRIVER = "memory";
@@ -720,6 +727,989 @@ describeIntegration("run executor lifecycle", () => {
       });
     }
   });
+
+  it("resumes a paused scripted continuation with its answer on the same run", async () => {
+    const { seeded, continuationRunId, steering } = await seedSteeringContinuation(
+      "scripted-ask-resume",
+      "ask me which city to use",
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    try {
+      await handles.executor.continueRun(continuationRunId, "ask-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "waiting_input" });
+      await expect(
+        handles.prisma.steeringMessage.findUniqueOrThrow({ where: { id: steering.id } }),
+      ).resolves.toMatchObject({ runId: continuationRunId, claimedAt: expect.any(Date) });
+      await rpc(seeded.cookie, "threads/send", {
+        botId: seeded.bot.id,
+        text: "Paris",
+        clientNonce: `scripted-answer-${stamp}`,
+      });
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "queued" });
+      const answered = await handles.prisma.message.findMany({
+        where: { runId: continuationRunId, role: "bot" },
+      });
+      expect(JSON.stringify(answered.map((item) => item.blocks))).toContain('"status":"answered"');
+      expect(JSON.stringify(answered.map((item) => item.blocks))).toContain("Paris");
+      await handles.executor.continueRun(continuationRunId, "answer-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, held.restore);
+    }
+  });
+
+  it("retains a legacy paused continuation instead of guessing its missing progress after an answer", async () => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation("scripted-legacy-pause", [
+      "ask me which city to use",
+      "write this to the destination crm after the legacy answer",
+    ]);
+    const held = holdContinuationJobs(seeded.bot.id);
+    const recordsBefore = handles.connector.records.length;
+    const runRuntime = handles.runtime.run.bind(handles.runtime);
+    const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+      if (request.runId !== continuationRunId) return runRuntime(request, context);
+      // Reproduce an already-paused pre-cursor run without changing its script or trigger.
+      const legacy = { ...request };
+      delete legacy.onScriptCheckpoint;
+      delete legacy.scriptedState;
+      delete legacy.scriptedResume;
+      return runRuntime(legacy, context);
+    });
+    try {
+      await handles.executor.continueRun(continuationRunId, "legacy-pause-worker");
+      runtime.mockRestore();
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "waiting_input", scriptedState: null });
+      const [card] = await scriptedAskCards(continuationRunId);
+      await rpc(seeded.cookie, "threads/answer", {
+        botId: seeded.bot.id,
+        runId: continuationRunId,
+        messageId: card!.message.id,
+        answer: "Paris",
+      });
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "queued" });
+      const retained = await handles.prisma.steeringMessage.findMany({
+        where: { botId: seeded.bot.id },
+        orderBy: { id: "asc" },
+      });
+      expect(retained).toHaveLength(2);
+      const attemptsBefore = await handles.prisma.attempt.count({
+        where: { runId: continuationRunId },
+      });
+      await handles.executor.continueRun(continuationRunId, "new-cursor-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({
+        status: "queued",
+        scriptedState: null,
+        error: "Scripted continuation progress could not be verified",
+      });
+      expect(await handles.prisma.attempt.count({ where: { runId: continuationRunId } })).toBe(
+        attemptsBefore,
+      );
+      expect(
+        await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(retained);
+      expect(handles.connector.records).toHaveLength(recordsBefore);
+      expect(
+        await handles.prisma.externalEffect.count({ where: { runId: continuationRunId } }),
+      ).toBe(0);
+      expect(await scriptedAskCards(continuationRunId)).toHaveLength(1);
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, () => {
+        runtime.mockRestore();
+        held.restore();
+      });
+    }
+  });
+
+  it.sequential.each([
+    {
+      kind: "ask",
+      prompt: "ask me which city to use",
+      phase: "ask",
+      status: "waiting_input",
+      event: "run.waiting_input",
+    },
+    {
+      kind: "takeover",
+      prompt: "take over so I can sign in",
+      phase: "takeover",
+      status: "waiting_takeover",
+      event: "computer.takeover.requested",
+    },
+  ] as const)(
+    "rolls back the $kind pause transaction when its scripted receipt cannot be saved",
+    async ({ kind, prompt, phase, status, event }) => {
+      const { seeded, continuationRunId } = await seedSteeringContinuation(
+        `scripted-pause-receipt-${kind}`,
+        [
+          "remember the synthetic pause-receipt preference",
+          prompt,
+          "Use the synthetic pause receipt recovery plan.",
+        ],
+      );
+      const held = holdContinuationJobs(seeded.bot.id);
+      const memoryBefore = await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id });
+      let functionInstalled = false;
+      let triggerInstalled = false;
+      const removeFault = async () => {
+        if (triggerInstalled) {
+          await handles.prisma.$executeRawUnsafe(
+            "DROP TRIGGER test_scripted_pause_receipt_failure ON runs",
+          );
+          triggerInstalled = false;
+        }
+        if (functionInstalled) {
+          await handles.prisma.$executeRawUnsafe(
+            "DROP FUNCTION test_scripted_pause_receipt_failure()",
+          );
+          functionInstalled = false;
+        }
+      };
+      try {
+        // Static fixture DDL targets the real receipt UPDATE inside the pause transaction.
+        // Both parameterized cases are serial and use this suite's temporary database.
+        await handles.prisma.$executeRawUnsafe(`
+          CREATE FUNCTION test_scripted_pause_receipt_failure() RETURNS trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW."scriptedState" ? 'pause'
+               AND NOT COALESCE(OLD."scriptedState" ? 'pause', false) THEN
+              RAISE EXCEPTION 'Synthetic scripted pause receipt failure';
+            END IF;
+            RETURN NEW;
+          END;
+          $$
+        `);
+        functionInstalled = true;
+        await handles.prisma.$executeRawUnsafe(`
+          CREATE TRIGGER test_scripted_pause_receipt_failure
+          BEFORE UPDATE OF "scriptedState" ON runs
+          FOR EACH ROW EXECUTE FUNCTION test_scripted_pause_receipt_failure()
+        `);
+        triggerInstalled = true;
+
+        await handles.executor.continueRun(continuationRunId, "receipt-failure-worker");
+        const retained = await handles.prisma.run.findUniqueOrThrow({
+          where: { id: continuationRunId },
+        });
+        expect(retained).toMatchObject({
+          status: "queued",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          error: "Scripted continuation progress could not be verified",
+        });
+        const cursor = parseStoredScriptedState(retained.scriptedState, continuationRunId);
+        expect(cursor.state.cursor.phase).toBe(phase);
+        expect(cursor.pause).toBeUndefined();
+        expect(
+          await handles.prisma.attempt.findMany({
+            where: { runId: continuationRunId },
+            select: { status: true },
+          }),
+        ).toEqual([{ status: "failed" }]);
+        expect(await scriptedAskCards(continuationRunId)).toHaveLength(0);
+        if (kind === "takeover") {
+          const messages = await handles.prisma.message.findMany({
+            where: { runId: continuationRunId, role: "bot" },
+          });
+          const computerCards = messages.flatMap((message) =>
+            MessageBlockSchema.array()
+              .parse(message.blocks)
+              .filter((block) => block.kind === "computer"),
+          );
+          expect
+            .soft(computerCards, "failed takeover receipt rolls back its computer card")
+            .toHaveLength(0);
+        }
+        expect(
+          await handles.prisma.event.count({
+            where: { runId: continuationRunId, type: event },
+          }),
+        ).toBe(0);
+        const rows = await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+          orderBy: { id: "asc" },
+        });
+        expect(rows).toHaveLength(3);
+        expect(rows.every((row) => row.runId === continuationRunId && row.claimedAt !== null)).toBe(
+          true,
+        );
+        expect(
+          await handles.prisma.externalEffect.count({ where: { runId: continuationRunId } }),
+        ).toBe(0);
+        expect(await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id })).toEqual(
+          memoryBefore,
+        );
+        await expect(
+          rpc(seeded.cookie, "computer/readFile", {
+            botId: seeded.bot.id,
+            path: "notes/last-task.md",
+          }),
+        ).rejects.toThrow();
+
+        await removeFault();
+        await handles.executor.continueRun(continuationRunId, "receipt-retry-worker");
+        const paused = await handles.prisma.run.findUniqueOrThrow({
+          where: { id: continuationRunId },
+        });
+        expect(paused).toMatchObject({ status, error: null });
+        const saved = parseStoredScriptedState(paused.scriptedState, continuationRunId);
+        expect(saved.pause?.kind).toBe(kind === "ask" ? "input" : "takeover");
+        expect(
+          await handles.prisma.attempt.findMany({
+            where: { runId: continuationRunId },
+            orderBy: { startedAt: "asc" },
+            select: { status: true },
+          }),
+        ).toEqual([{ status: "failed" }, { status }]);
+        const cards = await scriptedAskCards(continuationRunId);
+        expect(cards).toHaveLength(kind === "ask" ? 1 : 0);
+        if (kind === "takeover") {
+          const messages = await handles.prisma.message.findMany({
+            where: { runId: continuationRunId, role: "bot" },
+          });
+          const computerCards = messages.flatMap((message) =>
+            MessageBlockSchema.array()
+              .parse(message.blocks)
+              .filter((block) => block.kind === "computer"),
+          );
+          expect
+            .soft(computerCards, "retried takeover publishes exactly one computer card")
+            .toHaveLength(1);
+        }
+        if (kind === "ask") expect(saved.pause?.messageId).toBe(cards[0]!.message.id);
+        const receipts = await handles.prisma.event.findMany({
+          where: { runId: continuationRunId, type: event },
+        });
+        expect(receipts).toHaveLength(1);
+        if (kind === "takeover") expect(saved.pause?.eventSeq).toBe(receipts[0]!.seq);
+        expect(
+          await handles.prisma.steeringMessage.findMany({
+            where: { botId: seeded.bot.id },
+            orderBy: { id: "asc" },
+          }),
+        ).toEqual(rows);
+        expect(
+          await handles.prisma.externalEffect.count({ where: { runId: continuationRunId } }),
+        ).toBe(0);
+        expect(await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id })).toEqual(
+          memoryBefore,
+        );
+      } finally {
+        try {
+          await removeFault();
+        } finally {
+          try {
+            await rpc(seeded.cookie, "threads/stop", { botId: seeded.bot.id });
+          } finally {
+            await cleanupHeldRuns(seeded.bot.id, held.restore);
+          }
+        }
+      }
+    },
+  );
+
+  it("recovers a complete cursor after lease loss before deferred effects are committed", async () => {
+    const preference = "remember the synthetic recovered-completion preference";
+    const finalPrompt = "Use the synthetic recovered completion plan.";
+    const { seeded, continuationRunId } = await seedSteeringContinuation(
+      "scripted-complete-recovery",
+      ["write this to the destination crm before recovering completion", preference, finalPrompt],
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    const memoryBefore = await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id });
+    const recordsBefore = handles.connector.records.length;
+    let interrupted = false;
+    const runRuntime = handles.runtime.run.bind(handles.runtime);
+    const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+      if (request.runId !== continuationRunId) return runRuntime(request, context);
+      const save = request.onScriptCheckpoint;
+      if (!save) throw new Error("Expected a durable scripted checkpoint callback");
+      return runRuntime(
+        {
+          ...request,
+          onScriptCheckpoint: async (state) => {
+            await save(state);
+            if (!interrupted && state.cursor.phase === "complete") {
+              interrupted = true;
+              await handles.prisma.run.update({
+                where: { id: continuationRunId },
+                data: {
+                  leaseOwner: "replacement-completion-worker",
+                  leaseFence: { increment: 1 },
+                  leaseExpiresAt: new Date(Date.now() - 60_000),
+                },
+              });
+              throw new ScriptedStateError();
+            }
+          },
+        },
+        context,
+      );
+    });
+    try {
+      await handles.executor.continueRun(continuationRunId, "interrupted-completion-worker");
+      runtime.mockRestore();
+      expect(interrupted).toBe(true);
+      const interruptedRun = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      expect(interruptedRun).toMatchObject({
+        status: "running",
+        leaseOwner: "replacement-completion-worker",
+      });
+      const saved = parseStoredScriptedState(interruptedRun.scriptedState, continuationRunId);
+      expect(saved.state.cursor.phase).toBe("complete");
+      expect(saved.state.script.flatMap((turn) => turn.files ?? [])).toContainEqual({
+        path: "notes/last-task.md",
+        content: `# Task\n\n${finalPrompt}\n`,
+      });
+      expect(saved.state.script.flatMap((turn) => turn.memory ?? [])).toContainEqual({
+        scope: "bot",
+        path: "MEMORY.md",
+        content: `# Memory\n\n- ${preference}\n`,
+      });
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        3,
+      );
+      expect(await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id })).toEqual(
+        memoryBefore,
+      );
+      await expect(
+        rpc(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/last-task.md",
+        }),
+      ).rejects.toThrow();
+      expect(handles.connector.records).toHaveLength(recordsBefore + 1);
+      const effectsBefore = await handles.prisma.externalEffect.findMany({
+        where: { runId: continuationRunId },
+      });
+      expect(effectsBefore).toHaveLength(1);
+      expect(effectsBefore[0]).toMatchObject({ kind: "destination.write", status: "completed" });
+      // The lost worker has returned; only this fixture makes its durable progress runnable.
+      await handles.prisma.run.update({
+        where: { id: continuationRunId },
+        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+      });
+      await handles.executor.continueRun(continuationRunId, "recovered-completion-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(
+        await rpc(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/last-task.md",
+        }),
+      ).toMatchObject({ content: `# Task\n\n${finalPrompt}\n` });
+      expect(
+        await rpc<Array<{ content: string }>>(seeded.cookie, "memory/list", {
+          botId: seeded.bot.id,
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ content: `# Memory\n\n- ${preference}\n` }),
+        ]),
+      );
+      expect(handles.connector.records).toHaveLength(recordsBefore + 1);
+      const effectsAfter = await handles.prisma.externalEffect.findMany({
+        where: { runId: continuationRunId },
+      });
+      expect(effectsAfter).toHaveLength(1);
+      expect(effectsAfter[0]).toMatchObject({
+        id: effectsBefore[0]!.id,
+        idempotencyKey: effectsBefore[0]!.idempotencyKey,
+        request: effectsBefore[0]!.request,
+        status: "completed",
+      });
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, () => {
+        runtime.mockRestore();
+        held.restore();
+      });
+    }
+  });
+
+  it("reuses the committed effect when its cursor advance fails before an identical suffix tool", async () => {
+    const requestText = "write this to the destination crm as an identical recovery note";
+    const { seeded, continuationRunId } = await seedSteeringContinuation(
+      "scripted-effect-advance-recovery",
+      [requestText, requestText],
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    const recordsBefore = handles.connector.records.length;
+    let interrupted = false;
+    const runRuntime = handles.runtime.run.bind(handles.runtime);
+    const runtime = vi.spyOn(handles.runtime, "run").mockImplementation((request, context) => {
+      if (request.runId !== continuationRunId) return runRuntime(request, context);
+      const save = request.onScriptCheckpoint;
+      if (!save) throw new Error("Expected a durable scripted checkpoint callback");
+      return runRuntime(
+        {
+          ...request,
+          onScriptCheckpoint: async (state) => {
+            if (
+              !interrupted &&
+              state.cursor.phase === "after-tools" &&
+              state.cursor.ordinal === 1
+            ) {
+              interrupted = true;
+              throw new ScriptedStateError();
+            }
+            await save(state);
+          },
+        },
+        context,
+      );
+    });
+    try {
+      await handles.executor.continueRun(continuationRunId, "effect-advance-worker");
+      runtime.mockRestore();
+      expect(interrupted).toBe(true);
+      const retained = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      expect(retained).toMatchObject({
+        status: "queued",
+        error: "Scripted continuation progress could not be verified",
+      });
+      const saved = parseStoredScriptedState(retained.scriptedState, continuationRunId);
+      expect(saved.state.cursor).toMatchObject({ phase: "tool", ordinal: 0 });
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        2,
+      );
+      expect(handles.connector.records).toHaveLength(recordsBefore + 1);
+      const first = await handles.prisma.externalEffect.findMany({
+        where: { runId: continuationRunId },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(first).toHaveLength(1);
+      expect(first[0]).toMatchObject({ status: "completed" });
+      expect(saved.pendingEffect).toMatchObject({
+        id: first[0]!.id,
+        idempotencyKey: first[0]!.idempotencyKey,
+      });
+      await handles.executor.continueRun(continuationRunId, "effect-advance-recovery-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(handles.connector.records).toHaveLength(recordsBefore + 2);
+      const recovered = await handles.prisma.externalEffect.findMany({
+        where: { runId: continuationRunId },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(recovered).toHaveLength(2);
+      expect(recovered[0]).toMatchObject({
+        id: first[0]!.id,
+        idempotencyKey: first[0]!.idempotencyKey,
+        request: first[0]!.request,
+        status: "completed",
+      });
+      expect(recovered[0]!.request).toEqual(recovered[1]!.request);
+      expect(new Set(recovered.map((effect) => effect.idempotencyKey)).size).toBe(2);
+      expect(recovered.map((effect) => effect.status)).toEqual(["completed", "completed"]);
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, () => {
+        runtime.mockRestore();
+        held.restore();
+      });
+    }
+  });
+
+  it("retains deferred prefix effects, untouched suffix and fresh steering across an answer", async () => {
+    const preference = "remember the synthetic resume-prefix preference";
+    const { seeded, events, continuationRunId } = await seedSteeringContinuation(
+      "scripted-resume-batch",
+      [
+        preference,
+        "ask me which city to use",
+        "write a file called notes/resume-suffix.txt that says suffix-retained",
+      ],
+    );
+    const held = holdContinuationJobs(seeded.bot.id);
+    const memoryBefore = await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id });
+    try {
+      await handles.executor.continueRun(continuationRunId, "batch-pause-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "waiting_input" });
+      expect(await rpc(seeded.cookie, "memory/list", { botId: seeded.bot.id })).toEqual(
+        memoryBefore,
+      );
+      await expect(
+        rpc(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/resume-suffix.txt",
+        }),
+      ).rejects.toThrow();
+      const fresh = "write a file called notes/resume-fresh.txt that says fresh-retained";
+      await events.sendUserMessage({
+        spaceId: seeded.me.spaceId,
+        threadId: seeded.thread.id,
+        botId: seeded.bot.id,
+        userId: seeded.me.userId,
+        blocks: [{ kind: "text", text: fresh }],
+        prompt: fresh,
+        trigger: "follow_up",
+      });
+      // Inbound steering is not an answer to the pending card.
+      await handles.executor.continueRun(continuationRunId, "still-waiting-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "waiting_input" });
+      expect(await scriptedAskCards(continuationRunId)).toHaveLength(1);
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        4,
+      );
+      const [card] = await scriptedAskCards(continuationRunId);
+      await rpc(seeded.cookie, "threads/answer", {
+        botId: seeded.bot.id,
+        runId: continuationRunId,
+        messageId: card!.message.id,
+        answer: "Paris",
+      });
+      await handles.executor.continueRun(continuationRunId, "batch-resume-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(
+        await rpc<Array<{ content: string }>>(seeded.cookie, "memory/list", {
+          botId: seeded.bot.id,
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ content: `# Memory\n\n- ${preference}\n` }),
+        ]),
+      );
+      for (const [file, content] of [
+        ["notes/resume-suffix.txt", "suffix-retained\n"],
+        ["notes/resume-fresh.txt", "fresh-retained\n"],
+      ]) {
+        expect(
+          await rpc(seeded.cookie, "computer/readFile", { botId: seeded.bot.id, path: file }),
+        ).toMatchObject({ content });
+      }
+      expect(await scriptedAskCards(continuationRunId)).toHaveLength(1);
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, held.restore);
+    }
+  });
+
+  it("requires a distinct answer for each ask in the same scripted run", async () => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation("scripted-two-asks", [
+      "ask me which city to use",
+      "ask me which city to use",
+      "remember both answers completed",
+    ]);
+    const held = holdContinuationJobs(seeded.bot.id);
+    try {
+      await handles.executor.continueRun(continuationRunId, "first-question-worker");
+      const [first] = await scriptedAskCards(continuationRunId);
+      expect(first!.ask.status).not.toBe("answered");
+      await rpc(seeded.cookie, "threads/answer", {
+        botId: seeded.bot.id,
+        runId: continuationRunId,
+        messageId: first!.message.id,
+        answer: "Paris",
+      });
+      await handles.executor.continueRun(continuationRunId, "second-question-worker");
+      const cards = await scriptedAskCards(continuationRunId);
+      expect(cards).toHaveLength(2);
+      expect(cards.filter(({ ask }) => ask.status === "answered")).toHaveLength(1);
+      const second = cards.find(({ ask }) => ask.status !== "answered")!;
+      expect(second.message.id).not.toBe(first!.message.id);
+      await handles.executor.continueRun(continuationRunId, "old-answer-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "waiting_input" });
+      expect(await scriptedAskCards(continuationRunId)).toHaveLength(2);
+      await rpc(seeded.cookie, "threads/answer", {
+        botId: seeded.bot.id,
+        runId: continuationRunId,
+        messageId: second.message.id,
+        answer: "Tokyo",
+      });
+      await handles.executor.continueRun(continuationRunId, "second-answer-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect((await scriptedAskCards(continuationRunId)).map(({ ask }) => ask.status)).toEqual([
+        "answered",
+        "answered",
+      ]);
+      expect((await scriptedAskCards(continuationRunId)).map(({ ask }) => ask.answer)).toEqual([
+        "Paris",
+        "Tokyo",
+      ]);
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, held.restore);
+    }
+  });
+
+  it("resumes a choice without replacing its frozen suffix or native checkpoint semantics", async () => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation("scripted-choice-resume", [
+      "show tappable choices",
+      "write a file called notes/choice-suffix.txt that says choice-retained",
+    ]);
+    const held = holdContinuationJobs(seeded.bot.id);
+    try {
+      await handles.executor.continueRun(continuationRunId, "choice-pause-worker");
+      const paused = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      expect(paused).toMatchObject({ status: "waiting_input", scriptedState: expect.any(Object) });
+      expect(paused.checkpoint).toContain("Seoul");
+      const [card] = await scriptedAskCards(continuationRunId);
+      await rpc(seeded.cookie, "threads/answer", {
+        botId: seeded.bot.id,
+        runId: continuationRunId,
+        messageId: card!.message.id,
+        answer: "choice-2",
+      });
+      const queued = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      expect(queued).toMatchObject({ status: "queued", checkpoint: null });
+      const task = await handles.prisma.task.findUniqueOrThrow({ where: { id: queued.taskId } });
+      expect(task.prompt).toBe("Selected choice choice-2: Seoul");
+      await handles.executor.continueRun(continuationRunId, "choice-answer-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(await scriptedAskCards(continuationRunId)).toHaveLength(1);
+      expect(
+        await rpc(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/choice-suffix.txt",
+        }),
+      ).toMatchObject({ content: "choice-retained\n" });
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, held.restore);
+    }
+  });
+
+  it.each(["done", "skipped"] as const)(
+    "resumes takeover %s once and preserves the suffix and fresh steering",
+    async (reason) => {
+      const { seeded, events, continuationRunId } = await seedSteeringContinuation(
+        `scripted-takeover-${reason}`,
+        [
+          "take over so I can sign in",
+          "write a file called notes/takeover-suffix.txt that says takeover-retained",
+        ],
+      );
+      const held = holdContinuationJobs(seeded.bot.id);
+      let controlled = false;
+      try {
+        await handles.executor.continueRun(continuationRunId, "takeover-pause-worker");
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "waiting_takeover" });
+        const fresh = "remember the synthetic takeover-fresh preference";
+        await events.sendUserMessage({
+          spaceId: seeded.me.spaceId,
+          threadId: seeded.thread.id,
+          botId: seeded.bot.id,
+          userId: seeded.me.userId,
+          blocks: [{ kind: "text", text: fresh }],
+          prompt: fresh,
+          trigger: "follow_up",
+        });
+        await handles.executor.continueRun(continuationRunId, "unreleased-takeover-worker");
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "waiting_takeover" });
+        await rpc(seeded.cookie, "computer/boot", { botId: seeded.bot.id });
+        await rpc(seeded.cookie, "computer/takeover", { botId: seeded.bot.id });
+        controlled = true;
+        await rpc(seeded.cookie, "computer/release", { botId: seeded.bot.id, reason });
+        controlled = false;
+        await handles.executor.continueRun(continuationRunId, "takeover-resume-worker");
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "completed" });
+        expect(
+          await handles.prisma.event.count({
+            where: {
+              runId: continuationRunId,
+              type: "computer.takeover.released",
+            },
+          }),
+        ).toBe(1);
+        const messages = await handles.prisma.message.findMany({
+          where: { runId: continuationRunId, role: "bot" },
+        });
+        expect(JSON.stringify(messages.map((message) => message.blocks))).toContain(
+          reason === "done" ? "signed in." : "login was skipped.",
+        );
+        expect(
+          await rpc(seeded.cookie, "computer/readFile", {
+            botId: seeded.bot.id,
+            path: "notes/takeover-suffix.txt",
+          }),
+        ).toMatchObject({ content: "takeover-retained\n" });
+        expect(
+          await rpc<Array<{ content: string }>>(seeded.cookie, "memory/list", {
+            botId: seeded.bot.id,
+          }),
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ content: `# Memory\n\n- ${fresh}\n` }),
+          ]),
+        );
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(0);
+      } finally {
+        try {
+          if (controlled) await rpc(seeded.cookie, "computer/release", { botId: seeded.bot.id });
+        } finally {
+          await cleanupHeldRuns(seeded.bot.id, held.restore);
+        }
+      }
+    },
+  );
+
+  it.each(["allow", "always"] as const)(
+    "retains occurrence and exact pending effect identity when resuming approval with %s",
+    async (answer) => {
+      const request = "write this to the destination crm as a synthetic resume note";
+      const { seeded, continuationRunId } = await seedSteeringContinuation(
+        `scripted-approval-${answer}`,
+        [request, "ask me which city to use", request],
+      );
+      const held = holdContinuationJobs(seeded.bot.id);
+      const recordsBefore = handles.connector.records.length;
+      try {
+        await handles.executor.continueRun(continuationRunId, "effect-prefix-worker");
+        expect(handles.connector.records).toHaveLength(recordsBefore + 1);
+        const [question] = await scriptedAskCards(continuationRunId);
+        await handles.prisma.actionApprovalRule.create({
+          data: {
+            spaceId: seeded.me.spaceId,
+            createdByUserId: seeded.me.userId,
+            effect: "require_approval",
+            matchKind: "tool",
+            matchValue: "destination.write",
+          },
+        });
+        await rpc(seeded.cookie, "threads/answer", {
+          botId: seeded.bot.id,
+          runId: continuationRunId,
+          messageId: question!.message.id,
+          answer: "Paris",
+        });
+        await handles.executor.continueRun(continuationRunId, "approval-pause-worker");
+        expect(handles.connector.records).toHaveLength(recordsBefore + 1);
+        const before = await handles.prisma.externalEffect.findMany({
+          where: { runId: continuationRunId, kind: "destination.write" },
+          orderBy: { createdAt: "asc" },
+        });
+        expect(before).toHaveLength(2);
+        expect(before[0]!.request).toEqual(before[1]!.request);
+        expect(new Set(before.map((effect) => effect.idempotencyKey)).size).toBe(2);
+        expect(before.map((effect) => effect.status)).toEqual(["completed", "intended"]);
+        const approval = (await scriptedAskCards(continuationRunId)).find(
+          ({ ask }) => ask.status !== "answered",
+        )!;
+        expect(approval.ask).toMatchObject({ approvalEffectId: before[1]!.id });
+        await rpc(seeded.cookie, "threads/answer", {
+          botId: seeded.bot.id,
+          runId: continuationRunId,
+          messageId: approval.message.id,
+          answer,
+        });
+        await handles.executor.continueRun(continuationRunId, "approval-resume-worker");
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+        ).resolves.toMatchObject({ status: "completed" });
+        expect(handles.connector.records).toHaveLength(recordsBefore + 2);
+        const after = await handles.prisma.externalEffect.findMany({
+          where: { runId: continuationRunId, kind: "destination.write" },
+          orderBy: { createdAt: "asc" },
+        });
+        expect(after.map(({ id, idempotencyKey }) => ({ id, idempotencyKey }))).toEqual(
+          before.map(({ id, idempotencyKey }) => ({ id, idempotencyKey })),
+        );
+        expect(after.map((effect) => effect.status)).toEqual(["completed", "completed"]);
+        expect(await scriptedAskCards(continuationRunId)).toHaveLength(2);
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(0);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    },
+  );
+
+  it("resumes the exact protected secret tool without using a changed task prompt", async () => {
+    const { seeded, continuationRunId } = await seedSteeringContinuation("scripted-secret-resume", [
+      "show a secret card",
+      "write a file called notes/secret-suffix.txt that says secret-retained",
+    ]);
+    const held = holdContinuationJobs(seeded.bot.id);
+    const secret = "fake-scripted-resume-api-key";
+    try {
+      await handles.executor.continueRun(continuationRunId, "secret-pause-worker");
+      const paused = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      const originalTask = await handles.prisma.task.findUniqueOrThrow({
+        where: { id: paused.taskId },
+      });
+      const before = await handles.prisma.externalEffect.findFirstOrThrow({
+        where: { runId: continuationRunId, kind: "request_secret" },
+      });
+      const [card] = await scriptedAskCards(continuationRunId);
+      expect(card!.ask).toMatchObject({ input: "secret", status: "pending" });
+      await rpc(seeded.cookie, "threads/answer", {
+        botId: seeded.bot.id,
+        runId: continuationRunId,
+        messageId: card!.message.id,
+        answer: secret,
+      });
+      await expect(
+        handles.prisma.task.findUniqueOrThrow({ where: { id: paused.taskId } }),
+      ).resolves.toMatchObject({ prompt: originalTask.prompt });
+      await handles.executor.continueRun(continuationRunId, "secret-resume-worker");
+      await expect(
+        handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      const effects = await handles.prisma.externalEffect.findMany({
+        where: { runId: continuationRunId, kind: "request_secret" },
+      });
+      expect(effects).toHaveLength(1);
+      expect(effects[0]).toMatchObject({
+        id: before.id,
+        idempotencyKey: before.idempotencyKey,
+        status: "completed",
+      });
+      expect(await scriptedAskCards(continuationRunId)).toHaveLength(1);
+      expect(
+        await rpc(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/secret-suffix.txt",
+        }),
+      ).toMatchObject({ content: "secret-retained\n" });
+      const messages = await handles.prisma.message.findMany({
+        where: { runId: continuationRunId },
+      });
+      expect(JSON.stringify(messages)).not.toContain(secret);
+      const completed = await handles.prisma.run.findUniqueOrThrow({
+        where: { id: continuationRunId },
+      });
+      expect(JSON.stringify(completed.scriptedState)).not.toContain(secret);
+      expect(await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } })).toBe(
+        0,
+      );
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, held.restore);
+    }
+  });
+
+  it.each(["missing", "malformed", "wrong run", "edited source", "deleted source"] as const)(
+    "retains the claimed batch and blocks effects when resume state has %s",
+    async (damage) => {
+      const { seeded, continuationRunId, steering, message } = await seedSteeringContinuation(
+        `scripted-corrupt-${damage.replaceAll(" ", "-")}`,
+        ["ask me which city to use", "write this to the destination crm as a protected suffix"],
+      );
+      const held = holdContinuationJobs(seeded.bot.id);
+      const recordsBefore = handles.connector.records.length;
+      try {
+        await handles.executor.continueRun(continuationRunId, "state-pause-worker");
+        const paused = await handles.prisma.run.findUniqueOrThrow({
+          where: { id: continuationRunId },
+        });
+        expect(paused.scriptedState).toEqual(expect.any(Object));
+        const [card] = await scriptedAskCards(continuationRunId);
+        await rpc(seeded.cookie, "threads/answer", {
+          botId: seeded.bot.id,
+          runId: continuationRunId,
+          messageId: card!.message.id,
+          answer: "Paris",
+        });
+        if (damage === "missing" || damage === "malformed") {
+          await handles.prisma.run.update({
+            where: { id: continuationRunId },
+            data: { scriptedState: damage === "missing" ? Prisma.DbNull : {} },
+          });
+        } else if (damage === "wrong run") {
+          const state = paused.scriptedState;
+          if (!state || typeof state !== "object" || Array.isArray(state))
+            throw new Error("Expected saved state object");
+          await handles.prisma.run.update({
+            where: { id: continuationRunId },
+            data: {
+              scriptedState: { ...state, runId: seeded.run.id },
+            },
+          });
+        } else if (damage === "edited source") {
+          await handles.prisma.message.update({
+            where: { id: message.messageId },
+            data: {
+              blocks: [
+                { kind: "text", text: "write this to the destination crm as edited content" },
+              ],
+            },
+          });
+        } else {
+          await handles.prisma.message.delete({ where: { id: message.messageId } });
+        }
+        const remaining = await handles.prisma.steeringMessage.findMany({
+          where: { botId: seeded.bot.id },
+          orderBy: { id: "asc" },
+        });
+        expect(remaining).toHaveLength(damage === "deleted source" ? 1 : 2);
+        if (damage !== "deleted source")
+          expect(remaining.some((row) => row.id === steering.id)).toBe(true);
+        await handles.executor.continueRun(continuationRunId, "invalid-state-worker");
+        const rejected = await handles.prisma.run.findUniqueOrThrow({
+          where: { id: continuationRunId },
+        });
+        expect(rejected.status).not.toBe("completed");
+        expect(handles.connector.records).toHaveLength(recordsBefore);
+        expect(
+          await handles.prisma.steeringMessage.findMany({
+            where: { botId: seeded.bot.id },
+            orderBy: { id: "asc" },
+          }),
+        ).toEqual(remaining);
+        expect(await scriptedAskCards(continuationRunId)).toHaveLength(1);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    },
+  );
 
   it.each(["after resolution", "mid tool", "after done"] as const)(
     "does not persist deferred effects when a resolved script stops %s",
@@ -1550,6 +2540,18 @@ describeIntegration("run executor lifecycle", () => {
       });
     }
   });
+
+  async function scriptedAskCards(runId: string) {
+    const messages = await handles.prisma.message.findMany({
+      where: { runId, role: "bot" },
+      orderBy: { seq: "asc" },
+    });
+    return messages.flatMap((message) =>
+      MessageBlockSchema.array()
+        .parse(message.blocks)
+        .flatMap((ask) => (ask.kind === "ask" ? [{ message, ask }] : [])),
+    );
+  }
 
   function holdContinuationJobs(botId: string) {
     const published: string[] = [];

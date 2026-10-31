@@ -24,6 +24,7 @@ import type {
   NotificationMessage,
   NotificationProvider,
   SandboxProvider,
+  ScriptedRuntimeState,
   ScriptedTurn,
   SecretStore,
   SemanticMemoryProvider,
@@ -365,6 +366,14 @@ import {
   updateScratchpadItemFromTool,
 } from "./scratchpad-tools.js";
 import { inferScript } from "./scripted-runtime.js";
+import type { StoredScriptedState } from "./scripted-state.js";
+import {
+  ScriptedStateError,
+  scriptedStateDigest,
+  scriptedStateJson,
+  sealScriptedState,
+} from "./scripted-state.js";
+import { loadScriptedResume } from "./scripted-state-store.js";
 import {
   isRunningShellCommand,
   observeShellCommand,
@@ -3359,6 +3368,30 @@ export function createRunExecutor(deps: ExecutorDeps) {
       if (isTerminal(run.status as RunStatus)) return;
       let { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume } =
         takeoverContinuePlan(run);
+      const scripted = deps.runtime.describe().capabilities.scripted;
+      const isSteeringContinuation =
+        scripted &&
+        (run.scriptedState !== null ||
+          ((run.trigger === "follow_up" || run.trigger === "messaging") &&
+            run.sourceMessageId !== null &&
+            (await deps.prisma.steeringMessage.findFirst({
+              where: { runId, messageId: run.sourceMessageId },
+              select: { id: true },
+            })) !== null));
+      let scriptedResume: Awaited<ReturnType<typeof loadScriptedResume>> = { held: false };
+      if (isSteeringContinuation) {
+        try {
+          scriptedResume = await loadScriptedResume(deps.prisma, run, takeoverResume?.checkpoint);
+        } catch {
+          // Do not finalize: finalization consumes the source batch, whose progress is unverified.
+          await deps.prisma.run.updateMany({
+            where: { id: runId, status: run.status, leaseFence: run.leaseFence },
+            data: { error: "Scripted continuation progress could not be verified" },
+          });
+          return;
+        }
+        if (scriptedResume.held) return;
+      }
       const settleTakeoverCards = async () => {
         if (!takeoverResume) return;
         await settleReleasedTakeoverCards(
@@ -3483,6 +3516,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
       heartbeat.unref?.();
 
       const runSecrets = [...deps.secrets];
+      const retainScriptedProgress = async () => {
+        await deps.prisma.$transaction(async (tx) => {
+          const retained = await tx.run.updateMany({
+            where: {
+              id: runId,
+              status: { in: ["leased", "running"] },
+              leaseOwner: workerId,
+              leaseFence: fence,
+            },
+            data: {
+              status: "queued",
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              error: "Scripted continuation progress could not be verified",
+            },
+          });
+          if (retained.count === 1)
+            await tx.attempt.updateMany({
+              where: { id: attempt.id, runId, fence, status: "running" },
+              data: {
+                status: "failed",
+                error: "Scripted continuation progress could not be verified",
+                finishedAt: new Date(),
+              },
+            });
+        });
+      };
       try {
         const sourceBlocks =
           run.trigger === "messaging" && run.sourceMessageId
@@ -4095,7 +4155,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // The intro turn confirms how a bot read its own role before anyone hands it
         // real work — it must not be able to act on that reading (shell, computer,
         // scheduling, spawning another bot, ...) before the user has assigned any task.
-        const scripted = deps.runtime.describe().capabilities.scripted;
         // Optional discovery must not block an independently configured active model.
         const helperChoices =
           !scripted &&
@@ -4123,8 +4182,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const approvedEffects = await deps.prisma.externalEffect.findMany({
           where: { runId, status: "approved" },
           orderBy: APPROVED_EFFECT_REPLAY_ORDER,
-          select: { kind: true, request: true },
+          select: { id: true, idempotencyKey: true, kind: true, request: true },
         });
+        if (
+          isSteeringContinuation &&
+          approvedEffects.some(
+            (effect) =>
+              effect.id !== scriptedResume.stored?.pendingEffect?.id ||
+              effect.idempotencyKey !== scriptedResume.stored.pendingEffect.idempotencyKey,
+          )
+        )
+          throw new ScriptedStateError();
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
         const baseComputerInstruction = persistentComputerInstruction({
           heldForTakeover,
@@ -4283,8 +4351,105 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return secretPausedToolResult();
         };
 
-        const mutatingEffectOccurrences = new Map<string, number>();
-        const consumedEffectIds = new Set<string>();
+        const mutatingEffectOccurrences = new Map<string, number>(
+          scriptedResume.stored?.effectOccurrences,
+        );
+        const consumedEffectIds = new Set<string>(scriptedResume.stored?.consumedEffectIds);
+        let lastScriptedState = scriptedResume.stored;
+        const writeScriptedState = async (stored: StoredScriptedState) => {
+          try {
+            context.signal.throwIfAborted();
+            const updated = await deps.prisma.run.updateMany({
+              where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+              data: { scriptedState: scriptedStateJson(stored) },
+            });
+            if (updated.count !== 1) throw new ScriptedStateError();
+            lastScriptedState = stored;
+            context.signal.throwIfAborted();
+          } catch {
+            throw new ScriptedStateError();
+          }
+        };
+        const saveScriptedCheckpoint = async (state: ScriptedRuntimeState) => {
+          const samePending =
+            lastScriptedState?.pendingEffect &&
+            state.cursor.phase === "tool" &&
+            scriptedStateDigest(lastScriptedState.state.cursor) ===
+              scriptedStateDigest(state.cursor);
+          await writeScriptedState(
+            sealScriptedState({
+              kind: "scripted-state",
+              version: 1,
+              runId,
+              attemptId: attempt.id,
+              fence,
+              state,
+              effectOccurrences: [...mutatingEffectOccurrences],
+              consumedEffectIds: [...consumedEffectIds],
+              ...(samePending ? { pendingEffect: lastScriptedState!.pendingEffect } : {}),
+            }),
+          );
+        };
+        const pauseRunForInput = async (input: Parameters<ThreadEvents["pauseRunForInput"]>[0]) => {
+          try {
+            return await deps.events.pauseRunForInput(input);
+          } catch (error) {
+            if (isSteeringContinuation) throw new ScriptedStateError();
+            throw error;
+          }
+        };
+        const pauseRunForTakeover = async (
+          input: Parameters<ThreadEvents["pauseRunForTakeover"]>[0],
+        ) => {
+          try {
+            return await deps.events.pauseRunForTakeover(input);
+          } catch (error) {
+            if (isSteeringContinuation) throw new ScriptedStateError();
+            throw error;
+          }
+        };
+        const bindScriptedEffect = async (
+          effect: { id: string; kind: string; idempotencyKey: string; request: unknown },
+          executionId: string,
+        ) => {
+          if (!isSteeringContinuation || !lastScriptedState) return;
+          const cursor = lastScriptedState.state.cursor;
+          const call = lastScriptedState.state.script[cursor.turn]?.toolCalls?.[cursor.tool];
+          if (
+            cursor.phase !== "tool" ||
+            !call ||
+            executionId !== `${runId}:${call.name}:${cursor.ordinal}`
+          ) {
+            throw new ScriptedStateError();
+          }
+          const pendingEffect = {
+            id: effect.id,
+            kind: effect.kind,
+            idempotencyKey: effect.idempotencyKey,
+            requestDigest: scriptedStateDigest(effect.request),
+          };
+          if (
+            lastScriptedState.pendingEffect &&
+            scriptedStateDigest(lastScriptedState.pendingEffect) !==
+              scriptedStateDigest(pendingEffect)
+          ) {
+            throw new ScriptedStateError();
+          }
+          // Keep the pre-call occurrence map: this pending call must reuse its own key.
+          await writeScriptedState(
+            sealScriptedState({
+              kind: "scripted-state",
+              version: 1,
+              runId,
+              attemptId: attempt.id,
+              fence,
+              state: lastScriptedState.state,
+              effectOccurrences: lastScriptedState.effectOccurrences,
+              consumedEffectIds: lastScriptedState.consumedEffectIds,
+              pendingEffect,
+            }),
+          );
+        };
         const nextMutatingEffectOccurrence = (toolName: string, args: Record<string, unknown>) => {
           const fingerprint = toolEffectIdempotencyKey(runId, toolName, args);
           const occurrence = mutatingEffectOccurrences.get(fingerprint) ?? 0;
@@ -4611,6 +4776,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 executionId,
                 consumedEffectIds,
               );
+          if (applied) await bindScriptedEffect(applied.effect, executionId);
 
           const runAutoReview = async () => {
             if (!injectedReview && !checker) return;
@@ -4803,7 +4969,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return pauseForApproval();
             }
             await workspaceCheckpoint.flush();
-            const paused = await deps.events.pauseRunForInput({
+            const paused = await pauseRunForInput({
               spaceId: run.spaceId,
               threadId: run.threadId,
               botId: run.botId,
@@ -4811,6 +4977,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               attemptId: attempt.id,
               leaseOwner: workerId,
               leaseFence: fence,
+              ...(isSteeringContinuation && lastScriptedState
+                ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                : {}),
               blocks: [
                 buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
                   reviewReason,
@@ -6233,6 +6402,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
             }
             const recordedForAsk = await recordEffect(deps, run, name, effectKey, args);
+            await bindScriptedEffect(recordedForAsk.effect, executionId);
             const missingSecretAction = resolveMissingRunSecretAction(recordedForAsk.effect);
             if (missingSecretAction.action === "return") return missingSecretAction.result;
             if (connectionId) {
@@ -6288,7 +6458,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return pauseForSecret();
             }
             await workspaceCheckpoint.flush();
-            const paused = await deps.events.pauseRunForInput({
+            const paused = await pauseRunForInput({
               spaceId: run.spaceId,
               threadId: run.threadId,
               botId: run.botId,
@@ -6296,6 +6466,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               attemptId: attempt.id,
               leaseOwner: workerId,
               leaseFence: fence,
+              ...(isSteeringContinuation && lastScriptedState
+                ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                : {}),
               blocks: [
                 {
                   kind: "ask",
@@ -6829,16 +7002,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         }
 
-        // Continuation identity comes from its assigned source row, never task text.
-        const isSteeringContinuation =
-          scripted &&
-          (run.trigger === "follow_up" || run.trigger === "messaging") &&
-          run.sourceMessageId !== null &&
-          (await deps.prisma.steeringMessage.findFirst({
-            where: { runId, messageId: run.sourceMessageId },
-            select: { id: true },
-          })) !== null;
-
         // Stop during setup must not still open the model. A reclaimed lease can
         // leave status "running" under a new owner, and the stream loop only
         // notices cancellation after the provider request has started.
@@ -6898,6 +7061,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               runId,
               sourceMessageId: run.sourceMessageId,
               ...(scripted ? { isSteeringContinuation } : {}),
+              ...(isSteeringContinuation
+                ? {
+                    scriptedState: scriptedResume.stored?.state,
+                    scriptedResume: scriptedResume.resume,
+                    onScriptCheckpoint: saveScriptedCheckpoint,
+                  }
+                : {}),
               onUsage: async (event) => {
                 await recordUsage(deps.prisma, event, {
                   spaceId: run.spaceId,
@@ -7203,7 +7373,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 label: redactSecrets(action.label, runSecrets),
               }));
               await workspaceCheckpoint.flush();
-              const paused = await deps.events.pauseRunForInput({
+              const paused = await pauseRunForInput({
                 spaceId: run.spaceId,
                 threadId: run.threadId,
                 botId: run.botId,
@@ -7211,6 +7381,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 attemptId: attempt.id,
                 leaseOwner: workerId,
                 leaseFence: fence,
+                ...(isSteeringContinuation && lastScriptedState
+                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                  : {}),
                 blocks: [
                   {
                     kind: "ask",
@@ -7260,18 +7433,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 hasStreamedText = false;
                 pendingProgress = "";
               }
-              await publishMessage(
-                deps,
-                run,
-                "bot",
-                [{ kind: "computer", state: "Needs you", text: safeReason }],
-                true,
-              );
+              if (!(isSteeringContinuation && lastScriptedState)) {
+                await publishMessage(
+                  deps,
+                  run,
+                  "bot",
+                  [{ kind: "computer", state: "Needs you", text: safeReason }],
+                  true,
+                );
+              }
               await workspaceCheckpoint.flush();
               if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
                 throw new Error("Computer lease expired before takeover");
               }
-              const paused = await deps.events.pauseRunForTakeover({
+              const paused = await pauseRunForTakeover({
                 spaceId: run.spaceId,
                 threadId: run.threadId,
                 botId: run.botId,
@@ -7281,6 +7456,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 leaseFence: fence,
                 reason: safeReason,
                 computerId: storedComputer.id,
+                ...(isSteeringContinuation && lastScriptedState
+                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                  : {}),
               });
               if (!paused) return;
               retainComputerLease = true;
@@ -7628,6 +7806,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().error("history.compact enqueue failed", error);
           }
         } catch (error) {
+          if (error instanceof ScriptedStateError) {
+            await retainScriptedProgress();
+            return;
+          }
           // A computer that could not start fails setup, as it did when every run started it.
           runComputer.throwIfFailed();
           if (!terminalCheckpointComplete) {
@@ -7675,6 +7857,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         }
       } catch (setupError) {
+        if (setupError instanceof ScriptedStateError) {
+          await retainScriptedProgress();
+          return;
+        }
         const computerBusy = setupError instanceof ComputerBusyError;
         const retryForever = computerBusy || isTooManyDatabaseConnections(setupError);
         const setupFailureMessage =

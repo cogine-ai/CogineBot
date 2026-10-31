@@ -148,6 +148,8 @@ export interface PauseRunForInput {
    * (not in message blocks) so clients still see redacted labels.
    */
   offeredActions?: Array<{ id: string; label: string }>;
+  /** Internal scripted progress; associated with the new card in this transaction. */
+  scriptedState?: Prisma.InputJsonObject;
 }
 
 const CHOICE_ASK_CHECKPOINT_KIND = "choice_ask_v1";
@@ -189,6 +191,8 @@ export interface PauseRunForTakeover {
   reason: string;
   /** Computer that should expose the pending takeover to the UI via controlRunId. */
   computerId: string;
+  /** Internal scripted progress; associated with the takeover pause atomically. */
+  scriptedState?: Prisma.InputJsonObject;
 }
 
 export interface AnswerRunInput {
@@ -891,6 +895,42 @@ export async function answerWaitingRunWithTextInTransaction(
   return commitAnswerRunInput(tx, { ...input, messageId: found.messageId, answer });
 }
 
+async function bindScriptedPause(
+  tx: Prisma.TransactionClient,
+  input: {
+    runId: string;
+    attemptId: string;
+    leaseFence: number;
+    scriptedState?: Prisma.InputJsonObject;
+  },
+  pause: { kind: "input"; messageId: string } | { kind: "takeover"; eventSeq: number },
+): Promise<void> {
+  if (!input.scriptedState) return;
+  const stored = input.scriptedState;
+  if (
+    stored.kind !== "scripted-state" ||
+    stored.version !== 1 ||
+    stored.runId !== input.runId ||
+    stored.attemptId !== input.attemptId ||
+    stored.fence !== input.leaseFence
+  )
+    throw new Error("Scripted pause does not belong to this attempt");
+  const updated = await tx.run.updateMany({
+    where: {
+      id: input.runId,
+      leaseFence: input.leaseFence,
+      status: pause.kind === "input" ? "waiting_input" : "waiting_takeover",
+    },
+    data: {
+      scriptedState: {
+        ...stored,
+        pause: { ...pause, attemptId: input.attemptId, fence: input.leaseFence },
+      },
+    },
+  });
+  if (updated.count !== 1) throw new Error("Scripted pause lost its run fence");
+}
+
 export async function pauseRunForInput(
   prisma: PrismaClient,
   input: PauseRunForInput,
@@ -939,6 +979,7 @@ export async function pauseRunForInput(
       botId: input.botId,
       runId: input.runId,
     });
+    await bindScriptedPause(tx, input, { kind: "input", messageId: message.id });
     await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
       threadId: input.threadId,
@@ -1051,6 +1092,27 @@ export async function pauseRunForTakeover(
     });
     if (marked.count !== 1) throw new Error("Computer was not available to mark for takeover");
 
+    if (input.scriptedState) {
+      // Durable scripted cards must commit with the receipt that makes their pause resumable.
+      const blocks: MessageBlock[] = [{ kind: "computer", state: "Needs you", text: input.reason }];
+      const message = await createThreadMessageInTransaction(tx, {
+        threadId: input.threadId,
+        role: "bot",
+        blocks,
+        botId: input.botId,
+        runId: input.runId,
+        markUnread: true,
+      });
+      await appendEventInTransaction(tx, {
+        spaceId: input.spaceId,
+        threadId: input.threadId,
+        botId: input.botId,
+        type: "thread.message.created",
+        runId: input.runId,
+        payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
+      });
+    }
+
     const waitingEvent = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
       threadId: input.threadId,
@@ -1063,6 +1125,7 @@ export async function pauseRunForTakeover(
         retainedControl: retainControl,
       },
     });
+    await bindScriptedPause(tx, input, { kind: "takeover", eventSeq: waitingEvent.seq });
     await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
     return { threadId: waitingEvent.threadId, seq: waitingEvent.seq };
   });
