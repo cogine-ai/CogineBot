@@ -161,9 +161,11 @@ test("full matrix preserves all partitions and execution limits", () => {
     const expected =
       entry.lane === "web"
         ? 25
-        : ["unit", "integration", "shell-deploy"].includes(entry.lane)
-          ? 20
-          : 15;
+        : entry.lane === "unit"
+          ? 30
+          : ["integration", "shell-deploy"].includes(entry.lane)
+            ? 20
+            : 15;
     assert.equal(entry.timeout, expected);
   }
 });

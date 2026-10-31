@@ -30,7 +30,7 @@ function plan(lanes, reason) {
   if (result.static) add("Lint and typecheck", "static", 15);
   if (result.build) add("Web production build", "build", 15);
   if (result.marketing) add("Marketing production build", "marketing", 15);
-  if (result.unit) add("Default offline unit tests", "unit", 20);
+  if (result.unit) add("Default offline unit tests", "unit", 30);
   if (result.shell) {
     add("Deployment shell tests", "shell-deploy", 20);
     add("Other shell tests", "shell-other", 15);

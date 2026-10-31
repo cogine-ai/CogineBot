@@ -4,9 +4,62 @@ set -Eeuo pipefail
 
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 SSH_PORT="${SSH_PORT:-22}"
+PRESERVE_EXISTING_UFW_RULES="${PRESERVE_EXISTING_UFW_RULES-0}"
+[[ "${PRESERVE_EXISTING_UFW_RULES}" == 0 || "${PRESERVE_EXISTING_UFW_RULES}" == 1 ]] || {
+  echo "PRESERVE_EXISTING_UFW_RULES must be 0 or 1" >&2
+  exit 1
+}
+[[ "${SSH_PORT}" =~ ^[0-9]{1,5}$ ]] && (( 10#${SSH_PORT} > 0 && 10#${SSH_PORT} <= 65535 )) || {
+  echo "SSH_PORT must be an integer between 1 and 65535" >&2
+  exit 1
+}
+SSH_PORT="$((10#${SSH_PORT}))"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  exec sudo --preserve-env=DEPLOY_USER,SSH_PORT bash "$0" "$@"
+  exec sudo --preserve-env=DEPLOY_USER,SSH_PORT,SSH_CONNECTION,PRESERVE_EXISTING_UFW_RULES bash "$0" "$@"
+fi
+
+[[ -n "${SSH_CONNECTION:-}" ]] || {
+  echo "Run host hardening through SSH, preserving SSH_CONNECTION through sudo" >&2
+  exit 1
+}
+read -r ssh_client ssh_client_port ssh_server ssh_server_port ssh_extra <<<"${SSH_CONNECTION}"
+[[ "${SSH_CONNECTION}" != *$'\n'* && -n "${ssh_client}" && -n "${ssh_server}" && -z "${ssh_extra}" &&
+  "${ssh_client_port}" =~ ^[0-9]{1,5}$ && "${ssh_server_port}" =~ ^[0-9]{1,5}$ ]] &&
+  (( 10#${ssh_client_port} > 0 && 10#${ssh_client_port} <= 65535 && 10#${ssh_server_port} > 0 && 10#${ssh_server_port} <= 65535 )) || {
+  echo "Invalid SSH_CONNECTION; run host hardening through a verified SSH session" >&2
+  exit 1
+}
+
+FIREWALL_HELPER_SOURCE="$(dirname "$(readlink -f "$0")")/firewall-change.sh"
+[[ -f "${FIREWALL_HELPER_SOURCE}" && ! -L "${FIREWALL_HELPER_SOURCE}" ]] || {
+  echo "Firewall helper source is missing or unsafe" >&2; exit 1;
+}
+# Reject unsafe or different installed callbacks before packages or host settings change.
+for directory in /usr /usr/local; do
+  [[ -d "${directory}" && ! -L "${directory}" && "$(stat -c '%u' "${directory}")" == 0 ]] &&
+    (( (8#$(stat -c '%a' "${directory}") & 0022) == 0 )) || {
+    echo "Unsafe firewall helper parent directory" >&2; exit 1;
+  }
+done
+[[ ! -L /usr/local/sbin && ! -L /usr/local/sbin/rakazo-firewall-change ]] || {
+  echo "Firewall helper installation must not follow symbolic links" >&2; exit 1;
+}
+if [[ -e /usr/local/sbin ]]; then
+  [[ -d /usr/local/sbin && "$(stat -c '%u' /usr/local/sbin)" == 0 ]] &&
+    (( (8#$(stat -c '%a' /usr/local/sbin) & 0022) == 0 )) || {
+    echo "Unsafe firewall helper installation directory" >&2; exit 1;
+  }
+fi
+if [[ -e /usr/local/sbin/rakazo-firewall-change ]]; then
+  [[ -f /usr/local/sbin/rakazo-firewall-change && -x /usr/local/sbin/rakazo-firewall-change && "$(stat -c '%u %h' /usr/local/sbin/rakazo-firewall-change)" == '0 1' ]] &&
+    (( (8#$(stat -c '%a' /usr/local/sbin/rakazo-firewall-change) & 0022) == 0 )) || {
+    echo "Unsafe existing firewall helper" >&2; exit 1;
+  }
+  cmp -s -- "${FIREWALL_HELPER_SOURCE}" /usr/local/sbin/rakazo-firewall-change || {
+    echo "Existing firewall helper differs; finish pending changes and upgrade it manually before hardening" >&2
+    exit 1
+  }
 fi
 
 if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
@@ -14,9 +67,137 @@ if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Saved configuration must meet the same ownership/write boundary as its rollback snapshot.
+protected_ufw_path() {
+  local details owner mode
+  details="$(stat -c '%u %a' -- "$1")" || return 1
+  read -r owner mode <<<"${details}"
+  [[ "${owner}" == 0 && "${mode}" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#${mode} & 0022) == 0 ))
+}
+
+# Audit saved rules even while UFW is inactive, before any host settings change.
+# UFW's report covers registered rules, not every loadable policy file.
+for config_directory in /etc /etc/ufw /etc/default /lib/ufw /var/lib/ufw; do
+  if [[ -e "${config_directory}" || -L "${config_directory}" ]]; then
+    [[ -d "${config_directory}" && ! -L "${config_directory}" && -r "${config_directory}" && -x "${config_directory}" ]] &&
+      protected_ufw_path "${config_directory}" || {
+      echo "Unsafe or unreadable UFW configuration directory; host hardening stopped before changing host configuration." >&2
+      exit 1
+    }
+  fi
+done
+ufw_policy_files=(
+  /etc/ufw/user.rules /etc/ufw/user6.rules
+  /etc/ufw/before.rules /etc/ufw/before6.rules
+  /etc/ufw/after.rules /etc/ufw/after6.rules
+  /etc/ufw/before.init /etc/ufw/after.init
+  /lib/ufw/user.rules /lib/ufw/user6.rules
+)
+# Preserving policy never authorizes UFW or package scripts to read unsafe paths.
+for rules_file in "${ufw_policy_files[@]}" /etc/default/ufw; do
+  if [[ -e "${rules_file}" || -L "${rules_file}" ]]; then
+    [[ -f "${rules_file}" && ! -L "${rules_file}" && -r "${rules_file}" ]] &&
+      protected_ufw_path "${rules_file}" || {
+      echo "Unsafe or unreadable saved UFW configuration; host hardening stopped before changing host configuration." >&2
+      exit 1
+    }
+  fi
+done
+# UFW can read other saved configuration too; reject unsafe nested members before invoking it.
+ufw_config_paths=()
+[[ ! -e /etc/ufw ]] || ufw_config_paths+=(/etc/ufw)
+[[ ! -e /etc/default/ufw ]] || ufw_config_paths+=(/etc/default/ufw)
+if (( ${#ufw_config_paths[@]} )); then
+  if ! unsafe_saved_config="$(find "${ufw_config_paths[@]}" \( ! -user root -o -perm /022 -o \( ! -type f -a ! -type d \) \) -print -quit)"; then
+    echo "Cannot inspect saved UFW configuration; host hardening stopped before changing host configuration." >&2
+    exit 1
+  fi
+  [[ -z "${unsafe_saved_config}" ]] || {
+    echo "Unsafe saved UFW configuration; host hardening stopped before changing host configuration." >&2
+    exit 1
+  }
+fi
+ufw_audit_reason=""
+if command -v ufw >/dev/null 2>&1; then
+  # Missing files leave policy unknown; never invoke UFW on an incomplete audit.
+  for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules; do
+    if [[ ! -e "${rules_file}" ]]; then
+      ufw_audit_reason="Missing saved UFW rules"
+      break
+    fi
+  done
+  if [[ -z "${ufw_audit_reason}" ]]; then
+    if ! existing_ufw_rules="$(LC_ALL=C ufw show added 2>&1)"; then
+      ufw_audit_reason="Unable to audit existing UFW rules"
+    elif [[ "${existing_ufw_rules}" != $'Added user rules (see \'ufw status\' for running firewall):\n(None)' ]]; then
+      ufw_audit_reason="Existing UFW rules or unrecognized UFW audit output"
+    fi
+    # UFW omits saved IPv6 rules from its report when IPV6 is disabled.
+    for rules_file in /etc/ufw/user.rules /etc/ufw/user6.rules; do
+      if LC_ALL=C grep -q '^### tuple ###' "${rules_file}"; then
+        ufw_audit_reason="Existing saved UFW rules"
+        break
+      elif [[ "$?" -ne 1 ]]; then
+        ufw_audit_reason="Unable to read saved UFW rules"
+        break
+      fi
+    done
+  fi
+else
+  # A removed package may leave rules behind; installation must not bypass them.
+  for config_path in /etc/ufw /etc/default/ufw /lib/ufw/user.rules /lib/ufw/user6.rules /var/lib/ufw; do
+    if [[ -e "${config_path}" || -L "${config_path}" ]]; then
+      ufw_audit_reason="Cannot audit retained UFW configuration without ufw"
+      break
+    fi
+  done
+fi
+# An empty registered-rule report cannot certify raw rules or initialization hooks.
+# Even packaged baseline content requires explicit preservation acknowledgment.
+for rules_file in "${ufw_policy_files[@]}"; do
+  if [[ -s "${rules_file}" ]]; then
+    ufw_audit_reason="Existing nonempty UFW policy or initialization hook requires review"
+    break
+  fi
+done
+if [[ -n "${ufw_audit_reason}" && "${PRESERVE_EXISTING_UFW_RULES}" == 0 ]]; then
+  echo "${ufw_audit_reason}; host hardening stopped before changing host configuration." >&2
+  echo "Review all saved UFW rules, then set PRESERVE_EXISTING_UFW_RULES=1 only to explicitly preserve every existing rule." >&2
+  exit 1
+fi
+ufw_install_options=()
+check_existing_ufw=0
+preservation_checker=""
+if [[ "${PRESERVE_EXISTING_UFW_RULES}" == 1 ]]; then
+  # Legacy user files have no supported lossless migration through the current CLI.
+  for rules_file in /lib/ufw/user.rules /lib/ufw/user6.rules; do
+    [[ ! -s "${rules_file}" ]] || {
+      echo "Cannot preserve nonempty legacy UFW user rules; migrate them manually before hardening." >&2
+      exit 1
+    }
+  done
+  if [[ -s /etc/ufw/user.rules || -s /etc/ufw/user6.rules ]]; then
+    preservation_checker="$(dirname "${FIREWALL_HELPER_SOURCE}")/ufw-preserve-check.py"
+    [[ -f "${preservation_checker}" && ! -L "${preservation_checker}" ]] &&
+      command -v ufw >/dev/null 2>&1 &&
+      /usr/bin/python3 -I -B "${preservation_checker}" "$(command -v ufw)" /etc "${SSH_PORT}" || {
+      echo "Saved UFW user rules cannot be preserved safely; host hardening stopped before changing host configuration." >&2
+      exit 1
+    }
+    # Keep the checked installed formatter through this package operation.
+    ufw_install_options+=(--no-upgrade)
+    check_existing_ufw=1
+  fi
+  if [[ -n "${ufw_audit_reason}" ]]; then
+    echo "${ufw_audit_reason}; proceeding with explicit preservation acknowledgment." >&2
+  fi
+  echo "PRESERVE_EXISTING_UFW_RULES=1: preserving existing UFW rules as operator-approved exceptions, including public allows. Default deny and the SSH limit do not override earlier allows." >&2
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends \
+apt-get install "${ufw_install_options[@]}" -y --no-install-recommends \
   apparmor \
   apparmor-utils \
   auditd \
@@ -127,17 +308,26 @@ cat >/etc/audit/rules.d/50-rakazo.rules <<'EOF'
 EOF
 augenrules --load >/dev/null
 
-ufw --force reset >/dev/null
-ufw default deny incoming
-ufw default allow outgoing
-ufw limit "${SSH_PORT}/tcp" comment 'Rate-limited SSH'
-ufw allow 80/tcp comment 'HTTP for ACME redirect'
-ufw allow 443/tcp comment 'HTTPS'
-ufw allow 443/udp comment 'HTTP/3'
-ufw --force enable
+# An identical existing callback is reused: never replace a potentially armed version.
+if [[ ! -e /usr/local/sbin/rakazo-firewall-change ]]; then
+  install -d -m 755 /usr/local/sbin
+  install -m 755 -- "${FIREWALL_HELPER_SOURCE}" /usr/local/sbin/rakazo-firewall-change
+fi
+/usr/local/sbin/rakazo-firewall-change apply /bin/bash -euo pipefail -c '
+  if [[ "$2" == 1 ]]; then
+    /usr/bin/python3 -I -B "$3" "$(command -v ufw)" /etc "$1"
+  fi
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw limit "$1/tcp" comment "Rate-limited SSH"
+  ufw allow 80/tcp comment "HTTP for ACME redirect"
+  ufw allow 443/tcp comment "HTTPS"
+  ufw allow 443/udp comment "HTTP/3"
+  ufw --force enable
+' -- "${SSH_PORT}" "${check_existing_ufw}" "${preservation_checker}"
 
 systemctl enable --now apparmor auditd fail2ban unattended-upgrades
 systemctl restart fail2ban
 systemctl reload ssh
 
-echo "Rakazo host hardening applied. Verify a fresh SSH session before closing the current one."
+echo "Host hardening applied. Verify a fresh SSH session and confirm the armed firewall change before closing the current one."
