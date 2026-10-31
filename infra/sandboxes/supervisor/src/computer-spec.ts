@@ -363,6 +363,7 @@ export type SandboxInput =
   | PointerInput
   | { kind: "clipboard"; text: string };
 
+/** Keep the saved home mounted while applying deployment-selected isolation and resolver settings. */
 export function containerCreateOptions(input: ComputerCreateInput) {
   const ports = computerPortBindings(input.publishControlPort);
   return {
