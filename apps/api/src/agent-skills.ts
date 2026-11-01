@@ -9,7 +9,8 @@ import {
   parseSkillMd,
   type SkillSource,
 } from "@rakazo/core";
-import { IsolationError, type PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { activePluginSkillWhere, IsolationError } from "@rakazo/db";
 
 type AgentSkillRow = {
   id: string;
@@ -123,6 +124,7 @@ export function createAgentSkillsService(prisma: PrismaClient) {
     const row = await prisma.agentSkill.findFirst({
       where: {
         id: skillId,
+        ...activePluginSkillWhere,
         spaceId: actor.spaceId,
         userId: actor.userId,
       },
@@ -134,7 +136,7 @@ export function createAgentSkillsService(prisma: PrismaClient) {
   return {
     async list(actor: Actor): Promise<Omit<AgentSkill, "content">[]> {
       const rows = await prisma.agentSkill.findMany({
-        where: { spaceId: actor.spaceId, userId: actor.userId },
+        where: { spaceId: actor.spaceId, userId: actor.userId, ...activePluginSkillWhere },
         orderBy: [{ name: "asc" }, { id: "asc" }],
       });
       return mergeBuiltinSkills(builtinCatalog(), rows.map(mapAgentSkill)).map(
@@ -144,7 +146,7 @@ export function createAgentSkillsService(prisma: PrismaClient) {
 
     async listWithContent(actor: Actor): Promise<AgentSkill[]> {
       const rows = await prisma.agentSkill.findMany({
-        where: { spaceId: actor.spaceId, userId: actor.userId },
+        where: { spaceId: actor.spaceId, userId: actor.userId, ...activePluginSkillWhere },
         orderBy: [{ name: "asc" }, { id: "asc" }],
       });
       return mergeBuiltinSkills(builtinCatalog(), rows.map(mapAgentSkill));
@@ -164,6 +166,7 @@ export function createAgentSkillsService(prisma: PrismaClient) {
         where: {
           spaceId: actor.spaceId,
           userId: actor.userId,
+          ...activePluginSkillWhere,
         },
         orderBy: [{ name: "asc" }, { id: "asc" }],
       });

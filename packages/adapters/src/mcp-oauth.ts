@@ -16,7 +16,13 @@ import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { isLocalMcpHost } from "@rakazo/contracts";
 import { readBoundedResponseBytes } from "@rakazo/core";
-import type { PrismaClient } from "@rakazo/db";
+import type { Prisma, PrismaClient } from "@rakazo/db";
+import {
+  assertManagedPluginActive,
+  isPluginSecretReferenced,
+  lockPluginInstall,
+  readPluginCleanupRefs,
+} from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { sanitizeConnectorError } from "./connector-safety.js";
 import { secureFetch, validateUrl, withEndpointOriginFallback } from "./mcp-transport.js";
@@ -167,7 +173,12 @@ const COMMON_CONFIG_VALUES = new Set([
   "async",
 ]);
 
-type ServerRef = { id: string; endpoint: string | null; secretId: string | null };
+type ServerRef = {
+  id: string;
+  endpoint: string | null;
+  secretId: string | null;
+  installId?: string | null;
+};
 type ActorRef = { spaceId: string; userId: string };
 
 export class McpReauthorizationRequiredError extends Error {
@@ -533,6 +544,112 @@ export class McpOAuthBroker {
     private readonly allowPrivateEndpoint = false,
   ) {}
 
+  /** Parent lock precedes the existing OAuth material lock on every managed write. */
+  private async withActiveServer<T>(
+    server: ServerRef,
+    actor: ActorRef,
+    effect: (tx: Prisma.TransactionClient | PrismaClient) => Promise<T>,
+  ): Promise<T> {
+    if (!server.installId) return effect(this.prisma);
+    return this.prisma.$transaction(async (tx) => {
+      await lockPluginInstall(tx, server.installId!);
+      await assertManagedPluginActive(tx, server.installId!, actor);
+      const current = await tx.mcpServer.findFirst({
+        where: { id: server.id, ...actor, installId: server.installId, enabled: true },
+      });
+      if (!current?.enabled) throw new Error("MCP server is unavailable");
+      return effect(tx);
+    });
+  }
+
+  /** Durable sessions are removed by the uninstall transaction; discard local timers too. */
+  discardPluginPending(serverIds: readonly string[], actor: ActorRef): void {
+    const ids = new Set(serverIds);
+    for (const [id, pending] of this.pending) {
+      if (
+        ids.has(pending.serverId) &&
+        pending.spaceId === actor.spaceId &&
+        pending.userId === actor.userId
+      ) {
+        this.discardPending(id, pending);
+      }
+    }
+  }
+
+  async reservePluginCredential(installId: string, actor: ActorRef): Promise<string | undefined> {
+    return this.prisma.$transaction(async (tx) => {
+      await lockPluginInstall(tx, installId);
+      const install = await assertManagedPluginActive(tx, installId, actor);
+      if (install.kind !== "plugin" || install.clientNonce === null) return undefined;
+      const id = randomUUID();
+      const entries = readPluginCleanupRefs([
+        ...readPluginCleanupRefs(install.cleanupRefs),
+        { id, pending: true },
+      ]);
+      await tx.capabilityInstall.update({
+        where: { id: installId },
+        data: { cleanupRefs: entries as Prisma.InputJsonArray },
+      });
+      return id;
+    });
+  }
+
+  async resolvePluginCredential(
+    installId: string,
+    actor: ActorRef,
+    record: { id: string; ciphertext: string },
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await lockPluginInstall(tx, installId);
+      const install = await tx.capabilityInstall.findFirst({ where: { id: installId, ...actor } });
+      if (!install) throw new Error("Plugin credential recovery state is unavailable");
+      const entries = readPluginCleanupRefs(install.cleanupRefs).filter(
+        (entry) => entry.id !== record.id,
+      );
+      entries.push({ id: record.id, ref: record.ciphertext });
+      await tx.capabilityInstall.update({
+        where: { id: install.id },
+        data: { cleanupRefs: readPluginCleanupRefs(entries) as Prisma.InputJsonArray },
+      });
+    });
+  }
+
+  /** A failed strict cleanup leaves its exact record on the parent for uninstall recovery. */
+  async releasePluginCredential(installId: string, actor: ActorRef, id: string): Promise<void> {
+    try {
+      await this.prisma.$transaction(
+        async (tx) => {
+          await lockPluginInstall(tx, installId);
+          const install = await tx.capabilityInstall.findFirst({
+            where: { id: installId, ...actor },
+          });
+          if (!install) return;
+          const entries = readPluginCleanupRefs(install.cleanupRefs);
+          const entry = entries.find((item) => item.id === id);
+          if (!entry || entry.pending) return;
+          if (!(await isPluginSecretReferenced(tx, entry.id, entry.ref))) {
+            await this.secrets.delete(entry.ref, {
+              recordId: entry.id,
+              signal: AbortSignal.timeout(10_000),
+            });
+            await tx.secret.deleteMany({
+              where: { id: entry.id, ...actor, ciphertext: entry.ref },
+            });
+          }
+          await tx.capabilityInstall.update({
+            where: { id: install.id },
+            data: {
+              cleanupRefs: entries.filter((item) => item.id !== id) as Prisma.InputJsonArray,
+            },
+          });
+        },
+        { timeout: 20_000 },
+      );
+    } catch {
+      getLogger().warn("Plugin credential cleanup remains pending");
+    }
+  }
+
   async statusFor(
     server: ServerRef,
     context: ActorRef,
@@ -650,17 +767,19 @@ export class McpOAuthBroker {
       },
       { recordId: sessionId, ephemeral: true },
     );
-    await this.prisma.mcpOAuthSession.create({
-      data: {
-        id: sessionId,
-        serverId: server.id,
-        spaceId: input.spaceId,
-        userId: input.userId,
-        endpoint: server.endpoint,
-        redirectUri: input.redirectUri,
-        oauthCiphertext: sessionMaterial.ciphertext,
-      },
-    });
+    await this.withActiveServer(server, context, (tx) =>
+      tx.mcpOAuthSession.create({
+        data: {
+          id: sessionId,
+          serverId: server.id,
+          spaceId: input.spaceId,
+          userId: input.userId,
+          endpoint: endpoint.toString(),
+          redirectUri: input.redirectUri,
+          oauthCiphertext: sessionMaterial.ciphertext,
+        },
+      }),
+    );
     const expiry = setTimeout(() => {
       this.pending.delete(sessionId);
       void this.prisma.mcpOAuthSession
@@ -736,17 +855,23 @@ export class McpOAuthBroker {
         expiry: undefined,
       };
     }
+    const activeServer = await this.prisma.mcpServer.findFirst({
+      where: { id: pending.serverId, spaceId: input.spaceId, userId: input.userId, enabled: true },
+    });
+    if (!activeServer) throw new Error("MCP OAuth session is invalid or expired");
     // Consume the session up front so a failed token exchange cannot be
     // retried with a replayed code; the user starts a fresh flow instead.
     this.pending.delete(input.sessionId);
     if (pending.expiry) clearTimeout(pending.expiry);
-    const consumed = await this.prisma.mcpOAuthSession.deleteMany({
-      where: {
-        id: input.sessionId,
-        spaceId: input.spaceId,
-        userId: input.userId,
-      },
-    });
+    const consumed = await this.withActiveServer(activeServer, input, (tx) =>
+      tx.mcpOAuthSession.deleteMany({
+        where: {
+          id: input.sessionId,
+          spaceId: input.spaceId,
+          userId: input.userId,
+        },
+      }),
+    );
     if (consumed.count !== 1) throw new Error("MCP OAuth session is invalid or expired");
     const endpoint = new URL(pending.endpoint);
     const networkFetch = oauthFetch(
@@ -769,10 +894,12 @@ export class McpOAuthBroker {
     }
     if (!(await pending.provider.tokens())) throw new Error("MCP OAuth authorization failed");
     // Bump the revision so cached runtime sessions rebuild with the fresh tokens.
-    await this.prisma.mcpServer.update({
-      where: { id: pending.serverId },
-      data: { revision: { increment: 1 } },
-    });
+    await this.withActiveServer(activeServer, input, (tx) =>
+      tx.mcpServer.update({
+        where: { id: pending.serverId },
+        data: { revision: { increment: 1 } },
+      }),
+    );
   }
 
   private async sweepExpiredPending(): Promise<void> {
@@ -874,9 +1001,13 @@ export class McpOAuthBroker {
       const snapshot = await this.prisma.$transaction(async (tx) => {
         const server = await tx.mcpServer.findFirst({
           where: { id: serverId, spaceId: context.spaceId, userId: context.userId },
-          select: { endpoint: true, secretId: true },
+          select: { endpoint: true, secretId: true, installId: true },
         });
         if (!server) throw new Error("MCP server is unavailable");
+        if (server.installId) {
+          await lockPluginInstall(tx, server.installId);
+          await assertManagedPluginActive(tx, server.installId, context);
+        }
         if (expectedEndpoint !== undefined && server.endpoint !== expectedEndpoint)
           throw new Error(
             "MCP server endpoint changed during authorization; reconnect this server",
@@ -899,68 +1030,113 @@ export class McpOAuthBroker {
           Object.keys(nextMaterial.headers ?? {}).length ||
           nextMaterial.oauth,
       );
+      const installId = snapshot.server.installId;
+      const reservation =
+        hasMaterial && installId
+          ? await this.reservePluginCredential(installId, context)
+          : undefined;
+      // A pending marker survives a crash or an ambiguous provider write. It
+      // cannot be mistaken for a resolved ref during plugin cleanup.
       const stored = hasMaterial
-        ? await this.secrets.put(JSON.stringify(nextMaterial), {
-            operationId: "mcp.oauth.persist",
-            traceId: "mcp.oauth.persist",
-            spaceId: context.spaceId,
-            userId: context.userId,
-            botId: "mcp",
-            signal: new AbortController().signal,
-          })
+        ? await this.secrets.put(
+            JSON.stringify(nextMaterial),
+            {
+              operationId: "mcp.oauth.persist",
+              traceId: "mcp.oauth.persist",
+              spaceId: context.spaceId,
+              userId: context.userId,
+              botId: "mcp",
+              signal: new AbortController().signal,
+            },
+            reservation ? { recordId: reservation } : undefined,
+          )
         : undefined;
-      const committed = await persistPreparedSecret(
-        this.prisma,
-        this.secrets,
-        stored,
-        () =>
-          this.prisma.$transaction(async (tx) => {
-            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
-            const server = await tx.mcpServer.findFirst({
-              where: { id: serverId, spaceId: context.spaceId, userId: context.userId },
-              select: { endpoint: true, secretId: true },
-            });
-            if (!server) throw new Error("MCP server is unavailable");
-            if (
-              server.endpoint !== snapshot.server.endpoint ||
-              server.secretId !== snapshot.server.secretId
-            )
-              return false;
-            if (server.secretId)
-              await tx.$queryRaw`SELECT id FROM secrets WHERE id = ${server.secretId} FOR UPDATE`;
-            const current = server.secretId
-              ? await tx.secret.findFirst({
-                  where: { id: server.secretId, spaceId: context.spaceId, userId: context.userId },
-                })
-              : null;
-            if (current?.ciphertext !== snapshot.secret?.ciphertext) return false;
-            if (stored)
-              await tx.secret.create({
-                data: {
-                  id: stored.id,
-                  spaceId: context.spaceId,
-                  userId: context.userId,
-                  kind: "mcp",
-                  ciphertext: stored.ciphertext,
-                },
-              });
-            await tx.mcpServer.update({
-              where: { id: serverId },
+      if (reservation && stored && installId) {
+        if (stored.id !== reservation)
+          throw new Error("Credential store changed its reserved identity");
+        await this.resolvePluginCredential(installId, context, stored);
+      }
+      let retired: string | undefined;
+      const commit = () =>
+        this.prisma.$transaction(async (tx) => {
+          if (installId) await lockPluginInstall(tx, installId);
+          const parent = installId
+            ? await assertManagedPluginActive(tx, installId, context)
+            : undefined;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
+          const server = await tx.mcpServer.findFirst({
+            where: { id: serverId, spaceId: context.spaceId, userId: context.userId },
+            select: { endpoint: true, secretId: true, installId: true },
+          });
+          if (!server) throw new Error("MCP server is unavailable");
+          if (
+            server.endpoint !== snapshot.server.endpoint ||
+            server.secretId !== snapshot.server.secretId ||
+            server.installId !== installId
+          )
+            return false;
+          if (server.secretId)
+            await tx.$queryRaw`SELECT id FROM secrets WHERE id = ${server.secretId} FOR UPDATE`;
+          const current = server.secretId
+            ? await tx.secret.findFirst({
+                where: { id: server.secretId, spaceId: context.spaceId, userId: context.userId },
+              })
+            : null;
+          if (current?.ciphertext !== snapshot.secret?.ciphertext) return false;
+          if (stored)
+            await tx.secret.create({
               data: {
-                secretId: stored?.id ?? null,
-                ...(incrementRevision ? { revision: { increment: 1 } } : {}),
+                id: stored.id,
+                spaceId: context.spaceId,
+                userId: context.userId,
+                kind: "mcp",
+                ciphertext: stored.ciphertext,
               },
             });
-            if (server.secretId && server.secretId !== stored?.id)
-              await tx.secret.deleteMany({ where: { id: server.secretId } });
-            return true;
-          }),
-        (committed) => {
-          if (committed && stored)
-            onPersisted?.({ id: stored.id, ref: stored.ciphertext, material: nextMaterial });
-        },
-      );
-      if (committed) return stored?.id;
+          await tx.mcpServer.update({
+            where: { id: serverId },
+            data: {
+              secretId: stored?.id ?? null,
+              ...(incrementRevision ? { revision: { increment: 1 } } : {}),
+            },
+          });
+          if (parent?.kind === "plugin" && parent.clientNonce !== null) {
+            const entries = readPluginCleanupRefs(parent.cleanupRefs).filter(
+              (entry) => entry.id !== reservation,
+            );
+            if (current && current.id !== stored?.id) {
+              retired = current.id;
+              if (!entries.some((entry) => entry.id === current.id))
+                entries.push({ id: current.id, ref: current.ciphertext });
+            }
+            await tx.capabilityInstall.update({
+              where: { id: parent.id },
+              data: { cleanupRefs: readPluginCleanupRefs(entries) as Prisma.InputJsonArray },
+            });
+          } else if (server.secretId && server.secretId !== stored?.id) {
+            await tx.secret.deleteMany({ where: { id: server.secretId } });
+          }
+          return true;
+        });
+      const adopted = (committed: boolean) => {
+        if (committed && stored)
+          onPersisted?.({ id: stored.id, ref: stored.ciphertext, material: nextMaterial });
+      };
+      try {
+        const committed = reservation
+          ? await commit().then((result) => {
+              adopted(result);
+              return result;
+            })
+          : await persistPreparedSecret(this.prisma, this.secrets, stored, commit, adopted);
+        if (committed) {
+          if (retired && installId) await this.releasePluginCredential(installId, context, retired);
+          return stored?.id;
+        }
+      } finally {
+        if (reservation && installId)
+          await this.releasePluginCredential(installId, context, reservation);
+      }
     }
     throw new Error("MCP credentials changed during authorization; retry");
   }

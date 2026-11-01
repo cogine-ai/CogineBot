@@ -8,6 +8,7 @@ import {
   type SkillSource,
 } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
+import { activePluginSkillWhere } from "@rakazo/db";
 import { BUILTIN_AGENT_SKILLS } from "./builtin-skills.js";
 
 export const SKILL_TOOL_NAMES = new Set([
@@ -87,7 +88,7 @@ export async function listAgentSkillRecords(
   owner: SkillOwner,
 ): Promise<Array<SkillRecord & { id: string }>> {
   const rows = await prisma.agentSkill.findMany({
-    where: { spaceId: owner.spaceId, userId: owner.userId },
+    where: { spaceId: owner.spaceId, userId: owner.userId, ...activePluginSkillWhere },
     orderBy: [{ name: "asc" }, { id: "asc" }],
   });
   return mergeBuiltinSkills(builtinRecords(), rows.map(toRecord));

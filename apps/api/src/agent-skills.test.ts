@@ -21,6 +21,7 @@ function savedSkill(name: string, source = "user") {
     description: "Saved review recipe",
     content: buildSkillMd({ name, description: "Saved review recipe", body: "Saved steps" }),
     source,
+    installId: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -34,9 +35,14 @@ function setup(rows: ReturnType<typeof savedSkill>[] = []) {
     source?: string;
     name?: { equals: string; mode: "insensitive" };
     NOT?: { id: string };
+    installId?: null;
+    OR?: Where[];
+    install?: unknown;
   };
   const matches = (row: ReturnType<typeof savedSkill>, where: Where) =>
     Object.entries(where).every(([key, value]) => {
+      if (key === "OR") return where.OR?.some((branch) => matches(row, branch));
+      if (key === "install") return false; // These fixtures are unattached user or legacy rows.
       if (key === "name") return row.name.toLowerCase() === where.name?.equals.toLowerCase();
       if (key === "NOT") return row.id !== where.NOT?.id;
       return row[key as keyof typeof row] === value;
@@ -52,9 +58,10 @@ function setup(rows: ReturnType<typeof savedSkill>[] = []) {
       async ({
         data,
       }: {
-        data: Omit<ReturnType<typeof savedSkill>, "id" | "createdAt" | "updatedAt">;
+        data: Omit<ReturnType<typeof savedSkill>, "id" | "createdAt" | "updatedAt" | "installId">;
       }) => {
         const row = {
+          installId: null,
           ...data,
           id: `saved-${rows.length + 1}`,
           createdAt: new Date(0),

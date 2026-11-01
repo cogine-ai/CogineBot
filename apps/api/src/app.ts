@@ -18,6 +18,7 @@ import type {
   ComposioProvider,
   ConnectorRegistry,
   DestinationEmulator,
+  PluginRead,
   RemoteConnectorDependencies,
 } from "@rakazo/adapters";
 import {
@@ -179,6 +180,7 @@ export async function createApp(
     readinessCheck?: () => Promise<unknown>;
     secretStore?: SecretStore;
     openApiNow?: () => number;
+    pluginRead?: PluginRead;
   } = {},
 ): Promise<AppHandles> {
   const {
@@ -197,6 +199,7 @@ export async function createApp(
     readinessCheck: readinessCheckOverride,
     secretStore: secretStoreOverride,
     openApiNow,
+    pluginRead,
     ...envOverrides
   } = overrides;
   const env = { ...loadEnv(process.env), ...envOverrides };
@@ -568,6 +571,7 @@ export async function createApp(
   reconciler?.start();
 
   const router = createRouter({
+    pluginRead,
     openApiPreviewKey: env.encryptionKey,
     openApiNow,
     cloudAgent,

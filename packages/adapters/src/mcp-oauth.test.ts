@@ -956,7 +956,9 @@ describe("MCP OAuth", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       mcpOAuthSession: sessions,
-      $transaction: vi.fn().mockResolvedValue([]),
+      $executeRaw: vi.fn(),
+      $queryRaw: vi.fn(async () => []),
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
     };
     const secrets = {
       load: vi.fn((ciphertext: string) =>
@@ -1239,7 +1241,9 @@ describe("MCP OAuth", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       mcpOAuthSession: oauthSessionStore(),
-      $transaction: vi.fn().mockResolvedValue([]),
+      $executeRaw: vi.fn(),
+      $queryRaw: vi.fn(async () => []),
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
     };
     const broker = new McpOAuthBroker(prisma as never, { put } as never, TEST_NETWORK);
 
@@ -1307,6 +1311,138 @@ describe("MCP setup with an existing access token", () => {
       ).resolves.toEqual({ status: "authorization_not_requested" });
       expect(fetch).toHaveBeenCalled();
       expect(secrets.put).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("managed plugin OAuth lifecycle", () => {
+  it("rejects token persistence after uninstall before preparing another secret", async () => {
+    const server = {
+      id: "managed-server",
+      endpoint: "https://mcp.example.test",
+      secretId: null,
+      installId: "managed-plugin",
+    };
+    const prisma = {
+      mcpServer: { findFirst: vi.fn(async () => server) },
+      capabilityInstall: {
+        findFirst: vi.fn(async () => ({
+          id: server.installId,
+          kind: "plugin",
+          clientNonce: "install-one",
+          status: "uninstalling",
+          spaceId: "space",
+          userId: "user",
+        })),
+      },
+      $queryRaw: vi.fn(),
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+    };
+    const secrets = { put: vi.fn(), load: vi.fn() };
+    const broker = new McpOAuthBroker(prisma as never, secrets as never);
+    const provider = await broker.providerFor(
+      server,
+      { spaceId: "space", userId: "user" },
+      { material: { oauth: {} } },
+    );
+    await expect(
+      provider!.saveTokens({ access_token: "synthetic-token", token_type: "bearer" }),
+    ).rejects.toThrow("no longer installed");
+    expect(secrets.put).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "tracks a late prepared token through strict cleanup (failure: %s)",
+    async (cleanupFails) => {
+      let status = "installed";
+      let cleanupRefs: unknown = [];
+      let prepared!: () => void;
+      const preparing = new Promise<void>((resolve) => {
+        prepared = resolve;
+      });
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const server = {
+        id: "managed-server",
+        endpoint: "https://mcp.example.test",
+        secretId: null,
+        installId: "managed-plugin",
+      };
+      const count = () => ({ count: vi.fn(async () => 0) });
+      const prisma = {
+        mcpServer: { ...count(), findFirst: vi.fn(async () => server), update: vi.fn() },
+        capabilityInstall: {
+          ...count(),
+          findFirst: vi.fn(async () => ({
+            id: server.installId,
+            kind: "plugin",
+            clientNonce: "install-one",
+            status,
+            spaceId: "space",
+            userId: "user",
+            cleanupRefs,
+          })),
+          update: vi.fn(async ({ data }: { data: { cleanupRefs: unknown } }) => {
+            cleanupRefs = data.cleanupRefs;
+          }),
+        },
+        secret: {
+          ...count(),
+          findFirst: vi.fn(async () => null),
+          create: vi.fn(),
+          deleteMany: vi.fn(),
+        },
+        connection: count(),
+        nativeOAuthSession: count(),
+        nativeOAuthGrant: count(),
+        spaceMemoryConfig: count(),
+        agentSecret: count(),
+        userModelCredential: count(),
+        userVoiceCredential: count(),
+        botSecret: count(),
+        integrationProviderConfig: count(),
+        nativeAppConfig: count(),
+        $queryRaw: vi.fn(async () => [{ referenced: false }]),
+        $executeRaw: vi.fn(),
+        $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+      };
+      const record = { id: "", ciphertext: "synthetic-private-ref" };
+      const secrets = {
+        put: vi.fn(async (_value, _context, options) => {
+          record.id = options.recordId;
+          prepared();
+          await blocked;
+          return record;
+        }),
+        load: vi.fn(),
+        delete: vi.fn(async () => {
+          if (cleanupFails) throw new Error("synthetic cleanup failure");
+        }),
+      };
+      const broker = new McpOAuthBroker(prisma as never, secrets as never);
+      const provider = await broker.providerFor(
+        server,
+        { spaceId: "space", userId: "user" },
+        { material: { oauth: {} } },
+      );
+      const saving = provider!.saveTokens({
+        access_token: "synthetic-token",
+        token_type: "bearer",
+      });
+      const rejected = expect(saving).rejects.toThrow("no longer installed");
+      await preparing;
+      status = "uninstalling";
+      release();
+      await rejected;
+      expect(prisma.secret.create).not.toHaveBeenCalled();
+      expect(prisma.mcpServer.update).not.toHaveBeenCalled();
+      expect(secrets.delete).toHaveBeenCalledWith(
+        record.ciphertext,
+        expect.objectContaining({ recordId: record.id }),
+      );
+      expect(cleanupRefs).toEqual(cleanupFails ? [{ id: record.id, ref: record.ciphertext }] : []);
     },
   );
 });

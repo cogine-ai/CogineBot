@@ -58,6 +58,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IntegrationSetup } from "../components/integrations/IntegrationSetup";
 import { NativeAccountConnect } from "../components/integrations/NativeAccountConnect";
 import { OpenApiImportReview } from "../components/integrations/OpenApiImportReview";
+import { PluginInstallsPanel } from "../components/integrations/PluginInstallsPanel";
 import { optionalCatalogFeedProbe } from "../lib/optional-catalog-feed";
 import { createSpaceRpc, currentSpaceSelectionGeneration, rpc, selectedSpaceId } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
@@ -130,6 +131,7 @@ export function PluginsOverlay({
 }) {
   const { t } = useLingui();
   const [setupOpen, setSetupOpen] = useState(false);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(CONNECTION_CATALOG_PAGE_SIZE);
   const [catalog, setCatalog] = useState<ConnectionCatalogItem[]>([]);
@@ -1350,6 +1352,7 @@ export function PluginsOverlay({
                 className="group mt-8"
                 onToggle={(event) => {
                   if (!(event.currentTarget as HTMLDetailsElement).open) {
+                    setPluginsOpen(false);
                     invalidateSourceReview();
                     setSourceKind(null);
                     setSourceError(null);
@@ -1372,6 +1375,20 @@ export function PluginsOverlay({
                 </summary>
 
                 <div className="mt-4 space-y-4">
+                  <Button
+                    variant="outline"
+                    disabled={!ownerKey || !spaceId}
+                    onClick={() => setPluginsOpen((open) => !open)}
+                  >
+                    <Trans>GitHub plugins</Trans>
+                  </Button>
+                  {pluginsOpen ? (
+                    <PluginInstallsPanel
+                      ownerKey={ownerKey}
+                      spaceId={spaceId}
+                      onClose={() => setPluginsOpen(false)}
+                    />
+                  ) : null}
                   {catalogFeedEnabled ? (
                     <Card data-testid="integrations-catalog-feed">
                       <CardHeader>

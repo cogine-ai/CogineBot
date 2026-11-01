@@ -6417,3 +6417,107 @@ msgstr "此设置已在别处更改。请先刷新再保存。"
 #: src/pages/Shell.tsx
 msgid "Automatic collaboration stopped"
 msgstr "自动协作已停止"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Cleanup incomplete"
+msgstr "清理未完成"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Confirm removal"
+msgstr "确认移除"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not complete this request."
+msgstr "无法完成此请求。"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not confirm removal. Refresh before retrying."
+msgstr "无法确认是否已移除。请刷新后重试。"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not load installed plugins."
+msgstr "无法加载已安装插件。"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "GitHub plugins"
+msgstr "GitHub 插件"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Install plugin"
+msgstr "安装插件"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed"
+msgstr "已安装"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin installations"
+msgstr "插件安装记录"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installing…"
+msgstr "正在安装…"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "MCP tools require separate approval."
+msgstr "MCP 工具需要单独批准。"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "No plugins installed"
+msgstr "尚未安装插件"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin GitHub URL"
+msgstr "插件 GitHub 地址"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Remove plugin"
+msgstr "移除插件"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Retry cleanup"
+msgstr "重试清理"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills"
+msgstr "技能"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills are available to your Bots in this Space."
+msgstr "Skills 可供你在此 Space 中的 Bot 使用。"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skipped components"
+msgstr "已跳过的组件"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Version details"
+msgstr "版本详情"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "View instructions"
+msgstr "查看指令"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installation failed."
+msgstr "安装失败。"

@@ -129,6 +129,18 @@ export async function loadScriptedResume(
       } else invalidState();
     }
     if (ask.status !== "answered") return { stored, held: true };
+    // Answering one exact pause receipt does not settle another input in the same Run.
+    // A late queue delivery must honor the remaining cards before claiming a new attempt.
+    const messages = await prisma.message.findMany({
+      where: { runId: run.id, threadId: run.threadId, botId: run.botId, role: "bot" },
+      select: { blocks: true },
+    });
+    for (const candidate of messages) {
+      const pendingBlocks = MessageBlockSchema.array().safeParse(candidate.blocks);
+      if (!pendingBlocks.success) invalidState();
+      if (pendingBlocks.data.some((block) => block.kind === "ask" && block.status !== "answered"))
+        return { stored, held: true };
+    }
     return {
       stored,
       ...(stored.state.cursor.phase === "ask" ? { resume: "answer" as const } : {}),
