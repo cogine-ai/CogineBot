@@ -168,9 +168,15 @@ describePostgres("Space collaboration migration on predecessor deliveries", () =
   });
 
   it("rolls back schema and provenance together when the migration transaction fails", async () => {
-    await expect(client.query(`BEGIN;\n${migration}\nSELECT 1 / 0;`)).rejects.toMatchObject({
-      code: "22012",
-    });
+    const beforeCommit = migration.replace(/COMMIT;\s*$/, "SELECT 1 / 0;\nCOMMIT;");
+    const interrupted = beforeCommit === migration ? `${migration}\nSELECT 1 / 0;` : beforeCommit;
+    // Separate commands must not get an implicit multi-statement transaction.
+    await expect(
+      (async () => {
+        for (const statement of interrupted.split(";").filter((value) => value.trim()))
+          await client.query(statement);
+      })(),
+    ).rejects.toMatchObject({ code: "22012" });
     await client.query("ROLLBACK");
     expect(
       (

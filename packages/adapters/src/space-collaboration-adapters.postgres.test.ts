@@ -348,6 +348,82 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
     expect(await f.transcript()).toHaveLength(2);
   });
 
+  it("keeps later receipts recoverable when the oldest settlement repeatedly fails", async () => {
+    const f = await fixture();
+    await f.send("blocked-settlement");
+    await f.send("healthy-settlement");
+    const deliveries = await prisma.run.findMany({
+      where: { parentRunId: f.run.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(deliveries).toHaveLength(2);
+    const blocked = deliveries[0]!;
+    const healthy = deliveries[1]!;
+    for (const [index, delivery] of deliveries.entries())
+      await prisma.run.update({
+        where: { id: delivery.id },
+        data: {
+          status: "cancelled",
+          completedAt: new Date(),
+          updatedAt: new Date(index === 0 ? "2000-01-01T00:00:00Z" : "2001-01-01T00:00:00Z"),
+        },
+      });
+    let failBlocked = true;
+    const interrupted = new Proxy(prisma, {
+      get(target, property) {
+        if (property !== "$transaction") return Reflect.get(target, property);
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(current, name) {
+                  if (name !== "run") return Reflect.get(current, name);
+                  return new Proxy(current.run, {
+                    get(delegate, method) {
+                      if (method !== "findUnique") return Reflect.get(delegate, method);
+                      return (args: Prisma.RunFindUniqueArgs) => {
+                        if (failBlocked && args.where.id === blocked.id)
+                          throw new Error("Receipt storage unavailable for this delivery");
+                        return delegate.findUnique(args);
+                      };
+                    },
+                  });
+                },
+              }),
+            ),
+          );
+      },
+    });
+    const jobs: JobPublisher = {
+      enqueue: f.enqueue,
+      cancel: async () => undefined,
+      close: async () => undefined,
+    };
+    const reconciler = createJobReconciler(
+      { prisma: interrupted, jobs, events: createThreadEvents(prisma) },
+      { batchSize: 1 },
+    );
+    await reconciler.reconcileOnce();
+    await reconciler.reconcileOnce();
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: blocked.id } })).toMatchObject({
+      status: "cancelled",
+      collaborationStatus: "waiting_peer",
+    });
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: healthy.id } })).toMatchObject({
+      status: "cancelled",
+      collaborationStatus: "completed",
+    });
+    failBlocked = false;
+    await reconciler.reconcileOnce();
+    await reconciler.reconcileOnce();
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: blocked.id } })).toMatchObject({
+      status: "cancelled",
+      collaborationStatus: "completed",
+    });
+    expect(await f.transcript()).toHaveLength(2);
+    expect(await prisma.run.count({ where: { parentRunId: f.run.id } })).toBe(2);
+  });
+
   it("returns a delegated result when the worker cannot invoke the messaging tool", async () => {
     const f = await fixture();
     await f.send();

@@ -1,3 +1,6 @@
+-- Keep schema and retained-delivery provenance atomic during a coordinated upgrade.
+BEGIN;
+
 ALTER TABLE "spaces"
   ADD COLUMN "allowBotCollaboration" BOOLEAN NOT NULL DEFAULT true,
   ADD COLUMN "collaborationRevision" INTEGER NOT NULL DEFAULT 0,
@@ -107,3 +110,5 @@ CREATE INDEX "runs_collaborationSourceSpaceId_collaborationStatus_idx"
 CREATE INDEX "runs_spaceId_origin_status_startedAt_idx"
   ON "runs"("spaceId", "origin", "status", "startedAt");
 CREATE INDEX "runs_parentRunId_idx" ON "runs"("parentRunId");
+
+COMMIT;

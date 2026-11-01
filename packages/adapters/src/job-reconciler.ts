@@ -341,11 +341,21 @@ export function createJobReconciler(
           select: { id: true },
         });
         await Promise.all(
-          terminalPeerDeliveries.map((run) =>
-            settlePeerDelivery({ prisma: deps.prisma, events }, run.id, "completed").catch(
-              (error) => getLogger().error("collaboration result reconciliation", error),
-            ),
-          ),
+          terminalPeerDeliveries.map(async (run) => {
+            try {
+              await settlePeerDelivery({ prisma: deps.prisma, events }, run.id, "completed");
+            } catch (error) {
+              getLogger().error("collaboration result reconciliation", error);
+              await deps.prisma.run
+                .updateMany({
+                  where: { id: run.id, collaborationStatus: "waiting_peer" },
+                  data: { updatedAt: new Date() },
+                })
+                .catch((rotationError) =>
+                  getLogger().error("collaboration settlement retry rotation", rotationError),
+                );
+            }
+          }),
         );
       }
 

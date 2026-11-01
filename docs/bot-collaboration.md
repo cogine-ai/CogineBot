@@ -23,5 +23,9 @@ and record the operator, time and previous/new values. If another owner changes
 the setting first, refresh before confirming another change.
 
 Upgrade the API and workers together before using this control. Older workers
-do not enforce the setting. During rollback, stop policy-controlled work until
+do not enforce the setting. The schema and provenance migration uses one
+transaction and locks the Runs table while adding checks, backfills and indexes.
+Stop new API intake and workers for that maintenance window. Measure the lock
+duration on a representative copy before scheduling a large deployment.
+During rollback, stop policy-controlled work until
 policy-aware workers are restored, and retain the policy and delivery records.
