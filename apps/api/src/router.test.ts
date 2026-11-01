@@ -441,7 +441,7 @@ describe("model setup gate", () => {
   });
 
   it.each(["none", undefined])("keeps local defaults usable with policy %s", async (policy) => {
-    const f = modelGateDeps({ agentRuntime: "pi" });
+    const f = modelGateDeps({ agentRuntime: "pi", deploymentModelConfigured: true });
     f.deps.env.platformModelAllowlist = parsePlatformModelAllowlist(policy);
     f.deps.env.defaultProvider = "local";
     f.deps.env.defaultModel = "local-model";
@@ -452,6 +452,18 @@ describe("model setup gate", () => {
     await expect(response.json()).resolves.toMatchObject({
       json: { needsModel: false, defaultProvider: "local", defaultModel: "local-model" },
     });
+  });
+
+  it("does not claim an unconfigured local environment default can start runs", async () => {
+    const f = modelGateDeps({ agentRuntime: "pi" });
+    f.deps.env.platformModelAllowlist = "owner_only";
+    f.deps.env.defaultProvider = "local";
+    f.deps.env.defaultModel = "fixture-local-model";
+    Object.assign(f.deps.prisma.user, {
+      findUnique: vi.fn(async () => ({ email: "member@outside.test", emailVerified: false })),
+    });
+    const response = await call(f.handler, f.actor, "me", null);
+    await expect(response.json()).resolves.toMatchObject({ json: { needsModel: true } });
   });
 
   it("rejects a reply quote without a reply target", async () => {

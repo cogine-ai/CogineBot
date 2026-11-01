@@ -7206,7 +7206,11 @@ async function modelSetup(deps: RouterDeps, actor: Actor) {
     platformAllowed,
     hasDeployment,
     hasLocal,
-    needsModel: deps.env.agentRuntime !== "scripted" && !credential && !hasDeployment && !hasLocal,
+    needsModel:
+      deps.env.agentRuntime !== "scripted" &&
+      !credential &&
+      !hasDeployment &&
+      !(hasLocal && deps.env.deploymentModelConfigured),
   };
 }
 

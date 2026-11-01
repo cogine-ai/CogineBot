@@ -452,3 +452,49 @@ describe("platform model consent policy", () => {
     expect(f.findUser).not.toHaveBeenCalled();
   });
 });
+
+describe("local model data disclosure", () => {
+  it.each([undefined, "none"])(
+    "retains local recipient independently of funding policy %s",
+    async (policy) => {
+      vi.stubEnv("RAKAZO_LOCAL_MODELS_URL", "https://models.example.test/v1");
+      vi.stubEnv("RAKAZO_LOCAL_MODELS", "fixture-local-model");
+      const f = setup();
+      Object.assign(f.deps.env, {
+        agentRuntime: "pi",
+        deploymentModelConfigured: false,
+        defaultProvider: "local",
+        defaultModel: "fixture-local-model",
+        platformModelAllowlist: parsePlatformModelAllowlist(policy),
+      });
+      Object.assign(f.deps.prisma, {
+        user: {
+          findUnique: vi.fn(async () => ({ email: "member@outside.test", emailVerified: false })),
+        },
+      });
+      vi.mocked(f.deps.prisma.deploymentSettings.findUnique).mockResolvedValue({
+        ownerUserId: "different-owner",
+        defaultModelProvider: "local",
+        defaultModelId: "fixture-local-model",
+      } as never);
+      try {
+        const status = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+        expect(status.recipients).toEqual([
+          expect.objectContaining({
+            name: expect.stringContaining("models.example.test"),
+            use: "model",
+            detail: "fixture-local-model",
+            allowed: false,
+          }),
+        ]);
+        vi.mocked(f.deps.prisma.aiDataConsent.findMany).mockResolvedValue([
+          { recipientKey: status.recipients[0]!.key },
+        ] as never);
+        const granted = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+        expect(granted.recipients).toEqual([{ ...status.recipients[0], allowed: true }]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+});

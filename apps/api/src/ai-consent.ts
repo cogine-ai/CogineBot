@@ -5,6 +5,7 @@ import {
   aiRecipient,
   canUsePlatformModel,
   cloudAgentsEnabled,
+  LOCAL_PROVIDER_ID,
   listHelperModelConnections,
   parseModelSecret,
   selectConfiguredModel,
@@ -200,7 +201,11 @@ export async function aiConsentStatus(
     const models = [
       ...new Map(
         selected
-          .filter((model) => model.provider && (model.credential || platformAllowed))
+          .filter(
+            (model) =>
+              model.provider &&
+              (model.credential || model.provider === LOCAL_PROVIDER_ID || platformAllowed),
+          )
           .map((model) => [
             JSON.stringify([model.provider, model.id, model.credential?.secretId]),
             model,
