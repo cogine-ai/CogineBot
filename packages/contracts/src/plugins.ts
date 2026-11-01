@@ -102,6 +102,15 @@ export const PluginInstallReceiptSchema = z.object({
 });
 export type PluginInstallReceipt = z.infer<typeof PluginInstallReceiptSchema>;
 
+/** Separate administrative visibility from receipts used to recover the caller's writes. */
+export const PluginInstallListingSchema = z.object({
+  owned: z.array(PluginInstallReceiptSchema),
+  managed: z.array(
+    z.object({ receipt: PluginInstallReceiptSchema, ownerName: z.string().nullable() }),
+  ),
+});
+export type PluginInstallListing = z.infer<typeof PluginInstallListingSchema>;
+
 export const PluginPreviewInputSchema = z.object({ source: PluginSourceSchema }).strict();
 export const PluginInstallInputSchema = z
   .object({

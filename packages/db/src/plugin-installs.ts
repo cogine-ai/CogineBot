@@ -18,7 +18,7 @@ export const activePluginSkillWhere: Prisma.AgentSkillWhereInput = {
 
 export type PluginCredentialCleanupEntry =
   | { id: string; ref: string; pending?: never }
-  | { id: string; ref?: never; pending: true };
+  | { id: string; ref?: never; pending: true; recoveryRef?: string };
 
 /** Internal, bounded recovery data. A missing ref is an unknown external write, never success. */
 export function readPluginCleanupRefs(value: unknown): PluginCredentialCleanupEntry[] {
@@ -28,16 +28,26 @@ export function readPluginCleanupRefs(value: unknown): PluginCredentialCleanupEn
   return value.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item))
       throw new Error("Invalid plugin cleanup state");
-    const { id, ref, pending } = item as Record<string, unknown>;
+    const { id, ref, pending, recoveryRef } = item as Record<string, unknown>;
     if (typeof id !== "string" || id.length === 0 || id.length > 256 || ids.has(id))
       throw new Error("Invalid plugin cleanup state");
     ids.add(id);
     if (
       pending === true &&
       ref === undefined &&
-      Object.keys(item).every((key) => key === "id" || key === "pending")
-    )
+      (recoveryRef === undefined ||
+        (typeof recoveryRef === "string" &&
+          recoveryRef.length > 0 &&
+          recoveryRef.length <= 8192)) &&
+      Object.keys(item).every((key) => key === "id" || key === "pending" || key === "recoveryRef")
+    ) {
+      if (typeof recoveryRef === "string") {
+        bytes += Buffer.byteLength(recoveryRef);
+        if (bytes > 8_000_000) throw new Error("Invalid plugin cleanup state");
+        return { id, pending: true, recoveryRef };
+      }
       return { id, pending: true };
+    }
     if (
       pending !== undefined ||
       typeof ref !== "string" ||

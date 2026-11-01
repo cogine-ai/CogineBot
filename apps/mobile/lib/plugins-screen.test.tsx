@@ -90,13 +90,24 @@ vi.mock("../components/native-action-button", () => ({
     ),
 }));
 vi.mock("./i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-  t: (key: string) => key,
+  useI18n: () => ({
+    t: (key: string, values?: Record<string, string>) =>
+      key.replace(/\{(\w+)\}/g, (match, name: string) => values?.[name] ?? match),
+  }),
+  t: (key: string, values?: Record<string, string>) =>
+    key.replace(/\{(\w+)\}/g, (match, name: string) => values?.[name] ?? match),
 }));
 vi.mock("./native", () => ({ native: {}, useThemedStyles: <T,>(factory: () => T) => factory() }));
 vi.mock("./appearance", () => ({ mobileTokens: () => ({ destructive: "red" }) }));
 
 import Plugins from "../app/(settings)/plugins";
+
+function listing(
+  owned: PluginInstallReceipt[] = [],
+  managed: { receipt: PluginInstallReceipt; ownerName: string | null }[] = [],
+) {
+  return { owned, managed };
+}
 
 const preview: PluginPreview = {
   source: `https://github.com/example/plugin/tree/${"a".repeat(40)}`,
@@ -148,7 +159,7 @@ beforeEach(async () => {
     headers: { "x-rakazo-space-id": api.space },
   }));
   api.rpc.mockImplementation(async (procedure: string, input: { clientNonce?: string }) => {
-    if (procedure === "plugins/list") return [];
+    if (procedure === "plugins/list") return listing([]);
     if (procedure === "plugins/preview") return preview;
     if (procedure === "plugins/install") return { ...receipt, clientNonce: input.clientNonce };
     return { ...receipt, status: "removed", revision: 3 };
@@ -259,7 +270,7 @@ it("uses explicit confirmation and a fresh cleanup revision", async () => {
   const normal = api.rpc.getMockImplementation()!;
   let row: PluginInstallReceipt = receipt;
   api.rpc.mockImplementation(async (procedure, value, options) => {
-    if (procedure === "plugins/list") return [row];
+    if (procedure === "plugins/list") return listing([row]);
     if (procedure === "plugins/uninstall") {
       row = {
         ...row,
@@ -289,12 +300,12 @@ it("shows installing and failed receipts without treating either as a successful
       pending = {
         ...receipt,
         clientNonce: input.clientNonce,
-        status: "installing",
+        status: "installing" as const,
         installedAt: null,
       };
       return pending;
     }
-    if (procedure === "plugins/list") return pending ? [pending] : [];
+    if (procedure === "plugins/list") return listing(pending ? [pending] : []);
     return normal(procedure, input, options);
   });
   await openPreview();
@@ -346,7 +357,7 @@ it.each(["cleanup_failed", "uninstalling"] as const)(
       revision: 3,
     };
     api.rpc.mockImplementation(async (procedure, input, options) => {
-      if (procedure === "plugins/list") return [receipt, second];
+      if (procedure === "plugins/list") return listing([receipt, second]);
       if (procedure === "plugins/uninstall") return { ...second, status: "removed", revision: 5 };
       return normal(procedure, input, options);
     });
@@ -360,9 +371,9 @@ it.each(["cleanup_failed", "uninstalling"] as const)(
 
 it("explicitly confirms cleanup of a persisted pending receipt after reopening", async () => {
   const normal = api.rpc.getMockImplementation()!;
-  const pending = { ...receipt, status: "installing", installedAt: null };
+  const pending = { ...receipt, status: "installing" as const, installedAt: null };
   api.rpc.mockImplementation(async (procedure, input, options) => {
-    if (procedure === "plugins/list") return [pending];
+    if (procedure === "plugins/list") return listing([pending]);
     if (procedure === "plugins/uninstall") return { ...pending, status: "removed", revision: 3 };
     return normal(procedure, input, options);
   });
@@ -385,7 +396,7 @@ it("settles the current pending review after confirmed cleanup without replaying
       pending = {
         ...receipt,
         clientNonce: input.clientNonce,
-        status: "installing",
+        status: "installing" as const,
         installedAt: null,
       };
       return pending;
@@ -405,9 +416,14 @@ it("settles the current pending review after confirmed cleanup without replaying
 
 it("disables unrelated cleanup while an installation acknowledgement is unknown", async () => {
   const normal = api.rpc.getMockImplementation()!;
-  const pending = { ...receipt, clientNonce: "old-nonce", status: "installing", installedAt: null };
+  const pending = {
+    ...receipt,
+    clientNonce: "old-nonce",
+    status: "installing" as const,
+    installedAt: null,
+  };
   api.rpc.mockImplementation(async (procedure, input, options) => {
-    if (procedure === "plugins/list") return [pending];
+    if (procedure === "plugins/list") return listing([pending]);
     if (procedure === "plugins/install") throw new Error("reply lost");
     return normal(procedure, input, options);
   });
@@ -420,5 +436,58 @@ it("disables unrelated cleanup while an installation acknowledgement is unknown"
   expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
   await click("Check status");
   expect(button("Remove plugin").disabled).toBe(true);
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
+});
+
+it.each(["Alex", null])(
+  "lets an owner confirm removal of a member installation attributed to %s",
+  async (ownerName) => {
+    const normal = api.rpc.getMockImplementation()!;
+    const managed = {
+      ...receipt,
+      id: "member-install",
+      clientNonce: "member-nonce",
+      name: "Member plugin",
+    };
+    api.rpc.mockImplementation(async (procedure, input, options) => {
+      if (procedure === "plugins/list") return listing([], [{ receipt: managed, ownerName }]);
+      if (procedure === "plugins/uninstall") return { ...managed, status: "removed", revision: 3 };
+      return normal(procedure, input, options);
+    });
+    await click("Refresh");
+    expect(node.textContent).toContain(`Installed by ${ownerName ?? "Another member"}`);
+    await openPreview();
+    await click("Remove plugin");
+    expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
+    await click("Confirm removal");
+    const write = api.rpc.mock.calls.find((call) => call[0] === "plugins/uninstall")!;
+    expect(write[1]).toEqual({ installId: managed.id, expectedRevision: 1 });
+    expect(node.textContent).not.toContain("Member plugin");
+    expect(button("Install plugin")).toBeDefined();
+    expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/install")).toHaveLength(0);
+  },
+);
+
+it("shows a member only owned installations after management rights disappear", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  const managed = {
+    ...receipt,
+    id: "member-install",
+    clientNonce: "member-nonce",
+    name: "Member plugin",
+  };
+  let canManage = true;
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/list")
+      return listing([receipt], canManage ? [{ receipt: managed, ownerName: "Alex" }] : []);
+    return normal(procedure, input, options);
+  });
+  await click("Refresh");
+  const row = node.querySelector('[aria-label="Member plugin"]')!;
+  await act(async () => (row.querySelector("button")! as HTMLButtonElement).click());
+  canManage = false;
+  await click("Refresh");
+  expect(node.textContent).not.toContain("Member plugin");
+  expect(node.textContent).not.toContain("Installed by");
   expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
 });

@@ -6521,3 +6521,11 @@ msgstr "查看指令"
 #: src/components/integrations/PluginInstallsPanel.tsx
 msgid "Installation failed."
 msgstr "安装失败。"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Another member"
+msgstr "其他成员"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed by {name}"
+msgstr "由 {name} 安装"

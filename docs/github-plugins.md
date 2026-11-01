@@ -20,6 +20,10 @@ are rejected. Local processes, hooks, companion files and variable templates are
 not imported; the preview lists skipped components. Marketplace discovery and a
 guided connection flow are not included in this version.
 
+Repository reads are unauthenticated and share GitHub's rate limits across the
+deployment's egress address. A temporary limit can delay imports; this version does
+not configure GitHub credentials or cache repository responses.
+
 MCP header values use the existing encrypted secret store and never appear in the
 public preview or installation receipt. A package that repeats a detected header
 credential in public content is rejected. Inspect all instructions before installing;
@@ -36,13 +40,22 @@ If a server restart leaves an installation pending, refresh its durable receipt 
 choose **Remove plugin** to clean it up explicitly. A request with no confirmed
 receipt still requires **Check status** first. Removal does not restart the install.
 
-The installation owner or current Space owner can remove a plugin. Removal first
+The installation owner or current Space owner can remove a plugin. Space owners
+also see member installations labelled with their owner, and confirm removal from
+the same list. Request recovery uses only the current user's own receipts, even
+when another member used the same request identifier. Membership changes take
+effect on the next list or removal request.
+
+Removal first
 disables its servers and instructions and closes its pending connection/tool approval
 cards. Never-dispatched tool requests receive a removal result; a waiting Run resumes
 only when no other input is pending. Already-dispatched external work is not undone.
 Credential cleanup failures remain visible as **Cleanup incomplete** and can be retried.
-An unacknowledged credential write remains pending until its provider outcome can be
-reconciled; it is never reported as successful cleanup.
+Supported secret stores record recovery information before a credential write.
+Cleanup can recover an exact remote reference or confirm that an inline write had
+no external resource. An unavailable or changed provider keeps cleanup incomplete;
+restore its original configuration and retry. An unconfirmed remote write remains
+pending, including when a lookup has not found a resource that could still appear.
 
 ## Offline validation
 

@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { EncryptedSecretStore, withSecretPersistence } from "@rakazo/adapters";
+import {
+  ComposedSecretStore,
+  EncryptedSecretStore,
+  InfisicalSecretStore,
+  withSecretPersistence,
+} from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { bootstrapUserSpace, createDb, IsolationError } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { infisicalFake } from "../../../packages/adapters/src/secret-store-fake.js";
 import { createPluginUninstaller } from "./plugin-uninstall.js";
 
 const postgres =
@@ -350,5 +356,195 @@ postgres("managed plugin uninstall acceptance", () => {
     expect(
       await database.prisma.mcpServer.findUnique({ where: { id: f.server.id } }),
     ).toMatchObject({ enabled: false });
+  });
+
+  it("retires an explicitly inline pending write without guessing the provider of old markers", async () => {
+    const actor = await account();
+    const f = await installation(actor);
+    const id = randomUUID();
+    await database.prisma.capabilityInstall.update({
+      where: { id: f.install.id },
+      data: { cleanupRefs: [{ id, pending: true, recoveryRef: f.store.prepareWrite(id) }] },
+    });
+    expect(
+      (await f.service.uninstall(actor, { installId: f.install.id, expectedRevision: 1 })).status,
+    ).toBe("removed");
+    expect(
+      (await database.prisma.capabilityInstall.findUniqueOrThrow({ where: { id: f.install.id } }))
+        .cleanupRefs,
+    ).toEqual([]);
+  });
+
+  it.each([false, true])(
+    "recovers a lost remote acknowledgement using its original scope (configuration changed: %s)",
+    async (changed) => {
+      const actor = await account();
+      const f = await installation(actor);
+      const fake = infisicalFake();
+      const writer = new InfisicalSecretStore({
+        ...fake.options,
+        fetch: async (input, init) => {
+          const response = await fake.fetcher(input, init);
+          if (init?.method === "POST" && String(input).includes("/secrets/"))
+            throw new Error("synthetic acknowledgement lost after remote commit");
+          return response;
+        },
+      });
+      const id = randomUUID();
+      const recoveryRef = writer.prepareWrite(id);
+      const pending = { id, pending: true as const, recoveryRef };
+      await database.prisma.capabilityInstall.update({
+        where: { id: f.install.id },
+        data: { cleanupRefs: [pending] },
+      });
+      await expect(
+        writer.put(
+          "synthetic-private-material",
+          {
+            ...actor,
+            operationId: "offline",
+            traceId: "offline",
+            signal: new AbortController().signal,
+          },
+          { recordId: id, recoveryRef },
+        ),
+      ).rejects.toThrow();
+      expect(fake.values.size).toBe(1);
+      await writer.close();
+      const remote = new InfisicalSecretStore({
+        ...fake.options,
+        ...(changed ? { projectId: "different-project" } : {}),
+      });
+      const store = new ComposedSecretStore(f.store, remote);
+      const service = createPluginUninstaller({
+        prisma: withSecretPersistence(database.prisma, store),
+        secrets: store,
+        events: f.events,
+        jobs: f.jobs,
+      });
+      let receipt = await service.uninstall(actor, {
+        installId: f.install.id,
+        expectedRevision: 1,
+      });
+      try {
+        expect(JSON.stringify(receipt)).not.toContain(recoveryRef);
+        if (changed) {
+          expect(receipt.status).toBe("cleanup_failed");
+          expect(fake.values.size).toBe(1);
+          expect(
+            (
+              await database.prisma.capabilityInstall.findUniqueOrThrow({
+                where: { id: f.install.id },
+              })
+            ).cleanupRefs,
+          ).toEqual([pending]);
+          const matching = new ComposedSecretStore(f.store, new InfisicalSecretStore(fake.options));
+          try {
+            receipt = await createPluginUninstaller({
+              prisma: withSecretPersistence(database.prisma, matching),
+              secrets: matching,
+              events: f.events,
+              jobs: f.jobs,
+            }).uninstall(actor, { installId: f.install.id, expectedRevision: receipt.revision });
+          } finally {
+            await matching.close();
+          }
+        }
+        expect(receipt.status).toBe("removed");
+        expect(fake.values.size).toBe(0);
+        expect(
+          (
+            await database.prisma.capabilityInstall.findUniqueOrThrow({
+              where: { id: f.install.id },
+            })
+          ).cleanupRefs,
+        ).toEqual([]);
+        expect(await database.prisma.mcpServer.count({ where: { installId: f.install.id } })).toBe(
+          0,
+        );
+      } finally {
+        await store.close();
+      }
+    },
+  );
+
+  it("cannot finish uninstall while a remote create may still complete late", async () => {
+    const actor = await account();
+    const f = await installation(actor);
+    const fake = infisicalFake();
+    let opened!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      opened = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const remote = new InfisicalSecretStore({
+      ...fake.options,
+      fetch: async (input, init) => {
+        if (init?.method === "POST" && String(input).includes("/secrets/")) {
+          opened();
+          await gate;
+        }
+        return fake.fetcher(input, init);
+      },
+    });
+    const store = new ComposedSecretStore(f.store, remote);
+    const id = randomUUID();
+    const recoveryRef = store.prepareWrite(id);
+    const pending = { id, pending: true as const, recoveryRef };
+    await database.prisma.capabilityInstall.update({
+      where: { id: f.install.id },
+      data: { cleanupRefs: [pending] },
+    });
+    const writing = store.put(
+      "synthetic-late-material",
+      {
+        ...actor,
+        operationId: "offline",
+        traceId: "offline",
+        signal: new AbortController().signal,
+      },
+      { recordId: id, recoveryRef },
+    );
+    const service = createPluginUninstaller({
+      prisma: withSecretPersistence(database.prisma, store),
+      secrets: store,
+      events: f.events,
+      jobs: f.jobs,
+    });
+    try {
+      await started;
+      const blocked = await service.uninstall(actor, {
+        installId: f.install.id,
+        expectedRevision: 1,
+      });
+      expect(blocked.status).toBe("cleanup_failed");
+      expect(
+        (await database.prisma.capabilityInstall.findUniqueOrThrow({ where: { id: f.install.id } }))
+          .cleanupRefs,
+      ).toEqual([pending]);
+      expect(
+        await database.prisma.mcpServer.findUnique({ where: { id: f.server.id } }),
+      ).toMatchObject({ enabled: false });
+      expect(fake.values.size).toBe(0);
+      release();
+      await writing;
+      expect(fake.values.size).toBe(1);
+      expect(
+        (
+          await service.uninstall(actor, {
+            installId: f.install.id,
+            expectedRevision: blocked.revision,
+          })
+        ).status,
+      ).toBe("removed");
+      expect(fake.values.size).toBe(0);
+    } finally {
+      release();
+      await writing.catch(() => undefined);
+      await store.close();
+    }
   });
 });

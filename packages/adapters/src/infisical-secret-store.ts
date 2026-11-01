@@ -5,6 +5,7 @@ import type {
   SecretPutOptions,
   SecretRecord,
   SecretStore,
+  SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
 import { SecretNotFoundError, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { getLogger } from "@rakazo/logging";
@@ -13,7 +14,9 @@ import { SecretChanges } from "./secret-changes.js";
 
 export { SecretNotFoundError, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 
-export const INFISICAL_REF_PREFIX = "infisical:v1:";
+export const INFISICAL_REF_PREFIX = "infisical:";
+const LEGACY_REF_PREFIX = "infisical:v1:";
+const SCOPED_REF_PREFIX = "infisical:v2:";
 export interface InfisicalSecretStoreOptions {
   baseUrl: string;
   clientId: string;
@@ -39,6 +42,7 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
   private readonly lastSeen = new Map<string, string>();
   private readonly pendingReads = new Map<string, Promise<string>>();
   private readonly reads = new Map<string, Set<{ invalidated: boolean }>>();
+  private readonly activeWrites = new Set<string>();
   private readonly lifetime = new AbortController();
   private degraded = false;
   private closed = false;
@@ -127,7 +131,14 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
   private key(ref: string, context: SecretContext): string {
     const recordId = typeof context === "string" ? context : context.recordId;
     const prefix = `rakazo_${credentialDigest(recordId).slice(0, 24)}_`;
-    const key = ref.slice(INFISICAL_REF_PREFIX.length);
+    let key: string;
+    if (ref.startsWith(SCOPED_REF_PREFIX)) {
+      const parts = ref.slice(SCOPED_REF_PREFIX.length).split(":");
+      if (parts.length !== 2 || parts[0] !== this.scopeDigest())
+        throw new SecretStoreUnavailableError(undefined, "Credential storage scope does not match");
+      key = parts[1]!;
+    } else if (ref.startsWith(LEGACY_REF_PREFIX)) key = ref.slice(LEGACY_REF_PREFIX.length);
+    else throw new SecretNotFoundError();
     if (
       !ref.startsWith(INFISICAL_REF_PREFIX) ||
       !key.startsWith(prefix) ||
@@ -135,6 +146,50 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
     )
       throw new SecretNotFoundError();
     return key;
+  }
+  private scopeDigest(): string {
+    return credentialDigest(
+      JSON.stringify([
+        new URL(this.options.baseUrl).href.replace(/\/$/, ""),
+        this.options.projectId,
+        this.options.environment,
+        this.options.folder,
+        this.options.clientId,
+      ]),
+    );
+  }
+  prepareWrite(recordId: string): string {
+    const key = `rakazo_${credentialDigest(recordId).slice(0, 24)}_${randomUUID()}`;
+    return `${SCOPED_REF_PREFIX}${this.scopeDigest()}:${key}`;
+  }
+  async reconcileWrite(
+    recoveryRef: string,
+    context: SecretContext,
+  ): Promise<SecretWriteReconciliation> {
+    // A legacy ref is not evidence of a prepared, one-shot write.
+    if (!recoveryRef.startsWith(SCOPED_REF_PREFIX) || this.activeWrites.has(recoveryRef))
+      return { state: "unknown" };
+    try {
+      const key = this.key(recoveryRef, context);
+      const query = new URLSearchParams({
+        ...this.scope(),
+        expandSecretReferences: "false",
+        includeImports: "false",
+      });
+      const result = await this.request(
+        `/api/v3/secrets/raw/${key}?${query}`,
+        "GET",
+        undefined,
+        typeof context === "string" ? undefined : context.signal,
+      );
+      // Never install recovered plaintext into the cache, a log or a public receipt.
+      return typeof result.secret?.secretValue === "string"
+        ? { state: "found", ref: recoveryRef }
+        : { state: "unknown" };
+    } catch {
+      // In particular, 404 cannot exclude a remote request that may still create the key.
+      return { state: "unknown" };
+    }
   }
   private scope() {
     return {
@@ -152,25 +207,42 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
     context.signal.throwIfAborted();
     if (options.ephemeral) throw new Error("Ephemeral secrets require local encrypted storage");
     const recordId = options.recordId ?? randomUUID();
-    const key = `rakazo_${credentialDigest(recordId).slice(0, 24)}_${randomUUID()}`;
-    const ref = INFISICAL_REF_PREFIX + key;
+    const prepared = options.recoveryRef !== undefined;
+    const ref =
+      options.recoveryRef ??
+      `${LEGACY_REF_PREFIX}rakazo_${credentialDigest(recordId).slice(0, 24)}_${randomUUID()}`;
+    if (prepared && !ref.startsWith(SCOPED_REF_PREFIX))
+      throw new SecretStoreUnavailableError(
+        undefined,
+        "Credential recovery provider does not match",
+      );
+    const key = this.key(ref, recordId);
+    if (this.activeWrites.has(ref)) throw new SecretStoreUnavailableError();
+    this.activeWrites.add(ref);
     try {
       await this.request(
         `/api/v3/secrets/raw/${key}`,
         "POST",
         { ...this.scope(), secretValue: plaintext },
         context.signal,
+        prepared,
       );
     } catch (error) {
       // The unique key may have been created before the response was lost.
-      const cleanupSignal = AbortSignal.timeout(2_000);
-      await this.withCancellation(
-        this.delete(ref, { recordId, signal: cleanupSignal }),
-        cleanupSignal,
-      ).catch(() => {
-        getLogger().warn("Secret cleanup after a failed write did not complete; a key may remain");
-      });
+      if (!prepared) {
+        const cleanupSignal = AbortSignal.timeout(2_000);
+        await this.withCancellation(
+          this.delete(ref, { recordId, signal: cleanupSignal }),
+          cleanupSignal,
+        ).catch(() => {
+          getLogger().warn(
+            "Secret cleanup after a failed write did not complete; a key may remain",
+          );
+        });
+      }
       throw error;
+    } finally {
+      this.activeWrites.delete(ref);
     }
     this.observe(ref, plaintext);
     this.remember(ref, plaintext);
@@ -296,12 +368,13 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
     method: string,
     body?: unknown,
     signal?: AbortSignal,
+    oneShot = false,
   ): Promise<RestResult> {
     try {
       // Caller cancellation doesn't cancel a shared login used by other requests.
       const token = await this.withCancellation(this.authenticate(), signal);
       try {
-        return await this.http(path, method, body, token, signal);
+        return await this.http(path, method, body, token, signal, oneShot);
       } catch (error) {
         if (!(error instanceof SecretStoreUnavailableError) || error.status !== 401) throw error;
         if (this.token?.value === token) this.token = undefined;
@@ -311,6 +384,7 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
           body,
           await this.withCancellation(this.authenticate(), signal),
           signal,
+          oneShot,
         );
       }
     } catch (error) {
@@ -334,6 +408,7 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
     body?: unknown,
     token?: string,
     callerSignal?: AbortSignal,
+    oneShot = false,
   ): Promise<RestResult> {
     if (this.closed) throw new SecretStoreUnavailableError();
     const signal = AbortSignal.any([
@@ -357,7 +432,7 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
           this.degraded = false;
           throw new SecretNotFoundError();
         }
-        if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+        if (!oneShot && (response.status === 429 || response.status >= 500) && attempt < 2) {
           await response.body?.cancel();
           await this.pause(100 * 2 ** attempt, signal);
           continue;

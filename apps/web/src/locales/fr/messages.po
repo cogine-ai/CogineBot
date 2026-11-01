@@ -6521,3 +6521,11 @@ msgstr "Voir les instructions"
 #: src/components/integrations/PluginInstallsPanel.tsx
 msgid "Installation failed."
 msgstr "L’installation a échoué."
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Another member"
+msgstr "Un autre membre"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed by {name}"
+msgstr "Installé par {name}"

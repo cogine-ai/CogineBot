@@ -1,7 +1,11 @@
 import { ORPCError } from "@orpc/server";
 import type { JobPublisher, SecretStore } from "@rakazo/adapter-kit";
 import type { McpOAuthBroker } from "@rakazo/adapters";
-import { boundDirectApprovalDetails, catalogApprovalDetails } from "@rakazo/adapters";
+import {
+  boundDirectApprovalDetails,
+  catalogApprovalDetails,
+  reconcileSecretWrite,
+} from "@rakazo/adapters";
 import type { Actor, MessageBlock, PluginUninstallInput } from "@rakazo/contracts";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
@@ -285,6 +289,25 @@ export function createPluginUninstaller(deps: Deps) {
               const refs = readPluginCleanupRefs(row.cleanupRefs);
               const item = refs.find((entry) => !entry.pending);
               if (!item) {
+                const signal = AbortSignal.timeout(10_000);
+                for (const entry of refs) {
+                  if (!entry.pending) continue;
+                  const result = await reconcileSecretWrite(deps.secrets, entry.recoveryRef, {
+                    recordId: entry.id,
+                    signal,
+                  });
+                  if (result.state === "unknown") continue;
+                  const next = refs.filter((candidate) => candidate.id !== entry.id);
+                  if (result.state === "found") next.push({ id: entry.id, ref: result.ref });
+                  await tx.capabilityInstall.update({
+                    where: { id: row.id },
+                    data: {
+                      cleanupRefs: readPluginCleanupRefs(next),
+                      revision: { increment: 1 },
+                    },
+                  });
+                  return true;
+                }
                 if (refs.length) throw new Error("A credential write has not settled");
                 return false;
               }

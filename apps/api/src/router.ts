@@ -4888,12 +4888,14 @@ export function createRouter(deps: RouterDeps) {
                   ? await deps.secrets.put(
                       JSON.stringify(update.material),
                       computerContext(context.actor, "mcp", "mcp.update"),
-                      reservation ? { recordId: reservation } : undefined,
+                      reservation
+                        ? { recordId: reservation.id, recoveryRef: reservation.recoveryRef }
+                        : undefined,
                     )
                   : null;
               if (reservation && stored && existing.installId) {
                 await mcpOAuth.resolvePluginCredential(existing.installId, context.actor, stored);
-                if (stored.id !== reservation)
+                if (stored.id !== reservation.id)
                   throw new ORPCError("CONFLICT", {
                     message: "Could not prepare MCP credentials. Reload this setting.",
                   });
@@ -4970,7 +4972,7 @@ export function createRouter(deps: RouterDeps) {
                     });
                     if (parent?.kind === "plugin" && parent.clientNonce !== null) {
                       const entries = readPluginCleanupRefs(parent.cleanupRefs).filter(
-                        (entry) => entry.id !== reservation,
+                        (entry) => entry.id !== reservation?.id,
                       );
                       if ((stored || clearing) && secret && secret.id !== stored?.id) {
                         retired = secret.id;
@@ -5018,7 +5020,7 @@ export function createRouter(deps: RouterDeps) {
                   await mcpOAuth.releasePluginCredential(
                     existing.installId,
                     context.actor,
-                    reservation,
+                    reservation.id,
                   );
                 if (retired)
                   await mcpOAuth.releasePluginCredential(

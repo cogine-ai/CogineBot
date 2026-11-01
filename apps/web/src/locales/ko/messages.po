@@ -6521,3 +6521,11 @@ msgstr "지침 보기"
 #: src/components/integrations/PluginInstallsPanel.tsx
 msgid "Installation failed."
 msgstr "설치에 실패했습니다."
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Another member"
+msgstr "다른 멤버"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed by {name}"
+msgstr "{name}님이 설치함"

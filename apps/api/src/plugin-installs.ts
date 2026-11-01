@@ -9,7 +9,12 @@ import {
   parsePluginSource,
   toPluginPreview,
 } from "@rakazo/adapters";
-import type { Actor, PluginInstallInput, PluginInstallReceipt } from "@rakazo/contracts";
+import type {
+  Actor,
+  PluginInstallInput,
+  PluginInstallListing,
+  PluginInstallReceipt,
+} from "@rakazo/contracts";
 import type { PluginCredentialCleanupEntry, Prisma } from "@rakazo/db";
 import { lockPluginInstall, readPluginCleanupRefs, Prisma as Sql } from "@rakazo/db";
 import { pluginInstallReceipt } from "./plugin-install-receipt.js";
@@ -204,6 +209,7 @@ export function createPluginInstallsService(deps: Deps) {
         continue;
       }
       const recordId = randomUUID();
+      const recoveryRef = deps.secrets.prepareWrite?.(recordId);
       // This intent commits before a provider can create a credential. Missing acknowledgements
       // remain explicit pending entries rather than being mistaken for successful cleanup.
       await deps.prisma.$transaction(async (tx) => {
@@ -214,7 +220,10 @@ export function createPluginInstallsService(deps: Deps) {
         await tx.capabilityInstall.update({
           where: { id },
           data: {
-            cleanupRefs: [...refs, { id: recordId, pending: true }],
+            cleanupRefs: [
+              ...refs,
+              { id: recordId, pending: true, ...(recoveryRef ? { recoveryRef } : {}) },
+            ],
             revision: { increment: 1 },
           },
         });
@@ -237,7 +246,7 @@ export function createPluginInstallsService(deps: Deps) {
               traceId: "plugins.install",
               signal: context.signal ?? new AbortController().signal,
             },
-            { recordId },
+            { recordId, recoveryRef },
           );
           // Observe rejection immediately, while retaining the original outcome for adoption.
           void pending.catch(() => undefined);
@@ -251,10 +260,18 @@ export function createPluginInstallsService(deps: Deps) {
       }
       if (!pending) throw dispatchFailure;
       const stored = await pending;
-      await changeCleanup(context, id, (refs) => [
-        ...refs.filter((entry) => entry.id !== recordId),
-        { id: stored.id, ref: stored.ciphertext },
-      ]);
+      if (stored.id !== recordId) throw new Error("Credential store changed its reserved identity");
+      await changeCleanup(context, id, (refs) => {
+        if (!refs.some((entry) => entry.id === recordId && entry.pending))
+          throw new ORPCError("CONFLICT", {
+            message: "This plugin installation changed. Check its status.",
+          });
+        // Reconciliation may have consumed a late one-shot write. Never recreate that intent.
+        return [
+          ...refs.filter((entry) => entry.id !== recordId),
+          { id: stored.id, ref: stored.ciphertext },
+        ];
+      });
       if (dispatchFailure) throw dispatchFailure;
       prepared.push({ server, stored, index });
     }
@@ -294,19 +311,46 @@ export function createPluginInstallsService(deps: Deps) {
     return pluginInstallReceipt(row);
   }
   return {
-    async list(context: Context): Promise<PluginInstallReceipt[]> {
+    async list(context: Context): Promise<PluginInstallListing> {
       await scope(context);
-      const rows = await deps.prisma.capabilityInstall.findMany({
-        where: {
-          userId: context.actor.userId,
-          spaceId: context.actor.spaceId,
-          kind: "plugin",
-          clientNonce: { not: null },
-        },
-        include: includeChildren,
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      return deps.prisma.$transaction(async (tx) => {
+        // Keep current membership stable through this minimal administrative projection.
+        await lockScope(tx, context);
+        const member = await tx.spaceMember.findUniqueOrThrow({
+          where: {
+            spaceId_userId: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+          },
+          select: { role: true },
+        });
+        const rows = await tx.capabilityInstall.findMany({
+          where: {
+            ...(member.role === "owner" ? {} : { userId: context.actor.userId }),
+            spaceId: context.actor.spaceId,
+            kind: "plugin",
+            clientNonce: { not: null },
+          },
+          include: includeChildren,
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        });
+        const managed = rows.filter((row) => row.userId !== context.actor.userId);
+        const users = managed.length
+          ? await tx.user.findMany({
+              where: { id: { in: [...new Set(managed.map((row) => row.userId))] } },
+              select: { id: true, name: true },
+            })
+          : [];
+        const names = new Map(users.map((user) => [user.id, user.name]));
+        context.signal?.throwIfAborted();
+        return {
+          owned: rows
+            .filter((row) => row.userId === context.actor.userId)
+            .map(pluginInstallReceipt),
+          managed: managed.map((row) => ({
+            receipt: pluginInstallReceipt(row),
+            ownerName: names.get(row.userId) ?? null,
+          })),
+        };
       });
-      return rows.map(pluginInstallReceipt);
     },
     async preview(context: Context, input: { source: string }) {
       await scope(context);
@@ -425,7 +469,7 @@ export function createPluginInstallsService(deps: Deps) {
                 spaceId: context.actor.spaceId,
                 userId: context.actor.userId,
                 installId: row.id,
-                slug: `${plugin.name.slice(0, 48)}-${suffix}`,
+                slug: `${plugin.name.replace(/\./g, "-").slice(0, 48)}-${suffix}`,
                 name: `${plugin.name}: ${server.name}`.slice(0, 120),
                 description: `Installed from plugin ${plugin.name}`,
                 transport: server.transport,

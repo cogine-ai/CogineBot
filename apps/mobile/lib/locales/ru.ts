@@ -1123,4 +1123,6 @@ export const RU_MESSAGES: Record<string, string> = {
   "View instructions": "Показать инструкции",
   "Hide instructions": "Скрыть инструкции",
   "Installation failed.": "Установка не удалась.",
+  "Another member": "Другой участник",
+  "Installed by {name}": "Установлено участником {name}",
 };

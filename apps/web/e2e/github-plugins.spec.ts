@@ -4,6 +4,13 @@ import type { PluginInstallReceipt, PluginPreview } from "@rakazo/contracts";
 import { captureScreenshot, completeOnboarding, openIntegrations, signup } from "./helpers";
 
 // Synthetic RPC responses isolate cross-surface review; API transactions are tested separately.
+function listing(
+  owned: PluginInstallReceipt[] = [],
+  managed: { receipt: PluginInstallReceipt; ownerName: string | null }[] = [],
+) {
+  return { owned, managed };
+}
+
 const preview: PluginPreview = {
   source: `https://github.com/example/research-plugin/tree/${"a".repeat(40)}`,
   sourceSha: "a".repeat(40),
@@ -77,7 +84,7 @@ test("GitHub plugin review pins the version, renders raw instructions and preser
   let writes = 0;
   const removals: number[] = [];
   await page.route("**/rpc/plugins/list", (route) =>
-    route.fulfill({ json: { json: installed ? [installed] : [] } }),
+    route.fulfill({ json: { json: listing(installed ? [installed] : []) } }),
   );
   await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
   await page.route("**/rpc/plugins/install", (route) => {
@@ -148,7 +155,7 @@ test("a lost plugin installation reply requires a read-only status check before 
   let installed: PluginInstallReceipt | null = null;
   const nonces: string[] = [];
   await page.route("**/rpc/plugins/list", (route) =>
-    route.fulfill({ json: { json: installed ? [installed] : [] } }),
+    route.fulfill({ json: { json: listing(installed ? [installed] : []) } }),
   );
   await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
   await page.route("**/rpc/plugins/install", (route) => {
@@ -178,7 +185,7 @@ test("a reopened pending installation can be explicitly cleaned up without repla
   let installs = 0;
   const removals: number[] = [];
   await page.route("**/rpc/plugins/list", (route) =>
-    route.fulfill({ json: { json: pending ? [pending] : [] } }),
+    route.fulfill({ json: { json: listing(pending ? [pending] : []) } }),
   );
   await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
   await page.route("**/rpc/plugins/install", (route) => {
@@ -217,4 +224,55 @@ test("a reopened pending installation can be explicitly cleaned up without repla
   await expect(reopened.getByText("No plugins installed", { exact: true })).toBeVisible();
   expect(removals).toEqual([1]);
   expect(installs).toBe(1);
+});
+
+test("a Space owner reviews attribution and explicitly cleans a member installation without replacing their draft", async ({
+  page,
+}) => {
+  let managed: PluginInstallReceipt = {
+    ...receipt("member-nonce"),
+    id: "member-install",
+    name: "Member plugin",
+  };
+  const removals: number[] = [];
+  let installs = 0;
+  await page.route("**/rpc/plugins/list", (route) =>
+    route.fulfill({ json: { json: listing([], [{ receipt: managed, ownerName: "Alex" }]) } }),
+  );
+  await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
+  await page.route("**/rpc/plugins/install", (route) => {
+    installs += 1;
+    return route.abort("failed");
+  });
+  await page.route("**/rpc/plugins/uninstall", (route) => {
+    const input = route.request().postDataJSON().json;
+    expect(input).toEqual({ installId: managed.id, expectedRevision: managed.revision });
+    removals.push(input.expectedRevision);
+    managed = {
+      ...managed,
+      status: removals.length === 1 ? "cleanup_failed" : "removed",
+      revision: managed.revision + 2,
+    };
+    if (removals.length === 2) return route.abort("failed");
+    return route.fulfill({ json: { json: managed } });
+  });
+  const { panel } = await openPlugins(page);
+  const row = panel.getByRole("article", { name: "Member plugin", exact: true });
+  await expect(row.getByText("Installed by Alex", { exact: true })).toBeVisible();
+  await row.getByRole("button", { name: "Remove plugin", exact: true }).click();
+  expect(removals).toEqual([]);
+  await row.getByRole("button", { name: "Confirm removal", exact: true }).click();
+  await expect(row.getByText("Cleanup incomplete", { exact: true })).toBeVisible();
+  await row.getByRole("button", { name: "Retry cleanup", exact: true }).click();
+  await expect(
+    panel.getByText("Could not confirm removal. Refresh before retrying.", { exact: true }),
+  ).toBeVisible();
+  await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await expect(
+    panel.getByTestId("plugin-preview").getByRole("heading", { name: preview.name, exact: true }),
+  ).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Install plugin", exact: true })).toBeVisible();
+  expect(removals).toEqual([1, 3]);
+  expect(installs).toBe(0);
 });

@@ -1,10 +1,15 @@
 import type {
   PluginInstallInput,
+  PluginInstallListing,
   PluginInstallReceipt,
   PluginPreview,
   PluginUninstallInput,
 } from "@rakazo/contracts";
-import { PluginInstallReceiptSchema, PluginPreviewSchema } from "@rakazo/contracts";
+import {
+  PluginInstallListingSchema,
+  PluginInstallReceiptSchema,
+  PluginPreviewSchema,
+} from "@rakazo/contracts";
 
 export type PluginInstallReviewState = {
   source: string;
@@ -12,6 +17,7 @@ export type PluginInstallReviewState = {
   preview: PluginPreview | null;
   receipt: PluginInstallReceipt | null;
   installations: PluginInstallReceipt[];
+  installationOwners: Record<string, string | null>;
   loading: boolean;
   removingId: string | null;
   removalUnknownId: string | null;
@@ -27,6 +33,7 @@ export function initialPluginInstallReview(): PluginInstallReviewState {
     preview: null,
     receipt: null,
     installations: [],
+    installationOwners: {},
     loading: false,
     removingId: null,
     removalUnknownId: null,
@@ -40,7 +47,7 @@ export function initialPluginInstallReview(): PluginInstallReviewState {
 export function createPluginInstallReview(options: {
   preview(input: { source: string }, signal: AbortSignal): Promise<PluginPreview>;
   install(input: PluginInstallInput, signal: AbortSignal): Promise<PluginInstallReceipt>;
-  list(signal: AbortSignal): Promise<PluginInstallReceipt[]>;
+  list(signal: AbortSignal): Promise<PluginInstallListing>;
   uninstall(input: PluginUninstallInput, signal: AbortSignal): Promise<PluginInstallReceipt>;
   makeNonce(): string;
   isCurrent(): boolean;
@@ -56,17 +63,24 @@ export function createPluginInstallReview(options: {
   let busy = false;
   let active: AbortController | null = null;
   let listing: AbortController | null = null;
+  let ownIds = new Set<string>();
   const current = () => !closed && api.isCurrent();
   function publish(patch: Partial<PluginInstallReviewState>) {
     state = { ...state, ...patch };
     if (current()) api.changed({ ...state });
   }
-  function acceptReceipt(receipt: PluginInstallReceipt) {
+  function acceptReceipt(receipt: PluginInstallReceipt, owned = false) {
     listGeneration += 1;
     listing?.abort();
+    const installationOwners = { ...state.installationOwners };
+    if (owned) {
+      ownIds.add(receipt.id);
+      delete installationOwners[receipt.id];
+    }
     publish({
       loading: false,
       installations: [receipt, ...state.installations.filter((row) => row.id !== receipt.id)],
+      installationOwners,
     });
   }
   function sameRequest(receipt: PluginInstallReceipt, input: PluginInstallInput) {
@@ -104,11 +118,13 @@ export function createPluginInstallReview(options: {
       return false;
     return (
       state.phase !== "unknown" ||
-      (state.receipt?.status === "installing" && exactReceipt(state.receipt, receipt))
+      (ownIds.has(receipt.id) &&
+        state.receipt?.status === "installing" &&
+        exactReceipt(state.receipt, receipt))
     );
   }
   function receive(receipt: PluginInstallReceipt) {
-    acceptReceipt(receipt);
+    acceptReceipt(receipt, true);
     publish({
       receipt,
       phase: receiptPhase(receipt),
@@ -124,12 +140,18 @@ export function createPluginInstallReview(options: {
     const token = ++listGeneration;
     publish({ loading: true, listError: null });
     try {
-      const rows = PluginInstallReceiptSchema.array().parse(await api.list(controller.signal));
+      const result = PluginInstallListingSchema.parse(await api.list(controller.signal));
       if (!current() || token !== listGeneration) return null;
+      ownIds = new Set(result.owned.map((row) => row.id));
+      const managed = result.managed.filter((row) => !ownIds.has(row.receipt.id));
+      const rows = [...result.owned, ...managed.map((row) => row.receipt)];
       const confirmedRemoval =
         state.removalUnknownId && rows.some((row) => row.id === state.removalUnknownId);
       publish({
         installations: rows,
+        installationOwners: Object.fromEntries(
+          managed.map((row) => [row.receipt.id, row.ownerName]),
+        ),
         loading: false,
         listError: null,
         ...(confirmedRemoval ? { error: null } : {}),
@@ -141,11 +163,11 @@ export function createPluginInstallReview(options: {
       const known = state.receipt;
       const latest =
         known &&
-        rows.find(
+        result.owned.find(
           (row) => row.id === known.id && row.revision >= known.revision && sameRequest(row, known),
         );
       if (latest) publish({ receipt: latest, phase: receiptPhase(latest) });
-      return rows;
+      return result;
     } catch (error) {
       if (current() && token === listGeneration) publish({ loading: false, listError: error });
       return null;
@@ -253,9 +275,9 @@ export function createPluginInstallReview(options: {
       if (!current() || busy || state.phase !== "unknown" || !submitted) return;
       const token = reviewGeneration;
       const input = submitted;
-      const rows = await refresh();
-      if (!rows || !current() || token !== reviewGeneration) return;
-      const receipt = rows.find((row) => row.clientNonce === input.clientNonce);
+      const result = await refresh();
+      if (!result || !current() || token !== reviewGeneration) return;
+      const receipt = result.owned.find((row) => row.clientNonce === input.clientNonce);
       if (receipt && !sameRequest(receipt, input)) {
         publish({
           error: new Error("Installation receipt does not match this request"),
@@ -291,7 +313,7 @@ export function createPluginInstallReview(options: {
         acceptReceipt(result);
         publish({
           removalUnknownId: null,
-          ...(state.receipt?.id === result.id
+          ...(ownIds.has(result.id) && state.receipt?.id === result.id
             ? { receipt: result, phase: receiptPhase(result), retryChecked: false }
             : {}),
         });

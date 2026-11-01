@@ -60,6 +60,13 @@ vi.mock("@rakazo/ui-web", () => ({
 
 import { PluginInstallsPanel } from "./PluginInstallsPanel";
 
+function listing(
+  owned: PluginInstallReceipt[] = [],
+  managed: { receipt: PluginInstallReceipt; ownerName: string | null }[] = [],
+) {
+  return { owned, managed };
+}
+
 const preview: PluginPreview = {
   source: `https://github.com/example/plugin/tree/${"a".repeat(40)}`,
   sourceSha: "a".repeat(40),
@@ -116,7 +123,7 @@ beforeEach(async () => {
   api.session = 1;
   api.listeners.clear();
   api.preview.mockResolvedValue(preview);
-  api.list.mockResolvedValue([]);
+  api.list.mockResolvedValue(listing([]));
   api.install.mockImplementation(async (input: { clientNonce: string }) => ({
     ...receipt,
     clientNonce: input.clientNonce,
@@ -272,11 +279,15 @@ it("does not adopt a late install receipt after the account changes", async () =
 
 it("confirms removal and retries failed cleanup using the latest receipt", async () => {
   const installed = { ...receipt, clientNonce: "nonce-installed" };
-  api.list.mockResolvedValue([installed]);
+  api.list.mockResolvedValue(listing([installed]));
   await click("Refresh");
   await click("Remove plugin");
   expect(api.uninstall).not.toHaveBeenCalled();
-  api.uninstall.mockResolvedValueOnce({ ...installed, status: "cleanup_failed", revision: 3 });
+  api.uninstall.mockResolvedValueOnce({
+    ...installed,
+    status: "cleanup_failed" as const,
+    revision: 3,
+  });
   await click("Confirm removal");
   expect(node.textContent).toContain("Cleanup incomplete");
   api.uninstall.mockResolvedValueOnce({ ...installed, status: "removed", revision: 5 });
@@ -294,12 +305,12 @@ it("keeps durable installation in progress check-only and renders a failed outco
     pending = {
       ...receipt,
       clientNonce: value.clientNonce,
-      status: "installing",
+      status: "installing" as const,
       installedAt: null,
     };
     return pending;
   });
-  api.list.mockImplementation(async () => (pending ? [pending] : []));
+  api.list.mockImplementation(async () => listing(pending ? [pending] : []));
   await openPreview();
   await click("Install plugin");
   expect(node.textContent).toContain("Installation pending.");
@@ -324,10 +335,10 @@ it("never uses another plugin's pending confirmation when retrying cleanup", asy
     id: "install-two",
     name: "Second plugin",
     clientNonce: "second-nonce",
-    status: "cleanup_failed",
+    status: "cleanup_failed" as const,
     revision: 3,
   };
-  api.list.mockResolvedValue([first, second]);
+  api.list.mockResolvedValue(listing([first, second]));
   api.uninstall.mockResolvedValue({ ...second, status: "removed", revision: 5 });
   await click("Refresh");
   await click("Remove plugin");
@@ -342,10 +353,10 @@ it("explicitly confirms cleanup of a persisted pending receipt after reopening",
   const pending = {
     ...receipt,
     clientNonce: "nonce-installed",
-    status: "installing",
+    status: "installing" as const,
     installedAt: null,
   };
-  api.list.mockResolvedValue([pending]);
+  api.list.mockResolvedValue(listing([pending]));
   api.uninstall.mockResolvedValue({ ...pending, status: "removed", revision: 3 });
   await click("Refresh");
   expect(node.textContent).toContain("Installation pending.");
@@ -366,7 +377,7 @@ it("settles the current pending review after confirmed cleanup without replaying
     pending = {
       ...receipt,
       clientNonce: value.clientNonce,
-      status: "installing",
+      status: "installing" as const,
       installedAt: null,
     };
     return pending;
@@ -383,8 +394,13 @@ it("settles the current pending review after confirmed cleanup without replaying
 });
 
 it("disables unrelated cleanup while an installation acknowledgement is unknown", async () => {
-  const pending = { ...receipt, clientNonce: "old-nonce", status: "installing", installedAt: null };
-  api.list.mockResolvedValue([pending]);
+  const pending = {
+    ...receipt,
+    clientNonce: "old-nonce",
+    status: "installing" as const,
+    installedAt: null,
+  };
+  api.list.mockResolvedValue(listing([pending]));
   await click("Refresh");
   expect(button("Remove plugin").disabled).toBe(false);
   api.install.mockRejectedValueOnce(new Error("reply lost"));
@@ -395,5 +411,51 @@ it("disables unrelated cleanup while an installation acknowledgement is unknown"
   expect(api.uninstall).not.toHaveBeenCalled();
   await click("Check status");
   expect(button("Remove plugin").disabled).toBe(true);
+  expect(api.uninstall).not.toHaveBeenCalled();
+});
+
+it.each(["Alex", null])(
+  "lets an owner confirm removal of a member installation attributed to %s",
+  async (ownerName) => {
+    const managed = {
+      ...receipt,
+      id: "member-install",
+      clientNonce: "member-nonce",
+      name: "Member plugin",
+    };
+    api.list.mockResolvedValue(listing([], [{ receipt: managed, ownerName }]));
+    api.uninstall.mockResolvedValue({ ...managed, status: "removed", revision: 3 });
+    await click("Refresh");
+    expect(node.textContent).toContain(`Installed by ${ownerName ?? "Another member"}`);
+    await openPreview();
+    await click("Remove plugin");
+    expect(api.uninstall).not.toHaveBeenCalled();
+    await click("Confirm removal");
+    expect(api.uninstall).toHaveBeenCalledWith(
+      { installId: managed.id, expectedRevision: 1 },
+      expect.anything(),
+    );
+    expect(node.textContent).not.toContain("Member plugin");
+    expect(button("Install plugin")).toBeDefined();
+    expect(api.install).not.toHaveBeenCalled();
+  },
+);
+
+it("shows a member only owned installations and clears an obsolete management confirmation", async () => {
+  const managed = {
+    ...receipt,
+    id: "member-install",
+    clientNonce: "member-nonce",
+    name: "Member plugin",
+  };
+  const own = { ...receipt, clientNonce: "own-nonce" };
+  api.list.mockResolvedValue(listing([own], [{ receipt: managed, ownerName: "Alex" }]));
+  await click("Refresh");
+  const row = node.querySelector('article[aria-label="Member plugin"]')!;
+  await act(async () => (row.querySelector("button")! as HTMLButtonElement).click());
+  api.list.mockResolvedValue(listing([own]));
+  await click("Refresh");
+  expect(node.textContent).not.toContain("Member plugin");
+  expect(node.textContent).not.toContain("Installed by");
   expect(api.uninstall).not.toHaveBeenCalled();
 });

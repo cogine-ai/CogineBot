@@ -304,6 +304,9 @@ function PluginInstallsEditor({ scope, onClose }: { scope: RpcRecoveryScope; onC
                 )}
               </Badge>
             </div>
+            {Object.hasOwn(state.installationOwners, row.id) ? (
+              <PluginInstallationOwner ownerName={state.installationOwners[row.id] ?? null} />
+            ) : null}
             <p className="break-all text-xs text-muted-foreground">{row.source}</p>
             {row.mcpServers.map((server) => (
               <p key={server.id} className="break-all text-xs text-muted-foreground">
@@ -343,5 +346,15 @@ function PluginInstallsEditor({ scope, onClose }: { scope: RpcRecoveryScope; onC
         ))}
       </section>
     </section>
+  );
+}
+
+function PluginInstallationOwner({ ownerName }: { ownerName: string | null }) {
+  const { t } = useLingui();
+  const name = ownerName ?? t`Another member`;
+  return (
+    <p className="break-words text-xs text-muted-foreground">
+      <Trans>Installed by {name}</Trans>
+    </p>
   );
 }

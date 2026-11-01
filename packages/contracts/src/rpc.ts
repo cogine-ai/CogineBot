@@ -148,6 +148,7 @@ import {
 } from "./openapi-import.js";
 import {
   PluginInstallInputSchema,
+  PluginInstallListingSchema,
   PluginInstallReceiptSchema,
   PluginPreviewInputSchema,
   PluginPreviewSchema,
@@ -745,7 +746,7 @@ export const appContract = {
     remove: oc.input(z.object({ skillId: Id })).output(z.object({ ok: z.literal(true) })),
   },
   plugins: {
-    list: oc.output(z.array(PluginInstallReceiptSchema)),
+    list: oc.output(PluginInstallListingSchema),
     preview: oc.input(PluginPreviewInputSchema).output(PluginPreviewSchema),
     install: oc.input(PluginInstallInputSchema).output(PluginInstallReceiptSchema),
     uninstall: oc.input(PluginUninstallInputSchema).output(PluginInstallReceiptSchema),

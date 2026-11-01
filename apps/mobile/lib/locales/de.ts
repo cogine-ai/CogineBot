@@ -1124,4 +1124,6 @@ export const DE_MESSAGES: Record<string, string> = {
   "View instructions": "Anweisungen anzeigen",
   "Hide instructions": "Anweisungen ausblenden",
   "Installation failed.": "Installation fehlgeschlagen.",
+  "Another member": "Anderes Mitglied",
+  "Installed by {name}": "Installiert von {name}",
 };

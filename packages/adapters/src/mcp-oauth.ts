@@ -29,6 +29,7 @@ import { secureFetch, validateUrl, withEndpointOriginFallback } from "./mcp-tran
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { persistPreparedSecret } from "./secret-persistence.js";
+import { reconcileSecretWrite } from "./secret-store-factory.js";
 
 type OAuthState = {
   tokens?: OAuthTokens;
@@ -576,21 +577,25 @@ export class McpOAuthBroker {
     }
   }
 
-  async reservePluginCredential(installId: string, actor: ActorRef): Promise<string | undefined> {
+  async reservePluginCredential(
+    installId: string,
+    actor: ActorRef,
+  ): Promise<{ id: string; recoveryRef?: string } | undefined> {
     return this.prisma.$transaction(async (tx) => {
       await lockPluginInstall(tx, installId);
       const install = await assertManagedPluginActive(tx, installId, actor);
       if (install.kind !== "plugin" || install.clientNonce === null) return undefined;
       const id = randomUUID();
+      const recoveryRef = this.secrets.prepareWrite?.(id);
       const entries = readPluginCleanupRefs([
         ...readPluginCleanupRefs(install.cleanupRefs),
-        { id, pending: true },
+        { id, pending: true, ...(recoveryRef ? { recoveryRef } : {}) },
       ]);
       await tx.capabilityInstall.update({
         where: { id: installId },
         data: { cleanupRefs: entries as Prisma.InputJsonArray },
       });
-      return id;
+      return { id, ...(recoveryRef ? { recoveryRef } : {}) };
     });
   }
 
@@ -603,9 +608,20 @@ export class McpOAuthBroker {
       await lockPluginInstall(tx, installId);
       const install = await tx.capabilityInstall.findFirst({ where: { id: installId, ...actor } });
       if (!install) throw new Error("Plugin credential recovery state is unavailable");
-      const entries = readPluginCleanupRefs(install.cleanupRefs).filter(
-        (entry) => entry.id !== record.id,
-      );
+      const current = readPluginCleanupRefs(install.cleanupRefs);
+      const reservation = current.find((entry) => entry.id === record.id);
+      if (!reservation) {
+        // Reconciliation may already have consumed a late, one-shot write.
+        // Never recreate a terminal tombstone's cleanup list or adopt its result.
+        if (install.status !== "installed") return;
+        throw new Error("Plugin credential reservation is unavailable");
+      }
+      if (!reservation.pending) {
+        if (reservation.ref !== record.ciphertext)
+          throw new Error("Plugin credential recovery identity changed");
+        return;
+      }
+      const entries = current.filter((entry) => entry.id !== record.id);
       entries.push({ id: record.id, ref: record.ciphertext });
       await tx.capabilityInstall.update({
         where: { id: install.id },
@@ -625,8 +641,25 @@ export class McpOAuthBroker {
           });
           if (!install) return;
           const entries = readPluginCleanupRefs(install.cleanupRefs);
-          const entry = entries.find((item) => item.id === id);
-          if (!entry || entry.pending) return;
+          let entry = entries.find((item) => item.id === id);
+          if (!entry) return;
+          if (entry.pending) {
+            const result = await reconcileSecretWrite(this.secrets, entry.recoveryRef, {
+              recordId: id,
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (result.state === "unknown") return;
+            if (result.state === "found") entry = { id, ref: result.ref };
+            else {
+              await tx.capabilityInstall.update({
+                where: { id: install.id },
+                data: {
+                  cleanupRefs: entries.filter((item) => item.id !== id) as Prisma.InputJsonArray,
+                },
+              });
+              return;
+            }
+          }
           if (!(await isPluginSecretReferenced(tx, entry.id, entry.ref))) {
             await this.secrets.delete(entry.ref, {
               recordId: entry.id,
@@ -1048,11 +1081,13 @@ export class McpOAuthBroker {
               botId: "mcp",
               signal: new AbortController().signal,
             },
-            reservation ? { recordId: reservation } : undefined,
+            reservation
+              ? { recordId: reservation.id, recoveryRef: reservation.recoveryRef }
+              : undefined,
           )
         : undefined;
       if (reservation && stored && installId) {
-        if (stored.id !== reservation)
+        if (stored.id !== reservation.id)
           throw new Error("Credential store changed its reserved identity");
         await this.resolvePluginCredential(installId, context, stored);
       }
@@ -1102,7 +1137,7 @@ export class McpOAuthBroker {
           });
           if (parent?.kind === "plugin" && parent.clientNonce !== null) {
             const entries = readPluginCleanupRefs(parent.cleanupRefs).filter(
-              (entry) => entry.id !== reservation,
+              (entry) => entry.id !== reservation?.id,
             );
             if (current && current.id !== stored?.id) {
               retired = current.id;
@@ -1135,7 +1170,7 @@ export class McpOAuthBroker {
         }
       } finally {
         if (reservation && installId)
-          await this.releasePluginCredential(installId, context, reservation);
+          await this.releasePluginCredential(installId, context, reservation.id);
       }
     }
     throw new Error("MCP credentials changed during authorization; retry");

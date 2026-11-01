@@ -303,6 +303,13 @@ export default function Plugins() {
                       ? t("Installation failed.")
                       : t("Installed")}
             </Text>
+            {Object.hasOwn(state.installationOwners, row.id) ? (
+              <Text style={styles.secondary}>
+                {t("Installed by {name}", {
+                  name: state.installationOwners[row.id] ?? t("Another member"),
+                })}
+              </Text>
+            ) : null}
             <Text selectable style={styles.metadata}>
               {row.source}
             </Text>

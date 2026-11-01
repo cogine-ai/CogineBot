@@ -1081,4 +1081,6 @@ export const ZH_MESSAGES: Record<string, string> = {
   "View instructions": "查看指令",
   "Hide instructions": "收起指令",
   "Installation failed.": "安装失败。",
+  "Another member": "其他成员",
+  "Installed by {name}": "由 {name} 安装",
 };

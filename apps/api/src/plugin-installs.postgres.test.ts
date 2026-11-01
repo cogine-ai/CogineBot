@@ -7,15 +7,18 @@ import type {
   SecretContext,
   SecretPutOptions,
   SecretRecord,
+  SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
 import type { PluginRead } from "@rakazo/adapters";
 import { BUILTIN_AGENT_SKILLS, EncryptedSecretStore } from "@rakazo/adapters";
 import type {
   Actor,
   PluginInstallInput,
+  PluginInstallListing,
   PluginInstallReceipt,
   PluginPreview,
 } from "@rakazo/contracts";
+import { McpServerConfigInput } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -51,25 +54,54 @@ class FixtureSecretStore extends EncryptedSecretStore {
   deletes = 0;
   unknownAck = false;
   failDelete = false;
+  reconcileWrites = false;
+  inlineRecovery = false;
+  readonly unsettled = new Set<string>();
   nextPut: Barrier | undefined;
+
+  override prepareWrite(recordId: string, options: { ephemeral?: boolean } = {}): string {
+    return this.inlineRecovery || options.ephemeral
+      ? super.prepareWrite(recordId)
+      : `fixture:v1:${recordId}`;
+  }
+
+  override async reconcileWrite(
+    ref: string,
+    context: SecretContext,
+  ): Promise<SecretWriteReconciliation> {
+    if (!ref.startsWith("fixture:v1:")) return super.reconcileWrite(ref, context);
+    const id = typeof context === "string" ? context : context.recordId;
+    if (ref !== `fixture:v1:${id}` || !this.reconcileWrites || this.unsettled.has(id))
+      return { state: "unknown" };
+    const record = this.records.get(id);
+    return record ? { state: "found", ref: record.ref } : { state: "unknown" };
+  }
 
   override async put(
     plaintext: string,
     context: AdapterContext,
     options?: SecretPutOptions,
   ): Promise<SecretRecord> {
-    const stored = await super.put(plaintext, context, options);
+    const stored = await super.put(plaintext, context, {
+      ...options,
+      ...(options?.recoveryRef?.startsWith("fixture:v1:") ? { recoveryRef: undefined } : {}),
+    });
     if (context.operationId !== "plugins.install") return stored;
     this.puts++;
-    this.records.set(stored.id, stored);
+    if (options?.recoveryRef?.startsWith("fixture:v1:")) this.records.set(stored.id, stored);
     const paused = this.nextPut;
     this.nextPut = undefined;
-    if (paused) {
-      paused.enter();
-      await paused.released;
+    this.unsettled.add(stored.id);
+    try {
+      if (paused) {
+        paused.enter();
+        await paused.released;
+      }
+      if (this.unknownAck) throw new Error("Synthetic vault acknowledgement lost");
+      return stored;
+    } finally {
+      this.unsettled.delete(stored.id);
     }
-    if (this.unknownAck) throw new Error("Synthetic vault acknowledgement lost");
-    return stored;
   }
 
   override async delete(ref: string, context: SecretContext): Promise<void> {
@@ -298,8 +330,8 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
   });
   const install = (actor: Account, input: PluginInstallInput) =>
     call<PluginInstallReceipt>(actor, "plugins/install", input);
-  const list = (actor: Account, spaceId?: string) =>
-    call<PluginInstallReceipt[]>(actor, "plugins/list", {}, { spaceId });
+  const listOwned = async (actor: Account, spaceId?: string) =>
+    (await call<PluginInstallListing>(actor, "plugins/list", {}, { spaceId })).owned;
   const uninstall = (actor: Account, receipt: PluginInstallReceipt) =>
     call<PluginInstallReceipt>(actor, "plugins/uninstall", {
       installId: receipt.id,
@@ -376,6 +408,8 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     secrets.nextPut = undefined;
     secrets.unknownAck = false;
     secrets.failDelete = false;
+    secrets.reconcileWrites = false;
+    secrets.inlineRecovery = false;
     secondChildFailure = false;
     expect(outbound).not.toHaveBeenCalled();
   });
@@ -422,7 +456,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     expect(read.mock.calls[start]?.[0]).toBe(
       `https://api.github.com/repos/${f.repository}/commits/${sourceSha}`,
     );
-    expect(await list(actor)).toEqual([receipt]);
+    expect(await listOwned(actor)).toEqual([receipt]);
     const row = await database.prisma.capabilityInstall.findUniqueOrThrow({
       where: { id: receipt.id },
     });
@@ -484,7 +518,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       (await request(actor, "plugins/install", { ...intent(p), sourceSha: treeSha })).status,
     ).toBe(400);
     expect(read.mock.calls).toHaveLength(reads);
-    expect(await list(actor)).toEqual([]);
+    expect(await listOwned(actor)).toEqual([]);
     expect(secrets.puts).toBe(puts);
     expect(await database.prisma.agentSkill.count({ where: { userId: actor.actor.userId } })).toBe(
       0,
@@ -572,7 +606,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
         clientNonce: input.clientNonce,
       });
       expect(read.mock.calls).toHaveLength(reads);
-      expect((await list(actor))[0]).toEqual(duplicate);
+      expect((await listOwned(actor))[0]).toEqual(duplicate);
       await noChildren(duplicate.id);
       expect(secrets.puts).toBe(puts + 1);
     } finally {
@@ -581,7 +615,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     const installed = await first;
     expect(installed.status).toBe("installed");
     expect(installed.installedAt).not.toBeNull();
-    expect(await list(actor)).toEqual([installed]);
+    expect(await listOwned(actor)).toEqual([installed]);
     expect(
       await database.prisma.capabilityInstall.count({
         where: { clientNonce: input.clientNonce, userId: actor.actor.userId },
@@ -589,6 +623,85 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     ).toBe(1);
     expect(await database.prisma.agentSkill.count({ where: { installId: installed.id } })).toBe(1);
     expect(await database.prisma.mcpServer.count({ where: { installId: installed.id } })).toBe(1);
+  });
+
+  it("stores configuration-compatible MCP slugs for dotted and maximum-length plugin names", async () => {
+    const actor = await account();
+    for (const name of ["demo.plugin", "a".repeat(64)]) {
+      const f = fixture({ servers: 1 });
+      f.files.set(".cursor-plugin/plugin.json", JSON.stringify({ name }));
+      const receipt = await install(actor, intent(await preview(actor, f)));
+      expect(receipt.status).toBe("installed");
+      const server = await database.prisma.mcpServer.findFirstOrThrow({
+        where: { installId: receipt.id },
+      });
+      expect(
+        McpServerConfigInput.safeParse({
+          name: server.name,
+          slug: server.slug,
+          transport: server.transport,
+          endpoint: server.endpoint,
+        }).success,
+      ).toBe(true);
+      expect(server.slug).not.toContain(".");
+      expect(server.name).toContain(name);
+    }
+  });
+
+  it("lets current Space owners discover member receipts without mixing nonce ownership", async () => {
+    const owner = await account();
+    const member = await share(owner, await account());
+    const outsider = await account();
+    await database.prisma.user.update({
+      where: { id: member.actor.userId },
+      data: { name: "Member fixture" },
+    });
+    const f = fixture({ servers: 1 });
+    const p = await preview(owner, f);
+    const nonce = randomUUID();
+    const own = await install(owner, intent(p, nonce));
+    const other = await install(member, intent(p, nonce));
+    type Listing = {
+      owned: PluginInstallReceipt[];
+      managed: { receipt: PluginInstallReceipt; ownerName: string | null }[];
+    };
+    const listing = await call<Listing>(owner, "plugins/list");
+    expect(listing).toEqual({
+      owned: [own],
+      managed: [{ receipt: other, ownerName: "Member fixture" }],
+    });
+    expect(JSON.stringify(listing)).not.toContain(f.credential);
+    expect(await call<Listing>(member, "plugins/list")).toEqual({ owned: [other], managed: [] });
+    expect(await call<Listing>(outsider, "plugins/list")).toEqual({ owned: [], managed: [] });
+    expect(
+      (await request(outsider, "plugins/list", {}, { spaceId: owner.actor.spaceId })).status,
+    ).toBe(403);
+    const removed = await uninstall(owner, listing.managed[0]!.receipt);
+    expect(removed).toMatchObject({ id: other.id, status: "removed" });
+    expect(
+      await database.prisma.capabilityInstall.findUnique({ where: { id: own.id } }),
+    ).toMatchObject({ status: "installed" });
+    expect(await call<Listing>(owner, "plugins/list")).toEqual({
+      owned: [own],
+      managed: [{ receipt: removed, ownerName: "Member fixture" }],
+    });
+    const next = await install(member, intent(p));
+    await database.prisma.spaceMember.update({
+      where: { spaceId_userId: { spaceId: owner.actor.spaceId, userId: owner.actor.userId } },
+      data: { role: "member" },
+    });
+    expect(await call<Listing>(owner, "plugins/list")).toEqual({ owned: [own], managed: [] });
+    expect(
+      (
+        await request(owner, "plugins/uninstall", {
+          installId: next.id,
+          expectedRevision: next.revision,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      await database.prisma.capabilityInstall.findUnique({ where: { id: next.id } }),
+    ).toMatchObject({ status: "installed" });
   });
 
   it("cleans an interrupted durable claim without replaying its installation", async () => {
@@ -619,7 +732,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     });
     const reads = read.mock.calls.length;
     const puts = secrets.puts;
-    const pending = (await list(actor))[0]!;
+    const pending = (await listOwned(actor))[0]!;
     expect(pending).toMatchObject({ id: claimed.id, status: "installing", installedAt: null });
     expect(await install(actor, input)).toEqual(pending);
     expect(read.mock.calls).toHaveLength(reads);
@@ -632,7 +745,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     const replacement = await install(actor, intent(p));
     expect(replacement).toMatchObject({ status: "installed" });
     expect(replacement.id).not.toBe(claimed.id);
-    expect((await list(actor)).find((row) => row.id === claimed.id)).toEqual(removed);
+    expect((await listOwned(actor)).find((row) => row.id === claimed.id)).toEqual(removed);
   });
 
   it("rejects a competing plugin's same-name skill at final commit without replacing either receipt", async () => {
@@ -663,7 +776,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
         select: { installId: true },
       }),
     ).toEqual([{ installId: winner!.id }]);
-    expect((await list(actor)).map((row) => row.id).sort()).toEqual(
+    expect((await listOwned(actor)).map((row) => row.id).sort()).toEqual(
       [winner!.id, rejected.id].sort(),
     );
   });
@@ -683,7 +796,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     expect(removed.status).toBe("removed");
     expect(removed.installedAt).toBe(installed.installedAt);
     expect(await install(actor, input)).toEqual(removed);
-    expect(await list(actor)).toEqual([removed]);
+    expect(await listOwned(actor)).toEqual([removed]);
     expect(read.mock.calls).toHaveLength(reads);
     expect(secrets.puts).toBe(puts);
     await noChildren(installed.id);
@@ -711,7 +824,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       expect(response.status, JSON.stringify(body)).toBe(409);
       expect(JSON.stringify(body)).toContain(expected);
     }
-    expect(await list(actor)).toEqual([]);
+    expect(await listOwned(actor)).toEqual([]);
   });
 
   it("isolates the same nonce by user and Space and enforces current Space ownership on removal", async () => {
@@ -721,7 +834,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     const nonce = randomUUID();
     const p = await preview(owner, fixture());
     const installed = await install(owner, intent(p, nonce));
-    expect(await list(member)).toEqual([]);
+    expect(await listOwned(member)).toEqual([]);
     expect(
       (
         await request(member, "plugins/uninstall", {
@@ -735,7 +848,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     ).toBe(403);
     const memberInstall = await install(member, intent(p, nonce));
     expect(memberInstall.id).not.toBe(installed.id);
-    expect(await list(owner)).toEqual([installed]);
+    expect(await listOwned(owner)).toEqual([installed]);
     const removedByOwner = await call<PluginInstallReceipt>(owner, "plugins/uninstall", {
       installId: memberInstall.id,
       expectedRevision: memberInstall.revision,
@@ -747,8 +860,8 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     const otherSpace = { ...owner, actor: { ...owner.actor, spaceId: extraSpace.id } };
     const second = await install(otherSpace, intent(p, nonce));
     expect(second.id).not.toBe(installed.id);
-    expect(await list(otherSpace)).toEqual([second]);
-    expect(await list(owner)).toEqual([installed]);
+    expect(await listOwned(otherSpace)).toEqual([second]);
+    expect(await listOwned(owner)).toEqual([installed]);
   });
 
   it("requires the current revision and prevents generic removal from bypassing managed cleanup", async () => {
@@ -766,7 +879,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     expect(
       (await request(actor, "mcp/servers/remove", { id: receipt.mcpServers[0]!.id })).status,
     ).toBe(400);
-    expect((await list(actor))[0]).toEqual(receipt);
+    expect((await listOwned(actor))[0]).toEqual(receipt);
     const legacy = await database.prisma.capabilityInstall.create({
       data: {
         userId: actor.actor.userId,
@@ -829,6 +942,96 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     ).toEqual([]);
   });
 
+  it("recovers an exact provider-supported pending write after its acknowledgement is lost", async () => {
+    const actor = await account();
+    const input = intent(await preview(actor, fixture({ servers: 1 })));
+    secrets.unknownAck = true;
+    const failed = await install(actor, input);
+    expect(failed.status).toBe("cleanup_failed");
+    const row = await database.prisma.capabilityInstall.findUniqueOrThrow({
+      where: { id: failed.id },
+    });
+    const [entry] = row.cleanupRefs as { id: string; recoveryRef: string }[];
+    expect(secrets.records.has(entry!.id)).toBe(true);
+    secrets.unknownAck = false;
+    secrets.reconcileWrites = true;
+    const removed = await uninstall(actor, failed);
+    expect(removed.status).toBe("removed");
+    expect(secrets.records.has(entry!.id)).toBe(false);
+    expect(
+      (await database.prisma.capabilityInstall.findUniqueOrThrow({ where: { id: failed.id } }))
+        .cleanupRefs,
+    ).toEqual([]);
+    await noChildren(failed.id);
+    const puts = secrets.puts;
+    expect(await install(actor, input)).toEqual(removed);
+    expect(secrets.puts).toBe(puts);
+    expect((await install(actor, { ...input, clientNonce: randomUUID() })).status).toBe(
+      "installed",
+    );
+  });
+
+  it("proves inline absence after a lost acknowledgement without retaining a false cleanup failure", async () => {
+    const actor = await account();
+    secrets.inlineRecovery = true;
+    secrets.unknownAck = true;
+    const input = intent(await preview(actor, fixture({ servers: 1 })));
+    const failed = await install(actor, input);
+    expect(failed).toMatchObject({ status: "failed", installedAt: null });
+    await noChildren(failed.id);
+    expect(
+      (await database.prisma.capabilityInstall.findUniqueOrThrow({ where: { id: failed.id } }))
+        .cleanupRefs,
+    ).toEqual([]);
+    expect(await database.prisma.secret.count({ where: { userId: actor.actor.userId } })).toBe(0);
+    expect(await install(actor, input)).toEqual(failed);
+  });
+
+  it.each([true, false])(
+    "never recreates cleanup state or children after a late credential result (inline: %s)",
+    async (inline) => {
+      const actor = await account();
+      secrets.inlineRecovery = inline;
+      secrets.reconcileWrites = true;
+      const input = intent(await preview(actor, fixture({ servers: 1 })));
+      const paused = barrier();
+      held.push(paused);
+      secrets.nextPut = paused;
+      const first = install(actor, input);
+      void first.catch(() => undefined);
+      let installationId = "";
+      try {
+        await paused.entered;
+        const receipt = (await listOwned(actor))[0]!;
+        installationId = receipt.id;
+        expect(receipt.status).toBe("installing");
+        const removed = await uninstall(actor, receipt);
+        expect(removed.status).toBe(inline ? "removed" : "cleanup_failed");
+        await noChildren(receipt.id);
+      } finally {
+        paused.release();
+      }
+      const settled = await first;
+      // Inline removal already finished; a remote late acknowledgement instead finishes
+      // compensation for an installation that never reached its installed commit.
+      expect(settled).toMatchObject({
+        id: installationId,
+        status: inline ? "removed" : "failed",
+        installedAt: null,
+      });
+      await noChildren(installationId);
+      expect(
+        (
+          await database.prisma.capabilityInstall.findUniqueOrThrow({
+            where: { id: installationId },
+          })
+        ).cleanupRefs,
+      ).toEqual([]);
+      expect(await database.prisma.secret.count({ where: { userId: actor.actor.userId } })).toBe(0);
+      expect(await install(actor, input)).toEqual(settled);
+    },
+  );
+
   it("keeps unknown credential acknowledgement pending and never reports installation success", async () => {
     const actor = await account();
     const f = fixture({ servers: 1 });
@@ -840,7 +1043,9 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     const row = await database.prisma.capabilityInstall.findUniqueOrThrow({
       where: { id: result.id },
     });
-    expect(row.cleanupRefs).toEqual([{ id: expect.any(String), pending: true }]);
+    expect(row.cleanupRefs).toEqual([
+      { id: expect.any(String), pending: true, recoveryRef: expect.stringMatching(/^fixture:v1:/) },
+    ]);
     expect(JSON.stringify(result)).not.toContain("cleanupRefs");
     expect(JSON.stringify(result)).not.toContain(f.credential);
     expect(await database.prisma.secret.count({ where: { userId: actor.actor.userId } })).toBe(0);

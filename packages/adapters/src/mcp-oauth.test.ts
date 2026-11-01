@@ -1316,6 +1316,27 @@ describe("MCP setup with an existing access token", () => {
 });
 
 describe("managed plugin OAuth lifecycle", () => {
+  it("does not recreate a reservation already reconciled before a late acknowledgement", async () => {
+    const prisma = {
+      capabilityInstall: {
+        findFirst: vi.fn(async () => ({ id: "plugin", status: "removed", cleanupRefs: [] })),
+        update: vi.fn(),
+      },
+      $queryRaw: vi.fn(),
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+    };
+    const broker = new McpOAuthBroker(prisma as never, {} as never);
+    await broker.resolvePluginCredential(
+      "plugin",
+      { spaceId: "space", userId: "user" },
+      {
+        id: "already-cleaned",
+        ciphertext: "opaque-returned-reference",
+      },
+    );
+    expect(prisma.capabilityInstall.update).not.toHaveBeenCalled();
+  });
+
   it("rejects token persistence after uninstall before preparing another secret", async () => {
     const server = {
       id: "managed-server",
