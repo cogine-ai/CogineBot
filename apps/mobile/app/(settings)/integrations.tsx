@@ -1418,6 +1418,11 @@ export default function Integrations() {
             {advancedOpen ? (
               <View style={styles.advancedBody}>
                 <NativeActionButton
+                  label={t("GitHub plugins")}
+                  prominence="secondary"
+                  onPress={() => router.push("/(settings)/plugins")}
+                />
+                <NativeActionButton
                   label={t("MCP servers")}
                   prominence="secondary"
                   onPress={() => router.push("/(settings)/mcp")}

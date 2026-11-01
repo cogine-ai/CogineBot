@@ -146,6 +146,14 @@ import {
   OpenApiImportPreviewSchema,
   OpenApiImportReceiptInputSchema,
 } from "./openapi-import.js";
+import {
+  PluginInstallInputSchema,
+  PluginInstallListingSchema,
+  PluginInstallReceiptSchema,
+  PluginPreviewInputSchema,
+  PluginPreviewSchema,
+  PluginUninstallInputSchema,
+} from "./plugins.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { RoutineHistorySchema, RoutineRunCursorSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -736,6 +744,12 @@ export const appContract = {
     create: oc.input(CreateAgentSkillInput).output(AgentSkillSchema),
     update: oc.input(UpdateAgentSkillInput).output(AgentSkillSchema),
     remove: oc.input(z.object({ skillId: Id })).output(z.object({ ok: z.literal(true) })),
+  },
+  plugins: {
+    list: oc.output(PluginInstallListingSchema),
+    preview: oc.input(PluginPreviewInputSchema).output(PluginPreviewSchema),
+    install: oc.input(PluginInstallInputSchema).output(PluginInstallReceiptSchema),
+    uninstall: oc.input(PluginUninstallInputSchema).output(PluginInstallReceiptSchema),
   },
   capabilities: {
     list: oc.output(z.array(CapabilityInstallSchema)),

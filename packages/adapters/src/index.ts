@@ -1,6 +1,7 @@
 export * from "./agent-connections.js";
 export * from "./agent-environment.js";
 export * from "./ai-consent.js";
+export { boundDirectApprovalDetails, catalogApprovalDetails } from "./approval-effect.js";
 export * from "./artifacts.js";
 export * from "./auto-review.js";
 export * from "./auto-review-factory.js";
@@ -119,6 +120,7 @@ export * from "./pi-runtime.js";
 export * from "./pi-session.js";
 export * from "./pipedream-connector.js";
 export * from "./platform-model-access.js";
+export * from "./plugin-connectors.js";
 export * from "./private-endpoint.js";
 export * from "./realtime.js";
 export * from "./release-watch.js";

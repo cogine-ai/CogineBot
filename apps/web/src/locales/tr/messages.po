@@ -6417,3 +6417,115 @@ msgstr "Bu ayar başka bir yerde değiştirildi. Kaydetmeden önce yenileyin."
 #: src/pages/Shell.tsx
 msgid "Automatic collaboration stopped"
 msgstr "Otomatik iş birliği durduruldu"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Cleanup incomplete"
+msgstr "Temizleme tamamlanmadı"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Confirm removal"
+msgstr "Kaldırmayı onayla"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not complete this request."
+msgstr "Bu istek tamamlanamadı."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not confirm removal. Refresh before retrying."
+msgstr "Kaldırma doğrulanamadı. Yeniden denemeden önce yenileyin."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not load installed plugins."
+msgstr "Yüklü eklentiler yüklenemedi."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "GitHub plugins"
+msgstr "GitHub eklentileri"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Install plugin"
+msgstr "Eklentiyi yükle"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed"
+msgstr "Yüklendi"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin installations"
+msgstr "Eklenti yüklemeleri"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installing…"
+msgstr "Yükleniyor…"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "MCP tools require separate approval."
+msgstr "MCP araçları için ayrı onay gerekir."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "No plugins installed"
+msgstr "Yüklü eklenti yok"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin GitHub URL"
+msgstr "Eklentinin GitHub URL’si"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Remove plugin"
+msgstr "Eklentiyi kaldır"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Retry cleanup"
+msgstr "Temizlemeyi yeniden dene"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills"
+msgstr "Beceriler"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills are available to your Bots in this Space."
+msgstr "Becerileriniz bu Space içindeki Bot’larınıza sunulur."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skipped components"
+msgstr "Atlanan bileşenler"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Version details"
+msgstr "Sürüm ayrıntıları"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "View instructions"
+msgstr "Talimatları görüntüle"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installation failed."
+msgstr "Yükleme başarısız oldu."
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Another member"
+msgstr "Başka bir üye"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed by {name}"
+msgstr "{name} tarafından yüklendi"

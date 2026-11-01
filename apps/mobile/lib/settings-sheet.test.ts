@@ -90,6 +90,8 @@ describe("settings links", () => {
     expect(isSettingsLink("coginebot://voice")).toBe(true);
     expect(isSettingsLink("coginebot:///account?focus=usage")).toBe(true);
     expect(isSettingsLink("coginebot://integrations/")).toBe(true);
+    expect(isSettingsLink("coginebot://plugins")).toBe(true);
+    expect(isSettingsLink("/plugins")).toBe(true);
     expect(isSettingsLink("/change-password")).toBe(true);
     expect(isSettingsLink("coginebot:///thread?botId=bot-1")).toBe(false);
     expect(isSettingsLink("coginebot://group-thread?groupId=group-1")).toBe(false);
@@ -107,6 +109,9 @@ describe("settings links", () => {
     );
     expect(redirectSystemPath({ path: "coginebot:///account?focus=usage", initial: false })).toBe(
       "coginebot:///account?focus=usage",
+    );
+    expect(redirectSystemPath({ path: "coginebot:///plugins", initial: false })).toBe(
+      "coginebot:///plugins",
     );
     expect(close).not.toHaveBeenCalled();
 

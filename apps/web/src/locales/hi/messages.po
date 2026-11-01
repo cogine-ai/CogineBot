@@ -6417,3 +6417,115 @@ msgstr "यह सेटिंग कहीं और बदली गई है
 #: src/pages/Shell.tsx
 msgid "Automatic collaboration stopped"
 msgstr "स्वचालित सहयोग रोक दिया गया"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Cleanup incomplete"
+msgstr "सफ़ाई अधूरी"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Confirm removal"
+msgstr "हटाने की पुष्टि करें"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not complete this request."
+msgstr "यह अनुरोध पूरा नहीं हो सका।"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not confirm removal. Refresh before retrying."
+msgstr "हटाने की पुष्टि नहीं हो सकी। दोबारा प्रयास से पहले रीफ़्रेश करें।"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not load installed plugins."
+msgstr "इंस्टॉल किए गए प्लगइन लोड नहीं हो सके।"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "GitHub plugins"
+msgstr "GitHub प्लगइन"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Install plugin"
+msgstr "प्लगइन इंस्टॉल करें"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed"
+msgstr "इंस्टॉल किया गया"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin installations"
+msgstr "प्लगइन इंस्टॉलेशन"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installing…"
+msgstr "इंस्टॉल हो रहा है…"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "MCP tools require separate approval."
+msgstr "MCP टूल के लिए अलग मंज़ूरी चाहिए।"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "No plugins installed"
+msgstr "कोई प्लगइन इंस्टॉल नहीं है"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin GitHub URL"
+msgstr "प्लगइन का GitHub URL"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Remove plugin"
+msgstr "प्लगइन हटाएँ"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Retry cleanup"
+msgstr "सफ़ाई का फिर प्रयास करें"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills"
+msgstr "कौशल"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills are available to your Bots in this Space."
+msgstr "इस Space में आपके Bots के लिए Skills उपलब्ध हैं।"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skipped components"
+msgstr "छोड़े गए घटक"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Version details"
+msgstr "संस्करण विवरण"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "View instructions"
+msgstr "निर्देश देखें"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installation failed."
+msgstr "इंस्टॉलेशन विफल हुआ।"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Another member"
+msgstr "कोई अन्य सदस्य"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed by {name}"
+msgstr "{name} द्वारा इंस्टॉल किया गया"

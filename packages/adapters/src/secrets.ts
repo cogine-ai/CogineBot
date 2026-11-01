@@ -13,12 +13,14 @@ import type {
   SecretPutOptions,
   SecretRecord,
   SecretStore,
+  SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { getLogger } from "@rakazo/logging";
 import { SecretChanges } from "./secret-changes.js";
 
 const VERSION_PREFIX = "v2:";
+export const ENCRYPTED_RECOVERY_PREFIX = "inline:v1:";
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
@@ -79,6 +81,19 @@ export class EncryptedSecretStore extends SecretChanges implements SecretStore {
     };
   }
 
+  prepareWrite(recordId: string): string {
+    return ENCRYPTED_RECOVERY_PREFIX + createHash("sha256").update(recordId).digest("hex");
+  }
+
+  async reconcileWrite(
+    recoveryRef: string,
+    context: SecretContext,
+  ): Promise<SecretWriteReconciliation> {
+    if (typeof context !== "string") context.signal?.throwIfAborted();
+    const id = typeof context === "string" ? context : context.recordId;
+    return recoveryRef === this.prepareWrite(id) ? { state: "absent" } : { state: "unknown" };
+  }
+
   async put(
     plaintext: string,
     context: AdapterContext,
@@ -86,6 +101,11 @@ export class EncryptedSecretStore extends SecretChanges implements SecretStore {
   ): Promise<SecretRecord> {
     context.signal.throwIfAborted();
     const recordId = options.recordId ?? randomBytes(12).toString("hex");
+    if (options.recoveryRef && options.recoveryRef !== this.prepareWrite(recordId))
+      throw new SecretStoreUnavailableError(
+        undefined,
+        "Credential recovery provider does not match",
+      );
     const ref = this.seal(plaintext, recordId);
     this.changed(ref);
     return { id: recordId, ref, ciphertext: ref };
@@ -139,6 +159,8 @@ export class EncryptedSecretStore extends SecretChanges implements SecretStore {
     this.clearListeners();
   }
   async delete(ref: string, _context: SecretContext): Promise<void> {
+    if (ref.startsWith("infisical:"))
+      throw new SecretStoreUnavailableError(undefined, "Remote credential storage is unavailable");
     this.changed(ref);
   }
 

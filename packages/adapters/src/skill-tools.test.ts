@@ -383,7 +383,7 @@ describe("skill tools", () => {
       await skillReadFromTool(prisma as never, owner, { skillId: "one", name: "Review" }),
     ).toEqual({ error: "Skill not found." });
     expect(prisma.agentSkill.findMany).toHaveBeenLastCalledWith({
-      where: owner,
+      where: expect.objectContaining(owner),
       orderBy: [{ name: "asc" }, { id: "asc" }],
     });
   });

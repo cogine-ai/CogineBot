@@ -43,7 +43,7 @@ const preparedWrite = new AsyncLocalStorage<{ cleanup: Array<() => Promise<void>
 export async function persistPreparedSecret<T>(
   prisma: PrismaClient,
   store: SecretStore,
-  written: Candidate | undefined,
+  written: Candidate | Candidate[] | undefined,
   commit: () => Promise<T>,
   adopted?: (result: T) => void,
 ): Promise<T> {
@@ -54,7 +54,8 @@ export async function persistPreparedSecret<T>(
     return result;
   } finally {
     for (const cleanup of state.cleanup) await cleanup();
-    if (written) await cleanupUnreferenced(prisma, store, [written]);
+    if (written)
+      await cleanupUnreferenced(prisma, store, Array.isArray(written) ? written : [written]);
   }
 }
 

@@ -49,6 +49,7 @@ export * from "./model-oauth.js";
 export * from "./model-probe.js";
 export * from "./model-providers.js";
 export * from "./openapi-import-review.js";
+export * from "./plugin-install-review.js";
 export * from "./remote-images.js";
 export * from "./reply-announcement.js";
 export * from "./response-bytes.js";

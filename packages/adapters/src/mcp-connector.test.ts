@@ -1390,3 +1390,188 @@ describe("MCP shared server policy", () => {
     }
   });
 });
+
+describe("managed plugin MCP lifecycle", () => {
+  it("does not dispatch a queued tool after uninstall wins during session creation", async () => {
+    const server = { ...SHARED_SERVER, installId: "plugin-one" };
+    const parent = {
+      id: "plugin-one",
+      kind: "plugin",
+      clientNonce: "install-one",
+      status: "installed",
+      userId: "u1",
+      spaceId: "w1",
+    };
+    const prisma = {
+      mcpServer: { findFirst: vi.fn(async () => ({ ...server })) },
+      capabilityInstall: { findFirst: vi.fn(async () => ({ ...parent })) },
+      $queryRaw: vi.fn(),
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+    };
+    const state = { failNext: false, initializations: 0, calls: [] as string[] };
+    const normalFetch = mcpFetch(state);
+    let started!: () => void;
+    const connecting = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const body = request.method === "POST" ? await request.clone().json() : {};
+        if (body.method === "initialize") {
+          started();
+          await blocked;
+        }
+        return normalFetch(input, init);
+      }),
+    );
+    const connector = new McpConnector(prisma as never, {} as never, { network: TEST_NETWORK });
+    const context = {
+      operationId: "test",
+      traceId: "test",
+      botId: "bot-1",
+      spaceId: "w1",
+      userId: "u1",
+      signal: new AbortController().signal,
+    };
+    const result = (async () => {
+      const events = [];
+      for await (const event of connector.execute(
+        {
+          tool: "mcp__demo__echo",
+          route: {
+            connectorId: "mcp",
+            resourceId: server.id,
+            resourceRevision: 1,
+            toolName: "echo",
+          },
+          args: {},
+          executionId: "queued",
+        },
+        context,
+      ))
+        events.push(event);
+      return events;
+    })();
+    try {
+      await connecting;
+      parent.status = "uninstalling";
+      server.enabled = false;
+      server.revision++;
+      release();
+      expect(await result).toMatchObject([{ type: "error" }]);
+      expect(state.calls).toHaveLength(0);
+    } finally {
+      release();
+      await connector.close();
+    }
+  });
+});
+
+describe("plugin MCP dispatch settlement", () => {
+  it("keeps an admitted call alive when another queued call is rejected", async () => {
+    const server = { ...SHARED_SERVER, installId: "plugin-one" };
+    let active = true;
+    let lockCount = 0;
+    let queued!: () => void;
+    const queuedAdmission = new Promise<void>((resolve) => {
+      queued = resolve;
+    });
+    let releaseAdmission!: () => void;
+    const admission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    const prisma = {
+      mcpServer: { findFirst: vi.fn(async () => ({ ...server })) },
+      capabilityInstall: {
+        findFirst: vi.fn(async () => ({
+          id: server.installId,
+          kind: "plugin",
+          clientNonce: "one",
+          status: active ? "installed" : "uninstalling",
+          spaceId: "w1",
+          userId: "u1",
+        })),
+      },
+      $queryRaw: vi.fn(async () => {
+        lockCount++;
+        if (lockCount === 2) {
+          queued();
+          await admission;
+        }
+      }),
+      $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+    };
+    const state = { failNext: false, initializations: 0, calls: [] as string[] };
+    const normalFetch = mcpFetch(state);
+    let started!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let finish!: () => void;
+    const finishing = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const body = request.method === "POST" ? await request.clone().json() : {};
+        if (body.method === "tools/call") {
+          started();
+          await finishing;
+        }
+        return normalFetch(input, init);
+      }),
+    );
+    const connector = new McpConnector(prisma as never, {} as never, { network: TEST_NETWORK });
+    const context = {
+      operationId: "test",
+      traceId: "test",
+      botId: "bot-1",
+      spaceId: "w1",
+      userId: "u1",
+      signal: new AbortController().signal,
+    };
+    const execute = async (executionId: string) => {
+      const events = [];
+      for await (const event of connector.execute(
+        {
+          tool: "mcp__demo__echo",
+          route: {
+            connectorId: "mcp",
+            resourceId: server.id,
+            resourceRevision: 1,
+            toolName: "echo",
+          },
+          args: {},
+          executionId,
+        },
+        context,
+      ))
+        events.push(event);
+      return events;
+    };
+    const first = execute("admitted");
+    try {
+      await dispatched;
+      const second = execute("queued");
+      await queuedAdmission;
+      active = false;
+      releaseAdmission();
+      expect(await second).toMatchObject([{ type: "error" }]);
+      finish();
+      expect(await first).toMatchObject([{ type: "result" }]);
+      expect(state.calls).toHaveLength(1);
+    } finally {
+      finish();
+      releaseAdmission();
+      await connector.close();
+    }
+  });
+});

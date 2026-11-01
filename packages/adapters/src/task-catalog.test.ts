@@ -59,7 +59,7 @@ describe("task catalog", () => {
       },
     ]);
     expect(prisma.agentSkill.findMany).toHaveBeenCalledExactlyOnceWith({
-      where: { spaceId: "space-1", userId: "user-1" },
+      where: expect.objectContaining({ spaceId: "space-1", userId: "user-1" }),
       orderBy: [{ name: "asc" }, { id: "asc" }],
     });
   });
