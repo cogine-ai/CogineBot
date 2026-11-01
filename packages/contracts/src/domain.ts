@@ -338,6 +338,14 @@ export const ExternalConversationSchema = z.object({
 });
 export type ExternalConversation = z.infer<typeof ExternalConversationSchema>;
 
+export const SpaceCollaborationPolicySchema = z.object({
+  spaceId: Id,
+  allowBotCollaboration: z.boolean(),
+  collaborationRevision: z.number().int().nonnegative(),
+  canManageCollaboration: z.boolean(),
+});
+export type SpaceCollaborationPolicy = z.infer<typeof SpaceCollaborationPolicySchema>;
+
 export const SpaceSchema = z.object({
   id: Id,
   name: z.string(),
@@ -348,6 +356,10 @@ export const SpaceSchema = z.object({
   canRename: z.boolean().optional(),
   /** True only when the current member may delete this non-default space. */
   canDelete: z.boolean().optional(),
+  /** Present on fresh navigation; missing cached data never grants write authority. */
+  allowBotCollaboration: z.boolean().optional(),
+  collaborationRevision: z.number().int().nonnegative().optional(),
+  canManageCollaboration: z.boolean().optional(),
   bots: z.array(SpaceBotSchema),
   groups: z.array(SpaceGroupSchema),
   externalConversations: z.array(ExternalConversationSchema),

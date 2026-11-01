@@ -66,7 +66,10 @@ vi.mock("../lib/bootstrap", () => ({
 vi.mock("@lingui/react/macro", () => {
   const t = (parts: TemplateStringsArray, ...values: unknown[]) =>
     parts.reduce((text, part, index) => `${text}${part}${values[index] ?? ""}`, "");
-  return { useLingui: () => ({ t }), Trans: ({ children }: { children: ReactNode }) => children };
+  return {
+    useLingui: () => ({ t, i18n: { locale: "en" } }),
+    Trans: ({ children }: { children: ReactNode }) => children,
+  };
 });
 
 import { ShellPage } from "./Shell";
@@ -2370,3 +2373,84 @@ it.each(
     }
   },
 );
+
+for (const kind of ["bot_message_sent", "handoff", "child_bot"] as const) {
+  it.each([
+    ["policy_disabled", "Automatic collaboration stopped"],
+    ["waiting_peer", "Waiting…"],
+    ["completed", "Done"],
+    [undefined, null],
+  ] as const)(
+    `renders ${kind} delivery status %s without changing its target or exposing the peer body`,
+    async (deliveryStatus, label) => {
+      const block =
+        kind === "bot_message_sent"
+          ? {
+              kind,
+              toBotId: "worker",
+              toBotName: "Worker",
+              text: "Private peer body",
+              deliveryStatus,
+            }
+          : kind === "handoff"
+            ? {
+                kind,
+                fromBotId: "chief",
+                toBotId: "worker",
+                text: "Existing handoff text",
+                deliveryStatus,
+              }
+            : {
+                kind,
+                botId: "worker",
+                name: "Worker",
+                status: "created" as const,
+                title: "Worker title",
+                deliveryStatus,
+              };
+      const thread: ThreadSnapshot = {
+        ...snapshot(status()),
+        cursor: 1,
+        messages: [
+          {
+            id: "delivery-receipt",
+            threadId: "thread-chief",
+            seq: 1,
+            role: "bot",
+            blocks: [block],
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      };
+      boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread });
+      const fallback = boundary.call.getMockImplementation()!;
+      boundary.call.mockImplementation((path, input, options) =>
+        path === "threads.get" ? Promise.resolve(thread) : fallback(path, input, options),
+      );
+      await render();
+      const row = container.querySelector<HTMLElement>('[data-message-id="delivery-receipt"]');
+      expect(row).not.toBeNull();
+      if (label) expect(row?.textContent).toContain(label);
+      else {
+        expect(row?.textContent).not.toContain("Automatic collaboration stopped");
+        expect(row?.textContent).not.toContain("Waiting…");
+      }
+      if (kind === "bot_message_sent") {
+        expect(row?.textContent).not.toContain("Private peer body");
+        const chip = row?.querySelector<HTMLElement>('[data-testid="peer-receipt-chip"]');
+        expect(chip?.getAttribute("aria-label")).toContain("Messaged Worker");
+        if (label) expect(chip?.getAttribute("aria-label")).toContain(label);
+        await click(chip!);
+        await act(async () => vi.dynamicImportSettled());
+        expect(container.querySelector('[data-testid="peer-conversation-view"]')).not.toBeNull();
+      } else if (kind === "child_bot") {
+        await click(row!.querySelector("button")!);
+        expect(
+          boundary.call.mock.calls.some(
+            ([path, input]) => path === "threads.get" && input?.botId === "worker",
+          ),
+        ).toBe(true);
+      }
+    },
+  );
+}

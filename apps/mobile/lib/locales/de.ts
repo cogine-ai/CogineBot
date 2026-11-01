@@ -1095,4 +1095,10 @@ export const DE_MESSAGES: Record<string, string> = {
   "Instructions must be at most {count} characters":
     "Anweisungen dürfen höchstens {count} Zeichen lang sein",
   "Save other settings": "Andere Einstellungen speichern",
+  "Bot collaboration": "Bot-Zusammenarbeit",
+  "Allow Bots to message and assign work to other Bots and connected agents.":
+    "Bots dürfen anderen Bots und verbundenen Agenten Nachrichten senden und Aufgaben zuweisen.",
+  "Only the Space owner can change this.": "Nur der Space-Inhaber kann dies ändern.",
+  "Work already running may finish.": "Bereits laufende Arbeit kann noch abgeschlossen werden.",
+  "Automatic collaboration stopped": "Automatische Zusammenarbeit gestoppt",
 };

@@ -18,6 +18,23 @@ function harness(
   const messageCreate = vi.fn(async () => ({ id: "message-1" }));
   const tx = {
     $queryRaw: vi.fn(async () => [{ id: "group-1" }]),
+    space: {
+      findUnique: vi.fn(async () => ({
+        id: run.spaceId,
+        allowBotCollaboration: true,
+        collaborationRevision: 0,
+        deletingAt: null,
+      })),
+    },
+    spaceMember: { findUnique: vi.fn(async () => ({ spaceId: run.spaceId, userId: run.userId })) },
+    bot: {
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) => ({
+        id: where.id,
+        spaceId: run.spaceId,
+        userId: run.userId,
+        disabledBuiltinTools: [],
+      })),
+    },
     chatGroup: {
       findFirst: vi.fn(async () => ({
         id: "group-1",
@@ -40,6 +57,7 @@ function harness(
       create: messageCreate,
     },
     thread: {
+      findFirst: vi.fn(async () => ({ id: run.threadId, spaceId: run.spaceId })),
       update: vi.fn(async (args: { select: { nextMessageSeq?: boolean } }) =>
         args.select.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 2 },
       ),

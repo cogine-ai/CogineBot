@@ -9,13 +9,20 @@ import {
   sanitizeMessagingLabel,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
+import {
+  appendEventInTransaction,
+  authorizeBotCollaboration,
+  BotCollaborationDisabledError,
+  BotCollaborationSourceInactiveError,
+  collaborationRunFields,
+  createThreadMessageInTransaction,
+} from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { currentBotMessageHop } from "./bot-messages.js";
 
 export interface AgentConnectionDeps {
   prisma: PrismaClient;
-  events: Pick<ThreadEvents, "sendUserMessage" | "notify">;
+  events: Pick<ThreadEvents, "notify">;
   jobs: Pick<JobPublisher, "enqueue">;
 }
 
@@ -208,6 +215,7 @@ export async function messageConnectedAgent(
   sender: { id: string; name: string },
   input: { address?: string; message: string; deliveryKey?: string },
 ): Promise<Result> {
+  if (sender.id !== run.botId) return { ok: false, error: "source bot does not match the run" };
   const message = clampBotMessage(String(input.message ?? ""));
   if (!message) return { ok: false, error: "message is required" };
   const address = input.address?.trim();
@@ -262,12 +270,52 @@ export async function messageConnectedAgent(
   let committed!: Awaited<ReturnType<typeof deliverTx>>;
   const deliverTx = () =>
     deps.prisma.$transaction(async (tx) => {
+      const policy = await authorizeBotCollaboration(tx, {
+        sourceRunId: run.id,
+        sourceSpaceId: run.spaceId,
+        sourceThreadId: run.threadId,
+        sourceBotId: run.botId,
+        sourceUserId: run.userId,
+        targetSpaceId: targetIdentity.spaceId,
+        targetThreadId,
+        targetBotId: target.id,
+        targetUserId: targetIdentity.userId,
+        toolName: "message_agent",
+      });
+      for (const threadId of [run.threadId, targetThreadId].sort()) {
+        await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
+      }
       if (deliveryKey) {
         const already = await tx.message.findUnique({
           where: { threadId_clientNonce: { threadId: targetThreadId, clientNonce: deliveryKey } },
-          select: { id: true },
+          select: {
+            id: true,
+            sourceRuns: {
+              where: { collaborationStatus: "policy_disabled" },
+              select: { id: true },
+              take: 1,
+            },
+          },
         });
+        if (already?.sourceRuns?.length) return { ok: false as const, error: "policy_disabled" };
         if (already) return { replayed: true as const };
+      }
+      const [currentSender, currentTarget] = await Promise.all([
+        tx.messagingIdentity.findUnique({ where: { id: senderIdentity.id } }),
+        tx.messagingIdentity.findUnique({ where: { id: targetIdentity.id } }),
+      ]);
+      if (
+        currentSender?.botId !== run.botId ||
+        currentSender.spaceId !== run.spaceId ||
+        currentSender.userId !== run.userId ||
+        currentSender.provider !== senderIdentity.provider ||
+        currentTarget?.botId !== target.id ||
+        currentTarget.spaceId !== targetIdentity.spaceId ||
+        currentTarget.userId !== targetIdentity.userId ||
+        currentTarget.provider !== currentSender.provider ||
+        currentTarget.address !== address
+      ) {
+        return { ok: false as const, error: "agent identity is no longer available" };
       }
       const senderStillRunning = await tx.run.findFirst({
         where: { id: run.id, status: "running" },
@@ -278,10 +326,22 @@ export async function messageConnectedAgent(
       // Lock the connection row for the rest of the transaction: a revoke's
       // update blocks behind this lock, so delivery never commits after a
       // committed revocation (pattern: teaching-session.ts skill lock).
-      const locked = await tx.$queryRaw<Array<{ status: string }>>`
-        SELECT status FROM agent_connections WHERE id = ${connection.id} FOR UPDATE
+      const locked = await tx.$queryRaw<
+        Array<{ status: string; requesterBotId: string; targetBotId: string }>
+      >`
+        SELECT status, "requesterBotId", "targetBotId"
+        FROM agent_connections WHERE id = ${connection.id} FOR UPDATE
       `;
-      if (locked[0]?.status !== "approved") {
+      const currentConnection = locked[0];
+      if (
+        currentConnection?.status !== "approved" ||
+        !(
+          (currentConnection.requesterBotId === run.botId &&
+            currentConnection.targetBotId === target.id) ||
+          (currentConnection.requesterBotId === target.id &&
+            currentConnection.targetBotId === run.botId)
+        )
+      ) {
         return { ok: false as const, error: "connection is no longer approved" };
       }
 
@@ -297,6 +357,7 @@ export async function messageConnectedAgent(
         toBotId: target.id,
         toBotName: target.name,
         text: message,
+        deliveryStatus: "waiting_peer",
       };
       const inbound = await createThreadMessageInTransaction(tx, {
         threadId: targetThreadId,
@@ -331,6 +392,15 @@ export async function messageConnectedAgent(
           status: "queued",
           trigger: "bot_message",
           sourceMessageId: inbound.id,
+          ...collaborationRunFields({
+            origin: "external_agent",
+            sourceRunId: run.id,
+            sourceSpaceId: run.spaceId,
+            sourceBotId: run.botId,
+            sourceRevision: policy.sourceRevision,
+            targetRevision: policy.targetRevision,
+            outboundMessageId: outbound.id,
+          }),
         },
         select: { id: true },
       });
@@ -370,13 +440,25 @@ export async function messageConnectedAgent(
   try {
     committed = await deliverTx();
   } catch (error) {
+    if (error instanceof BotCollaborationDisabledError)
+      return { ok: false, error: "policy_disabled" };
+    if (error instanceof BotCollaborationSourceInactiveError)
+      return { ok: false, error: error.message };
     // Two concurrent retries can both miss the in-transaction lookup; the
     // loser hits the unique key. Treat that as a successful replay.
     if (deliveryKey && isUniqueConstraintError(error)) {
       const winner = await deps.prisma.message.findUnique({
         where: { threadId_clientNonce: { threadId: targetThreadId, clientNonce: deliveryKey } },
-        select: { id: true },
+        select: {
+          id: true,
+          sourceRuns: {
+            where: { collaborationStatus: "policy_disabled" },
+            select: { id: true },
+            take: 1,
+          },
+        },
       });
+      if (winner?.sourceRuns?.length) return { ok: false, error: "policy_disabled" };
       if (winner) {
         return {
           ok: true,

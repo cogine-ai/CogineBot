@@ -7,6 +7,7 @@ import {
   Cpu,
   CreditCard,
   Gauge,
+  MessagesSquare,
   Monitor,
   Settings,
   ShieldCheck,
@@ -18,6 +19,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
 import { ListboxSelect } from "../components/ListboxSelect";
+import { SpaceCollaborationSettings } from "../components/SpaceCollaborationSettings";
 import { createSpaceRpc } from "../lib/rpc";
 import { SpaceRpcProvider, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
@@ -38,6 +40,7 @@ export type SettingsSection =
   | "memory"
   | "voice"
   | "confirmations"
+  | "collaboration"
   | "usage"
   | "computer"
   | "billing"
@@ -110,6 +113,7 @@ export function SettingsOverlay({
   useLayoutEffect(() => onSectionChange?.(section), [section, onSectionChange]);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
+  const [collaborationBusy, setCollaborationBusy] = useState(false);
   const [keepComputerRecovery, setKeepComputerRecovery] = useState(false);
   const recoveryHoldTimer = useRef<number | undefined>(undefined);
   const showComputer =
@@ -122,6 +126,7 @@ export function SettingsOverlay({
     leaveRevision.current++;
     setMemoryBusy(false);
     setVoiceBusy(false);
+    setCollaborationBusy(false);
     return () => {
       if (committedTarget.current === targetBinding) committedTarget.current = null;
       leaveRevision.current++;
@@ -147,7 +152,13 @@ export function SettingsOverlay({
     },
     [targetCurrent],
   );
-  const panelBusy = memoryBusy || voiceBusy;
+  const handleCollaborationBusy = useCallback(
+    (busy: boolean) => {
+      if (targetCurrent()) setCollaborationBusy(busy);
+    },
+    [targetCurrent],
+  );
+  const panelBusy = memoryBusy || voiceBusy || collaborationBusy;
   const releaseComputerRecovery = useCallback(() => {
     window.clearTimeout(recoveryHoldTimer.current);
     recoveryHoldTimer.current = undefined;
@@ -192,6 +203,7 @@ export function SettingsOverlay({
     { id: "memory", label: t`Memory`, icon: Brain },
     { id: "voice", label: t`Voice`, icon: Volume2 },
     { id: "confirmations", label: t`Confirmations`, icon: ShieldCheck },
+    { id: "collaboration", label: t`Bot collaboration`, icon: MessagesSquare },
     { id: "usage", label: t`Usage`, icon: Gauge },
     ...(showComputer ? [{ id: "computer" as const, label: t`Computer`, icon: Monitor }] : []),
     ...(billingEnabled ? [{ id: "billing" as const, label: t`Billing`, icon: CreditCard }] : []),
@@ -397,6 +409,9 @@ export function SettingsOverlay({
                       />
                     ) : null}
                     {section === "confirmations" ? <ApprovalRulesSettings /> : null}
+                    {section === "collaboration" ? (
+                      <SpaceCollaborationSettings onBusyChange={handleCollaborationBusy} />
+                    ) : null}
                   </>
                 ) : (
                   <p>
@@ -412,7 +427,13 @@ export function SettingsOverlay({
   );
 }
 
-const SPACE_SECTIONS = new Set<SettingsSection>(["models", "memory", "voice", "confirmations"]);
+const SPACE_SECTIONS = new Set<SettingsSection>([
+  "models",
+  "memory",
+  "voice",
+  "confirmations",
+  "collaboration",
+]);
 function TargetMemorySettings({
   initialConfig,
   onConfigChange,

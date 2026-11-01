@@ -5,6 +5,7 @@ export * from "./board-live.js";
 export * from "./bootstrap-user.js";
 export * from "./cancel-runs.js";
 export * from "./client.js";
+export * from "./collaboration.js";
 export * from "./computers.js";
 export * from "./connection-selection.js";
 export * from "./credential-secrets.js";

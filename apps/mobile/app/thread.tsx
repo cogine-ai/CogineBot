@@ -293,6 +293,15 @@ function isWorkingStatus(status: string | undefined): boolean {
   );
 }
 
+function collaborationDeliveryLabel(
+  status: Extract<MessageBlock, { kind: "bot_message_sent" }>["deliveryStatus"],
+): string | undefined {
+  if (status === "policy_disabled") return t("Automatic collaboration stopped");
+  if (status === "waiting_peer") return t("Waiting…");
+  if (status === "completed") return t("Done");
+  return undefined;
+}
+
 const ATTACHMENT_PLACEHOLDER_LINE = /^\[(?:image|file|chart): .*\]$/;
 
 function speakableMessageText(message: MobileMessage): string {
@@ -3816,10 +3825,12 @@ const MessageBubble = memo(function MessageBubble({
   if (handoff) {
     const from = memberName(members, handoff.fromBotId) ?? t("bot");
     const to = memberName(members, handoff.toBotId) ?? t("bot");
+    const origin = t("{from} messaged {to}", { from, to });
+    const status = collaborationDeliveryLabel(handoff.deliveryStatus);
     return (
       <AgentEventLabel
         actionProps={actionProps}
-        label={t("{from} messaged {to}", { from, to })}
+        label={status ? `${origin} · ${status}` : origin}
         detail={handoff.text}
         expanded={peerExpanded}
         onToggle={() => setPeerExpanded((expanded) => !expanded)}
@@ -3836,9 +3847,11 @@ const MessageBubble = memo(function MessageBubble({
     const sent = peerMessage.kind === "bot_message_sent";
     const peer = sent ? peerMessage.toBotName : peerMessage.fromBotName;
     const peerBotId = sent ? peerMessage.toBotId : peerMessage.fromBotId;
-    const label = sent
+    const origin = sent
       ? t("Messaged {peer}", { peer: peer ?? t("Bot") })
       : t("Message from {peer}", { peer: peer ?? t("Bot") });
+    const status = sent ? collaborationDeliveryLabel(peerMessage.deliveryStatus) : undefined;
+    const label = status ? `${origin} · ${status}` : origin;
     const peerColor =
       bots.find((bot) => bot.id === peerBotId)?.color ??
       members?.find((member) => member.botId === peerBotId)?.color ??
@@ -4006,6 +4019,7 @@ const MessageBubble = memo(function MessageBubble({
   }
   if (special?.kind === "child_bot") {
     const removed = special.status === "deleted" || special.status === "archived";
+    const status = collaborationDeliveryLabel(special.deliveryStatus);
     return (
       <Pressable
         {...actionProps}
@@ -4032,6 +4046,7 @@ const MessageBubble = memo(function MessageBubble({
         >
           <Text style={{ color: tokens.foreground, fontSize: 15, fontWeight: "600" }}>
             {special.name || t("Bot")}
+            {status ? ` · ${status}` : null}
           </Text>
           <Text style={{ color: removed ? tokens.destructive : tokens.success, fontSize: 13 }}>
             {special.status === "archived"

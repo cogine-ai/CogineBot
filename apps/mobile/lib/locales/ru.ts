@@ -1094,4 +1094,10 @@ export const RU_MESSAGES: Record<string, string> = {
   "Instructions must be at most {count} characters":
     "Инструкции должны содержать не более {count} символов",
   "Save other settings": "Сохранить остальные настройки",
+  "Bot collaboration": "Совместная работа ботов",
+  "Allow Bots to message and assign work to other Bots and connected agents.":
+    "Разрешить ботам отправлять сообщения и поручать работу другим ботам и подключённым агентам.",
+  "Only the Space owner can change this.": "Изменить это может только владелец Space.",
+  "Work already running may finish.": "Уже запущенная работа может завершиться.",
+  "Automatic collaboration stopped": "Автоматическое взаимодействие остановлено",
 };

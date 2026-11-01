@@ -83,11 +83,26 @@ describe("spawned bot creation", () => {
     const prisma = {
       bot: {
         count: vi.fn().mockResolvedValue(0),
-        findFirst: vi.fn().mockResolvedValue({ id: "parent-1" }),
+        findFirst: vi.fn().mockResolvedValue({ id: "parent-1", disabledBuiltinTools: [] }),
         findUnique,
       },
       deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },
-      run: { findUnique: vi.fn().mockResolvedValue({ id: "child-run-1" }) },
+      space: {
+        findUnique: vi.fn().mockResolvedValue({ allowBotCollaboration: true, deletingAt: null }),
+      },
+      run: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "child-run-1",
+          spaceId: "workspace-1",
+          userId: "user-1",
+          botId: "child-1",
+          threadId: "thread-1",
+          origin: "child_prompt",
+          parentRunId: "run-retry",
+          collaborationSourceSpaceId: "workspace-1",
+          collaborationSourceBotId: "parent-1",
+        }),
+      },
       $transaction: vi.fn().mockRejectedValue(new Error("unique spawn key")),
     } as unknown as PrismaClient;
 

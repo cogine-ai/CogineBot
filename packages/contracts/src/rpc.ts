@@ -86,6 +86,7 @@ import {
   ServerUpdateRunSchema,
   ServerUpdateStatusSchema,
   SkillPlaybookSchema,
+  SpaceCollaborationPolicySchema,
   SpaceMemoryConfigSchema,
   SpaceNavigationSchema,
   SpaceSchema,
@@ -251,6 +252,15 @@ export const appContract = {
   spaces: {
     list: oc.output(SpaceNavigationSchema),
     create: oc.input(z.object({ name: spaceName })).output(SpaceSchema),
+    update: oc
+      .input(
+        z.object({
+          spaceId: Id,
+          allowBotCollaboration: z.boolean(),
+          expectedCollaborationRevision: z.number().int().nonnegative().max(2147483647),
+        }),
+      )
+      .output(SpaceCollaborationPolicySchema),
     rename: oc
       .input(z.object({ spaceId: Id, name: spaceName }))
       .output(z.object({ id: Id, name: z.string() })),

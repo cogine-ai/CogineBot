@@ -6385,3 +6385,35 @@ msgstr "添加你自己的 API 密钥以继续。"
 
 msgid "Add API key"
 msgstr "添加 API 密钥"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Bot collaboration"
+msgstr "Bot 协作"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Allow Bots to message and assign work to other Bots and connected agents."
+msgstr "允许 Bot 向其他 Bot 和已连接的代理发送消息和分配工作。"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Only the Space owner can change this."
+msgstr "只有 Space 所有者可以更改此设置。"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Work already running may finish."
+msgstr "已在运行的工作可以完成。"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not load this setting."
+msgstr "无法加载此设置。"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not confirm this change. Refresh before saving."
+msgstr "无法确认此次更改。请先刷新再保存。"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "This setting changed elsewhere. Refresh before saving."
+msgstr "此设置已在别处更改。请先刷新再保存。"
+
+#: src/pages/Shell.tsx
+msgid "Automatic collaboration stopped"
+msgstr "自动协作已停止"

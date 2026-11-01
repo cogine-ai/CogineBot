@@ -9,23 +9,22 @@ import type {
   SecretStore,
 } from "@rakazo/adapter-kit";
 import { routineJobKey, runContinueJob, runJobKey } from "@rakazo/adapter-kit";
-import {
-  type Actor,
-  type Bot,
-  type ComputerMode,
-  GROUP_MEMBER_MIN,
-  OPENAI_COMPATIBLE_PROVIDER_ID,
-} from "@rakazo/contracts";
+import type { Actor, Bot, ComputerMode } from "@rakazo/contracts";
+import { GROUP_MEMBER_MIN, OPENAI_COMPATIBLE_PROVIDER_ID } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
+  appendEventInTransaction,
+  authorizeBotCollaboration,
+  BotCollaborationDisabledError,
+  BotCollaborationSourceInactiveError,
   cancelRunsInTransaction,
+  collaborationRunFields,
   computerScopeKey,
   createRepos,
   createThreadMessageInTransaction,
   expireComputerExecutionLeases,
   lockBotCreationIntro,
-  type Prisma,
-  type PrismaClient,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -63,6 +62,7 @@ export async function spawnBot(
     prisma: PrismaClient;
     jobs: JobPublisher;
     secretStore?: Pick<SecretStore, "load">;
+    events?: { notify(threadId: string, seq: number): Promise<void> };
   },
   input: {
     spawnedBy: {
@@ -82,6 +82,17 @@ export async function spawnBot(
 ) {
   const name = input.name.trim();
   if (!name) return { error: "Bot name is required." };
+  const prompt = (input.prompt ?? "").trim();
+  if (prompt) {
+    // Avoid creating a child when assignment is already known to be disabled.
+    // The delivery transaction still authorizes again after creation commits.
+    const policy = await deps.prisma.space.findUnique({
+      where: { id: input.spawnedBy.spaceId },
+      select: { allowBotCollaboration: true, deletingAt: true },
+    });
+    if (!policy?.allowBotCollaboration || policy.deletingAt)
+      return { error: "policy_disabled" } as const;
+  }
 
   const actor: Actor = {
     userId: input.spawnedBy.userId,
@@ -94,9 +105,16 @@ export async function spawnBot(
   try {
     const parent = await deps.prisma.bot.findFirst({
       where: { id: input.spawnedBy.id, userId: actor.userId, spaceId: actor.spaceId },
-      select: { modelProvider: true, modelId: true, modelCredentialId: true },
+      select: {
+        modelProvider: true,
+        modelId: true,
+        modelCredentialId: true,
+        disabledBuiltinTools: true,
+      },
     });
     if (!parent) throw new Error("Parent bot is unavailable");
+    if (prompt && parent.disabledBuiltinTools.includes("spawn_bot"))
+      return { error: "policy_disabled" } as const;
     const inherited =
       parent.modelProvider && parent.modelId
         ? await findConnectedModelCredential(
@@ -202,19 +220,35 @@ export async function spawnBot(
     };
   }
 
-  const prompt = (input.prompt ?? "").trim();
   if (prompt) {
-    const run = await ensureSpawnRun(deps.prisma, {
-      spaceId: input.spawnedBy.spaceId,
-      userId: input.spawnedBy.userId,
-      botId: created.id,
-      threadId: created.threadId,
-      sourceRunId: input.runId,
-      spawnKey: input.spawnKey,
-      prompt,
-    });
+    let delivery: Awaited<ReturnType<typeof ensureSpawnRun>>;
+    try {
+      delivery = await ensureSpawnRun(deps.prisma, {
+        spaceId: input.spawnedBy.spaceId,
+        userId: input.spawnedBy.userId,
+        botId: created.id,
+        threadId: created.threadId,
+        sourceRunId: input.runId,
+        sourceBotId: input.spawnedBy.id,
+        spawnKey: input.spawnKey,
+        prompt,
+        name: created.name,
+        title: created.title,
+      });
+    } catch (error) {
+      if (error instanceof BotCollaborationDisabledError)
+        return { error: "policy_disabled" } as const;
+      if (error instanceof BotCollaborationSourceInactiveError)
+        return { error: error.message } as const;
+      throw error;
+    }
+    if ("notice" in delivery && delivery.notice) {
+      await deps.events
+        ?.notify(delivery.notice.threadId, delivery.notice.seq)
+        .catch((error) => getLogger().error("spawned bot delivery notification", error));
+    }
     await deps.jobs
-      .enqueue(runContinueJob(run.id))
+      .enqueue(runContinueJob(delivery.run.id))
       .catch((error) => getLogger().error("spawned bot enqueue", error));
   }
 
@@ -236,8 +270,11 @@ async function ensureSpawnRun(
     botId: string;
     threadId: string;
     sourceRunId: string;
+    sourceBotId: string;
     spawnKey: string;
     prompt: string;
+    name: string;
+    title: string;
   },
 ) {
   const clientNonce = `spawn:${input.spawnKey}`;
@@ -248,11 +285,69 @@ async function ensureSpawnRun(
     },
   } as const;
   const existing = await prisma.run.findUnique({ where });
-  if (existing) return existing;
+  const validateReceipt = (run: NonNullable<typeof existing>) => {
+    if (
+      run.collaborationStatus === "policy_disabled" ||
+      run.spaceId !== input.spaceId ||
+      run.userId !== input.userId ||
+      run.botId !== input.botId ||
+      run.threadId !== input.threadId ||
+      run.origin !== "child_prompt" ||
+      run.parentRunId !== input.sourceRunId ||
+      run.collaborationSourceSpaceId !== input.spaceId ||
+      run.collaborationSourceBotId !== input.sourceBotId
+    )
+      throw new BotCollaborationDisabledError();
+    return run;
+  };
+  if (existing) return { run: validateReceipt(existing) };
 
   try {
     return await prisma.$transaction(async (tx) => {
-      await createThreadMessageInTransaction(tx, {
+      const source = await tx.run.findFirst({
+        where: {
+          id: input.sourceRunId,
+          spaceId: input.spaceId,
+          userId: input.userId,
+          botId: input.sourceBotId,
+        },
+        select: { threadId: true },
+      });
+      if (!source) throw new BotCollaborationDisabledError();
+      const policy = await authorizeBotCollaboration(tx, {
+        sourceRunId: input.sourceRunId,
+        sourceSpaceId: input.spaceId,
+        sourceThreadId: source.threadId,
+        sourceBotId: input.sourceBotId,
+        sourceUserId: input.userId,
+        targetSpaceId: input.spaceId,
+        targetThreadId: input.threadId,
+        targetBotId: input.botId,
+        targetUserId: input.userId,
+        toolName: "spawn_bot",
+      });
+      const recorded = await tx.run.findUnique({ where });
+      if (recorded) return { run: validateReceipt(recorded) };
+      for (const threadId of [...new Set([source.threadId, input.threadId])].sort()) {
+        await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
+      }
+      const block = {
+        kind: "child_bot" as const,
+        botId: input.botId,
+        name: input.name,
+        title: input.title,
+        status: "created" as const,
+        deliveryStatus: "waiting_peer" as const,
+      };
+      const outbound = await createThreadMessageInTransaction(tx, {
+        threadId: source.threadId,
+        role: "bot",
+        botId: input.sourceBotId,
+        runId: input.sourceRunId,
+        blocks: [block],
+        clientNonce: `spawn-card:${input.spawnKey}`,
+      });
+      const message = await createThreadMessageInTransaction(tx, {
         threadId: input.threadId,
         role: "user",
         blocks: [{ kind: "text", text: input.prompt }],
@@ -268,7 +363,7 @@ async function ensureSpawnRun(
           status: "queued",
         },
       });
-      return tx.run.create({
+      const run = await tx.run.create({
         data: {
           spaceId: input.spaceId,
           botId: input.botId,
@@ -278,12 +373,32 @@ async function ensureSpawnRun(
           status: "queued",
           trigger: "spawn",
           clientNonce,
+          sourceMessageId: message.id,
+          ...collaborationRunFields({
+            origin: "child_prompt",
+            sourceRunId: input.sourceRunId,
+            sourceSpaceId: input.spaceId,
+            sourceBotId: input.sourceBotId,
+            sourceRevision: policy.sourceRevision,
+            targetRevision: policy.targetRevision,
+            outboundMessageId: outbound.id,
+          }),
         },
       });
+      const event = await appendEventInTransaction(tx, {
+        spaceId: input.spaceId,
+        threadId: source.threadId,
+        botId: input.sourceBotId,
+        runId: input.sourceRunId,
+        type: "thread.message.created",
+        payload: { messageId: outbound.id, messageSeq: outbound.seq, role: "bot", blocks: [block] },
+      });
+      return { run, notice: { threadId: event.threadId, seq: event.seq } };
     });
   } catch (error) {
+    if (error instanceof BotCollaborationDisabledError) throw error;
     const winner = await prisma.run.findUnique({ where });
-    if (winner) return winner;
+    if (winner) return { run: validateReceipt(winner) };
     throw error;
   }
 }

@@ -1,12 +1,30 @@
 import type { Page, Request } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import type { ActionApprovalRule, Me, ModelCredential, SpaceNavigation } from "@rakazo/contracts";
-import { captureScreenshot, completeOnboarding, openNewSpace, rpc, signup } from "./helpers";
+import type {
+  ActionApprovalRule,
+  Me,
+  ModelCredential,
+  SpaceNavigation,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openNewSpace,
+  rpc,
+  signup,
+} from "./helpers";
 
-async function inSpace<T>(page: Page, spaceId: string, procedure: string): Promise<T> {
+async function inSpace<T>(
+  page: Page,
+  spaceId: string,
+  procedure: string,
+  input: unknown = {},
+): Promise<T> {
   const response = await page.request.post(`/rpc/${procedure}`, {
     headers: { "x-rakazo-space-id": spaceId },
-    data: { json: {} },
+    data: { json: input },
   });
   expect(response.ok(), `${procedure}: ${response.status()}`).toBe(true);
   return ((await response.json()) as { json: T }).json;
@@ -159,6 +177,59 @@ test("editing another Space saves its models and confirmations without moving th
   await settings.getByTestId("settings-nav-general").click();
   await expect(settings.getByTestId("settings-space")).toHaveCount(0);
   await expect(settings.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+  await settings.getByRole("button", { name: "Close user settings", exact: true }).click();
+  expect(page.url()).toBe(chatUrl);
+  expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(support.id);
+  await expect(composer).toHaveValue("Keep the current chat draft. 保留草稿。");
+});
+
+test("the Space owner can disable Bot collaboration while the active chat and draft stay intact", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const { personal, support, chatUrl, settings, composer } = await fixture(page);
+  await settings.getByTestId("settings-nav-collaboration").click();
+  const toggle = settings.getByRole("switch", { name: "Bot collaboration", exact: true });
+  await expect(toggle).toBeChecked();
+  await expect(toggle).toBeEnabled();
+  await expect(settings.getByText("Work already running may finish.")).toHaveCount(0);
+  const before = await inSpace<SpaceNavigation>(page, personal.id, "spaces/list");
+  const target = before.spaces.find((space) => space.id === personal.id)!;
+  expect(target.canManageCollaboration).toBe(true);
+  expect(target.collaborationRevision).toEqual(expect.any(Number));
+  const current = before.spaces.find((space) => space.id === support.id)!;
+  await toggle.click();
+  await expect(settings.getByText("Work already running may finish.")).toBeVisible();
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 840 });
+    await expect(toggle).toBeVisible();
+    await expect(settings.getByRole("button", { name: "Save", exact: true })).toBeVisible();
+    await captureScreenshot(page, testInfo, `space-collaboration-owner-${width}`);
+  }
+  const saved = page.waitForResponse(
+    (response) => response.url().endsWith("/rpc/spaces/update") && response.ok(),
+  );
+  await settings.getByRole("button", { name: "Save", exact: true }).click();
+  const reply = await saved;
+  expect(reply.request().headers()["x-rakazo-space-id"]).toBe(personal.id);
+  expect(reply.request().postDataJSON()).toEqual({
+    json: {
+      spaceId: personal.id,
+      allowBotCollaboration: false,
+      expectedCollaborationRevision: target.collaborationRevision,
+    },
+  });
+  await expect(settings.getByText("Saved.", { exact: true })).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+  const after = await inSpace<SpaceNavigation>(page, personal.id, "spaces/list");
+  expect(after.spaces.find((space) => space.id === personal.id)).toMatchObject({
+    allowBotCollaboration: false,
+    collaborationRevision: target.collaborationRevision! + 1,
+  });
+  expect(after.spaces.find((space) => space.id === support.id)).toMatchObject({
+    allowBotCollaboration: current.allowBotCollaboration,
+    collaborationRevision: current.collaborationRevision,
+  });
   await settings.getByRole("button", { name: "Close user settings", exact: true }).click();
   expect(page.url()).toBe(chatUrl);
   expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(support.id);
@@ -394,7 +465,32 @@ test("a shared Space member can open settings without owner actions or a chat sw
     ).toHaveText("Shared research");
     expect((await inSpace<Me>(member, shared.id, "me")).spaceId).toBe(shared.id);
     await captureScreenshot(member, testInfo, "space-member-settings-target");
-    await settings.getByRole("button", { name: "Close model settings", exact: true }).click();
+    await settings.getByTestId("settings-nav-collaboration").click();
+    const collaboration = settings.getByRole("switch", { name: "Bot collaboration", exact: true });
+    await expect(collaboration).toBeChecked();
+    await expect(collaboration).toBeDisabled();
+    await expect(settings.getByText("Only the Space owner can change this.")).toBeVisible();
+    await expect(settings.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+    const freshPolicy = await inSpace<SpaceNavigation>(member, shared.id, "spaces/list");
+    const sharedPolicy = freshPolicy.spaces.find((space) => space.id === shared.id)!;
+    expect(sharedPolicy.canManageCollaboration).toBe(false);
+    const deniedPolicy = await member.request.post("/rpc/spaces/update", {
+      headers: { "x-rakazo-space-id": shared.id },
+      data: {
+        json: {
+          spaceId: shared.id,
+          allowBotCollaboration: false,
+          expectedCollaborationRevision: sharedPolicy.collaborationRevision,
+        },
+      },
+    });
+    expect(deniedPolicy.status()).toBe(403);
+    for (const width of [1280, 390]) {
+      await member.setViewportSize({ width, height: 840 });
+      await expect(collaboration).toBeVisible();
+      await captureScreenshot(member, testInfo, `space-collaboration-member-${width}`);
+    }
+    await settings.getByRole("button", { name: "Close user settings", exact: true }).click();
     await expect(composer).toHaveValue("Keep this member's chat draft.");
     expect(member.url()).toBe(chatUrl);
     expect(await member.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(chatSpace.id);
@@ -567,3 +663,89 @@ for (const role of ["owner", "member"] as const) {
     expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(selectedSpace);
   });
 }
+
+test("a stored stopped collaboration receipt remains readable without sending or moving the chat", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 840 });
+  const { support, settings } = await fixture(page);
+  await settings.getByRole("button", { name: "Close model settings", exact: true }).click();
+  const chiefId = activeBotId(page);
+  const peer = await inSpace<{ id: string }>(page, support.id, "bots/create", {
+    name: "Researcher",
+    title: "",
+    description: "",
+    instructions: "",
+    notifyOnFinish: false,
+  });
+  const thread = await inSpace<ThreadSnapshot>(page, support.id, "threads/get", {
+    botId: chiefId,
+  });
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(process.env.AGENT_RUNTIME).toBe("scripted");
+  expect(process.env.DATABASE_URL).toBeTruthy();
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(
+    new URL(process.env.DATABASE_URL!).hostname,
+  );
+  const { createDb } = await import("../../../packages/db/src/client");
+  const { createThreadMessage } = await import("../../../packages/db/src/messages");
+  const db = createDb(process.env.DATABASE_URL!, {
+    poolMax: 2,
+    applicationName: "collaboration-receipt-browser-fixture",
+  });
+  let messageId: string;
+  try {
+    // A stored projection fixture proves rendering and navigation; policy cancellation is covered separately.
+    const receipt = await createThreadMessage(db.prisma, {
+      threadId: thread.threadId,
+      botId: chiefId,
+      role: "bot",
+      blocks: [
+        {
+          kind: "bot_message_sent",
+          toBotId: peer.id,
+          toBotName: "Researcher",
+          text: "Hidden synthetic peer prompt.",
+          deliveryStatus: "policy_disabled",
+        },
+      ],
+    });
+    messageId = receipt.id;
+  } finally {
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
+  const fresh = await inSpace<ThreadSnapshot>(page, support.id, "threads/get", {
+    botId: chiefId,
+  });
+  expect(fresh.messages.find((message) => message.id === messageId)?.blocks).toEqual([
+    expect.objectContaining({ deliveryStatus: "policy_disabled" }),
+  ]);
+  await page.reload();
+  await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+  const currentUrl = page.url();
+  const composer = page.getByRole("combobox", { name: "Message Chief" });
+  await composer.fill("Keep the human draft. 保留草稿。");
+  const chip = page
+    .getByTestId("peer-receipt-chip")
+    .filter({ hasText: "Automatic collaboration stopped" });
+  await expect(chip).toContainText("Researcher");
+  await expect(chip).not.toContainText("Hidden synthetic peer prompt.");
+  await expect(chip).toHaveAccessibleName(/Messaged Researcher.*Automatic collaboration stopped/);
+  await captureScreenshot(page, testInfo, "space-collaboration-stopped-receipt");
+  let sends = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/threads/send")) sends += 1;
+  });
+  await chip.click();
+  const peerConversation = page.getByTestId("peer-conversation-view");
+  await expect(peerConversation).toBeVisible();
+  await expect(peerConversation.getByRole("textbox")).toHaveCount(0);
+  await expect(composer).toBeHidden();
+  expect(page.url()).toBe(currentUrl);
+  expect(await page.evaluate(() => localStorage.getItem("rakazo:space-id"))).toBe(support.id);
+  await peerConversation.getByRole("button", { name: "Close chat", exact: true }).click();
+  await expect(peerConversation).toHaveCount(0);
+  await expect(composer).toHaveValue("Keep the human draft. 保留草稿。");
+  expect(sends).toBe(0);
+});

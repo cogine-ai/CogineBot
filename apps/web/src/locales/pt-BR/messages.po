@@ -6385,3 +6385,35 @@ msgstr "Adicione sua própria chave de API para continuar."
 
 msgid "Add API key"
 msgstr "Adicionar chave de API"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Bot collaboration"
+msgstr "Colaboração entre Bots"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Allow Bots to message and assign work to other Bots and connected agents."
+msgstr "Permitir que os Bots enviem mensagens e atribuam tarefas a outros Bots e agentes conectados."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Only the Space owner can change this."
+msgstr "Somente o proprietário do Space pode alterar isso."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Work already running may finish."
+msgstr "O trabalho já em execução pode terminar."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not load this setting."
+msgstr "Não foi possível carregar esta configuração."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not confirm this change. Refresh before saving."
+msgstr "Não foi possível confirmar a alteração. Atualize antes de salvar."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "This setting changed elsewhere. Refresh before saving."
+msgstr "Esta configuração foi alterada em outro lugar. Atualize antes de salvar."
+
+#: src/pages/Shell.tsx
+msgid "Automatic collaboration stopped"
+msgstr "Colaboração automática interrompida"

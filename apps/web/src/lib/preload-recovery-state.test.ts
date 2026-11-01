@@ -96,3 +96,12 @@ describe("preload recovery panel positions", () => {
     ).toBeNull();
   });
 });
+
+it("restores the collaboration settings position without persisting a policy draft", () => {
+  const value = { ...snapshot, section: "collaboration" as const };
+  preparePreloadRecoverySnapshot(storage(value));
+  expect(consumePreloadRecoverySnapshot(scope)).toEqual(value);
+  expect(
+    readPreloadRecoverySnapshot(storage({ ...value, allowBotCollaboration: false })),
+  ).toBeNull();
+});

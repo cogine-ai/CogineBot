@@ -109,6 +109,8 @@ The Electron desktop E2E suite opens real windows and may steal focus on macOS. 
 
 ## Before a pull request
 
+See [Bot collaboration](bot-collaboration.md) for Space policy and delivery semantics.
+
 - Run the checks relevant to your changes and report their scope, including failures and skips.
 - Validate English/Chinese README parity, local links, and any documented commands you changed.
 - Record environment classes and versions using public-safe placeholders; do not attach personal paths, credentials, raw private logs, or customer data.
