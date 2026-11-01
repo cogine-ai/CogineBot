@@ -26,6 +26,12 @@ export class BotCollaborationDisabledError extends Error {
     this.name = "BotCollaborationDisabledError";
   }
 }
+export class BotCollaborationSourceInactiveError extends Error {
+  constructor() {
+    super("source run is no longer active");
+    this.name = "BotCollaborationSourceInactiveError";
+  }
+}
 export class CannotChangeCollaborationError extends Error {
   constructor() {
     super("Only the Space owner can change this.");
@@ -126,16 +132,30 @@ export async function authorizeBotCollaboration(tx: Tx, input: AuthorizeBotColla
     sourceSpace.deletingAt ||
     !targetSpace?.allowBotCollaboration ||
     targetSpace.deletingAt ||
-    !source ||
     !sourceBot ||
     !targetBot ||
     !targetThread ||
     !sourceMember ||
     !targetMember ||
-    sourceBot.disabledBuiltinTools.includes(input.toolName) ||
-    (input.allowTerminalSource && source.collaborationStatus === "policy_disabled")
+    (!(input.allowTerminalSource && input.toolName === "message_bot") &&
+      sourceBot.disabledBuiltinTools.includes(input.toolName)) ||
+    (input.allowTerminalSource && source?.collaborationStatus === "policy_disabled")
   )
     throw new BotCollaborationDisabledError();
+  if (!source) {
+    const scopedSource = await tx.run.findFirst({
+      where: {
+        id: input.sourceRunId,
+        spaceId: input.sourceSpaceId,
+        threadId: input.sourceThreadId,
+        botId: input.sourceBotId,
+        userId: input.sourceUserId,
+      },
+      select: { id: true },
+    });
+    if (scopedSource) throw new BotCollaborationSourceInactiveError();
+    throw new BotCollaborationDisabledError();
+  }
   if (
     input.toolName !== "message_agent" &&
     (input.sourceSpaceId !== input.targetSpaceId || input.sourceUserId !== input.targetUserId)
@@ -303,7 +323,6 @@ export async function authorizeCollaborationRunStart(
       sourceBot &&
       !sourceBot.archivedAt &&
       sourceBot.spaceId === run.collaborationSourceSpaceId &&
-      !sourceBot.disabledBuiltinTools.includes(tool) &&
       targetBot &&
       !targetBot.archivedAt &&
       targetBot.spaceId === run.spaceId &&
@@ -357,12 +376,22 @@ export async function authorizeCollaborationRunStart(
                 block.toBotId === run.botId
               : block.kind === "bot_message_received" && block.fromBotId === sourceBot.id,
           );
+    // Only the runtime writes this reserved delivery key, after validating a
+    // terminal source. Explicit tool results use their normal effect key.
+    const automaticReturn = Boolean(
+      run.origin === "peer_return" &&
+        parent &&
+        ["completed", "failed", "cancelled"].includes(parent.status) &&
+        message?.role === "user" &&
+        message.clientNonce === `bot-message:auto-outcome:${parent.id}`,
+    );
     permitted = Boolean(
       sourceMember &&
         targetMember &&
         thread &&
         sourceMatches &&
         (!run.parentRunId || parent) &&
+        (!sourceBot.disabledBuiltinTools.includes(tool) || automaticReturn) &&
         (run.origin === "external_agent" ||
           (sourceBot.spaceId === run.spaceId && sourceBot.userId === run.userId)),
     );

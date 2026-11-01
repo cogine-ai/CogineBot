@@ -14,6 +14,7 @@ import {
   appendEventInTransaction,
   authorizeBotCollaboration,
   BotCollaborationDisabledError,
+  BotCollaborationSourceInactiveError,
   collaborationRunFields,
   createThreadMessageInTransaction,
   withTransactionRetry,
@@ -336,6 +337,8 @@ export async function messageBot(
   } catch (error) {
     if (error instanceof BotCollaborationDisabledError)
       return { ok: false as const, error: "policy_disabled" };
+    if (error instanceof BotCollaborationSourceInactiveError)
+      return { ok: false as const, error: error.message };
     // Two concurrent retries can both miss the in-transaction lookup; the
     // loser hits the unique key. Treat that as a successful replay.
     if (deliveryKey && isUniqueConstraintError(error)) {

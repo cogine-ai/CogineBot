@@ -13,6 +13,7 @@ import {
   appendEventInTransaction,
   authorizeBotCollaboration,
   BotCollaborationDisabledError,
+  BotCollaborationSourceInactiveError,
   collaborationRunFields,
   createThreadMessageInTransaction,
 } from "@rakazo/db";
@@ -441,6 +442,8 @@ export async function messageConnectedAgent(
   } catch (error) {
     if (error instanceof BotCollaborationDisabledError)
       return { ok: false, error: "policy_disabled" };
+    if (error instanceof BotCollaborationSourceInactiveError)
+      return { ok: false, error: error.message };
     // Two concurrent retries can both miss the in-transaction lookup; the
     // loser hits the unique key. Treat that as a successful replay.
     if (deliveryKey && isUniqueConstraintError(error)) {

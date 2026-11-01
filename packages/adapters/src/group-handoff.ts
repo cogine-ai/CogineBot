@@ -6,6 +6,7 @@ import {
   appendEventInTransaction,
   authorizeBotCollaboration,
   BotCollaborationDisabledError,
+  BotCollaborationSourceInactiveError,
   collaborationRunFields,
   createThreadMessageInTransaction,
   groupMemberOrderBy,
@@ -234,6 +235,8 @@ export async function handoffToGroupBot(
     .catch((error: unknown) => {
       if (error instanceof BotCollaborationDisabledError)
         return { error: "policy_disabled" } as const;
+      if (error instanceof BotCollaborationSourceInactiveError)
+        return { error: error.message } as const;
       throw error;
     });
   if ("error" in committed) return committed;

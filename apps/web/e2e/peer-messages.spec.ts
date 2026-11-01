@@ -302,7 +302,8 @@ test("group peer sources combine stored group sends and live direct replies with
     .getByTestId("peer-receipt-chip")
     .filter({ hasText: "Researcher" })
     .first();
-  await expect(chip).toHaveAccessibleName("Messaged Researcher");
+  // The stored reply settles the sender receipt; its accessible name includes that status.
+  await expect(chip).toHaveAccessibleName("Messaged Researcher. Done");
   await composer.fill("Keep this group thought while I read their exchange.");
   const originSubscription = page.waitForRequest(
     (request) =>

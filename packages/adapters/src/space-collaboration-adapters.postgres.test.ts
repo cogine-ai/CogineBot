@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { JobPublisher } from "@rakazo/adapter-kit";
+import { stuckWorkStatusMessages } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { createDb, updateSpaceCollaborationForMember } from "@rakazo/db";
+import {
+  authorizeCollaborationRunStart,
+  cancelRunsInTransaction,
+  createDb,
+  createThreadEvents,
+  updateSpaceCollaborationForMember,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { messageConnectedAgent } from "./agent-connections.js";
 import { messageBot, returnBotMessageOutcome } from "./bot-messages.js";
@@ -9,6 +16,7 @@ import { spawnBot } from "./child-bots.js";
 import type { ExecutorDeps } from "./executor.js";
 import { createRunExecutor } from "./executor.js";
 import { handoffToGroupBot } from "./group-handoff.js";
+import { createJobReconciler } from "./job-reconciler.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres =
@@ -266,6 +274,160 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
     expect(await f.recipientRuns()).toHaveLength(1);
     expect(f.enqueue).toHaveBeenCalledTimes(1);
   });
+
+  it.each([null, "Stopped by user"])(
+    "settles ordinary cancelled bot deliveries silently with error %s",
+    async (error) => {
+      const f = await fixture();
+      await f.send();
+      const delivery = await prisma.run.findFirstOrThrow({ where: { botId: f.target.bot.id } });
+      const events = createThreadEvents(prisma);
+      if (error)
+        await prisma.$transaction((tx) => cancelRunsInTransaction(tx, [delivery], new Date()));
+      else
+        await events.clearThread({
+          spaceId: f.spaceId,
+          threadId: f.target.thread.id,
+          botId: f.target.bot.id,
+        });
+      if (error) await prisma.run.update({ where: { id: delivery.id }, data: { error } });
+      expect(await prisma.message.count({ where: { id: delivery.sourceMessageId! } })).toBe(
+        error ? 1 : 0,
+      );
+      const jobs: JobPublisher = {
+        enqueue: f.enqueue,
+        cancel: async () => undefined,
+        close: async () => undefined,
+      };
+      const reconciler = createJobReconciler({ prisma, jobs, events });
+      await reconciler.reconcileOnce();
+      await reconciler.reconcileOnce();
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: delivery.id } })).toMatchObject({
+        status: "cancelled",
+        error,
+        collaborationStatus: "completed",
+      });
+      expect((await f.transcript())[0]?.blocks).toEqual([
+        expect.objectContaining({ kind: "bot_message_sent", deliveryStatus: "completed" }),
+      ]);
+      expect(await f.transcript()).toHaveLength(1);
+      expect(await f.recipientRuns()).toHaveLength(1);
+      expect(f.enqueue).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("retains stuck cancellation outcome delivery without replaying it on recovery", async () => {
+    const f = await fixture();
+    await f.send();
+    const delivery = await prisma.run.findFirstOrThrow({ where: { botId: f.target.bot.id } });
+    await prisma.run.update({
+      where: { id: delivery.id },
+      data: {
+        status: "cancelled",
+        startedAt: new Date(),
+        completedAt: new Date(),
+        error: stuckWorkStatusMessages()[0],
+      },
+    });
+    const jobs: JobPublisher = {
+      enqueue: f.enqueue,
+      cancel: async () => undefined,
+      close: async () => undefined,
+    };
+    const reconciler = createJobReconciler({ prisma, jobs, events: createThreadEvents(prisma) });
+    await reconciler.reconcileOnce();
+    await reconciler.reconcileOnce();
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: delivery.id } })).toMatchObject({
+      status: "cancelled",
+      collaborationStatus: "completed",
+      botOutcomeReturnedAt: expect.any(Date),
+    });
+    expect(
+      await prisma.run.count({ where: { parentRunId: delivery.id, origin: "peer_return" } }),
+    ).toBe(1);
+    expect(await f.transcript()).toHaveLength(2);
+  });
+
+  it("returns a delegated result when the worker cannot invoke the messaging tool", async () => {
+    const f = await fixture();
+    await f.send();
+    const delivery = await prisma.run.findFirstOrThrow({ where: { botId: f.target.bot.id } });
+    await prisma.run.update({
+      where: { id: delivery.id },
+      data: { status: "running", startedAt: new Date() },
+    });
+    await prisma.bot.update({
+      where: { id: f.target.bot.id },
+      data: { disabledBuiltinTools: ["message_bot"] },
+    });
+    await expect(
+      messageBot(f.deps, delivery, f.target.bot, {
+        bot_id: f.sender.bot.id,
+        message: "An explicit tool call",
+        intent: "result",
+        deliveryKey: "explicit-blocked-result",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: "policy_disabled" });
+    await prisma.run.update({
+      where: { id: delivery.id },
+      data: { status: "completed", completedAt: new Date() },
+    });
+    await expect(
+      returnBotMessageOutcome(f.deps, delivery, f.target.bot, "The authorized result"),
+    ).resolves.toBe(true);
+    const returned = await prisma.run.findFirstOrThrow({
+      where: { parentRunId: delivery.id, origin: "peer_return" },
+    });
+    await expect(
+      prisma.$transaction((tx) => authorizeCollaborationRunStart(tx, returned.id)),
+    ).resolves.toMatchObject({ allowed: true });
+    expect(await f.transcript()).toHaveLength(2);
+    await f.toggle(false);
+    await f.toggle(true);
+    await expect(
+      prisma.$transaction((tx) => authorizeCollaborationRunStart(tx, returned.id)),
+    ).resolves.toMatchObject({ allowed: false });
+  });
+
+  it.each(["automatic", "explicit"] as const)(
+    "rechecks a queued %s result after the worker messaging tool is disabled",
+    async (kind) => {
+      const f = await fixture();
+      await f.send();
+      const delivery = await prisma.run.findFirstOrThrow({ where: { botId: f.target.bot.id } });
+      await prisma.run.update({
+        where: { id: delivery.id },
+        data: { status: "running", startedAt: new Date() },
+      });
+      if (kind === "explicit")
+        await expect(
+          messageBot(f.deps, delivery, f.target.bot, {
+            bot_id: f.sender.bot.id,
+            message: "Explicit result",
+            intent: "result",
+            deliveryKey: "explicit-result-effect",
+          }),
+        ).resolves.toMatchObject({ ok: true });
+      await prisma.run.update({
+        where: { id: delivery.id },
+        data: { status: "completed", completedAt: new Date() },
+      });
+      if (kind === "automatic")
+        await expect(
+          returnBotMessageOutcome(f.deps, delivery, f.target.bot, "Automatic result"),
+        ).resolves.toBe(true);
+      const returned = await prisma.run.findFirstOrThrow({
+        where: { parentRunId: delivery.id, origin: "peer_return" },
+      });
+      await prisma.bot.update({
+        where: { id: f.target.bot.id },
+        data: { disabledBuiltinTools: ["message_bot"] },
+      });
+      await expect(
+        prisma.$transaction((tx) => authorizeCollaborationRunStart(tx, returned.id)),
+      ).resolves.toMatchObject({ allowed: kind === "automatic" });
+    },
+  );
 
   it("keeps a Bot's disabled tool restriction narrower than an enabled Space", async () => {
     const f = await fixture();

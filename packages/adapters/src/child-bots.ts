@@ -17,6 +17,7 @@ import {
   appendEventInTransaction,
   authorizeBotCollaboration,
   BotCollaborationDisabledError,
+  BotCollaborationSourceInactiveError,
   cancelRunsInTransaction,
   collaborationRunFields,
   computerScopeKey,
@@ -237,6 +238,8 @@ export async function spawnBot(
     } catch (error) {
       if (error instanceof BotCollaborationDisabledError)
         return { error: "policy_disabled" } as const;
+      if (error instanceof BotCollaborationSourceInactiveError)
+        return { error: error.message } as const;
       throw error;
     }
     if ("notice" in delivery && delivery.notice) {

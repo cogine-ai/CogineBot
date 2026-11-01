@@ -322,10 +322,17 @@ export function createJobReconciler(
             }
           }),
         );
-        const localPeerDeliveries = await deps.prisma.run.findMany({
+        const terminalPeerDeliveries = await deps.prisma.run.findMany({
           where: {
             origin: { in: [...BOT_COLLABORATION_ORIGINS] },
-            trigger: { not: "bot_message" },
+            OR: [
+              { trigger: { not: "bot_message" } },
+              {
+                trigger: "bot_message",
+                status: "cancelled",
+                OR: [{ error: null }, { error: { notIn: [...stuckWorkStatusMessages()] } }],
+              },
+            ],
             collaborationStatus: "waiting_peer",
             status: { in: ["completed", "failed", "cancelled"] },
           },
@@ -334,7 +341,7 @@ export function createJobReconciler(
           select: { id: true },
         });
         await Promise.all(
-          localPeerDeliveries.map((run) =>
+          terminalPeerDeliveries.map((run) =>
             settlePeerDelivery({ prisma: deps.prisma, events }, run.id, "completed").catch(
               (error) => getLogger().error("collaboration result reconciliation", error),
             ),
