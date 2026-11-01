@@ -5,6 +5,7 @@ const sections = [
   "memory",
   "voice",
   "confirmations",
+  "collaboration",
   "usage",
   "computer",
   "billing",

@@ -8865,6 +8865,16 @@ const MessageView = memo(function MessageView({
             );
           }
           if (isToolActivityBlock(block)) return null;
+          const deliveryStatus =
+            "deliveryStatus" in block
+              ? block.deliveryStatus === "policy_disabled"
+                ? t`Automatic collaboration stopped`
+                : block.deliveryStatus === "waiting_peer"
+                  ? t`Waiting…`
+                  : block.deliveryStatus === "completed"
+                    ? t`Done`
+                    : undefined
+              : undefined;
           if (block.kind === "handoff") {
             const from = memberName?.(block.fromBotId) ?? t`bot`;
             const to = memberName?.(block.toBotId) ?? t`bot`;
@@ -8877,6 +8887,7 @@ const MessageView = memo(function MessageView({
                   ↪ {to} ← {from}
                 </span>
                 <span>{block.text}</span>
+                {deliveryStatus ? <span>{deliveryStatus}</span> : null}
               </div>
             );
           }
@@ -8888,7 +8899,8 @@ const MessageView = memo(function MessageView({
             return (
               <CollaborationMarker
                 key={i}
-                ariaLabel={label}
+                ariaLabel={deliveryStatus ? `${label}. ${deliveryStatus}` : label}
+                status={deliveryStatus}
                 color={peerBot(peerBotId)?.color ?? FALLBACK_BOT_COLOR}
                 identity={peerBotId}
                 label={sent ? t`Messaged` : t`Message from`}
@@ -9012,6 +9024,9 @@ const MessageView = memo(function MessageView({
                       : t`Removed with chat, computer, and memory.`
                     : block.title || t`Opened its thread.`}
                 </div>
+                {deliveryStatus ? (
+                  <div className="mt-2 text-[13px] text-muted-foreground">{deliveryStatus}</div>
+                ) : null}
               </button>
             );
           }

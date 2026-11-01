@@ -212,6 +212,9 @@ model Space {
   createdAt                   DateTime                     @default(now())
   deletingAt                  DateTime?
   deletionClaimId             String?
+  allowBotCollaboration       Boolean                      @default(true)
+  collaborationRevision       Int                          @default(0)
+  collaborationAudit          SpaceCollaborationChange[]
   memberships                 SpaceMember[]
   bots                        Bot[]
   botSections                 BotSection[]
@@ -276,6 +279,20 @@ model SpaceMember {
   @@index([organizationId, userId])
   @@index([userId, createdAt])
   @@map("space_members")
+}
+
+model SpaceCollaborationChange {
+  id              String   @id @default(cuid())
+  spaceId         String
+  space           Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  actorUserId     String
+  previousAllowed Boolean
+  allowed         Boolean
+  revision        Int
+  createdAt       DateTime @default(now())
+
+  @@unique([spaceId, revision])
+  @@map("space_collaboration_changes")
 }
 
 model Invitation {
@@ -641,6 +658,16 @@ model Run {
   userId               String
   status               String
   trigger              String
+  /// Trusted dispatch classification, independent of user-visible trigger names.
+  origin               String           @default("human")
+  parentRunId          String?
+  collaborationSourceSpaceId String?
+  collaborationSourceBotId String?
+  collaborationSourceRevision Int?
+  collaborationRevision Int?
+  collaborationMessageId String?
+  /// Delivery state, not a new Run lifecycle state.
+  collaborationStatus  String?
   modelProvider        String?
   modelId              String?
   modelCredentialId    String?
@@ -680,6 +707,9 @@ model Run {
   @@index([trigger, status, teamChatMirroredAt, updatedAt])
   @@index([spaceId, botId])
   @@index([sourceMessageId])
+  @@index([collaborationSourceSpaceId, collaborationStatus])
+  @@index([spaceId, origin, status, startedAt])
+  @@index([parentRunId])
   @@index([threadId, status, createdAt])
   @@index([routineId])
   @@map("runs")

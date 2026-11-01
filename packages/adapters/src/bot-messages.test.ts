@@ -28,6 +28,10 @@ function deps(
     /** Simulate a unique (threadId, clientNonce) race after both retries miss. */
     uniqueConflictOnCommit?: boolean;
     transactionConflictOnce?: boolean;
+    collaborationAllowed?: boolean;
+    disabledBuiltinTools?: string[];
+    origin?: string;
+    collaborationStatus?: string;
   } = {},
 ) {
   const enqueue = vi.fn().mockResolvedValue(undefined);
@@ -41,15 +45,47 @@ function deps(
     );
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: "thread" }]),
+    space: {
+      findUnique: vi.fn().mockResolvedValue({
+        id: run.spaceId,
+        allowBotCollaboration: options.collaborationAllowed ?? true,
+        collaborationRevision: 0,
+        deletingAt: null,
+      }),
+    },
     run: {
       findFirst: vi
         .fn()
-        .mockResolvedValue(options.senderRunning === false ? null : { id: "run-1" }),
-      findUnique: vi.fn().mockResolvedValue({ status: "running" }),
+        .mockResolvedValue(options.senderRunning === false ? null : { ...run, status: "running" }),
+      findUnique: vi.fn().mockResolvedValue({
+        ...run,
+        status: "running",
+        origin: options.origin ?? "human",
+        collaborationStatus: options.collaborationStatus ?? null,
+        parentRunId: null,
+        collaborationMessageId: null,
+      }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       create: vi.fn().mockResolvedValue({ id: "run-2" }),
     },
     bot: {
-      findFirst: vi.fn().mockResolvedValue(options.targetArchived ? null : { id: "bot-target" }),
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === run.botId
+          ? {
+              id: run.botId,
+              userId: run.userId,
+              spaceId: run.spaceId,
+              disabledBuiltinTools: options.disabledBuiltinTools ?? [],
+            }
+          : options.targetArchived
+            ? null
+            : {
+                id: "bot-target",
+                userId: run.userId,
+                spaceId: run.spaceId,
+                disabledBuiltinTools: [],
+              },
+      ),
     },
     task: { create: vi.fn().mockResolvedValue({ id: "task-1" }) },
     message: {
@@ -58,7 +94,13 @@ function deps(
       update: vi.fn().mockResolvedValue({}),
     },
     event: { create: vi.fn().mockResolvedValue({ seq: 7 }) },
-    thread: { update: vi.fn().mockResolvedValue({}) },
+    thread: {
+      findFirst: vi.fn().mockResolvedValue({ id: "thread-target", spaceId: run.spaceId }),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    spaceMember: {
+      findUnique: vi.fn().mockResolvedValue({ userId: run.userId, spaceId: run.spaceId }),
+    },
   };
   let transactionAttempts = 0;
   const prisma = {
@@ -72,7 +114,10 @@ function deps(
         ),
     },
     message: { findUnique: messageFindUnique, findMany: vi.fn().mockResolvedValue([]) },
-    run: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    run: {
+      findUnique: tx.run.findUnique,
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
     $transaction: vi.fn(async (fn: (client: unknown) => unknown) => {
       transactionAttempts += 1;
       if (options.transactionConflictOnce && transactionAttempts === 1) {
@@ -96,6 +141,58 @@ function deps(
 }
 
 describe("messaging another bot", () => {
+  it("refuses a peer delivery while Space collaboration is disabled", async () => {
+    const harness = deps({ collaborationAllowed: false });
+    const sent = await messageBot(harness.deps, run, sender, {
+      bot_id: "bot-target",
+      message: "Research this",
+    });
+
+    expect(sent).toEqual({ ok: false, error: "policy_disabled" });
+    expect(harness.enqueue).not.toHaveBeenCalled();
+    expect(harness.tx.message.create).not.toHaveBeenCalled();
+  });
+
+  it("preserves the sending Bot's narrower disabled tool setting", async () => {
+    const harness = deps({ disabledBuiltinTools: ["message_bot"] });
+    await expect(
+      messageBot(harness.deps, run, sender, {
+        bot_id: "bot-target",
+        message: "Research this",
+      }),
+    ).resolves.toEqual({ ok: false, error: "policy_disabled" });
+    expect(harness.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a policy-cancelled delivery after collaboration is enabled again", async () => {
+    const harness = deps({
+      alreadyDelivered: { id: "prior-message", sourceRuns: [{ id: "cancelled-run" }] },
+    });
+    await expect(
+      messageBot(harness.deps, run, sender, {
+        bot_id: "bot-target",
+        message: "Research this",
+        deliveryKey: "original-call",
+      }),
+    ).resolves.toEqual({ ok: false, error: "policy_disabled" });
+    expect(harness.enqueue).not.toHaveBeenCalled();
+    expect(harness.tx.message.create).not.toHaveBeenCalled();
+  });
+
+  it("treats a disabled automatic return as handled without delivering it", async () => {
+    const harness = deps({ origin: "bot_peer", collaborationStatus: "policy_disabled" });
+    await expect(returnBotMessageOutcome(harness.deps, run, sender, "Result")).resolves.toBe(true);
+    expect(harness.enqueue).not.toHaveBeenCalled();
+    expect(harness.tx.message.create).not.toHaveBeenCalled();
+  });
+
+  it("settles a connected-agent delivery without inventing a cross-Space automatic return", async () => {
+    const harness = deps({ origin: "external_agent", collaborationStatus: "waiting_peer" });
+    await expect(returnBotMessageOutcome(harness.deps, run, sender, "Result")).resolves.toBe(true);
+    expect(harness.enqueue).not.toHaveBeenCalled();
+    expect(harness.tx.message.create).not.toHaveBeenCalled();
+  });
+
   it("delivers into the target's own chat and preserves unread activity on both sides", async () => {
     const harness = deps();
     const sent = await messageBot(harness.deps, run, sender, {
@@ -275,7 +372,6 @@ describe("messaging another bot", () => {
       { allowTerminalSource: true },
     );
     expect(sent.ok).toBe(true);
-    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(2);
     expect(harness.tx.message.create).toHaveBeenLastCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

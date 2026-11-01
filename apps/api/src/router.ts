@@ -179,10 +179,12 @@ import {
   appendEventInTransaction,
   BotSectionNameConflictError,
   bindWaitingTakeoverControl,
+  CannotChangeCollaborationError,
   CannotDeleteDefaultSpaceError,
   CannotDeleteLastSpaceError,
   CannotDeleteSpaceAsNonOwnerError,
   CannotRenameSpaceAsNonOwnerError,
+  CollaborationRevisionConflictError,
   ComputerLimitError,
   claimEmptySpaceDeletionForMember,
   createExternalConversationRepos,
@@ -233,6 +235,7 @@ import {
   toTicketCommentDto,
   toTicketDto,
   touchGroupUpdatedAt,
+  updateSpaceCollaborationForMember,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -1042,11 +1045,39 @@ export function createRouter(deps: RouterDeps) {
           hasContent: false,
           canRename: true,
           canDelete: true,
+          allowBotCollaboration: true,
+          collaborationRevision: 0,
+          canManageCollaboration: true,
           bots: [],
           groups: [],
           externalConversations: [],
           botSections: [],
         };
+      }),
+      update: authed.spaces.update.handler(async ({ context, input }) => {
+        // Policy changes are a person/session setting, never an agent tool capability.
+        if (!context.sessionId) throw new ORPCError("FORBIDDEN");
+        try {
+          const committed = await updateSpaceCollaborationForMember(deps.prisma, {
+            currentSpaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            ...input,
+          });
+          for (const notice of committed.notices)
+            await deps.events.notify(notice.threadId, notice.seq).catch(() => undefined);
+          return committed.policy;
+        } catch (error) {
+          if (error instanceof CannotChangeCollaborationError)
+            throw new ORPCError("FORBIDDEN", { message: error.message });
+          if (error instanceof SpaceNotFoundError)
+            throw new ORPCError("NOT_FOUND", { message: error.message });
+          if (
+            error instanceof CollaborationRevisionConflictError ||
+            error instanceof SpaceDeletionInProgressError
+          )
+            throw new ORPCError("CONFLICT", { message: error.message });
+          throw error;
+        }
       }),
       rename: authed.spaces.rename.handler(async ({ context, input }) => {
         try {
@@ -6926,7 +6957,15 @@ async function spaceNavigationDto(
     select: {
       spaceId: true,
       role: true,
-      space: { select: { name: true, isDefault: true, deletingAt: true } },
+      space: {
+        select: {
+          name: true,
+          isDefault: true,
+          deletingAt: true,
+          allowBotCollaboration: true,
+          collaborationRevision: true,
+        },
+      },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -6996,6 +7035,9 @@ async function spaceNavigationDto(
         isDefault: membership.space.isDefault,
         hasContent: spacesWithContent.has(membership.spaceId),
         canRename: membership.role === "owner" && membership.space.deletingAt === null,
+        allowBotCollaboration: membership.space.allowBotCollaboration,
+        collaborationRevision: membership.space.collaborationRevision,
+        canManageCollaboration: membership.role === "owner" && membership.space.deletingAt === null,
         canDelete:
           membership.role === "owner" &&
           !membership.space.isDefault &&

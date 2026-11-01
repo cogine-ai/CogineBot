@@ -91,6 +91,7 @@ vi.mock("../components/settings-group", () => ({
       {title}
     </button>
   ),
+  SettingsSwitch: () => null,
 }));
 vi.mock("../components/native-action-button", () => ({
   NativeActionButton: ({

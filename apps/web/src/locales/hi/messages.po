@@ -6385,3 +6385,35 @@ msgstr "जारी रखने के लिए अपनी API कुंज
 
 msgid "Add API key"
 msgstr "API कुंजी जोड़ें"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Bot collaboration"
+msgstr "Bot सहयोग"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Allow Bots to message and assign work to other Bots and connected agents."
+msgstr "Bots को दूसरे Bots और जुड़े एजेंटों को संदेश भेजने और काम सौंपने दें।"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Only the Space owner can change this."
+msgstr "केवल Space का स्वामी इसे बदल सकता है।"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Work already running may finish."
+msgstr "पहले से चल रहा काम पूरा हो सकता है।"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not load this setting."
+msgstr "यह सेटिंग लोड नहीं हो सकी।"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not confirm this change. Refresh before saving."
+msgstr "इस बदलाव की पुष्टि नहीं हो सकी। सहेजने से पहले रीफ़्रेश करें।"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "This setting changed elsewhere. Refresh before saving."
+msgstr "यह सेटिंग कहीं और बदली गई है। सहेजने से पहले रीफ़्रेश करें।"
+
+#: src/pages/Shell.tsx
+msgid "Automatic collaboration stopped"
+msgstr "स्वचालित सहयोग रोक दिया गया"

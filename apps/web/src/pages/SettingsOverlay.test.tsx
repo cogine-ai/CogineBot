@@ -21,6 +21,8 @@ vi.mock("@lingui/react/macro", () => ({
 vi.mock("@rakazo/ui-web", async (importOriginal) => {
   const actual = await importOriginal<typeof UiWeb>();
   return {
+    Switch: actual.Switch,
+    Label: actual.Label,
     Select: actual.Select,
     SelectContent: actual.SelectContent,
     SelectItem: actual.SelectItem,
@@ -37,8 +39,12 @@ vi.mock("@rakazo/ui-web", async (importOriginal) => {
       </button>
     ),
     Dialog: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-    DialogClose: ({ children, ...props }: ComponentProps<"button"> & { render?: unknown }) => (
-      <button type="button" disabled={props.disabled}>
+    DialogClose: ({
+      children,
+      render: _render,
+      ...props
+    }: ComponentProps<"button"> & { render?: unknown }) => (
+      <button type="button" {...props}>
         {children}
       </button>
     ),
@@ -270,6 +276,142 @@ it("ignores a previous target read that finishes after a replacement target", as
     expect(h.container.querySelector('[data-testid="memory-value"]')?.textContent).not.toContain(
       "space-b",
     );
+  } finally {
+    await h.close();
+  }
+});
+
+it("lets the target Space owner save fresh collaboration policy without moving the chat", async () => {
+  const h = await setup();
+  let written: unknown;
+  let writeSpace: string | null = null;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request | string | URL, init?: RequestInit) => {
+      const url = request instanceof Request ? request.url : String(request);
+      if (url.endsWith("/spaces/list"))
+        return Response.json({
+          json: {
+            spaces: [
+              {
+                id: "space-b",
+                name: "Beta",
+                allowBotCollaboration: true,
+                collaborationRevision: 7,
+                canManageCollaboration: true,
+              },
+            ],
+          },
+        });
+      if (url.endsWith("/spaces/update")) {
+        written = JSON.parse(
+          request instanceof Request ? await request.text() : String(init?.body),
+        );
+        writeSpace = new Headers(init?.headers).get("x-rakazo-space-id");
+        return Response.json({
+          json: {
+            spaceId: "space-b",
+            allowBotCollaboration: false,
+            collaborationRevision: 8,
+            canManageCollaboration: true,
+          },
+        });
+      }
+      throw new Error(`Unexpected UI RPC ${url}`);
+    }),
+  );
+  try {
+    const tab = h.container.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-nav-collaboration"]',
+    );
+    expect(tab).not.toBeNull();
+    await act(async () => tab!.click());
+    const toggle = h.container.querySelector<HTMLButtonElement>('[role="switch"]');
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => toggle!.click());
+    expect(h.container.textContent).toContain("Work already running may finish.");
+    const save = Array.from(h.container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Save",
+    );
+    expect(save?.disabled).toBe(false);
+    await act(async () => save!.click());
+    expect(written).toEqual({
+      json: { spaceId: "space-b", allowBotCollaboration: false, expectedCollaborationRevision: 7 },
+    });
+    expect(writeSpace).toBe("space-b");
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(h.container.textContent).toContain("Saved.");
+    expect(h.onSpaceChange).not.toHaveBeenCalled();
+    expect(localStorage.getItem("rakazo:space-id")).toBe("space-a");
+  } finally {
+    await h.close();
+  }
+});
+
+it("keeps the settings target and navigation locked until a collaboration write settles", async () => {
+  const h = await setup();
+  let release!: (value: Response) => void;
+  const pending = new Promise<Response>((done) => {
+    release = done;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      if (request.url.endsWith("/spaces/list"))
+        return Response.json({
+          json: {
+            spaces: [
+              {
+                id: "space-b",
+                allowBotCollaboration: true,
+                collaborationRevision: 7,
+                canManageCollaboration: true,
+              },
+            ],
+          },
+        });
+      if (request.url.endsWith("/spaces/update")) return pending;
+      throw new Error("Unexpected UI RPC");
+    }),
+  );
+  try {
+    await act(async () =>
+      h.container
+        .querySelector<HTMLButtonElement>('[data-testid="settings-nav-collaboration"]')!
+        .click(),
+    );
+    await act(async () => h.container.querySelector<HTMLElement>('[role="switch"]')!.click());
+    await act(async () =>
+      [...h.container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Save")!
+        .click(),
+    );
+    expect(
+      h.container.querySelector<HTMLButtonElement>('[data-testid="settings-space"]')?.disabled,
+    ).toBe(true);
+    expect(
+      h.container.querySelector<HTMLButtonElement>('[data-testid="settings-nav-models"]')?.disabled,
+    ).toBe(true);
+    expect(
+      h.container.querySelector<HTMLButtonElement>('[aria-label="Close user settings"]')?.disabled,
+    ).toBe(true);
+    expect(h.onSpaceChange).not.toHaveBeenCalled();
+    await act(async () =>
+      release(
+        Response.json({
+          json: {
+            spaceId: "space-b",
+            allowBotCollaboration: false,
+            collaborationRevision: 8,
+            canManageCollaboration: true,
+          },
+        }),
+      ),
+    );
+    expect(
+      h.container.querySelector<HTMLButtonElement>('[data-testid="settings-space"]')?.disabled,
+    ).toBe(false);
+    expect(localStorage.getItem("rakazo:space-id")).toBe("space-a");
   } finally {
     await h.close();
   }

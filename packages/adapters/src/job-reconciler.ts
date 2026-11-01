@@ -3,9 +3,11 @@ import { messagingDeliverJob, routineWakeupJob, runContinueJob } from "@rakazo/a
 import type { MessageBlock } from "@rakazo/contracts";
 import { normalizeRunError, stuckWorkStatusMessages } from "@rakazo/core";
 import type { Pool, PrismaClient, ThreadEvents } from "@rakazo/db";
+import { BOT_COLLABORATION_ORIGINS } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { PoolClient } from "pg";
 import { returnBotMessageOutcome } from "./bot-messages.js";
+import { settlePeerDelivery } from "./collaboration-policy.js";
 import { scheduleComputerControlExpiry } from "./computer-control.js";
 import { reconcileStuckWork } from "./stuck-work.js";
 import { isUserProgressClientNonce } from "./user-progress.js";
@@ -319,6 +321,24 @@ export function createJobReconciler(
               });
             }
           }),
+        );
+        const localPeerDeliveries = await deps.prisma.run.findMany({
+          where: {
+            origin: { in: [...BOT_COLLABORATION_ORIGINS] },
+            trigger: { not: "bot_message" },
+            collaborationStatus: "waiting_peer",
+            status: { in: ["completed", "failed", "cancelled"] },
+          },
+          orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+          take: batchSize,
+          select: { id: true },
+        });
+        await Promise.all(
+          localPeerDeliveries.map((run) =>
+            settlePeerDelivery({ prisma: deps.prisma, events }, run.id, "completed").catch(
+              (error) => getLogger().error("collaboration result reconciliation", error),
+            ),
+          ),
         );
       }
 

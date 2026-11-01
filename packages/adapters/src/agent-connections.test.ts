@@ -36,6 +36,8 @@ function createDeps(
     connectionRevokedInsideTx?: boolean;
     /** Simulates a revoke landing after the in-transaction approval read. */
     connectionRevokedAfterReadInsideTx?: boolean;
+    sourceCollaborationAllowed?: boolean;
+    targetCollaborationAllowed?: boolean;
   } = {},
 ) {
   const outboundRows: Array<Record<string, unknown>> = [];
@@ -45,6 +47,18 @@ function createDeps(
     taskCreate: [] as unknown[],
   };
   const txMock = {
+    space: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
+        id: where.id,
+        collaborationRevision: 0,
+        deletingAt: null,
+        allowBotCollaboration:
+          where.id === "ws-1"
+            ? (overrides.sourceCollaborationAllowed ?? true)
+            : (overrides.targetCollaborationAllowed ?? true),
+      })),
+    },
+    spaceMember: { findUnique: vi.fn(async () => ({ role: "owner" })) },
     message: {
       findUnique: vi.fn(async () => null),
       create: vi.fn(async ({ data }: { data: unknown }) => {
@@ -70,17 +84,28 @@ function createDeps(
     event: {
       create: vi.fn(async ({ data }: { data: object }) => ({ id: "evt-1", seq: 8, ...data })),
     },
-    thread: { update: vi.fn(async () => ({ nextMessageSeq: 4, nextEventSeq: 9 })) },
-    bot: { findFirst: vi.fn(async () => ({ id: "bot-2" })) },
+    thread: {
+      findFirst: vi.fn(async () => ({ id: "thread-2", spaceId: "ws-2" })),
+      update: vi.fn(async () => ({ nextMessageSeq: 4, nextEventSeq: 9 })),
+    },
+    bot: {
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) => ({
+        id: where.id,
+        disabledBuiltinTools: [],
+        archivedAt: null,
+        spaceId: where.id === "bot-1" ? "ws-1" : "ws-2",
+        userId: where.id === "bot-1" ? "user-1" : "user-2",
+      })),
+    },
     // What a `SELECT ... FOR UPDATE` on the connection row would see.
     $queryRaw: vi.fn(async () => {
       if (overrides.connectionRevokedInsideTx || overrides.connectionRevokedAfterReadInsideTx) {
-        return [{ status: "revoked" }];
+        return [{ status: "revoked", requesterBotId: "bot-1", targetBotId: "bot-2" }];
       }
       if (overrides.connection && typeof overrides.connection === "object") {
-        return [{ status: (overrides.connection as { status: string }).status }];
+        return [{ requesterBotId: "bot-1", targetBotId: "bot-2", ...overrides.connection }];
       }
-      return [{ status: "approved" }];
+      return [{ status: "approved", requesterBotId: "bot-1", targetBotId: "bot-2" }];
     }),
   };
   const connection = overrides.connection === undefined ? null : overrides.connection;
@@ -174,6 +199,7 @@ function createDeps(
   Object.assign(txMock, {
     agentConnection: prisma.agentConnection,
     messagingOutbound: prisma.messagingOutbound,
+    messagingIdentity: prisma.messagingIdentity,
   });
   const sendUserMessage = vi.fn(async () => ({ messageId: "m", runId: "r", seq: 1 }));
   const notify = vi.fn(async () => undefined);
@@ -313,6 +339,31 @@ describe("respondAgentConnection", () => {
 });
 
 describe("messageConnectedAgent", () => {
+  it.each(["source", "target"] as const)(
+    "requires the %s Space policy as well as an approved connection",
+    async (side) => {
+      const deps = createDeps({
+        connection: {
+          id: "ac-1",
+          requesterBotId: "bot-1",
+          targetBotId: "bot-2",
+          status: "approved",
+        },
+        ...(side === "source"
+          ? { sourceCollaborationAllowed: false }
+          : { targetCollaborationAllowed: false }),
+      });
+      await expect(
+        messageConnectedAgent(deps, run, sender, {
+          address: "+15552222222",
+          message: "Research this",
+        }),
+      ).resolves.toEqual({ ok: false, error: "policy_disabled" });
+      expect(deps.txCalls.messageCreate).toHaveLength(0);
+      expect(deps.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
   it("delivers across workspaces over an approved connection", async () => {
     const deps = createDeps({
       connection: { id: "ac-1", requesterBotId: "bot-1", targetBotId: "bot-2", status: "approved" },

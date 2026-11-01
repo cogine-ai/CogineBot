@@ -400,3 +400,30 @@ describe("lingui catalogs", () => {
     }
   });
 });
+
+it.each(["en", "de", "es", "fr", "hi", "ko", "pt-BR", "ru", "tr", "zh-CN"])(
+  "translates Bot collaboration policy and recovery controls in %s",
+  (locale) => {
+    const catalog = readFileSync(
+      fileURLToPath(new URL(`../locales/${locale}/messages.po`, import.meta.url)),
+      "utf8",
+    );
+    for (const message of [
+      "Bot collaboration",
+      "Allow Bots to message and assign work to other Bots and connected agents.",
+      "Only the Space owner can change this.",
+      "Work already running may finish.",
+      "Could not load this setting.",
+      "Could not confirm this change. Refresh before saving.",
+      "This setting changed elsewhere. Refresh before saving.",
+      "Automatic collaboration stopped",
+    ]) {
+      const entry = catalog
+        .split("\n\n")
+        .find((block) => block.includes(`msgid ${JSON.stringify(message)}\n`));
+      expect(entry, `${locale}: ${message}`).toMatch(/msgstr ".+"/);
+      if (locale !== "en")
+        expect(entry?.split("msgstr ")[1]?.trim()).not.toBe(JSON.stringify(message));
+    }
+  },
+);

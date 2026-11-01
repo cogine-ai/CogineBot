@@ -257,9 +257,7 @@ export async function lockSpaceForContentCreation(
   tx: Prisma.TransactionClient,
   input: { spaceId: string; userId: string },
 ): Promise<{ organizationId: string }> {
-  await tx.$queryRaw(Prisma.sql`
-    SELECT pg_advisory_xact_lock(hashtextextended(${input.spaceId}, 0))::text AS "lock"
-  `);
+  await lockSpaceLifecycle(tx, input.spaceId);
   const membership = await tx.spaceMember.findUnique({
     where: { spaceId_userId: { spaceId: input.spaceId, userId: input.userId } },
     select: {
@@ -272,7 +270,10 @@ export async function lockSpaceForContentCreation(
   return { organizationId: membership.organizationId };
 }
 
-async function lockSpaceDeletion(tx: Prisma.TransactionClient, spaceId: string): Promise<void> {
+export async function lockSpaceLifecycle(
+  tx: Prisma.TransactionClient,
+  spaceId: string,
+): Promise<void> {
   await tx.$queryRaw(Prisma.sql`
     SELECT pg_advisory_xact_lock(hashtextextended(${spaceId}, 0))::text AS "lock"
   `);
@@ -390,7 +391,7 @@ export async function claimEmptySpaceDeletionForMember(
   return withTransactionRetry(() =>
     prisma.$transaction(
       async (tx) => {
-        await lockSpaceDeletion(tx, input.spaceId);
+        await lockSpaceLifecycle(tx, input.spaceId);
         const planned = await assertEmptySpaceDeletable(tx, input);
         const lifecycle = await tx.space.findUnique({
           where: { id: input.spaceId },
@@ -467,7 +468,7 @@ export async function deleteEmptySpaceForMember(
   return withTransactionRetry(() =>
     prisma.$transaction(
       async (tx) => {
-        await lockSpaceDeletion(tx, input.spaceId);
+        await lockSpaceLifecycle(tx, input.spaceId);
         const claim = await tx.space.findFirst({
           where: { id: input.spaceId, deletionClaimId: input.claimId },
           select: { id: true },
@@ -499,7 +500,7 @@ export async function renameSpaceForMember(
   return withTransactionRetry(() =>
     prisma.$transaction(
       async (tx) => {
-        await lockSpaceDeletion(tx, input.spaceId);
+        await lockSpaceLifecycle(tx, input.spaceId);
         const owned = await loadActorSpace(tx, input);
         if (owned.role !== "owner") throw new CannotRenameSpaceAsNonOwnerError();
         if (owned.deletingAt) throw new SpaceDeletionInProgressError();

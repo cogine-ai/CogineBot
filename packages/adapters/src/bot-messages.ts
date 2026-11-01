@@ -9,14 +9,18 @@ import {
   nextBotMessageHop,
   resolveBotAddress,
 } from "@rakazo/core";
+import type { PrismaClient } from "@rakazo/db";
 import {
   appendEventInTransaction,
+  authorizeBotCollaboration,
+  BotCollaborationDisabledError,
+  collaborationRunFields,
   createThreadMessageInTransaction,
-  type PrismaClient,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import type { ExecutorDeps } from "./executor.js";
+import type { PeerDispatchDeps } from "./collaboration-policy.js";
+import { settlePeerDelivery } from "./collaboration-policy.js";
 
 /**
  * The hop the current run sits at, read back from the message that woke this
@@ -60,7 +64,7 @@ export async function loadBotMessageContext(
 }
 
 export async function messageBot(
-  deps: Pick<ExecutorDeps, "prisma" | "events" | "jobs">,
+  deps: PeerDispatchDeps,
   run: {
     id: string;
     spaceId: string;
@@ -79,6 +83,8 @@ export async function messageBot(
   },
   options?: { allowTerminalSource?: boolean },
 ) {
+  if (sender.id !== run.botId)
+    return { ok: false as const, error: "source bot does not match the run" };
   const message = String(input.message ?? "").trim();
   if (!message) return { ok: false as const, error: "message is required" };
   if (message.length > BOT_MESSAGE_MAX_LENGTH) {
@@ -111,6 +117,8 @@ export async function messageBot(
       sourceContext.intent === "request" ||
       sourceContext.intent === "question") &&
     sourceContext?.fromBotId === target.id;
+  const returnsToPeer =
+    (intent === "result" || intent === "status") && sourceContext?.fromBotId === target.id;
   if (botMessageHopExhausted(hop) && !returnsToSender) {
     return {
       ok: false as const,
@@ -141,6 +149,7 @@ export async function messageBot(
     toBotName: target.name,
     text: message,
     intent,
+    deliveryStatus: "waiting_peer",
   };
 
   let committed:
@@ -161,6 +170,19 @@ export async function messageBot(
   try {
     committed = await withTransactionRetry(() =>
       deps.prisma.$transaction(async (tx) => {
+        const policy = await authorizeBotCollaboration(tx, {
+          sourceRunId: run.id,
+          sourceSpaceId: run.spaceId,
+          sourceThreadId: run.threadId,
+          sourceBotId: run.botId,
+          sourceUserId: run.userId,
+          targetSpaceId: run.spaceId,
+          targetThreadId,
+          targetBotId: target.id,
+          targetUserId: run.userId,
+          toolName: "message_bot",
+          allowTerminalSource: options?.allowTerminalSource,
+        });
         for (const threadId of [run.threadId, targetThreadId].sort()) {
           await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
         }
@@ -169,8 +191,16 @@ export async function messageBot(
         if (deliveryKey) {
           const already = await tx.message.findUnique({
             where: { threadId_clientNonce: { threadId: targetThreadId, clientNonce: deliveryKey } },
-            select: { id: true },
+            select: {
+              id: true,
+              sourceRuns: {
+                where: { collaborationStatus: "policy_disabled" },
+                select: { id: true },
+                take: 1,
+              },
+            },
           });
+          if (already?.sourceRuns?.length) return { ok: false as const, error: "policy_disabled" };
           if (already) return { ok: true as const, replayed: true as const };
         }
 
@@ -255,6 +285,15 @@ export async function messageBot(
             status: "queued",
             trigger: "bot_message",
             sourceMessageId: inbound.id,
+            ...collaborationRunFields({
+              origin: returnsToPeer ? "peer_return" : "bot_peer",
+              sourceRunId: run.id,
+              sourceSpaceId: run.spaceId,
+              sourceBotId: run.botId,
+              sourceRevision: policy.sourceRevision,
+              targetRevision: policy.targetRevision,
+              outboundMessageId: outbound.id,
+            }),
           },
           select: { id: true },
         });
@@ -295,13 +334,23 @@ export async function messageBot(
       }),
     );
   } catch (error) {
+    if (error instanceof BotCollaborationDisabledError)
+      return { ok: false as const, error: "policy_disabled" };
     // Two concurrent retries can both miss the in-transaction lookup; the
     // loser hits the unique key. Treat that as a successful replay.
     if (deliveryKey && isUniqueConstraintError(error)) {
       const winner = await deps.prisma.message.findUnique({
         where: { threadId_clientNonce: { threadId: targetThreadId, clientNonce: deliveryKey } },
-        select: { id: true },
+        select: {
+          id: true,
+          sourceRuns: {
+            where: { collaborationStatus: "policy_disabled" },
+            select: { id: true },
+            take: 1,
+          },
+        },
       });
+      if (winner?.sourceRuns?.length) return { ok: false as const, error: "policy_disabled" };
       if (winner) return replayed();
     }
     throw error;
@@ -330,7 +379,7 @@ export async function messageBot(
 
 /** Return a delegated run's terminal outcome unless it already sent one explicitly. */
 export async function returnBotMessageOutcome(
-  deps: Pick<ExecutorDeps, "prisma" | "events" | "jobs">,
+  deps: PeerDispatchDeps,
   run: {
     id: string;
     spaceId: string;
@@ -343,14 +392,31 @@ export async function returnBotMessageOutcome(
   text: string,
   intent: "result" | "status" = "result",
 ) {
+  const current = await deps.prisma.run.findUnique({
+    where: { id: run.id },
+    select: { origin: true, collaborationStatus: true },
+  });
+  if (current?.collaborationStatus === "policy_disabled") {
+    await settlePeerDelivery(deps, run.id, "policy_disabled");
+    return true;
+  }
+  // Connected-agent messages have no implicit cross-Space return protocol.
+  // Their recipient may explicitly message the approved connection instead.
+  if (current?.origin === "external_agent") {
+    await settlePeerDelivery(deps, run.id, "completed");
+    await markBotOutcomeReturned(deps.prisma, run.id);
+    return true;
+  }
   const source = await loadBotMessageContext(deps.prisma, run.sourceMessageId);
   if (!source) {
+    await settlePeerDelivery(deps, run.id, "completed");
     await markBotOutcomeReturned(deps.prisma, run.id);
     // Handled: nothing to deliver. Return true so callers do not release a reservation.
     return true;
   }
   const sourceIntent = source.intent ?? "request";
   if (sourceIntent !== "request" && sourceIntent !== "question") {
+    await settlePeerDelivery(deps, run.id, "completed");
     await markBotOutcomeReturned(deps.prisma, run.id);
     return true;
   }
@@ -369,6 +435,7 @@ export async function returnBotMessageOutcome(
     ),
   );
   if (alreadyReturned) {
+    await settlePeerDelivery(deps, run.id, "completed");
     await markBotOutcomeReturned(deps.prisma, run.id);
     return true;
   }
@@ -385,7 +452,13 @@ export async function returnBotMessageOutcome(
     },
     { allowTerminalSource: true },
   );
-  if (outcome.ok) await markBotOutcomeReturned(deps.prisma, run.id);
+  if (outcome.ok) {
+    await settlePeerDelivery(deps, run.id, "completed");
+    await markBotOutcomeReturned(deps.prisma, run.id);
+  } else if (outcome.error === "policy_disabled") {
+    await settlePeerDelivery(deps, run.id, "policy_disabled");
+    return true;
+  }
   return outcome.ok;
 }
 

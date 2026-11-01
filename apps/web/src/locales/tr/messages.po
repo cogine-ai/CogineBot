@@ -6385,3 +6385,35 @@ msgstr "Devam etmek için kendi API anahtarınızı ekleyin."
 
 msgid "Add API key"
 msgstr "API anahtarı ekle"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Bot collaboration"
+msgstr "Bot iş birliği"
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Allow Bots to message and assign work to other Bots and connected agents."
+msgstr "Botların diğer Botlara ve bağlı aracılara mesaj göndermesine ve iş atamasına izin verin."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Only the Space owner can change this."
+msgstr "Bunu yalnızca Space sahibi değiştirebilir."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Work already running may finish."
+msgstr "Devam eden işler tamamlanabilir."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not load this setting."
+msgstr "Bu ayar yüklenemedi."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "Could not confirm this change. Refresh before saving."
+msgstr "Bu değişiklik doğrulanamadı. Kaydetmeden önce yenileyin."
+
+#: src/components/SpaceCollaborationSettings.tsx
+msgid "This setting changed elsewhere. Refresh before saving."
+msgstr "Bu ayar başka bir yerde değiştirildi. Kaydetmeden önce yenileyin."
+
+#: src/pages/Shell.tsx
+msgid "Automatic collaboration stopped"
+msgstr "Otomatik iş birliği durduruldu"

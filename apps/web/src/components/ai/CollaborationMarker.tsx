@@ -9,6 +9,7 @@ export function CollaborationMarker({
   identity,
   label,
   peerName,
+  status,
   onClick,
 }: {
   ariaLabel: string;
@@ -16,6 +17,7 @@ export function CollaborationMarker({
   identity: string;
   label: string;
   peerName: string;
+  status?: string;
   onClick: () => void;
 }) {
   return (
@@ -25,7 +27,7 @@ export function CollaborationMarker({
         data-testid="peer-receipt-chip"
         aria-label={ariaLabel}
         onClick={onClick}
-        className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-lg px-0 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="inline-flex min-h-8 max-w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-lg px-0 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <span className="shrink-0">{label}</span>
         <BotAvatar color={color} identity={identity} size={16} />
@@ -33,6 +35,7 @@ export function CollaborationMarker({
           {peerName}
         </span>
         <ChevronRight size={12} strokeWidth={1.5} className="shrink-0" aria-hidden="true" />
+        {status ? <span className="basis-full text-start">{status}</span> : null}
       </button>
     </div>
   );

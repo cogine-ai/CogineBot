@@ -57,6 +57,11 @@ export type ProductEventType = z.infer<typeof ProductEventType>;
 export const MessageRole = z.enum(["user", "bot", "system"]);
 export const BotMessageIntent = z.enum(["request", "result", "question", "status", "fyi"]);
 export type BotMessageIntent = z.infer<typeof BotMessageIntent>;
+export const BotCollaborationDeliveryStatus = z.enum([
+  "waiting_peer",
+  "completed",
+  "policy_disabled",
+]);
 
 export const MAX_CHART_DATA_ROWS = 5_000;
 
@@ -185,6 +190,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("child_bot"),
+    deliveryStatus: BotCollaborationDeliveryStatus.optional(),
     botId: z.string(),
     name: z.string(),
     title: z.string().optional(),
@@ -246,6 +252,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("handoff"),
+    deliveryStatus: BotCollaborationDeliveryStatus.optional(),
     fromBotId: Id,
     toBotId: Id,
     text: z.string(),
@@ -267,6 +274,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   z.object({
     /** Shown in the sending bot's own chat, so the user can see what it sent. */
     kind: z.literal("bot_message_sent"),
+    deliveryStatus: BotCollaborationDeliveryStatus.optional(),
     toBotId: Id,
     toBotName: z.string(),
     text: z.string(),

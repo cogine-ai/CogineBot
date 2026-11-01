@@ -1054,4 +1054,10 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not save timezone": "无法保存时区",
   "Instructions must be at most {count} characters": "指令最多可包含 {count} 个字符",
   "Save other settings": "保存其他设置",
+  "Bot collaboration": "Bot 协作",
+  "Allow Bots to message and assign work to other Bots and connected agents.":
+    "允许 Bot 向其他 Bot 和已连接的智能体发送消息并分配工作。",
+  "Only the Space owner can change this.": "只有 Space 所有者可以更改此设置。",
+  "Work already running may finish.": "已开始的工作可能会继续完成。",
+  "Automatic collaboration stopped": "自动协作已停止",
 };

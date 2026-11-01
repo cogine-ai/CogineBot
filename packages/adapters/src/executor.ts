@@ -111,6 +111,8 @@ import {
 import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   appendEventInTransaction,
+  authorizeCollaborationRunStart,
+  BOT_COLLABORATION_ORIGINS,
   createSpaceForMember,
   createThreadMessageInTransaction,
   effectiveMemoryScope,
@@ -130,6 +132,7 @@ import {
   settleReleasedTakeoverCards,
   storeToolResultHistory,
   TOOL_RESULT_HISTORY_MAX_BYTES,
+  withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
@@ -215,6 +218,7 @@ import { executeCloudAgentTool } from "./cloud-agent-service.js";
 import { validCloudAgentArgs } from "./cloud-agent-tools.js";
 import { selectCloudAgentTools } from "./cloud-agent-tools-select.js";
 import { cloudflareGatewayProviderEnv } from "./cloudflare-ai-gateway.js";
+import { notifyCollaborationNotices, settlePeerDelivery } from "./collaboration-policy.js";
 import type { PluginConnectionRow } from "./composio-connector.js";
 import {
   collectLogIds,
@@ -3392,6 +3396,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
       if (isTerminal(run.status as RunStatus)) return;
+      const settleLocalPeerDelivery = async () => {
+        if (
+          run.trigger !== "bot_message" &&
+          BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin)
+        ) {
+          await settlePeerDelivery(deps, runId, "completed").catch((error) => {
+            getLogger().error("collaboration result settlement", error);
+          });
+        }
+      };
       // Admission must not inspect or terminate another worker's unexpired episode.
       if (
         (run.status === "running" || run.status === "leased") &&
@@ -3456,59 +3470,75 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
       const fence = nextFence(run.leaseFence);
       const now = new Date();
-      const leased = await deps.prisma.run.updateMany({
-        where: {
-          id: runId,
-          ...continueRunClaimFence(run),
-          ...(isSteeringContinuation
-            ? {
-                leaseFence: run.leaseFence,
-                updatedAt: run.updatedAt,
-                scriptedState: {
-                  equals: run.scriptedState === null ? Prisma.DbNull : run.scriptedState,
-                },
-              }
-            : {}),
-          OR: [
-            { status: { in: ["queued", "waiting_input", "waiting_takeover"] } },
-            {
-              status: { in: ["leased", "running"] },
-              leaseExpiresAt: { lte: now },
-            },
-          ],
-        },
-        data: {
-          status: "leased",
-          leaseOwner: workerId,
-          leaseFence: fence,
-          leaseExpiresAt: new Date(Date.now() + 5 * 60_000),
-          error: null,
-          checkpoint: null,
-        },
-      });
-      if (leased.count !== 1) return;
+      const claimAndStart = async (db: Pick<PrismaClient, "run">): Promise<boolean> => {
+        const leased = await db.run.updateMany({
+          where: {
+            id: runId,
+            ...continueRunClaimFence(run),
+            ...(isSteeringContinuation
+              ? {
+                  leaseFence: run.leaseFence,
+                  updatedAt: run.updatedAt,
+                  scriptedState: {
+                    equals: run.scriptedState === null ? Prisma.DbNull : run.scriptedState,
+                  },
+                }
+              : {}),
+            OR: [
+              { status: { in: ["queued", "waiting_input", "waiting_takeover"] } },
+              {
+                status: { in: ["leased", "running"] },
+                leaseExpiresAt: { lte: now },
+              },
+            ],
+          },
+          data: {
+            status: "leased",
+            leaseOwner: workerId,
+            leaseFence: fence,
+            leaseExpiresAt: new Date(Date.now() + 5 * 60_000),
+            error: null,
+            checkpoint: null,
+          },
+        });
+        if (leased.count !== 1) return false;
 
-      const current = await deps.prisma.run.findUniqueOrThrow({
-        where: { id: runId },
-      });
-      if (
-        current.status === "queued" ||
-        current.status === "leased" ||
-        current.status === "waiting_input" ||
-        current.status === "waiting_takeover"
-      ) {
-        assertTransition(current.status as RunStatus, "running");
+        const current = await db.run.findUniqueOrThrow({
+          where: { id: runId },
+        });
+        if (
+          current.status === "queued" ||
+          current.status === "leased" ||
+          current.status === "waiting_input" ||
+          current.status === "waiting_takeover"
+        ) {
+          assertTransition(current.status as RunStatus, "running");
+        }
+        const started = await db.run.updateMany({
+          where: {
+            id: runId,
+            status: "leased",
+            leaseOwner: workerId,
+            leaseFence: fence,
+          },
+          data: { status: "running", startedAt: current.startedAt ?? new Date() },
+        });
+        return started.count === 1;
+      };
+      let started: boolean;
+      if (BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin)) {
+        const admission = await withTransactionRetry(() =>
+          deps.prisma.$transaction(async (tx) => {
+            const gate = await authorizeCollaborationRunStart(tx, runId);
+            return { started: gate.allowed && (await claimAndStart(tx)), notices: gate.notices };
+          }),
+        );
+        await notifyCollaborationNotices(deps.events, admission.notices);
+        started = admission.started;
+      } else {
+        started = await claimAndStart(deps.prisma);
       }
-      const started = await deps.prisma.run.updateMany({
-        where: {
-          id: runId,
-          status: "leased",
-          leaseOwner: workerId,
-          leaseFence: fence,
-        },
-        data: { status: "running", startedAt: current.startedAt ?? new Date() },
-      });
-      if (started.count !== 1) return;
+      if (!started) return;
       if (isSteeringContinuation) {
         // A former worker can finish its receipt transaction before this lease is won.
         // Admission reads cannot authorize an effect; inspect the ledger under our fence.
@@ -3543,7 +3573,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ? scriptedAdmissionError.message
               : "Scripted continuation progress could not be verified",
         });
-        if (failed) await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
+        if (failed) {
+          await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
+          await settleLocalPeerDelivery();
+        }
         return;
       }
       const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
@@ -3623,7 +3656,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           attemptId: attempt.id,
           error: redactSecrets(error instanceof Error ? error.message : String(error), runSecrets),
         });
-        if (failed) await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
+        if (failed) {
+          await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
+          await settleLocalPeerDelivery();
+        }
       };
       const retainScriptedProgress = async () => {
         await deps.prisma.$transaction(async (tx) => {
@@ -3986,6 +4022,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error: message,
           });
           if (!failed) return;
+          await settleLocalPeerDelivery();
           if (failed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(failed.continuationRunId))
@@ -6826,15 +6863,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if ("error" in spawned) return finish(spawned);
             if (!(await persistEffectResult(spawned))) return uncertainEffectResult(name);
             try {
-              await publishMessage(deps, run, "bot", [
-                {
-                  kind: "child_bot",
-                  botId: spawned.botId,
-                  name: spawned.name,
-                  title: spawned.title,
-                  status: "created",
-                },
-              ]);
+              // Prompt deliveries publish the waiting card with their Run transaction.
+              if (!String(args.prompt ?? "").trim())
+                await publishMessage(deps, run, "bot", [
+                  {
+                    kind: "child_bot",
+                    botId: spawned.botId,
+                    name: spawned.name,
+                    title: spawned.title,
+                    status: "created",
+                  },
+                ]);
               await deps.events.append({
                 spaceId: run.spaceId,
                 threadId: thread.id,
@@ -7868,6 +7907,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     : [{ kind: "text", text: stuckText }],
                 });
                 if (!stopped) return;
+                await settleLocalPeerDelivery();
                 if (stopped.continuationRunId) {
                   await deps.jobs
                     .enqueue(runContinueJob(stopped.continuationRunId))
@@ -8147,6 +8187,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             markUnread: completionMarksUnread(run.trigger, text),
           });
           if (!completed) return;
+          await settleLocalPeerDelivery();
           if (completed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(completed.continuationRunId))
@@ -8240,6 +8281,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error: message,
           });
           if (!failed) return;
+          await settleLocalPeerDelivery();
           if (failed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(failed.continuationRunId))
