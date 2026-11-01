@@ -57,7 +57,7 @@ import {
   isAttachmentImageMimeType,
   OPENAI_COMPATIBLE_PROVIDER_ID,
 } from "@rakazo/contracts";
-import type { ActionApprovalRule, ToolCallStreak } from "@rakazo/core";
+import type { ActionApprovalRule, PlatformModelAllowlist, ToolCallStreak } from "@rakazo/core";
 import {
   appendTextSegment,
   appendToolCallSegment,
@@ -86,6 +86,8 @@ import {
   messagingDmSurfaceNote,
   nextCronDateAcross,
   nextFence,
+  normalizeRunError,
+  PlatformModelForbiddenError,
   planActionGate,
   promptInvokesSkill,
   redactSecrets,
@@ -317,6 +319,7 @@ import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
+import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import {
   isRetiredModelCredentialError,
@@ -328,6 +331,7 @@ import {
   serializeModelSecret,
   withModelCredentialLock,
 } from "./pi-oauth.js";
+import { canUsePlatformModel, platformModelAuthorization } from "./platform-model-access.js";
 import type { PlotSpec } from "./plot-tool.js";
 import {
   assertPlotDataWithinLimits,
@@ -2703,6 +2707,7 @@ export interface ExecutorDeps {
   connectors?: { managed(id: string): ManagedConnectorProvider | undefined };
   secrets: string[];
   secretStore: SecretStore;
+  platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey?: string;
   /** The deployment default model can run; see resolveDeploymentModel. */
   deploymentModelConfigured?: boolean;
@@ -3045,6 +3050,7 @@ export function buildApprovalContinuation(
 export function isTerminalModelSetupError(error: unknown): boolean {
   return (
     error instanceof UnavailableModelForAuthError ||
+    error instanceof PlatformModelForbiddenError ||
     isRetiredModelCredentialError(error) ||
     (error instanceof Error && error.message === CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE)
   );
@@ -3100,6 +3106,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
     return {
       provider,
       id: modelId,
+      authorize: resolved.authorize,
       modelCredentialId: resolved.modelCredentialId,
       apiKey: resolved.oauth ? undefined : resolved.apiKey,
       ...cloudflareRunFields(resolved),
@@ -3199,6 +3206,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       return {
         provider,
         id,
+        authorize: resolved.authorize,
         modelCredentialId: resolved.modelCredentialId,
         apiKey: resolved.oauth ? undefined : resolved.apiKey,
         ...cloudflareRunFields(resolved),
@@ -3988,7 +3996,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               deps,
               { ...run, sourceMessageId: run.sourceMessageId },
               { id: bot.id, name: bot.name },
-              `Could not complete the delegated request: ${message}`,
+              `Could not complete the delegated request: ${message === "platform_model_forbidden" ? normalizeRunError(message).summary : message}`,
               "status",
             ).catch((error) => getLogger().error("bot message failure return", error));
           }
@@ -3996,7 +4004,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             await notifyRun(deps, run, {
               kind: "failure",
               title: `${bot.name} failed`,
-              body: message,
+              body: (message === "platform_model_forbidden"
+                ? normalizeRunError(message).summary
+                : message
+              ).slice(0, 180),
               botId: bot.id,
               threadId: thread.id,
             });
@@ -4989,7 +5000,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             autoReviewPref &&
             (Boolean(injectedReview) ||
               (checker
-                ? isAutoReviewCheckerConfigured({}) ||
+                ? isAutoReviewCheckerConfigured({
+                    platformModelAllowed: await canUsePlatformModel(
+                      deps.prisma,
+                      deps.platformModelAllowlist,
+                      run.userId,
+                    ),
+                  }) ||
                   Boolean(
                     await findModelCredential(
                       deps.prisma,
@@ -5101,6 +5118,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         }),
                       runtime: deps.runtime,
                       checker: checker!,
+                      authorize: judgeKey.authorize,
                       modelCredentialId: judgeKey.modelCredentialId,
                       apiKey: judgeKey.oauth ? undefined : judgeKey.apiKey,
                       accountId: judgeKey.accountId,
@@ -7421,6 +7439,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               model: {
                 provider: runModelProvider,
                 id: runModelId,
+                authorize: resolved.authorize,
                 modelCredentialId: resolved.modelCredentialId,
                 apiKey: resolved.oauth ? undefined : resolved.apiKey,
                 ...cloudflareRunFields(resolved),
@@ -8231,7 +8250,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               deps,
               { ...run, sourceMessageId: run.sourceMessageId },
               { id: bot.id, name: bot.name },
-              `Could not complete the delegated request: ${message}`,
+              `Could not complete the delegated request: ${message === "platform_model_forbidden" ? normalizeRunError(message).summary : message}`,
               "status",
             ).catch((returnError) => getLogger().error("bot message failure return", returnError));
           }
@@ -8239,7 +8258,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             await notifyRun(deps, run, {
               kind: "failure",
               title: `${bot.name} failed`,
-              body: message.slice(0, 180),
+              body: (message === "platform_model_forbidden"
+                ? normalizeRunError(message).summary
+                : message
+              ).slice(0, 180),
               botId: bot.id,
               threadId: thread.id,
             });
@@ -9500,9 +9522,23 @@ function uncertainEffectError(toolName: string): Error {
  * only when the provider that won the resolution above is that vendor. A provider named
  * by deployment settings or a bot override gets no key rather than another vendor's.
  */
-function deploymentKeyFor(deps: ExecutorDeps, provider: string): string | undefined {
-  if (!deps.deploymentModelKey) return undefined;
-  return provider === resolveDeploymentModel().provider ? deps.deploymentModelKey : undefined;
+async function deploymentModelAccess(
+  deps: ExecutorDeps,
+  provider: string,
+  userId: string,
+): Promise<Pick<AgentRunRequest["model"], "authorize" | "apiKey">> {
+  const authorize =
+    provider === LOCAL_PROVIDER_ID || deps.runtime?.describe().capabilities.scripted
+      ? undefined
+      : platformModelAuthorization(deps.prisma, deps.platformModelAllowlist, userId);
+  await authorize?.();
+  return {
+    authorize,
+    apiKey:
+      deps.deploymentModelKey && provider === resolveDeploymentModel().provider
+        ? deps.deploymentModelKey
+        : undefined,
+  };
 }
 
 /**
@@ -9542,6 +9578,7 @@ async function resolveModelKey(
   registerSecrets?: (values: string[]) => void,
   requireStoredSecret = false,
 ): Promise<{
+  authorize?: () => Promise<void>;
   modelCredentialId: string | null;
   apiKey?: string;
   accountId?: string;
@@ -9576,7 +9613,11 @@ async function resolveModelKey(
             throw new UnavailableModelForAuthError("Model connection is unavailable");
           }
           cloudflareGatewayProviderEnv({ provider });
-          return { modelCredentialId: null, apiKey: deploymentKeyFor(deps, provider), redact: [] };
+          return {
+            modelCredentialId: null,
+            ...(await deploymentModelAccess(deps, provider, userId)),
+            redact: [],
+          };
         }
         const plaintext = await deps.secretStore.load(row.ciphertext, row.id);
         registerSecrets?.(secretValuesToRedact(parseModelSecret(plaintext)));
@@ -9818,7 +9859,11 @@ async function resolveModelKey(
   }
   if (requireStoredSecret) throw new Error("Backup model credential is no longer available");
   cloudflareGatewayProviderEnv({ provider });
-  return { modelCredentialId: null, apiKey: deploymentKeyFor(deps, provider), redact: [] };
+  return {
+    modelCredentialId: null,
+    ...(await deploymentModelAccess(deps, provider, userId)),
+    redact: [],
+  };
 }
 
 function cloudflareRunFields(resolved: { accountId?: string; gatewayId?: string }): {

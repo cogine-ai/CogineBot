@@ -1,0 +1,13 @@
+diff --git a/dist/api/bedrock-converse-stream.js b/dist/api/bedrock-converse-stream.js
+index 44e3f13e808f0665a44e34437e173743f81bd51f..15180b84c533ac3f08110c607f222f4a6a2d3d1b 100644
+--- a/dist/api/bedrock-converse-stream.js
++++ b/dist/api/bedrock-converse-stream.js
+@@ -50,6 +50,8 @@ export const stream = (model, context, options = {}) => {
+         const optionsProfile = options.profile || options.env?.AWS_PROFILE;
+         const config = {
+             profile: optionsProfile || getProviderEnvValue("AWS_PROFILE", options.env),
++            // Keep SDK attempts within the caller's shared retry budget.
++            ...(options.maxRetries !== undefined ? { maxAttempts: options.maxRetries + 1 } : {}),
+         };
+         const configuredRegion = getConfiguredBedrockRegion(options);
+         const hasAmbientConfiguredProfile = Boolean(getProviderEnvValue("AWS_PROFILE"));

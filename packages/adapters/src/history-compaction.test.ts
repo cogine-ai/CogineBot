@@ -6,6 +6,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
+import { PlatformModelForbiddenError } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger, wrapJobPayload } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
@@ -229,6 +230,7 @@ type HarnessMessage = {
 
 function compactionHarness(
   options: {
+    platformModelAllowlist?: string[] | "owner_only";
     deploymentModelKey?: string;
     deploymentModelConfigured?: boolean;
     settings?: { defaultModelProvider: string | null; defaultModelId: string | null } | null;
@@ -374,6 +376,7 @@ function compactionHarness(
     runtime: runtime as unknown as AgentRuntime,
     jobs: jobs as unknown as JobPublisher,
     memoryProviders,
+    platformModelAllowlist: options.platformModelAllowlist,
     deploymentModelKey: options.deploymentModelKey,
     deploymentModelConfigured:
       options.deploymentModelConfigured ?? options.deploymentModelKey !== undefined,
@@ -1214,5 +1217,65 @@ describe("compactHistory", () => {
     await compactHistory(harness.deps, "thread-1");
 
     expect(harness.jobs.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe("compaction funding policy", () => {
+  it("leaves history, memory and cursor untouched when shared funding is denied", async () => {
+    const harness = compactionHarness({
+      deploymentModelKey: "fake-shared-key",
+      platformModelAllowlist: "owner_only",
+    });
+    Object.assign(harness.prisma, {
+      user: { findUnique: async () => ({ email: "member@example.test", emailVerified: true }) },
+    });
+    const original = { ...harness.thread };
+    await compactHistory(harness.deps, "thread-1");
+    expect(harness.runtime.run).not.toHaveBeenCalled();
+    expect(harness.saveMemory).not.toHaveBeenCalled();
+    expect(harness.thread).toEqual(original);
+  });
+
+  it("keeps an explicitly resolved user credential available independently", async () => {
+    const resolveModel = async () => ({
+      provider: "openrouter",
+      id: "fixture-model",
+      apiKey: "fake-owned-key",
+      modelCredentialId: "owned-credential",
+    });
+    const harness = compactionHarness({ platformModelAllowlist: "owner_only", resolveModel });
+    await compactHistory(harness.deps, "thread-1");
+    expect(harness.thread.historyCompactionSummary).toBe("Summary of 50 messages.");
+    expect(harness.runtime.run.mock.calls[0]![0].model.apiKey).toBe("fake-owned-key");
+  });
+});
+
+describe("compaction resolver denials", () => {
+  it("skips a permanent funding denial without changing history or retrying the job", async () => {
+    const harness = compactionHarness({
+      platformModelAllowlist: "owner_only",
+      resolveModel: async () => {
+        throw new PlatformModelForbiddenError();
+      },
+    });
+    const original = { ...harness.thread };
+    await expect(compactHistory(harness.deps, "thread-1")).resolves.toBeUndefined();
+    expect(harness.thread).toEqual(original);
+    expect(harness.runtime.run).not.toHaveBeenCalled();
+    expect(harness.saveMemory).not.toHaveBeenCalled();
+    expect(harness.jobs.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("keeps other resolver failures retryable without advancing the cursor", async () => {
+    const failure = new Error("Synthetic credential store unavailable");
+    const harness = compactionHarness({
+      resolveModel: async () => {
+        throw failure;
+      },
+    });
+    const original = { ...harness.thread };
+    await expect(compactHistory(harness.deps, "thread-1")).rejects.toBe(failure);
+    expect(harness.thread).toEqual(original);
+    expect(harness.runtime.run).not.toHaveBeenCalled();
   });
 });

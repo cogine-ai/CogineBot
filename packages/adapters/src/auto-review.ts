@@ -136,6 +136,7 @@ export function resolveAutoReviewChecker(
  */
 export function isAutoReviewCheckerConfigured(input: {
   env?: NodeJS.ProcessEnv;
+  platformModelAllowed?: boolean;
   hasUserCredentialForProvider?: (provider: string) => boolean;
 }): boolean {
   const env = input.env ?? process.env;
@@ -146,9 +147,24 @@ export function isAutoReviewCheckerConfigured(input: {
   if (checker.provider === LOCAL_PROVIDER_ID) return localModelIds(env).length > 0;
 
   const deployment = resolveDeploymentModel(env);
-  if (checker.provider === deployment.provider && deployment.configured) return true;
-  if (env.OPENROUTER_API_KEY?.trim() && checker.provider === "openrouter") return true;
-  if (env.ANTHROPIC_API_KEY?.trim() && checker.provider === "anthropic") return true;
+  if (
+    input.platformModelAllowed !== false &&
+    checker.provider === deployment.provider &&
+    deployment.configured
+  )
+    return true;
+  if (
+    input.platformModelAllowed !== false &&
+    env.OPENROUTER_API_KEY?.trim() &&
+    checker.provider === "openrouter"
+  )
+    return true;
+  if (
+    input.platformModelAllowed !== false &&
+    env.ANTHROPIC_API_KEY?.trim() &&
+    checker.provider === "anthropic"
+  )
+    return true;
   return Boolean(input.hasUserCredentialForProvider?.(checker.provider));
 }
 
@@ -269,6 +285,7 @@ export async function runAutoReviewJudge(input: {
   onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => Promise<unknown>;
   runtime: AgentRuntime;
   checker: AutoReviewChecker;
+  authorize?: AgentRunModel["authorize"];
   modelCredentialId?: string | null;
   apiKey?: string;
   accountId?: string;
@@ -315,6 +332,7 @@ export async function runAutoReviewJudge(input: {
         model: {
           provider: input.checker.provider,
           id: input.checker.model,
+          authorize: input.authorize,
           modelCredentialId: input.modelCredentialId,
           apiKey: input.oauth ? undefined : input.apiKey,
           accountId: input.accountId,
@@ -367,6 +385,7 @@ export type LlmAutoReviewOptions = {
   onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => Promise<unknown>;
   runtime: AgentRuntime;
   checker: AutoReviewChecker;
+  authorize?: AgentRunModel["authorize"];
   modelCredentialId?: string | null;
   apiKey?: string;
   accountId?: string;

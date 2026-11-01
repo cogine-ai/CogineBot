@@ -6379,3 +6379,9 @@ msgstr "No se pudo mover {name}"
 #: src/lib/use-sidebar-announcements.ts
 msgid "Move cancelled"
 msgstr "Movimiento cancelado"
+
+msgid "Add your own API key to continue."
+msgstr "Añade tu propia clave de API para continuar."
+
+msgid "Add API key"
+msgstr "Añadir clave de API"

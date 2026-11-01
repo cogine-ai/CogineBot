@@ -264,3 +264,16 @@ describe("OIDC environment", () => {
     ).toBe(true);
   });
 });
+
+describe("shared model policy configuration", () => {
+  it("keeps blank deployments unrestricted and parses explicit funding restrictions", () => {
+    expect(loadEnv(base).platformModelAllowlist).toEqual([]);
+    expect(loadEnv({ ...base, PLATFORM_MODEL_ALLOWLIST: " NoNe " }).platformModelAllowlist).toBe(
+      "owner_only",
+    );
+    expect(
+      loadEnv({ ...base, PLATFORM_MODEL_ALLOWLIST: " member@example.test, @EXAMPLE.TEST " })
+        .platformModelAllowlist,
+    ).toEqual(["member@example.test", "@example.test"]);
+  });
+});

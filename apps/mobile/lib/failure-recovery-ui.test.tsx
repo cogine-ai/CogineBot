@@ -8,7 +8,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { HomeErrorState } from "../components/home-error-state";
 import { RoutineRunHistory } from "../components/routine-run-history";
-import { RunErrorNotice } from "../components/run-error-notice";
+import { RunErrorNotice, ThreadErrorNotices } from "../components/run-error-notice";
 import type { MobileScope } from "./mobile-scope";
 
 const state = vi.hoisted(() => ({ rpc: vi.fn(), push: vi.fn(), openURL: vi.fn(), current: true }));
@@ -251,3 +251,105 @@ it("retries a failed history read and fences an obsolete chat link", async () =>
   expect(state.push).not.toHaveBeenCalled();
   expect(state.rpc).toHaveBeenCalledTimes(2);
 });
+
+it("opens existing Models for policy recovery without replaying a failed request", async () => {
+  await render(<RunErrorNotice error="platform_model_forbidden" />);
+  expect(container.textContent).toContain("Add your own API key to continue.");
+  expect(state.push).not.toHaveBeenCalled();
+  await press("Add API key");
+  expect(state.push).toHaveBeenCalledExactlyOnceWith("/(settings)/models");
+  expect(state.rpc).not.toHaveBeenCalled();
+  expect(state.openURL).not.toHaveBeenCalled();
+  await render(<RunErrorNotice error="403: platform_model_forbidden" />);
+  expect(container.textContent).not.toContain("Add API key");
+});
+
+it("keeps a later Run failure visible alongside older send policy recovery", async () => {
+  await render(
+    <ThreadErrorNotices
+      scopeKey="account/space/thread"
+      sendError="platform_model_forbidden"
+      run={{ id: "later-run", error: "429: too many requests" }}
+    />,
+  );
+  const alerts = Array.from(container.querySelectorAll('[role="alert"]'));
+  expect(alerts).toHaveLength(2);
+  expect(alerts[0]?.textContent).toBe("Add your own API key to continue.");
+  expect(alerts[1]?.textContent).toContain("is rate limiting requests. Try again shortly.");
+  await press("Add API key");
+  expect(state.push).toHaveBeenCalledExactlyOnceWith("/(settings)/models");
+  expect(state.rpc).not.toHaveBeenCalled();
+});
+
+it("keeps current Run diagnostics open when send recovery is removed", async () => {
+  const run = { id: "later-run", error: '503: {"error":{"message":"later Run unavailable"}}' };
+  await render(
+    <ThreadErrorNotices
+      scopeKey="account/space/thread"
+      sendError="platform_model_forbidden"
+      run={run}
+    />,
+  );
+  const notice = Array.from(container.querySelectorAll('[role="alert"]')).find(
+    (alert) => alert.textContent === "The model provider returned an error.",
+  )?.parentElement;
+  expect(notice).toBeDefined();
+  const details = Array.from(notice!.querySelectorAll("button")).find(
+    (button) => button.textContent === "Details",
+  );
+  await act(async () => details!.click());
+  expect(container.querySelector("section")?.textContent).toContain("later Run unavailable");
+  await render(<ThreadErrorNotices scopeKey="account/space/thread" sendError={null} run={run} />);
+  expect(container.querySelector("section")?.textContent).toContain("later Run unavailable");
+  expect(container.textContent).not.toContain("Add API key");
+});
+
+it("deduplicates the same policy error while retaining the current Run identity", async () => {
+  const run = { id: "policy-run", error: "platform_model_forbidden" };
+  await render(
+    <ThreadErrorNotices
+      scopeKey="account/space/thread"
+      sendError="platform_model_forbidden"
+      run={run}
+    />,
+  );
+  expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+  expect(
+    Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent === "Add API key",
+    ),
+  ).toHaveLength(1);
+  await press("Details");
+  await render(<ThreadErrorNotices scopeKey="account/space/thread" sendError={null} run={run} />);
+  expect(container.querySelector("section")?.textContent).toContain("platform_model_forbidden");
+});
+
+it.each(["scope", "run"])("closes diagnostics across a changed %s identity", async (boundary) => {
+  const run = { id: "run-a", error: "429: too many requests" };
+  await render(<ThreadErrorNotices scopeKey="scope-a" sendError={null} run={run} />);
+  await press("Details");
+  expect(container.querySelector("section")).not.toBeNull();
+  await render(
+    <ThreadErrorNotices
+      scopeKey={boundary === "scope" ? "scope-b" : "scope-a"}
+      sendError={null}
+      run={{ ...run, id: boundary === "run" ? "run-b" : run.id }}
+    />,
+  );
+  expect(container.querySelector("section")).toBeNull();
+});
+
+it.each(["403: platform_model_forbidden", "prefix_platform_model_forbidden_suffix"])(
+  "does not turn provider or lookalike send diagnostics into policy recovery: %s",
+  async (sendError) => {
+    await render(
+      <ThreadErrorNotices
+        scopeKey="scope-a"
+        sendError={sendError}
+        run={{ id: "run-a", error: sendError }}
+      />,
+    );
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(container.textContent).not.toContain("Add API key");
+  },
+);

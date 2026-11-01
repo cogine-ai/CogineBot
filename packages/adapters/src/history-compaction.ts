@@ -1,7 +1,8 @@
 import type { AgentRunRequest, AgentRuntime, JobPublisher } from "@rakazo/adapter-kit";
 import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { blocksToAgentHistoryText } from "@rakazo/core";
+import type { PlatformModelAllowlist } from "@rakazo/core";
+import { blocksToAgentHistoryText, PlatformModelForbiddenError } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { recordUsage } from "@rakazo/db";
 import { getLogger, unwrapJobPayload } from "@rakazo/logging";
@@ -11,6 +12,8 @@ import type {
   ConfiguredMemoryProvider,
   MemoryProviderResolver,
 } from "./memory-provider-factory.js";
+import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
+import { canUsePlatformModel, platformModelAuthorization } from "./platform-model-access.js";
 
 /**
  * Sentinel for "nothing compacted yet". Message `seq` is 0-based, so an exclusive lower bound of
@@ -210,6 +213,7 @@ export interface CompactHistoryDeps {
   runtime: AgentRuntime;
   jobs: JobPublisher;
   memoryProviders: MemoryProviderResolver;
+  platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey?: string;
   deploymentModelConfigured?: boolean;
   resolveModel?: (scope: {
@@ -331,11 +335,16 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   // advance the cursor past messages that are then lost from both stores. Skip instead.
   const deploymentFallback = resolveDeploymentModel();
   const model = deps.resolveModel
-    ? await deps.resolveModel({
-        userId: thread.userId,
-        spaceId: thread.spaceId,
-        botId: thread.botId,
-      })
+    ? await deps
+        .resolveModel({
+          userId: thread.userId,
+          spaceId: thread.spaceId,
+          botId: thread.botId,
+        })
+        .catch((error: unknown) => {
+          if (error instanceof PlatformModelForbiddenError) return null;
+          throw error;
+        })
     : deps.deploymentModelConfigured
       ? {
           // Provider must come from the same resolver as the key, not a hardcoded one.
@@ -353,6 +362,16 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
             apiKey: undefined,
           };
         })();
+  if (!model) return;
+  if (!deps.resolveModel && model.provider !== LOCAL_PROVIDER_ID && model.provider !== "scripted") {
+    if (!(await canUsePlatformModel(deps.prisma, deps.platformModelAllowlist, thread.userId)))
+      return;
+    model.authorize = platformModelAuthorization(
+      deps.prisma,
+      deps.platformModelAllowlist,
+      thread.userId,
+    );
+  }
   if (!deps.runtime.describe().capabilities.compaction || model.provider === "scripted") {
     getLogger().info(`history.compact skipped for thread ${threadId}: no usable summarizer model`);
     return;

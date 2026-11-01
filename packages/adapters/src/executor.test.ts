@@ -3312,3 +3312,87 @@ describe("ticket board tool capability", () => {
       expect(backgroundNames).not.toContain(name);
   });
 });
+
+describe("deployment-funded model resolution", () => {
+  function policyExecutor(
+    input: {
+      verified?: boolean;
+      owner?: boolean;
+      byok?: boolean;
+      missingSecret?: boolean;
+      scripted?: boolean;
+    } = {},
+  ) {
+    const currentUser = { email: "member@example.test", emailVerified: input.verified ?? false };
+    const preference = input.byok
+      ? modelPreference({
+          provider: "openrouter",
+          secretId: "owned-secret",
+          modelId: "openai/gpt-6-luna",
+          isDefault: true,
+        })
+      : null;
+    const prisma = {
+      user: { findUnique: vi.fn(async () => currentUser) },
+      deploymentSettings: {
+        findUnique: vi.fn(async () => ({ ownerUserId: input.owner ? "user-1" : "other-owner" })),
+      },
+      spaceModelPreference: { findFirst: vi.fn(async () => preference) },
+      secret: {
+        findFirst: vi.fn(async () =>
+          input.byok && !input.missingSecret
+            ? { id: "owned-secret", ciphertext: "fake-cipher" }
+            : null,
+        ),
+      },
+    } as unknown as PrismaClient;
+    const executor = createRunExecutor({
+      prisma,
+      runtime: { describe: () => ({ capabilities: { scripted: input.scripted ?? false } }) },
+      secretStore: { load: async () => "fake-user-model-key", put: vi.fn() },
+      deploymentModelKey: "fake-platform-model-key",
+      deploymentModelConfigured: true,
+      platformModelAllowlist: ["@example.test"],
+    } as unknown as Parameters<typeof createRunExecutor>[0]);
+    return { executor, currentUser };
+  }
+
+  it("rejects an unverified shared model before resolving a provider credential", async () => {
+    const { executor } = policyExecutor();
+    await expect(
+      executor.resolveModel({ userId: "user-1", spaceId: "ws-1" }),
+    ).rejects.toMatchObject({ code: "platform_model_forbidden" });
+  });
+
+  it("binds a fresh authorization to the funded subject and detects revoked mailbox proof", async () => {
+    const { executor, currentUser } = policyExecutor({ verified: true });
+    const model = await executor.resolveModel({ userId: "user-1", spaceId: "ws-1" });
+    expect(model.apiKey).toBe("fake-platform-model-key");
+    await expect(model.authorize!()).resolves.toBeUndefined();
+    currentUser.emailVerified = false;
+    await expect(model.authorize!()).rejects.toMatchObject({ code: "platform_model_forbidden" });
+  });
+
+  it("keeps owner and offline scripted resolution available", async () => {
+    for (const options of [{ owner: true }, { scripted: true }]) {
+      const { executor } = policyExecutor(options);
+      await expect(
+        executor.resolveModel({ userId: "user-1", spaceId: "ws-1" }),
+      ).resolves.toMatchObject({ provider: "openrouter" });
+    }
+  });
+
+  it("keeps a user's own connected credential independent of platform funding", async () => {
+    const { executor } = policyExecutor({ byok: true });
+    const model = await executor.resolveModel({ userId: "user-1", spaceId: "ws-1" });
+    expect(model.apiKey).toBe("fake-user-model-key");
+    expect(model.authorize).toBeUndefined();
+  });
+
+  it("cannot fall through to a shared key when an unverified user's secret disappears", async () => {
+    const { executor } = policyExecutor({ byok: true, missingSecret: true });
+    await expect(
+      executor.resolveModel({ userId: "user-1", spaceId: "ws-1" }),
+    ).rejects.toMatchObject({ code: "platform_model_forbidden" });
+  });
+});

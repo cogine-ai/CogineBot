@@ -9,7 +9,13 @@ import { rpc } from "../lib/rpc";
 import { formatToolActivityDuration } from "../lib/tool-activity-view";
 import { statusLabel, statusTone } from "./ActivityList";
 
-export function RoutineRunHistory({ routineId }: { routineId: string }) {
+export function RoutineRunHistory({
+  routineId,
+  onAddKey,
+}: {
+  routineId: string;
+  onAddKey?: () => void;
+}) {
   const { i18n } = useLingui();
   const [history, setHistory] = useState<RoutineHistory | null>(null);
   const [failed, setFailed] = useState(false);
@@ -228,7 +234,7 @@ export function RoutineRunHistory({ routineId }: { routineId: string }) {
                 </div>
                 {run.error ? (
                   <div className="mt-2 text-destructive">
-                    <RunErrorDetails key={run.id} error={run.error} />
+                    <RunErrorDetails key={run.id} error={run.error} onAddKey={onAddKey} />
                   </div>
                 ) : null}
               </li>

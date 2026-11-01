@@ -788,10 +788,7 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
     ? undefined
     : modelConfig.provider === OPENAI_COMPATIBLE_PROVIDER_ID
       ? modelConfig.apiKey || "local"
-      : // Only OpenRouter may fall back to the OpenRouter env key. Handing it to
-        // another provider would ship our key to a vendor it was not issued for.
-        (modelConfig.apiKey ??
-        (provider === "openrouter" ? process.env.OPENROUTER_API_KEY : undefined));
+      : modelConfig.apiKey;
   return { provider, modelId, models, model, apiKey, credentials };
 }
 
@@ -2782,7 +2779,39 @@ function fallbackAwareModelStream(
       let sawPartialOutput = false;
       let restart = false;
       let stream: AssistantMessageEventStream;
+      const authorizationAbort = new AbortController();
+      let authorizationError: unknown;
+      let authorizationTimer: ReturnType<typeof setInterval> | undefined;
+      let authorizationClosed = false;
+      let checkingAuthorization = false;
+      const closeAuthorization = () => {
+        authorizationClosed = true;
+        clearInterval(authorizationTimer);
+        signal.removeEventListener("abort", closeAuthorization);
+      };
       try {
+        signal.throwIfAborted();
+        await target.config.authorize?.();
+        signal.throwIfAborted();
+        if (target.config.authorize) {
+          const authorize = target.config.authorize;
+          signal.addEventListener("abort", closeAuthorization, { once: true });
+          authorizationTimer = setInterval(() => {
+            if (authorizationClosed || checkingAuthorization) return;
+            checkingAuthorization = true;
+            void Promise.resolve()
+              .then(authorize)
+              .catch((error: unknown) => {
+                if (authorizationClosed) return;
+                authorizationError = error;
+                authorizationAbort.abort(error);
+              })
+              .finally(() => {
+                checkingAuthorization = false;
+              });
+          }, 1_000);
+          authorizationTimer.unref?.();
+        }
         const apiKey = target.credentials?.accessToken ?? target.apiKey;
         const thinkingLevel = target.model.reasoning
           ? thinkingLevelFor(
@@ -2793,20 +2822,34 @@ function fallbackAwareModelStream(
             )
           : "off";
         const reasoning = thinkingLevel === "off" ? undefined : thinkingLevel;
+        // The outer loop reauthorizes retries. SDK-internal retries would bypass that boundary.
+        const authorizedOptions = target.config.authorize
+          ? { ...attemptOptions, maxRetries: 0 }
+          : attemptOptions;
         stream = state.stream(
           target,
           requestContext(),
           state.request.fallbackModels?.length
-            ? { ...attemptOptions, apiKey, reasoning }
-            : attemptOptions,
+            ? {
+                ...authorizedOptions,
+                apiKey,
+                reasoning,
+                signal: AbortSignal.any([signal, authorizationAbort.signal]),
+              }
+            : {
+                ...authorizedOptions,
+                signal: AbortSignal.any([signal, authorizationAbort.signal]),
+              },
           retries > 0 || signatureRetryError ? startedAt + timeoutMs : undefined,
         );
       } catch (error) {
+        closeAuthorization();
         finishWithThrownError(target, error);
         return;
       }
       try {
         for await (const event of stream) {
+          if (authorizationError) throw authorizationError;
           if (event.type === "error") {
             if (state.isRequestDeadlineExceeded(event.error)) {
               if (failIfAborted(target)) return;
@@ -2846,9 +2889,11 @@ function fallbackAwareModelStream(
               isRetryableProviderUnavailable(event.error)
             ) {
               const next = await resolveNext(target);
+              if (authorizationError) throw authorizationError;
               if (failIfAborted(target)) return;
               if (next) {
                 await state.onSwitch(next);
+                if (authorizationError) throw authorizationError;
                 if (failIfAborted(target)) return;
                 // A backup retains its configured first-attempt header window.
                 signatureRetryError = undefined;
@@ -2862,6 +2907,7 @@ function fallbackAwareModelStream(
                 if (delay !== undefined && Date.now() - startedAt + delay < timeoutMs) {
                   retries += 1;
                   await abortableDelay(delay, signal);
+                  if (authorizationError) throw authorizationError;
                   if (failIfAborted(target)) return;
                   if (Date.now() - startedAt < timeoutMs) {
                     buffered = [];
@@ -2906,8 +2952,10 @@ function fallbackAwareModelStream(
         }
       } catch (error) {
         for (const pending of buffered) output.push(pending);
-        finishWithThrownError(target, error);
+        finishWithThrownError(target, authorizationError ?? error);
         return;
+      } finally {
+        closeAuthorization();
       }
       if (restart) continue;
       for (const pending of buffered) output.push(pending);

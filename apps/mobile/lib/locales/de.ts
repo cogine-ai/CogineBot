@@ -1,4 +1,6 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Add your own API key to continue.": "Füge deinen eigenen API-Schlüssel hinzu, um fortzufahren.",
+  "Add API key": "API-Schlüssel hinzufügen",
   "Back to chats": "Zurück zu Chats",
   "Subscription required": "Abonnement erforderlich",
   "Contact your organization owner": "Kontaktiere den Organisationsinhaber",

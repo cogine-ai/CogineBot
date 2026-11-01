@@ -6379,3 +6379,9 @@ msgstr "{name} konnte nicht verschoben werden"
 #: src/lib/use-sidebar-announcements.ts
 msgid "Move cancelled"
 msgstr "Verschieben abgebrochen"
+
+msgid "Add your own API key to continue."
+msgstr "Füge deinen eigenen API-Schlüssel hinzu, um fortzufahren."
+
+msgid "Add API key"
+msgstr "API-Schlüssel hinzufügen"

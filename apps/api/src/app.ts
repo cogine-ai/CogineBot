@@ -508,6 +508,7 @@ export async function createApp(
     secretStore: secrets,
     secretHttp: remoteConnectors,
     mcpAllowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
+    platformModelAllowlist: env.platformModelAllowlist,
     deploymentModelKey: env.deploymentModelKey,
     deploymentModelConfigured: env.deploymentModelConfigured,
     dataDir: env.dataDir,
@@ -544,6 +545,7 @@ export async function createApp(
     runtime,
     secretStore: secrets,
     memoryProviders,
+    platformModelAllowlist: env.platformModelAllowlist,
     deploymentModelKey: env.deploymentModelKey,
     deploymentModelConfigured: env.deploymentModelConfigured,
     messaging,
@@ -599,6 +601,7 @@ export async function createApp(
     env: {
       ticketBoardEnabled,
       agentRuntime: env.agentRuntime,
+      platformModelAllowlist: env.platformModelAllowlist,
       defaultProvider: env.defaultProvider,
       defaultModel: env.defaultModel,
       teamChatJudgeProvider: env.teamChatJudgeProvider,
@@ -928,6 +931,7 @@ export async function createApp(
               secrets,
               deploymentProvider: env.defaultProvider,
               deploymentModel: env.defaultModel,
+              platformModelAllowlist: env.platformModelAllowlist,
               deploymentModelKey: env.deploymentModelKey,
               providerOverride: env.teamChatJudgeProvider,
               modelOverride: env.teamChatJudgeModel,
@@ -938,6 +942,7 @@ export async function createApp(
               secrets,
               deploymentProvider: env.defaultProvider,
               deploymentModel: env.defaultModel,
+              platformModelAllowlist: env.platformModelAllowlist,
               deploymentModelKey: env.deploymentModelKey,
             });
       const bridge = new TeamChatBridge({

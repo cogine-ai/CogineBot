@@ -5,6 +5,36 @@ import {
   sanitizeRunErrorDetails,
 } from "./run-error.js";
 
+describe("platform model policy recovery", () => {
+  it("offers only a Models action for the exact controlled policy token", () => {
+    expect(normalizeRunError("platform_model_forbidden")).toEqual({
+      summary: "Add your own API key to continue.",
+      details: "platform_model_forbidden",
+      action: "add_key",
+    });
+  });
+
+  it("localizes the recovery summary without changing its stable diagnostics", () => {
+    const translate = (message: string) => `localized:${message}`;
+    expect(normalizeRunError("platform_model_forbidden", translate)).toEqual({
+      summary: "localized:Add your own API key to continue.",
+      details: "platform_model_forbidden",
+      action: "add_key",
+    });
+  });
+
+  it.each([
+    "403: forbidden",
+    "403: platform_model_forbidden",
+    "prefix_platform_model_forbidden_suffix",
+    "The provider returned platform_model_forbidden in a response.",
+    '{"error":{"code":"platform_model_forbidden","message":"provider refusal"}}',
+    "[platform-model-key]402: credit limit exceeded",
+  ])("does not infer a policy decision from provider diagnostics: %s", (details) => {
+    expect(normalizeRunError(details).action).not.toBe("add_key");
+  });
+});
+
 describe("ChatGPT plan usage recovery", () => {
   it.each([
     [

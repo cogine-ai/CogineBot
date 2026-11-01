@@ -1,4 +1,5 @@
 import { CHATGPT_USAGE_SETTINGS_URL, normalizeRunError } from "@rakazo/core";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
 import { Linking, Text, View } from "react-native";
@@ -10,6 +11,7 @@ import { SelectTextSheet } from "./select-text-sheet";
 export function RunErrorNotice({ error, style }: { error: string; style?: StyleProp<ViewStyle> }) {
   const { t, locale } = useI18n();
   const tokens = useMobileTokens();
+  const router = useRouter();
   const [selectedError, setSelectedError] = useState<string | null>(null);
   const normalized = normalizeRunError(error, t, locale);
   return (
@@ -24,6 +26,13 @@ export function RunErrorNotice({ error, style }: { error: string; style?: StyleP
           onPress={() => void Linking.openURL(CHATGPT_USAGE_SETTINGS_URL)}
         />
       ) : null}
+      {normalized.action === "add_key" ? (
+        <NativeActionButton
+          label={t("Add API key")}
+          fill={false}
+          onPress={() => router.push("/(settings)/models")}
+        />
+      ) : null}
       <NativeActionButton
         label={t("Details")}
         fill={false}
@@ -33,6 +42,32 @@ export function RunErrorNotice({ error, style }: { error: string; style?: StyleP
         text={selectedError === error ? normalized.details : null}
         onClose={() => setSelectedError(null)}
       />
+    </View>
+  );
+}
+
+/** Keep send recovery and the current Run bound to the thread that owns them. */
+export function ThreadErrorNotices({
+  scopeKey,
+  sendError,
+  run,
+  style,
+}: {
+  scopeKey: string;
+  sendError: string | null;
+  run: { id: string; error: string } | null;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const showSendError = sendError === "platform_model_forbidden" && run?.error !== sendError;
+  if (!showSendError && !run) return null;
+  return (
+    <View style={[{ gap: 12 }, style]}>
+      {showSendError ? (
+        <RunErrorNotice key={JSON.stringify([scopeKey, "send"])} error={sendError} />
+      ) : null}
+      {run ? (
+        <RunErrorNotice key={JSON.stringify([scopeKey, "run", run.id])} error={run.error} />
+      ) : null}
     </View>
   );
 }

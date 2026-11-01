@@ -5,7 +5,7 @@ import { useCopyText } from "../lib/copy-text";
 import { translateRunError } from "../lib/run-error";
 
 /** Diagnostics are plain, bounded, cleaned text; expanding them never repeats work. */
-export function RunErrorDetails({ error }: { error: string }) {
+export function RunErrorDetails({ error, onAddKey }: { error: string; onAddKey?: () => void }) {
   const { i18n, t } = useLingui();
   const [copied, copy] = useCopyText();
   const normalized = normalizeRunError(error, translateRunError, i18n.locale);
@@ -21,6 +21,11 @@ export function RunErrorDetails({ error }: { error: string }) {
         >
           <Trans>Manage usage</Trans>
         </a>
+      ) : null}
+      {normalized.action === "add_key" && onAddKey ? (
+        <Button size="xs" variant="ghost" onClick={onAddKey}>
+          <Trans>Add API key</Trans>
+        </Button>
       ) : null}
       <details key={error} className="mt-1">
         <summary className="w-fit cursor-pointer text-[12px] underline underline-offset-2">

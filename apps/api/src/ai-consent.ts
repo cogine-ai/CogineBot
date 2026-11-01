@@ -3,7 +3,9 @@ import { ORPCError } from "@orpc/server";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import {
   aiRecipient,
+  canUsePlatformModel,
   cloudAgentsEnabled,
+  LOCAL_PROVIDER_ID,
   listHelperModelConnections,
   parseModelSecret,
   selectConfiguredModel,
@@ -123,15 +125,21 @@ export async function aiConsentStatus(
     }),
   ]);
   const allowed = new Set(consents.map((row) => row.recipientKey));
+  const platformAllowed = await canUsePlatformModel(
+    deps.prisma,
+    deps.env.platformModelAllowlist,
+    actor.userId,
+  );
   const recipients = new Map<string, AiRecipient>();
   const add = (recipient: ReturnType<typeof aiRecipient>) => {
     if (recipient)
       recipients.set(recipient.key, { ...recipient, allowed: allowed.has(recipient.key) });
   };
   if (modelsEnabled) {
-    const deployment = deps.env.deploymentModelConfigured
-      ? { provider: deps.env.defaultProvider, model: deps.env.defaultModel }
-      : null;
+    const deployment =
+      deps.env.deploymentModelConfigured && platformAllowed
+        ? { provider: deps.env.defaultProvider, model: deps.env.defaultModel }
+        : null;
     const selected = await Promise.all(
       (target ? [...bots, ...routines] : [null, ...bots, ...routines]).map(async (override) => {
         const overrideCredential =
@@ -193,7 +201,11 @@ export async function aiConsentStatus(
     const models = [
       ...new Map(
         selected
-          .filter((model) => model.provider)
+          .filter(
+            (model) =>
+              model.provider &&
+              (model.credential || model.provider === LOCAL_PROVIDER_ID || platformAllowed),
+          )
           .map((model) => [
             JSON.stringify([model.provider, model.id, model.credential?.secretId]),
             model,

@@ -202,6 +202,7 @@ jobs:
           path: |
             apps/web/test-results/model-settings-*/**/a1-*.png
             apps/web/test-results/model-settings-*/**/chatgpt-plan-*.png
+            apps/web/test-results/run-failure-*/**/model-policy-*.png
           if-no-files-found: error
           retention-days: 7
       - name: Retain shared notification acceptance screenshot

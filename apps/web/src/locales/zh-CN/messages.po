@@ -6379,3 +6379,9 @@ msgstr "无法移动{name}"
 #: src/lib/use-sidebar-announcements.ts
 msgid "Move cancelled"
 msgstr "已取消移动"
+
+msgid "Add your own API key to continue."
+msgstr "添加你自己的 API 密钥以继续。"
+
+msgid "Add API key"
+msgstr "添加 API 密钥"

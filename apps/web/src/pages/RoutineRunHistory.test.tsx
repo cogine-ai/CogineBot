@@ -78,7 +78,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   api.history.mockReset();
 });
-async function mounted(routineId = "routine-1") {
+async function mounted(routineId = "routine-1", onAddKey?: () => void) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   document.body.append(container);
@@ -87,7 +87,7 @@ async function mounted(routineId = "routine-1") {
     act(async () =>
       root.render(
         <MemoryRouter>
-          <RoutineRunHistory key={id} routineId={id} />
+          <RoutineRunHistory key={id} routineId={id} onAddKey={onAddKey} />
         </MemoryRouter>,
       ),
     );
@@ -352,6 +352,27 @@ it("keeps loaded older runs while expanded, and refreshes to the first page on c
     await act(async () => button("Run history").click());
     expect(view.container.querySelectorAll("li")).toHaveLength(1);
     expect(button("Run history").getAttribute("aria-expanded")).toBe("false");
+  } finally {
+    await view.close();
+  }
+});
+
+it("opens model recovery from failed history without rerunning the Routine", async () => {
+  api.history.mockResolvedValue(
+    page([{ ...run, status: "failed", error: "platform_model_forbidden", messageId: null }]),
+  );
+  const addKey = vi.fn();
+  const view = await mounted("routine-1", addKey);
+  try {
+    expect(view.container.textContent).toContain("Add your own API key to continue.");
+    const action = Array.from(view.container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Add API key",
+    );
+    expect(action).toBeDefined();
+    await act(async () => action!.click());
+    expect(addKey).toHaveBeenCalledTimes(1);
+    expect(api.history).toHaveBeenCalledTimes(1);
+    expect(view.container.querySelector("a")).toBeNull();
   } finally {
     await view.close();
   }

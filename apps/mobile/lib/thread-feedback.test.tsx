@@ -7,6 +7,7 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FailedSendBubble } from "../components/failed-send-bubble";
+import { ThreadErrorNotices } from "../components/run-error-notice";
 import type { ComposerSnapshot, SendPayload } from "./thread-feedback";
 import {
   clearFailedSends,
@@ -18,9 +19,12 @@ import {
   useThreadFeedback,
 } from "./thread-feedback";
 
+vi.mock("expo-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("react-native", () => ({
+  Linking: { openURL: vi.fn() },
   View: ({ children }: { children?: ReactNode }) => createElement("div", null, children),
-  Text: ({ children }: { children?: ReactNode }) => createElement("span", null, children),
+  Text: ({ children, accessibilityRole }: { children?: ReactNode; accessibilityRole?: string }) =>
+    createElement("span", { role: accessibilityRole }, children),
   Image: () => null,
   Pressable: ({
     children,
@@ -53,6 +57,14 @@ vi.mock("react-native", () => ({
   ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
   Alert: { alert: vi.fn() },
 }));
+vi.mock("../components/native-action-button", () => ({
+  NativeActionButton: ({ label, onPress }: { label: string; onPress: () => void }) =>
+    createElement("button", { type: "button", onClick: onPress }, label),
+}));
+vi.mock("../components/select-text-sheet", () => ({
+  SelectTextSheet: ({ text }: { text: string | null }) =>
+    text === null ? null : createElement("section", { "aria-label": "Run diagnostics" }, text),
+}));
 vi.mock("../components/native-symbol", () => ({ NativeSymbol: () => null }));
 vi.mock("./native", () => ({ useMobileTokens: () => ({}) }));
 vi.mock("./i18n", () => ({
@@ -63,16 +75,38 @@ vi.mock("./i18n", () => ({
 let feedback: ReturnType<typeof useThreadFeedback>;
 let nonces = 0;
 const retry = vi.fn();
-function Probe({ threadKey }: { threadKey: string }) {
+function Probe({
+  threadKey,
+  run,
+  noticeScope = threadKey,
+}: {
+  threadKey: string;
+  run?: { id: string; error: string };
+  noticeScope?: string;
+}) {
   feedback = useThreadFeedback(threadKey, () => `nonce-${++nonces}`);
-  return feedback.unsentSends.map((attempt) => (
-    <FailedSendBubble
-      key={attempt.clientNonce}
-      attempt={attempt}
-      onRetry={retry}
-      onDelete={() => feedback.discard(attempt)}
-    />
-  ));
+  return (
+    <>
+      {feedback.unsentSends.map((attempt) => (
+        <FailedSendBubble
+          key={attempt.clientNonce}
+          attempt={attempt}
+          onRetry={retry}
+          onDelete={() => feedback.discard(attempt)}
+        />
+      ))}
+      {run ? (
+        <ThreadErrorNotices
+          scopeKey={noticeScope}
+          sendError={
+            feedback.unsentSends.find((attempt) => attempt.error === "platform_model_forbidden")
+              ?.error ?? null
+          }
+          run={run}
+        />
+      ) : null}
+    </>
+  );
 }
 
 function payload(text = "Hello"): SendPayload {
@@ -254,6 +288,126 @@ describe("scoped mobile outbox", () => {
     const sends = request.mock.calls.filter(([proc]) => proc === "threads/send");
     expect(sends[0]).toEqual(sends[1]);
   });
+  it("retains a policy-refused payload and never resends it during background recovery", async () => {
+    const attempt = feedback.sendAttempt(payload("Keep the rejected draft"));
+    request
+      .mockResolvedValueOnce({ id: "artifact-a" })
+      .mockRejectedValueOnce(Object.assign(new Error("platform_model_forbidden"), { status: 403 }));
+    await act(async () => {
+      await feedback.send(attempt);
+    });
+    const nonce = attempt.clientNonce;
+    const artifacts = Array.from(attempt.artifactIds);
+    expect(attempt.state).toBe("refused");
+    expect(attempt.payload.displayText).toBe("Keep the rejected draft");
+    expect(attempt.payload.attachments[0]?.name).toBeTruthy();
+    expect(disk.forget).not.toHaveBeenCalled();
+    expect(notDelivered).toHaveBeenCalledWith(attempt);
+    const calls = request.mock.calls.length;
+    await act(async () => {
+      await sendWaitingMessages(true);
+      await feedback.send(attempt, true);
+    });
+    expect(request).toHaveBeenCalledTimes(calls);
+    expect(attempt.clientNonce).toBe(nonce);
+    expect(Array.from(attempt.artifactIds)).toEqual(artifacts);
+  });
+  it("keeps a later Run notice and its diagnostics when a refused send is retried or deleted", async () => {
+    configureUnsentSends({
+      request,
+      scope: () => scope,
+      serverReachable: () => reachable,
+      disk,
+      errorText: (error) => (error instanceof Error ? error.message : String(error)),
+      notDelivered,
+    });
+    const run = { id: "later-run", error: "429: too many requests" };
+    await act(async () => root.render(<Probe threadKey="bot-1" run={run} />));
+    const attempt = feedback.sendAttempt(payload("Retain this refused send"));
+    request
+      .mockResolvedValueOnce({ id: "artifact-a" })
+      .mockRejectedValueOnce(Object.assign(new Error("platform_model_forbidden"), { status: 403 }));
+    await act(async () => {
+      await feedback.send(attempt);
+    });
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(2);
+    const currentRun = Array.from(container.querySelectorAll('[role="alert"]')).find((alert) =>
+      alert.textContent?.includes("rate limiting"),
+    )?.parentElement;
+    expect(currentRun).toBeDefined();
+    const details = Array.from(currentRun!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Details",
+    );
+    await act(async () => details!.click());
+    expect(container.querySelector("section")?.textContent).toBe(run.error);
+    const nonce = attempt.clientNonce;
+    const artifacts = Array.from(attempt.artifactIds);
+    const calls = request.mock.calls.length;
+    await act(async () => {
+      await feedback.send(attempt, true);
+      await sendWaitingMessages(true);
+    });
+    expect(request).toHaveBeenCalledTimes(calls);
+    expect(attempt.state).toBe("refused");
+    expect(attempt.clientNonce).toBe(nonce);
+    expect(Array.from(attempt.artifactIds)).toEqual(artifacts);
+    expect(attempt.payload.displayText).toBe("Retain this refused send");
+    expect(container.querySelector("section")?.textContent).toBe(run.error);
+    await act(async () => feedback.discard(attempt));
+    expect(container.textContent).not.toContain("Add API key");
+    expect(container.textContent).toContain("rate limiting");
+    expect(container.querySelector("section")?.textContent).toBe(run.error);
+    expect(request).toHaveBeenCalledTimes(calls);
+  });
+
+  it.each(["thread", "Space", "account"] as const)(
+    "does not carry refused send recovery across a changed %s",
+    async (boundary) => {
+      configureUnsentSends({
+        request,
+        scope: () => scope,
+        serverReachable: () => reachable,
+        disk,
+        errorText: (error) => (error instanceof Error ? error.message : String(error)),
+        notDelivered,
+      });
+      const run = { id: "run-a", error: "429: too many requests" };
+      await act(async () =>
+        root.render(<Probe threadKey="bot-1" noticeScope="scope-a" run={run} />),
+      );
+      const attempt = feedback.sendAttempt(payload("Scoped refused draft"));
+      request
+        .mockResolvedValueOnce({ id: "artifact-a" })
+        .mockRejectedValueOnce(
+          Object.assign(new Error("platform_model_forbidden"), { status: 403 }),
+        );
+      await act(async () => {
+        await feedback.send(attempt);
+      });
+      expect(container.textContent).toContain("Add API key");
+      try {
+        if (boundary === "Space") scope.spaceId = "space-b";
+        if (boundary === "account") scope.userId = "user-b";
+        await act(async () =>
+          root.render(
+            <Probe
+              threadKey={boundary === "account" ? "bot-1" : "bot-2"}
+              noticeScope="scope-b"
+              run={{ id: "run-b", error: "503: later failure" }}
+            />,
+          ),
+        );
+        expect(container.textContent).not.toContain("Add API key");
+        expect(container.textContent).not.toContain("Scoped refused draft");
+        expect(container.textContent).not.toContain("rate limiting");
+        expect(container.textContent).toContain("The model provider returned an error.");
+        expect(attempt.state).toBe("refused");
+      } finally {
+        scope.userId = "user-a";
+        scope.spaceId = "space-a";
+      }
+    },
+  );
   it.each([false, true])("pauses the ordered queue on HTTP 429 (wrapped: %s)", async (wrapped) => {
     reachable = false;
     const first = feedback.sendAttempt(payload("First"));

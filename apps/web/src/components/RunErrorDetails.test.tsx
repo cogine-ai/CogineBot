@@ -11,7 +11,11 @@ vi.mock("@lingui/react/macro", () => ({
 }));
 vi.mock("../lib/run-error", () => ({ translateRunError: (message: string) => message }));
 vi.mock("@rakazo/ui-web", () => ({
-  Button: ({ children }: { children?: ReactNode }) => <button type="button">{children}</button>,
+  Button: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
+    <button type="button" onClick={onClick}>
+      {children}
+    </button>
+  ),
 }));
 
 afterEach(() => {
@@ -64,5 +68,36 @@ it.each([
     expect(container.querySelector('a[href="https://untrusted.example/usage"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());
+  }
+});
+
+it("opens the supplied model settings action once without sending or following diagnostics", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const addKey = vi.fn();
+  try {
+    await act(async () =>
+      root.render(<RunErrorDetails error="platform_model_forbidden" onAddKey={addKey} />),
+    );
+    expect(container.textContent).toContain("Add your own API key to continue.");
+    const action = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Add API key",
+    );
+    expect(action).toBeDefined();
+    expect(addKey).not.toHaveBeenCalled();
+    await act(async () => action!.click());
+    expect(addKey).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("a")).toBeNull();
+    await act(async () =>
+      root.render(<RunErrorDetails error="403: forbidden" onAddKey={addKey} />),
+    );
+    expect(container.textContent).not.toContain("Add API key");
+    await act(async () => root.render(<RunErrorDetails error="platform_model_forbidden" />));
+    expect(container.textContent).not.toContain("Add API key");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
   }
 });

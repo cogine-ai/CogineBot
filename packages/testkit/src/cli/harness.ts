@@ -87,6 +87,7 @@ async function main() {
     "apps/api/src/health-app.postgres.test.ts",
     "apps/api/src/model-connections.postgres.test.ts",
     "apps/api/src/model-bindings.postgres.test.ts",
+    "apps/api/src/platform-model-app.postgres.test.ts",
     "apps/api/src/chatgpt-plan-finalization.postgres.test.ts",
     "apps/api/src/chatgpt-plan-registration.postgres.test.ts",
     "packages/adapters/src/chatgpt-plan-credential-lock.postgres.test.ts",

@@ -110,7 +110,7 @@ import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
 import { ReplyDismissButton } from "../components/reply-dismiss-button";
 import { ReplyLine } from "../components/reply-line";
-import { RunErrorNotice } from "../components/run-error-notice";
+import { ThreadErrorNotices } from "../components/run-error-notice";
 import { SelectTextSheet } from "../components/select-text-sheet";
 import { trailingHeaderOptions } from "../components/sheet-header";
 import type { ThreadComposerHandle } from "../components/thread-composer";
@@ -2268,6 +2268,9 @@ function Thread({
   }
 
   const answerableAskMessageId = latestAnswerableAskMessageId(snap);
+  const modelPolicyRefusal =
+    error === "platform_model_forbidden" ||
+    feedback.unsentSends.some((attempt) => attempt.error === "platform_model_forbidden");
   const runError = snap?.run?.status === "failed" ? (snap.run.error ?? null) : null;
   useSyncExternalStore(
     subscribeRejectedSessionDraft,
@@ -2742,25 +2745,26 @@ function Thread({
       keyboardVerticalOffset={Platform.OS === "android" ? nativeHeaderHeight : 0}
       style={{ flex: 1, backgroundColor: tokens.background, paddingHorizontal: 20 }}
     >
-      {error ? (
+      {error && error !== "platform_model_forbidden" ? (
         <Text style={{ color: tokens.mutedForeground, marginTop: headerHeight + 28 }}>
           {showingSaved ? t("Couldn't refresh — showing the last loaded messages.") : error}
         </Text>
       ) : null}
-      {runError ? (
-        <RunErrorNotice
-          key={JSON.stringify([
-            ownerUserId,
-            sessionEpoch,
-            profileScope?.apiBase,
-            profileScope?.spaceId,
-            snap?.threadId,
-            snap?.run?.id,
-          ])}
-          error={runError}
-          style={{ marginTop: error ? 12 : headerHeight + 28 }}
-        />
-      ) : null}
+      <ThreadErrorNotices
+        scopeKey={JSON.stringify([
+          ownerUserId,
+          sessionEpoch,
+          profileScope?.apiBase,
+          profileScope?.spaceId,
+          threadKey,
+          snap?.threadId,
+        ])}
+        sendError={modelPolicyRefusal ? "platform_model_forbidden" : null}
+        run={runError && snap?.run ? { id: snap.run.id, error: runError } : null}
+        style={{
+          marginTop: error && error !== "platform_model_forbidden" ? 12 : headerHeight + 28,
+        }}
+      />
       {/* The floor keeps a tall suggestion list from sliding under the transparent header. */}
       <View style={{ flex: 1, minHeight: headerHeight, position: "relative" }}>
         {showPinnedPage ? (

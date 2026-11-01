@@ -93,6 +93,20 @@ describe("mobile i18n", () => {
     }
   });
 
+  it.each(["zh-CN", "ru", "de"] as const)(
+    "localizes model policy recovery in %s",
+    async (locale) => {
+      const { normalizeRunError } = await import("@rakazo/core");
+      const { resetI18nForTests, t } = await import("./i18n");
+      resetI18nForTests(locale);
+      const result = normalizeRunError("platform_model_forbidden", t, locale);
+      expect(result.action).toBe("add_key");
+      expect(result.summary).not.toBe("Add your own API key to continue.");
+      expect(result.details).toBe("platform_model_forbidden");
+      expect(t("Add API key")).not.toBe("Add API key");
+    },
+  );
+
   it("localizes shared provider recovery advice without exposing its diagnostics", async () => {
     const { normalizeRunError, RUN_ERROR_LIMIT_MESSAGES } = await import("@rakazo/core");
     const { resetI18nForTests, t } = await import("./i18n");

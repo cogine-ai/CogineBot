@@ -1,6 +1,7 @@
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import { AI_DISCLOSURE_VERSION } from "@rakazo/contracts";
+import { parsePlatformModelAllowlist } from "@rakazo/core";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./thread-target.js", () => ({
@@ -370,4 +371,130 @@ describe("consent grants", () => {
       }),
     );
   });
+});
+
+describe("platform model consent policy", () => {
+  function policyConsent(raw: string | undefined, email: string, verified: boolean, owner = false) {
+    const f = setup();
+    Object.assign(f.deps.env, {
+      agentRuntime: "pi",
+      deploymentModelConfigured: true,
+      defaultProvider: "openai",
+      defaultModel: "shared-model",
+      platformModelAllowlist: parsePlatformModelAllowlist(raw),
+    });
+    const findUser = vi.fn(async () => ({ email, emailVerified: verified }));
+    Object.assign(f.deps.prisma, { user: { findUnique: findUser } });
+    vi.mocked(f.deps.prisma.deploymentSettings.findUnique).mockResolvedValue({
+      ownerUserId: owner ? f.actor.userId : "different-owner",
+    } as never);
+    f.actor.email = "member@allowed.test";
+    f.actor.isDeploymentOwner = !owner;
+    return { ...f, findUser };
+  }
+
+  it.each([
+    ["none", "member@allowed.test", true],
+    ["@allowed.test", "member@allowed.test", false],
+    ["@allowed.test", "member@allowed.test.attacker.invalid", true],
+  ] as const)(
+    "omits a denied shared recipient (%s / %s / proof=%s)",
+    async (raw, email, verified) => {
+      const f = policyConsent(raw, email, verified);
+      const result = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+      expect(result.recipients).toEqual([]);
+      expect(f.findUser).toHaveBeenCalledWith({
+        where: { id: f.actor.userId },
+        select: { email: true, emailVerified: true },
+      });
+    },
+  );
+
+  it("uses the stored owner grant rather than the caller's cached owner flag", async () => {
+    const f = policyConsent("none", "owner@messaging.invalid", false, true);
+    const result = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+    expect(result.recipients).toEqual([
+      expect.objectContaining({ name: "OpenAI", detail: "shared-model", use: "model" }),
+    ]);
+  });
+
+  it("keeps BYOK disclosure while excluding the denied deployment model", async () => {
+    const f = policyConsent("none", "member@outside.test", false);
+    const credential = {
+      id: "byok",
+      userId: f.actor.userId,
+      provider: "anthropic",
+      secretId: "user-secret",
+      preferences: [],
+    };
+    vi.mocked(f.deps.prisma.spaceModelPreference.findFirst).mockResolvedValue({
+      modelId: "user-model",
+      isDefault: true,
+      thinkingLevel: null,
+      credential,
+    } as never);
+    vi.mocked(f.deps.prisma.secret.findMany).mockResolvedValue([
+      { id: "user-secret", ciphertext: "fake-cipher" },
+    ] as never);
+    f.deps.secrets = { load: vi.fn(async () => "fake-user-key") } as never;
+    const result = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+    expect(result.recipients).toEqual([
+      expect.objectContaining({ name: "Anthropic", detail: "user-model", use: "model" }),
+    ]);
+  });
+
+  it("keeps unrestricted disclosure without an authority lookup", async () => {
+    const f = policyConsent(undefined, "member@outside.test", false);
+    const result = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+    expect(result.recipients).toEqual([
+      expect.objectContaining({ name: "OpenAI", detail: "shared-model" }),
+    ]);
+    expect(f.findUser).not.toHaveBeenCalled();
+  });
+});
+
+describe("local model data disclosure", () => {
+  it.each([undefined, "none"])(
+    "retains local recipient independently of funding policy %s",
+    async (policy) => {
+      vi.stubEnv("RAKAZO_LOCAL_MODELS_URL", "https://models.example.test/v1");
+      vi.stubEnv("RAKAZO_LOCAL_MODELS", "fixture-local-model");
+      const f = setup();
+      Object.assign(f.deps.env, {
+        agentRuntime: "pi",
+        deploymentModelConfigured: false,
+        defaultProvider: "local",
+        defaultModel: "fixture-local-model",
+        platformModelAllowlist: parsePlatformModelAllowlist(policy),
+      });
+      Object.assign(f.deps.prisma, {
+        user: {
+          findUnique: vi.fn(async () => ({ email: "member@outside.test", emailVerified: false })),
+        },
+      });
+      vi.mocked(f.deps.prisma.deploymentSettings.findUnique).mockResolvedValue({
+        ownerUserId: "different-owner",
+        defaultModelProvider: "local",
+        defaultModelId: "fixture-local-model",
+      } as never);
+      try {
+        const status = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+        expect(status.recipients).toEqual([
+          expect.objectContaining({
+            name: expect.stringContaining("models.example.test"),
+            use: "model",
+            detail: "fixture-local-model",
+            allowed: false,
+          }),
+        ]);
+        vi.mocked(f.deps.prisma.aiDataConsent.findMany).mockResolvedValue([
+          { recipientKey: status.recipients[0]!.key },
+        ] as never);
+        const granted = await aiConsentStatus(f.deps, f.actor, { uses: ["model"] });
+        expect(granted.recipients).toEqual([{ ...status.recipients[0], allowed: true }]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 });

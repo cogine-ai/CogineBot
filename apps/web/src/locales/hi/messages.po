@@ -6379,3 +6379,9 @@ msgstr "{name} को नहीं ले जाया जा सका"
 #: src/lib/use-sidebar-announcements.ts
 msgid "Move cancelled"
 msgstr "ले जाना रद्द किया गया"
+
+msgid "Add your own API key to continue."
+msgstr "जारी रखने के लिए अपनी API कुंजी जोड़ें।"
+
+msgid "Add API key"
+msgstr "API कुंजी जोड़ें"
