@@ -251,4 +251,57 @@ describe("desktop update withdrawal prototype", () => {
     await f.controller.check(false);
     expect(f.updater.checkForUpdates).toHaveBeenCalledTimes(1);
   });
+
+  it("does not dispatch a check after disposal while the updater was loading", async () => {
+    const f = await fixture({
+      check: async () => {
+        throw new Error("unused");
+      },
+    });
+    vi.mocked(f.updater.checkForUpdates).mockClear();
+    let release!: (value: ElectronAutoUpdater) => void;
+    const loading = new Promise<ElectronAutoUpdater>((resolve) => {
+      release = resolve;
+    });
+    const controller = new DesktopUpdateController(
+      { packaged: true, version: "0.2.1" },
+      () => loading,
+    );
+    controllers.push(controller);
+    const check = controller.check(false);
+    controller.dispose();
+    release(f.updater);
+    await check;
+    expect(f.updater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it.each(["download", "install"])(
+    "does not dispatch %s after disposal during an updater await",
+    async (operation) => {
+      const f = await fixture({
+        check: async () => {
+          throw new Error("unused");
+        },
+      });
+      // Use the normal construction too: dispose is a lifecycle boundary with or without the PoC.
+      const controller = new DesktopUpdateController(
+        { packaged: true, version: "0.2.1" },
+        async () => f.updater,
+      );
+      controllers.push(controller);
+      await controller.check(false);
+      let pending: Promise<unknown>;
+      if (operation === "download") {
+        f.emit("update-available", { version: "0.3.0" });
+        pending = controller.download();
+      } else {
+        f.emit("update-downloaded", { version: "0.3.0" });
+        pending = controller.install();
+      }
+      controller.dispose();
+      await pending;
+      expect(f.updater.downloadUpdate).not.toHaveBeenCalled();
+      expect(f.updater.quitAndInstall).not.toHaveBeenCalled();
+    },
+  );
 });

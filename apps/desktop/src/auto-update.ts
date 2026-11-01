@@ -419,7 +419,7 @@ export class DesktopUpdateController {
       this.lastCheck = 0;
     }
     const updater = await this.updater();
-    if (updater === null) return this.current;
+    if (updater === null || this.disposed) return this.current;
     now = this.clock.now();
     if (!shouldCheck(this.current, now, this.lastCheck, checkOptions)) return this.current;
     this.lastCheck = now;
@@ -445,7 +445,8 @@ export class DesktopUpdateController {
   private async runDownload() {
     if (this.disposed || this.current.phase !== "available") return this.current;
     const updater = await this.updater();
-    if (updater === null || this.current.phase !== "available") return this.current;
+    if (updater === null || this.disposed || this.current.phase !== "available")
+      return this.current;
     this.push({ type: "download-start" });
     try {
       await updater.downloadUpdate();
@@ -498,7 +499,12 @@ export class DesktopUpdateController {
   private async runInstall(manual: boolean) {
     if (this.disposed || this.installStarted || this.current.phase !== "ready") return this.state();
     const updater = await this.updater();
-    if (updater === null || this.installStarted || this.current.phase !== "ready") {
+    if (
+      updater === null ||
+      this.disposed ||
+      this.installStarted ||
+      this.current.phase !== "ready"
+    ) {
       return this.current;
     }
     try {

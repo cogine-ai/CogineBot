@@ -27,7 +27,7 @@ The serial store is scoped to the feed origin, channel and test-key fingerprint.
 Use a separate file for each namespace. Accepted serials are atomically written
 before returning a result. Corrupt, missing-parent, locked or unwritable stores
 fail closed. An interrupted lock is not automatically removed; inspect and recover
-the test store explicitly. Reopening tests establish process-restart behavior,
+the test store explicitly. Fresh-client reopening tests read the same on-disk store,
 not power-loss durability or protection against a local attacker replacing state.
 
 ## Download and installation boundaries

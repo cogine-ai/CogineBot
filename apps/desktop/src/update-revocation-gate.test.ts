@@ -234,10 +234,60 @@ describe("downloaded update installation gate", () => {
     expect(() => gate(verifier("clear"))).toThrow("test-only");
   });
 
+  it("keeps the selected build tuple fixed when its caller changes the options during hashing", async () => {
+    const client = verifier("revoked");
+    const check = client.check;
+    client.check = async (identity) => ({
+      ...(await check(identity)),
+      status: identity.arch === "arm64" ? "revoked" : "clear",
+    });
+    const options = {
+      client,
+      platform: "darwin",
+      arch: "arm64",
+      channel: "stable",
+      now: () => NOW,
+    };
+    const control = new DownloadedUpdateRevocationGate(options);
+    const pending = control.downloaded(await artifact());
+    options.arch = "x64";
+    await pending;
+    expect(control.state()).toMatchObject({ status: "revoked", artifact: { arch: "arm64" } });
+    expect(await control.install(vi.fn())).toBe(false);
+  });
+
   it("permanently closes a disposed prototype even if a download callback arrives late", async () => {
     const control = gate(verifier("clear"));
     control.dispose();
     await control.downloaded(await artifact());
     expect(await control.install(vi.fn())).toBe(false);
+  });
+
+  it("immediately declines quit while a manual install is awaiting its network review", async () => {
+    const client = verifier("clear");
+    const control = gate(client);
+    await control.downloaded(await artifact());
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const check = client.check;
+    client.check = vi.fn(async (identity) => {
+      await wait;
+      return check(identity);
+    });
+    const manual = control.install(vi.fn());
+    await vi.waitFor(() => expect(client.check).toHaveBeenCalledTimes(1));
+    let settled = false;
+    const quit = control.install(vi.fn(), false).then((result) => {
+      settled = true;
+      return result;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const declinedWithoutNetworkWait = settled;
+    release();
+    await manual;
+    expect(await quit).toBe(false);
+    expect(declinedWithoutNetworkWait).toBe(true);
   });
 });

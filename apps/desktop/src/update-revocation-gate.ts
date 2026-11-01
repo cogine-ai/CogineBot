@@ -59,6 +59,7 @@ export class DownloadedUpdateRevocationGate {
   private candidate: Promise<DownloadedArtifact | null> | null = null;
   private current: UpdateRevocationStatus | null = null;
   private tail: Promise<unknown> = Promise.resolve();
+  private pendingOperations = 0;
   private refreshInFlight: {
     generation: number;
     promise: Promise<UpdateRevocationStatus | null>;
@@ -69,6 +70,7 @@ export class DownloadedUpdateRevocationGate {
 
   constructor(private readonly options: GateOptions) {
     if (process.env.NODE_ENV !== "test") throw new Error("Update revocation PoC is test-only");
+    this.options = { ...options };
     this.now = options.now ?? Date.now;
   }
 
@@ -127,7 +129,10 @@ export class DownloadedUpdateRevocationGate {
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(operation);
+    this.pendingOperations += 1;
+    const result = this.tail.then(operation).finally(() => {
+      this.pendingOperations -= 1;
+    });
     this.tail = result.catch(() => undefined);
     return result;
   }
@@ -181,7 +186,7 @@ export class DownloadedUpdateRevocationGate {
   /** Manual installs recheck the feed; a quit simulation uses only already-fresh evidence. */
   install(effect: () => void, manual = true): Promise<boolean> {
     if (this.disposed) return Promise.resolve(false);
-    if (!manual && (this.refreshInFlight !== null || this.state()?.status !== "clear")) {
+    if (!manual && (this.pendingOperations !== 0 || this.state()?.status !== "clear")) {
       return Promise.resolve(false);
     }
     const generation = this.generation;
