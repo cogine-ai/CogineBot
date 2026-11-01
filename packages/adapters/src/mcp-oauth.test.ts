@@ -1,10 +1,13 @@
+import { getLogger } from "@rakazo/logging";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { InfisicalSecretStore } from "./infisical-secret-store.js";
 import type { OAuthMaterial } from "./mcp-oauth.js";
 import {
   McpOAuthBroker,
   McpReauthorizationRequiredError,
   StoredMcpOAuthProvider,
 } from "./mcp-oauth.js";
+import { infisicalFake } from "./secret-store-fake.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -1316,6 +1319,108 @@ describe("MCP setup with an existing access token", () => {
 });
 
 describe("managed plugin OAuth lifecycle", () => {
+  it.each([false, true])(
+    "compensates a known remote token when its parent disappears before acknowledgement (cleanup fails: %s)",
+    async (cleanupFails) => {
+      let exists = true;
+      let cleanupRefs: unknown = [];
+      let created!: () => void;
+      let release!: () => void;
+      const createdRemote = new Promise<void>((resolve) => {
+        created = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fake = infisicalFake();
+      const secrets = new InfisicalSecretStore({
+        ...fake.options,
+        fetch: async (input, init) => {
+          const response = await fake.fetcher(input, init);
+          if (init?.method === "POST" && String(input).includes("/secrets/")) {
+            created();
+            await gate;
+          }
+          return response;
+        },
+      });
+      const server = {
+        id: "managed-server",
+        endpoint: "https://mcp.example.test",
+        secretId: null,
+        installId: "managed-plugin",
+      };
+      const count = () => ({ count: vi.fn(async () => 0) });
+      const prisma = {
+        mcpServer: { findFirst: vi.fn(async () => (exists ? server : null)), update: vi.fn() },
+        capabilityInstall: {
+          findFirst: vi.fn(async () =>
+            exists
+              ? {
+                  id: server.installId,
+                  kind: "plugin",
+                  clientNonce: "one",
+                  status: "installed",
+                  userId: "user",
+                  spaceId: "space",
+                  cleanupRefs,
+                }
+              : null,
+          ),
+          update: vi.fn(async ({ data }: { data: { cleanupRefs: unknown } }) => {
+            if (!exists) throw new Error("Deleted parent must not be recreated");
+            cleanupRefs = data.cleanupRefs;
+          }),
+        },
+        secret: { ...count(), create: vi.fn() },
+        botSecret: count(),
+        integrationProviderConfig: count(),
+        nativeAppConfig: count(),
+        $queryRaw: vi.fn(async () => [{ referenced: false }]),
+        $executeRaw: vi.fn(),
+        $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+      };
+      const warning = vi.spyOn(getLogger(), "warn");
+      const broker = new McpOAuthBroker(prisma as never, secrets);
+      const provider = await broker.providerFor(
+        server,
+        { spaceId: "space", userId: "user" },
+        { material: { oauth: {} } },
+      );
+      const saving = provider!.saveTokens({
+        access_token: "synthetic-token",
+        token_type: "bearer",
+      });
+      const rejected = expect(saving).rejects.toThrow(
+        "Plugin credential recovery state is unavailable",
+      );
+      try {
+        await createdRemote;
+        expect(fake.values.size).toBe(1);
+        exists = false;
+        if (cleanupFails) fake.statuses.push(503, 503, 503);
+        release();
+        await rejected;
+        expect(
+          fake.fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE").length,
+        ).toBeGreaterThan(0);
+        expect(fake.values.size).toBe(cleanupFails ? 1 : 0);
+        expect(prisma.secret.create).not.toHaveBeenCalled();
+        expect(prisma.mcpServer.update).not.toHaveBeenCalled();
+        expect(prisma.capabilityInstall.update).toHaveBeenCalledTimes(1);
+        if (cleanupFails)
+          expect(warning).toHaveBeenCalledWith(
+            "Secret deletion failed; retry cleanup before removing provider access",
+          );
+      } finally {
+        release();
+        await Promise.resolve(saving).catch(() => undefined);
+        warning.mockRestore();
+        await secrets.close();
+      }
+    },
+  );
+
   it("does not recreate a reservation already reconciled before a late acknowledgement", async () => {
     const prisma = {
       capabilityInstall: {

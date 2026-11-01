@@ -301,7 +301,7 @@ jobs:
 
       - name: Require plugin acceptance views
         run: |
-          for view in d011-plugin-preview d011-plugin-preview-320 d011-plugin-installed d011-plugin-cleanup-failed d011-plugin-unknown; do
+          for view in d011-plugin-preview d011-plugin-preview-320 d011-plugin-installed d011-plugin-cleanup-failed d011-plugin-unknown d011-plugin-member-management; do
             match="$(find apps/web/test-results -type f -path '*/github-plugins-*/*' -name "${view}.png" -print -quit)"
             if [ -z "$match" ]; then
               echo "Missing plugin screenshot: $view" >&2

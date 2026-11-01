@@ -228,7 +228,9 @@ test("a reopened pending installation can be explicitly cleaned up without repla
 
 test("a Space owner reviews attribution and explicitly cleans a member installation without replacing their draft", async ({
   page,
-}) => {
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const owned = { ...receipt("owner-nonce"), id: "owner-install", name: "Your plugin" };
   let managed: PluginInstallReceipt = {
     ...receipt("member-nonce"),
     id: "member-install",
@@ -237,7 +239,7 @@ test("a Space owner reviews attribution and explicitly cleans a member installat
   const removals: number[] = [];
   let installs = 0;
   await page.route("**/rpc/plugins/list", (route) =>
-    route.fulfill({ json: { json: listing([], [{ receipt: managed, ownerName: "Alex" }]) } }),
+    route.fulfill({ json: { json: listing([owned], [{ receipt: managed, ownerName: "Alex" }]) } }),
   );
   await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
   await page.route("**/rpc/plugins/install", (route) => {
@@ -261,6 +263,14 @@ test("a Space owner reviews attribution and explicitly cleans a member installat
   await expect(row.getByText("Installed by Alex", { exact: true })).toBeVisible();
   await row.getByRole("button", { name: "Remove plugin", exact: true }).click();
   expect(removals).toEqual([]);
+  const ownRow = panel.getByRole("article", { name: "Your plugin", exact: true });
+  await expect(ownRow).toBeVisible();
+  await expect(ownRow.getByText("Installed by", { exact: false })).toHaveCount(0);
+  await row.getByRole("button", { name: "Confirm removal", exact: true }).scrollIntoViewIfNeeded();
+  expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
+    true,
+  );
+  await captureScreenshot(page, testInfo, "d011-plugin-member-management");
   await row.getByRole("button", { name: "Confirm removal", exact: true }).click();
   await expect(row.getByText("Cleanup incomplete", { exact: true })).toBeVisible();
   await row.getByRole("button", { name: "Retry cleanup", exact: true }).click();

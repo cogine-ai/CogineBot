@@ -7,6 +7,7 @@ import {
   buildMcpCredentialBlob,
   fetchGitHubPlugin,
   parsePluginSource,
+  persistPreparedSecret,
   toPluginPreview,
 } from "@rakazo/adapters";
 import type {
@@ -199,7 +200,12 @@ export function createPluginInstallsService(deps: Deps) {
       });
     });
   }
-  async function prepare(context: Context, id: string, plugin: ParsedPlugin) {
+  async function prepare(
+    context: Context,
+    id: string,
+    plugin: ParsedPlugin,
+    written: SecretRecord[],
+  ) {
     const prepared: Prepared[] = [];
     for (const [index, server] of plugin.mcpServers.entries()) {
       await authorized(context);
@@ -260,6 +266,7 @@ export function createPluginInstallsService(deps: Deps) {
       }
       if (!pending) throw dispatchFailure;
       const stored = await pending;
+      written.push(stored);
       if (stored.id !== recordId) throw new Error("Credential store changed its reserved identity");
       await changeCleanup(context, id, (refs) => {
         if (!refs.some((entry) => entry.id === recordId && entry.pending))
@@ -277,15 +284,19 @@ export function createPluginInstallsService(deps: Deps) {
     }
     return prepared;
   }
-  async function fail(context: Context, id: string) {
+  async function fail(context: Context, id: string, written: SecretRecord[]) {
     let row = await deps.prisma.capabilityInstall.findFirst({
       where: { id, userId: context.actor.userId, spaceId: context.actor.spaceId },
       include: includeChildren,
     });
-    if (!row)
+    if (!row) {
+      // Parent cascades cannot retain the private ledger. Compensate every known
+      // prepared ref using the same reference-aware cleanup as other secret writes.
+      await persistPreparedSecret(deps.prisma, deps.secrets, written, async () => undefined);
       throw new ORPCError("CONFLICT", {
         message: "Could not confirm installation. Check its status before retrying.",
       });
+    }
     if (row.status === "installed" || row.status === "removed" || row.status === "failed")
       return pluginInstallReceipt(row);
     try {
@@ -427,8 +438,9 @@ export function createPluginInstallsService(deps: Deps) {
         return { row, owned: true };
       });
       if (!claimed.owned) return pluginInstallReceipt(claimed.row);
+      const written: SecretRecord[] = [];
       try {
-        const servers = await prepare(context, claimed.row.id, plugin);
+        const servers = await prepare(context, claimed.row.id, plugin, written);
         await authorized(context);
         return await deps.prisma.$transaction(async (tx) => {
           await lockScope(tx, context);
@@ -507,7 +519,7 @@ export function createPluginInstallsService(deps: Deps) {
         });
       } catch {
         // Read the durable outcome before compensating an uncertain transaction acknowledgement.
-        return fail(context, claimed.row.id);
+        return fail(context, claimed.row.id, written);
       }
     },
   };

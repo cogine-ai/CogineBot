@@ -459,3 +459,37 @@ it("shows a member only owned installations and clears an obsolete management co
   expect(node.textContent).not.toContain("Installed by");
   expect(api.uninstall).not.toHaveBeenCalled();
 });
+
+it("does not restore a revoked member row when cleanup replies after a concurrent refresh", async () => {
+  const managed = {
+    ...receipt,
+    id: "member-install",
+    clientNonce: "member-nonce",
+    name: "Member plugin",
+  };
+  api.list.mockResolvedValue(listing([], [{ receipt: managed, ownerName: "Alex" }]));
+  await click("Refresh");
+  let resolveRead!: (value: ReturnType<typeof listing>) => void;
+  let resolveWrite!: (value: PluginInstallReceipt) => void;
+  api.list.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolveRead = done;
+      }),
+  );
+  api.uninstall.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolveWrite = done;
+      }),
+  );
+  await click("Refresh");
+  await click("Remove plugin");
+  await click("Confirm removal");
+  await act(async () => resolveRead(listing()));
+  await act(async () => resolveWrite({ ...managed, status: "cleanup_failed", revision: 3 }));
+  expect(node.textContent).not.toContain("Member plugin");
+  expect(node.textContent).not.toContain("Installed by");
+  expect(node.textContent).toContain("No plugins installed");
+  expect(api.uninstall).toHaveBeenCalledTimes(1);
+});

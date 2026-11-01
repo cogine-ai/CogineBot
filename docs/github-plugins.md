@@ -51,10 +51,12 @@ disables its servers and instructions and closes its pending connection/tool app
 cards. Never-dispatched tool requests receive a removal result; a waiting Run resumes
 only when no other input is pending. Already-dispatched external work is not undone.
 Credential cleanup failures remain visible as **Cleanup incomplete** and can be retried.
-Supported secret stores record recovery information before a credential write.
+New managed plugin writes record provider recovery information when available.
 Cleanup can recover an exact remote reference or confirm that an inline write had
-no external resource. An unavailable or changed provider keeps cleanup incomplete;
-restore its original configuration and retry. An unconfirmed remote write remains
+no external resource. Scoped recovery keeps cleanup incomplete when its original
+provider is unavailable or changed; restore that configuration and retry. Existing
+unscoped credentials retain the [legacy migration procedure](infisical-secrets.md).
+An unconfirmed remote write remains
 pending, including when a lookup has not found a resource that could still appear.
 
 ## Offline validation

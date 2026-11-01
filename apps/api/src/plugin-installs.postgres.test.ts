@@ -58,6 +58,7 @@ class FixtureSecretStore extends EncryptedSecretStore {
   inlineRecovery = false;
   readonly unsettled = new Set<string>();
   nextPut: Barrier | undefined;
+  pauseAtPut: number | undefined;
 
   override prepareWrite(recordId: string, options: { ephemeral?: boolean } = {}): string {
     return this.inlineRecovery || options.ephemeral
@@ -86,11 +87,13 @@ class FixtureSecretStore extends EncryptedSecretStore {
       ...options,
       ...(options?.recoveryRef?.startsWith("fixture:v1:") ? { recoveryRef: undefined } : {}),
     });
-    if (context.operationId !== "plugins.install") return stored;
+    if (!["plugins.install", "mcp.update", "mcp.oauth.persist"].includes(context.operationId))
+      return stored;
     this.puts++;
     if (options?.recoveryRef?.startsWith("fixture:v1:")) this.records.set(stored.id, stored);
-    const paused = this.nextPut;
-    this.nextPut = undefined;
+    const paused =
+      this.pauseAtPut === undefined || this.pauseAtPut === this.puts ? this.nextPut : undefined;
+    if (paused) this.nextPut = undefined;
     this.unsettled.add(stored.id);
     try {
       if (paused) {
@@ -406,6 +409,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     for (const paused of held.splice(0)) paused.release();
     pauseRead = undefined;
     secrets.nextPut = undefined;
+    secrets.pauseAtPut = undefined;
     secrets.unknownAck = false;
     secrets.failDelete = false;
     secrets.reconcileWrites = false;
@@ -1029,6 +1033,65 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       ).toEqual([]);
       expect(await database.prisma.secret.count({ where: { userId: actor.actor.userId } })).toBe(0);
       expect(await install(actor, input)).toEqual(settled);
+    },
+  );
+
+  it.each(["install", "MCP update"] as const)(
+    "cleans every known prepared credential after Space deletion races with %s",
+    async (operation) => {
+      const owner = await account();
+      const space = await call<{ id: string }>(owner, "spaces/create", {
+        name: "Credential cascade fixture",
+      });
+      const scoped = { ...owner, actor: { ...owner.actor, spaceId: space.id } };
+      const input = intent(
+        await preview(scoped, fixture({ servers: operation === "install" ? 2 : 1 })),
+      );
+      const existing = operation === "MCP update" ? await install(scoped, input) : undefined;
+      const paused = barrier();
+      held.push(paused);
+      secrets.nextPut = paused;
+      secrets.pauseAtPut = secrets.puts + (operation === "install" ? 2 : 1);
+      const writing =
+        operation === "install"
+          ? request(scoped, "plugins/install", input)
+          : request(scoped, "mcp/servers/update", {
+              id: existing!.mcpServers[0]!.id,
+              secret: "replacement-fixture",
+            });
+      void writing.catch(() => undefined);
+      let ids: string[] = [];
+      try {
+        await paused.entered;
+        const parent = await database.prisma.capabilityInstall.findFirstOrThrow({
+          where: { spaceId: space.id, clientNonce: input.clientNonce },
+        });
+        const children = await database.prisma.mcpServer.findMany({
+          where: { installId: parent.id },
+          select: { secretId: true },
+        });
+        ids = [
+          ...(parent.cleanupRefs as { id: string }[]).map((entry) => entry.id),
+          ...children.flatMap((child) => (child.secretId ? [child.secretId] : [])),
+        ];
+        expect(ids).toHaveLength(2);
+        expect(ids.every((id) => secrets.records.has(id))).toBe(true);
+        expect(
+          await call<{ ok: boolean }>(owner, "spaces/remove", { spaceId: space.id }),
+        ).toMatchObject({ ok: true });
+        expect(
+          await database.prisma.capabilityInstall.findUnique({ where: { id: parent.id } }),
+        ).toBeNull();
+      } finally {
+        paused.release();
+      }
+      const result = await writing;
+      expect(result.ok).toBe(false);
+      expect(result.status).toBeGreaterThanOrEqual(400);
+      expect(ids.every((id) => !secrets.records.has(id))).toBe(true);
+      expect(await database.prisma.secret.count({ where: { spaceId: space.id } })).toBe(0);
+      expect(await database.prisma.mcpServer.count({ where: { spaceId: space.id } })).toBe(0);
+      expect(await database.prisma.agentSkill.count({ where: { spaceId: space.id } })).toBe(0);
     },
   );
 

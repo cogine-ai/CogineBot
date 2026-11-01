@@ -1086,14 +1086,16 @@ export class McpOAuthBroker {
               : undefined,
           )
         : undefined;
-      if (reservation && stored && installId) {
-        if (stored.id !== reservation.id)
-          throw new Error("Credential store changed its reserved identity");
-        await this.resolvePluginCredential(installId, context, stored);
-      }
       let retired: string | undefined;
-      const commit = () =>
-        this.prisma.$transaction(async (tx) => {
+      const commit = async () => {
+        // The provider has acknowledged a known ref. Keep resolution and identity
+        // checks inside compensation even if its parent was concurrently cascaded.
+        if (reservation && stored && installId) {
+          if (stored.id !== reservation.id)
+            throw new Error("Credential store changed its reserved identity");
+          await this.resolvePluginCredential(installId, context, stored);
+        }
+        return this.prisma.$transaction(async (tx) => {
           if (installId) await lockPluginInstall(tx, installId);
           const parent = installId
             ? await assertManagedPluginActive(tx, installId, context)
@@ -1153,17 +1155,19 @@ export class McpOAuthBroker {
           }
           return true;
         });
+      };
       const adopted = (committed: boolean) => {
         if (committed && stored)
           onPersisted?.({ id: stored.id, ref: stored.ciphertext, material: nextMaterial });
       };
       try {
-        const committed = reservation
-          ? await commit().then((result) => {
-              adopted(result);
-              return result;
-            })
-          : await persistPreparedSecret(this.prisma, this.secrets, stored, commit, adopted);
+        const committed = await persistPreparedSecret(
+          this.prisma,
+          this.secrets,
+          stored,
+          commit,
+          adopted,
+        );
         if (committed) {
           if (retired && installId) await this.releasePluginCredential(installId, context, retired);
           return stored?.id;

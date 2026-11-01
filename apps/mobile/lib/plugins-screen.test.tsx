@@ -491,3 +491,40 @@ it("shows a member only owned installations after management rights disappear", 
   expect(node.textContent).not.toContain("Installed by");
   expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
 });
+
+it("does not restore a revoked member row when cleanup replies after a concurrent refresh", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  const managed = {
+    ...receipt,
+    id: "member-install",
+    clientNonce: "member-nonce",
+    name: "Member plugin",
+  };
+  let resolveRead!: (value: ReturnType<typeof listing>) => void;
+  let resolveWrite!: (value: PluginInstallReceipt) => void;
+  let reading = false;
+  api.rpc.mockImplementation((procedure, input, options) => {
+    if (procedure === "plugins/list")
+      return reading
+        ? new Promise((done) => {
+            resolveRead = done;
+          })
+        : Promise.resolve(listing([], [{ receipt: managed, ownerName: "Alex" }]));
+    if (procedure === "plugins/uninstall")
+      return new Promise((done) => {
+        resolveWrite = done;
+      });
+    return normal(procedure, input, options);
+  });
+  await click("Refresh");
+  reading = true;
+  await click("Refresh");
+  await click("Remove plugin");
+  await click("Confirm removal");
+  await act(async () => resolveRead(listing()));
+  await act(async () => resolveWrite({ ...managed, status: "cleanup_failed", revision: 3 }));
+  expect(node.textContent).not.toContain("Member plugin");
+  expect(node.textContent).not.toContain("Installed by");
+  expect(node.textContent).toContain("No plugins installed");
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(1);
+});

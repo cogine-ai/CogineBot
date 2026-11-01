@@ -40,6 +40,16 @@ const receipt: PluginInstallReceipt = {
   mcpServers: [],
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 function fixture(makeNonce = () => "nonce-one") {
   const transport = {
     preview: vi.fn(async (_input: { source: string }, _signal: AbortSignal) => preview),
@@ -561,5 +571,160 @@ describe("plugin installation review", () => {
     await f.manager.refresh();
     expect(f.manager.state()).toMatchObject({ phase: "installed", receipt });
     expect(f.manager.canUninstall(receipt)).toBe(false);
+  });
+
+  it("does not resurrect managed authority when a refresh withdraws it before a late cleanup reply", async () => {
+    const f = fixture();
+    const managed = { ...receipt, id: "member-install" };
+    f.list.mockResolvedValue(listing([], [{ receipt: managed, ownerName: "Alex" }]));
+    await f.manager.refresh();
+    const read = deferred<ReturnType<typeof listing>>();
+    const write = deferred<PluginInstallReceipt>();
+    f.list.mockReturnValueOnce(read.promise);
+    f.uninstall.mockReturnValueOnce(write.promise);
+    const refresh = f.manager.refresh();
+    const removal = f.manager.uninstall(managed);
+    read.resolve(listing());
+    await refresh;
+    const result = { ...managed, status: "cleanup_failed" as const, revision: 3 };
+    write.resolve(result);
+    await removal;
+    expect(f.manager.state()).toMatchObject({
+      installations: [],
+      installationOwners: {},
+      removalUnknownId: null,
+    });
+    expect(f.manager.canUninstall(result)).toBe(false);
+    await f.manager.uninstall(result);
+    expect(f.uninstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets an in-flight authoritative listing withdraw managed access after a cleanup reply arrives first", async () => {
+    const f = fixture();
+    const managed = { ...receipt, id: "member-install" };
+    f.list.mockResolvedValue(listing([], [{ receipt: managed, ownerName: "Alex" }]));
+    await f.manager.refresh();
+    const read = deferred<ReturnType<typeof listing>>();
+    f.list.mockReturnValueOnce(read.promise);
+    const refresh = f.manager.refresh();
+    const signal = f.list.mock.calls.at(-1)![0];
+    f.uninstall.mockResolvedValueOnce({ ...managed, status: "cleanup_failed", revision: 3 });
+    await f.manager.uninstall(managed);
+    expect(signal.aborted).toBe(false);
+    expect(f.manager.state()).toMatchObject({
+      installationOwners: { "member-install": "Alex" },
+      loading: true,
+    });
+    read.resolve(listing());
+    await refresh;
+    expect(f.manager.state()).toMatchObject({
+      installations: [],
+      installationOwners: {},
+      loading: false,
+    });
+  });
+
+  it("keeps fresh managed attribution and the newest revision across racing cleanup and listing", async () => {
+    const f = fixture();
+    const managed = { ...receipt, id: "member-install" };
+    f.list.mockResolvedValue(listing([], [{ receipt: managed, ownerName: "Alex" }]));
+    await f.manager.refresh();
+    const read = deferred<ReturnType<typeof listing>>();
+    const write = deferred<PluginInstallReceipt>();
+    f.list.mockReturnValueOnce(read.promise);
+    f.uninstall.mockReturnValueOnce(write.promise);
+    const refresh = f.manager.refresh();
+    const removal = f.manager.uninstall(managed);
+    const latest = { ...managed, status: "removed" as const, revision: 5 };
+    read.resolve(listing([], [{ receipt: latest, ownerName: "New name" }]));
+    await refresh;
+    write.resolve({ ...managed, status: "cleanup_failed", revision: 3 });
+    await removal;
+    expect(f.manager.state()).toMatchObject({
+      installations: [latest],
+      installationOwners: { "member-install": "New name" },
+    });
+    expect(f.manager.canUninstall(latest)).toBe(false);
+  });
+
+  it("keeps an owned cleanup outcome when an earlier overlapping listing omits it", async () => {
+    const f = fixture();
+    await f.manager.preview("https://github.com/example/plugin");
+    await f.manager.install();
+    const read = deferred<ReturnType<typeof listing>>();
+    const write = deferred<PluginInstallReceipt>();
+    f.list.mockReturnValueOnce(read.promise);
+    f.uninstall.mockReturnValueOnce(write.promise);
+    const refresh = f.manager.refresh();
+    const removal = f.manager.uninstall(receipt);
+    read.resolve(listing());
+    await refresh;
+    const result = { ...receipt, status: "cleanup_failed" as const, revision: 3 };
+    write.resolve(result);
+    await removal;
+    expect(f.manager.state()).toMatchObject({
+      phase: "terminal",
+      receipt: result,
+      installations: [result],
+      installationOwners: {},
+    });
+    expect(f.manager.canUninstall(result)).toBe(true);
+  });
+
+  it("requires an exact managed readback after a lost removal reply even if a fresh list withdrew access", async () => {
+    const f = fixture();
+    const managed = { ...receipt, id: "member-install" };
+    f.list.mockResolvedValue(listing([], [{ receipt: managed, ownerName: "Alex" }]));
+    await f.manager.refresh();
+    const read = deferred<ReturnType<typeof listing>>();
+    const write = deferred<PluginInstallReceipt>();
+    f.list.mockReturnValueOnce(read.promise);
+    f.uninstall.mockReturnValueOnce(write.promise);
+    const refresh = f.manager.refresh();
+    const removal = f.manager.uninstall(managed);
+    read.resolve(listing());
+    await refresh;
+    write.reject(new Error("reply lost"));
+    await removal;
+    expect(f.manager.state()).toMatchObject({ installations: [], removalUnknownId: managed.id });
+    const tombstone = { ...managed, status: "removed" as const, revision: 3 };
+    f.list.mockResolvedValue(listing([tombstone]));
+    await f.manager.refresh();
+    expect(f.manager.state().removalUnknownId).toBe(managed.id);
+    f.list.mockResolvedValue(
+      listing(
+        [],
+        [{ receipt: { ...tombstone, clientNonce: "different-nonce" }, ownerName: "Alex" }],
+      ),
+    );
+    await f.manager.refresh();
+    expect(f.manager.state().removalUnknownId).toBe(managed.id);
+    f.list.mockResolvedValue(listing([], [{ receipt: tombstone, ownerName: "Alex" }]));
+    await f.manager.refresh();
+    expect(f.manager.state()).toMatchObject({
+      removalUnknownId: null,
+      installationOwners: { "member-install": "Alex" },
+      receipt: null,
+    });
+  });
+
+  it("retains an acknowledged managed revision while an overlapping listing still grants access", async () => {
+    const f = fixture();
+    const managed = { ...receipt, id: "member-install" };
+    f.list.mockResolvedValue(listing([], [{ receipt: managed, ownerName: "Alex" }]));
+    await f.manager.refresh();
+    const read = deferred<ReturnType<typeof listing>>();
+    f.list.mockReturnValueOnce(read.promise);
+    const refresh = f.manager.refresh();
+    const acknowledged = { ...managed, status: "cleanup_failed" as const, revision: 3 };
+    f.uninstall.mockResolvedValueOnce(acknowledged);
+    await f.manager.uninstall(managed);
+    read.resolve(listing([], [{ receipt: managed, ownerName: "New name" }]));
+    await refresh;
+    expect(f.manager.state()).toMatchObject({
+      installations: [acknowledged],
+      installationOwners: { "member-install": "New name" },
+    });
+    expect(f.manager.canUninstall(acknowledged)).toBe(true);
   });
 });

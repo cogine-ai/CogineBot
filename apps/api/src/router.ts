@@ -4893,21 +4893,25 @@ export function createRouter(deps: RouterDeps) {
                         : undefined,
                     )
                   : null;
-              if (reservation && stored && existing.installId) {
-                await mcpOAuth.resolvePluginCredential(existing.installId, context.actor, stored);
-                if (stored.id !== reservation.id)
-                  throw new ORPCError("CONFLICT", {
-                    message: "Could not prepare MCP credentials. Reload this setting.",
-                  });
-              }
               const clearing =
                 update.action === "store" && Object.keys(update.material).length === 0;
               const row = await persistPreparedSecret(
                 deps.prisma,
                 deps.secrets,
                 stored ?? undefined,
-                () =>
-                  deps.prisma.$transaction(async (tx) => {
+                async () => {
+                  if (reservation && stored && existing.installId) {
+                    if (stored.id !== reservation.id)
+                      throw new ORPCError("CONFLICT", {
+                        message: "Could not prepare MCP credentials. Reload this setting.",
+                      });
+                    await mcpOAuth.resolvePluginCredential(
+                      existing.installId,
+                      context.actor,
+                      stored,
+                    );
+                  }
+                  return deps.prisma.$transaction(async (tx) => {
                     const parent = await lockActivePluginChild(tx, existing, context.actor);
                     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${input.id}))`;
                     const current = await tx.mcpServer.findFirst({
@@ -5005,7 +5009,8 @@ export function createRouter(deps: RouterDeps) {
                               tx,
                             );
                     return { server: updated, seqs };
-                  }),
+                  });
+                },
               );
               if (row) {
                 for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
