@@ -135,14 +135,7 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          # Bound stalled transfers within the existing browser-setup time budget.
-          apt_options=(
-            -o Acquire::Retries=2
-            -o Acquire::http::Timeout=20
-            -o Acquire::https::Timeout=20
-          )
-          sudo apt-get "${apt_options[@]}" update 2>&1 | tee test-report/repository-ci/cjk-fonts-install.log
-          sudo apt-get "${apt_options[@]}" install --yes --no-install-recommends fonts-noto-cjk 2>&1 | tee -a test-report/repository-ci/cjk-fonts-install.log
+          node scripts/install-ci-cjk-fonts.mjs /etc/apt/sources.list.d/ubuntu.sources 2>&1 | tee test-report/repository-ci/cjk-fonts-install.log
           fc-match 'sans-serif:lang=zh-cn' 2>&1 | tee -a test-report/repository-ci/cjk-fonts-install.log
           pnpm --filter @rakazo/web exec playwright install chromium 2>&1 | tee test-report/repository-ci/chromium-install.log
       - name: Run selected web specs with the official offline harness
